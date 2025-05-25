@@ -1,3 +1,0 @@
-/home/babapro/Documents/GitHub/fcck/quanta/build/CMakeFiles/quanta.dir
-/home/babapro/Documents/GitHub/fcck/quanta/build/CMakeFiles/edit_cache.dir
-/home/babapro/Documents/GitHub/fcck/quanta/build/CMakeFiles/rebuild_cache.dir
