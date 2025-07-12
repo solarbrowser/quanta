@@ -1,0 +1,16 @@
+.vscode
+.history
+.cache
+
+*.bak
+*.tmp
+
+*.o
+*.exe
+*.a
+*.lib
+*.so
+*.dll
+
+build
+tests
