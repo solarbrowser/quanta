@@ -15,14 +15,14 @@
 using namespace Quanta;
 
 // ANSI color codes for better terminal output
-const std::string RESET = "\033[0m";
-const std::string BOLD = "\033[1m";
-const std::string RED = "\033[31m";
-const std::string GREEN = "\033[32m";
-const std::string YELLOW = "\033[33m";
-const std::string BLUE = "\033[34m";
-const std::string MAGENTA = "\033[35m";
-const std::string CYAN = "\033[36m";
+static const std::string RESET = "\033[0m";
+static const std::string BOLD = "\033[1m";
+static const std::string RED = "\033[31m";
+static const std::string GREEN = "\033[32m";
+static const std::string YELLOW = "\033[33m";
+static const std::string BLUE = "\033[34m";
+static const std::string MAGENTA = "\033[35m";
+static const std::string CYAN = "\033[36m";
 
 class QuantaConsole {
 private:
