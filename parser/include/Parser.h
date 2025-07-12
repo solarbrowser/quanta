@@ -1,0 +1,149 @@
+#ifndef QUANTA_PARSER_H
+#define QUANTA_PARSER_H
+
+#include "AST.h"
+#include "../../lexer/include/Token.h"
+#include "../../lexer/include/Lexer.h"
+#include <memory>
+#include <vector>
+#include <string>
+#include <functional>
+
+namespace Quanta {
+
+/**
+ * High-performance recursive descent parser for JavaScript
+ * Features:
+ * - Operator precedence parsing
+ * - Error recovery
+ * - Position tracking
+ * - Memory-efficient AST construction
+ */
+class Parser {
+public:
+    struct ParseOptions {
+        bool allow_return_outside_function = false;
+        bool allow_await_outside_async = false;
+        bool strict_mode = false;
+        bool source_type_module = false;
+    };
+
+    struct ParseError {
+        std::string message;
+        Position position;
+        std::string severity; // "error", "warning"
+        
+        ParseError(const std::string& msg, const Position& pos, const std::string& sev = "error")
+            : message(msg), position(pos), severity(sev) {}
+        
+        std::string to_string() const {
+            return severity + " at " + position.to_string() + ": " + message;
+        }
+    };
+
+private:
+    TokenSequence tokens_;
+    ParseOptions options_;
+    std::vector<ParseError> errors_;
+    
+    // Current parsing state
+    size_t current_token_index_;
+
+public:
+    // Constructor
+    explicit Parser(TokenSequence tokens);
+    Parser(TokenSequence tokens, const ParseOptions& options);
+    
+    // Main parsing methods
+    std::unique_ptr<Program> parse_program();
+    std::unique_ptr<ASTNode> parse_statement();
+    std::unique_ptr<ASTNode> parse_expression();
+    
+    // Statement parsing
+    std::unique_ptr<ASTNode> parse_variable_declaration();
+    std::unique_ptr<ASTNode> parse_block_statement();
+    std::unique_ptr<ASTNode> parse_if_statement();
+    std::unique_ptr<ASTNode> parse_expression_statement();
+    
+    // Expression parsing with precedence
+    std::unique_ptr<ASTNode> parse_assignment_expression();
+    std::unique_ptr<ASTNode> parse_conditional_expression();
+    std::unique_ptr<ASTNode> parse_logical_or_expression();
+    std::unique_ptr<ASTNode> parse_logical_and_expression();
+    std::unique_ptr<ASTNode> parse_bitwise_or_expression();
+    std::unique_ptr<ASTNode> parse_bitwise_xor_expression();
+    std::unique_ptr<ASTNode> parse_bitwise_and_expression();
+    std::unique_ptr<ASTNode> parse_equality_expression();
+    std::unique_ptr<ASTNode> parse_relational_expression();
+    std::unique_ptr<ASTNode> parse_shift_expression();
+    std::unique_ptr<ASTNode> parse_additive_expression();
+    std::unique_ptr<ASTNode> parse_multiplicative_expression();
+    std::unique_ptr<ASTNode> parse_exponentiation_expression();
+    std::unique_ptr<ASTNode> parse_unary_expression();
+    std::unique_ptr<ASTNode> parse_postfix_expression();
+    std::unique_ptr<ASTNode> parse_call_expression();
+    std::unique_ptr<ASTNode> parse_member_expression();
+    std::unique_ptr<ASTNode> parse_primary_expression();
+    std::unique_ptr<ASTNode> parse_parenthesized_expression();
+    
+    // Literal parsing
+    std::unique_ptr<ASTNode> parse_number_literal();
+    std::unique_ptr<ASTNode> parse_string_literal();
+    std::unique_ptr<ASTNode> parse_boolean_literal();
+    std::unique_ptr<ASTNode> parse_null_literal();
+    std::unique_ptr<ASTNode> parse_undefined_literal();
+    std::unique_ptr<ASTNode> parse_identifier();
+    
+    // Utility methods
+    const Token& current_token() const;
+    const Token& peek_token(size_t offset = 1) const;
+    void advance();
+    bool match(TokenType type);
+    bool match_any(const std::vector<TokenType>& types);
+    bool consume(TokenType type);
+    bool consume_if_match(TokenType type);
+    
+    // Error handling
+    void add_error(const std::string& message);
+    void add_error(const std::string& message, const Position& position);
+    const std::vector<ParseError>& get_errors() const { return errors_; }
+    bool has_errors() const { return !errors_.empty(); }
+    
+    // Position tracking
+    Position get_current_position() const;
+    
+    // Utility
+    bool at_end() const;
+    
+private:
+    // Helper methods
+    std::unique_ptr<ASTNode> parse_binary_expression(
+        std::function<std::unique_ptr<ASTNode>()> parse_operand,
+        const std::vector<TokenType>& operators
+    );
+    
+    BinaryExpression::Operator token_to_binary_operator(TokenType type);
+    UnaryExpression::Operator token_to_unary_operator(TokenType type);
+    
+    // Error recovery
+    void skip_to_statement_boundary();
+    void skip_to(TokenType type);
+    
+    // Validation
+    bool is_assignment_operator(TokenType type) const;
+    bool is_binary_operator(TokenType type) const;
+    bool is_unary_operator(TokenType type) const;
+};
+
+/**
+ * Parser factory for different parsing modes
+ */
+namespace ParserFactory {
+    std::unique_ptr<Parser> create_expression_parser(const std::string& source);
+    std::unique_ptr<Parser> create_statement_parser(const std::string& source);
+    std::unique_ptr<Parser> create_module_parser(const std::string& source);
+}
+
+} // namespace Quanta
+
+#endif // QUANTA_PARSER_H
