@@ -62,7 +62,7 @@ private:
 
 public:
     // Constructors
-    Value() : bits_(TAG_UNDEFINED) {}
+    Value() : bits_(QUIET_NAN | TAG_UNDEFINED) {}
     
     // Null constructor
     static Value null() {
@@ -85,7 +85,7 @@ public:
     explicit Value(const std::string& str);
     
     // Object constructor
-    explicit Value(Object* obj) : bits_(QUIET_NAN | TAG_OBJECT | reinterpret_cast<uint64_t>(obj)) {}
+    explicit Value(Object* obj);
     
     // Function constructor
     explicit Value(Function* func) : bits_(QUIET_NAN | TAG_FUNCTION | reinterpret_cast<uint64_t>(func)) {}
@@ -234,6 +234,11 @@ namespace ValueFactory {
     inline Value boolean(bool b) { return Value(b); }
     inline Value number(double d) { return Value(d); }
     inline Value string(const std::string& s) { return Value(s); }
+    Value create_function(std::unique_ptr<class Function> function_obj);
+    inline Value function_placeholder(const std::string& name) { 
+        // For now, create a function as a special string value
+        return Value("[Function: " + name + "]"); 
+    }
     
     // Common values
     inline Value zero() { return Value(0.0); }

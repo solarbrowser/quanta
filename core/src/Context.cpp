@@ -15,7 +15,8 @@ uint32_t Context::next_context_id_ = 1;
 Context::Context(Engine* engine, Type type) 
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
-      global_object_(nullptr), current_exception_(), has_exception_(false), engine_(engine) {
+      global_object_(nullptr), current_exception_(), has_exception_(false), 
+      return_value_(), has_return_value_(false), engine_(engine) {
     
     if (type == Type::Global) {
         initialize_global_context();
@@ -26,7 +27,7 @@ Context::Context(Engine* engine, Context* parent, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       global_object_(parent ? parent->global_object_ : nullptr),
-      current_exception_(), has_exception_(false), engine_(engine) {
+      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), engine_(engine) {
     
     // Inherit built-ins from parent
     if (parent) {
@@ -240,6 +241,20 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("Infinity", Value(std::numeric_limits<double>::infinity()), false);
     
     // Built-in objects are registered separately via register_built_in_object
+}
+
+//=============================================================================
+// Return Value Handling
+//=============================================================================
+
+void Context::set_return_value(const Value& value) {
+    return_value_ = value;
+    has_return_value_ = true;
+}
+
+void Context::clear_return_value() {
+    return_value_ = Value();
+    has_return_value_ = false;
 }
 
 //=============================================================================

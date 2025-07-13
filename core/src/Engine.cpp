@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "../../parser/include/AST.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -42,11 +43,15 @@ bool Engine::initialize() {
         // Create global context
         global_context_ = ContextFactory::create_global_context(this);
         
+        // Initialize module loader
+        module_loader_ = std::make_unique<ModuleLoader>(this);
+        
         // Setup global environment
         setup_global_object();
         setup_built_in_objects();
         setup_built_in_functions();
         setup_error_types();
+        setup_browser_globals();
         
         // Initialize garbage collector (placeholder)
         initialize_gc();
@@ -151,7 +156,7 @@ Engine::Result Engine::evaluate(const std::string& expression) {
 }
 
 void Engine::set_global_property(const std::string& name, const Value& value) {
-    if (initialized_ && global_context_) {
+    if (global_context_) {
         global_context_->create_binding(name, value);
         
         Object* global_obj = global_context_->get_global_object();
@@ -162,26 +167,31 @@ void Engine::set_global_property(const std::string& name, const Value& value) {
 }
 
 Value Engine::get_global_property(const std::string& name) {
-    if (initialized_ && global_context_) {
+    if (global_context_) {
         return global_context_->get_binding(name);
     }
     return Value();
 }
 
 bool Engine::has_global_property(const std::string& name) {
-    if (initialized_ && global_context_) {
+    if (global_context_) {
         return global_context_->has_binding(name);
     }
     return false;
 }
 
 void Engine::register_function(const std::string& name, std::function<Value(const std::vector<Value>&)> func) {
-    if (!initialized_) return;
+    // Allow registration during initialization
+    if (!global_context_) return;
     
-    // Create a native function wrapper (placeholder)
-    auto native_func = ObjectFactory::create_function();
+    // Create a native function with the actual implementation
+    auto native_func = ObjectFactory::create_native_function(name, 
+        [func](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            return func(args);
+        });
     
-    // Store the function somehow - for now, just set as property
+    // Store the function as a global property
     set_global_property(name, Value(native_func.release()));
 }
 
@@ -261,7 +271,25 @@ void Engine::inject_dom(Object* document) {
 void Engine::setup_browser_globals() {
     // Browser-specific globals (placeholder implementations)
     set_global_property("window", Value(global_context_->get_global_object()));
-    set_global_property("console", Value(ObjectFactory::create_object().release()));
+    
+    // Create console object with log method
+    auto console_obj = ObjectFactory::create_object();
+    
+    // Create console.log function
+    auto console_log_fn = ObjectFactory::create_native_function("log", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            for (size_t i = 0; i < args.size(); ++i) {
+                if (i > 0) std::cout << " ";
+                std::cout << args[i].to_string();
+            }
+            std::cout << std::endl;
+            return Value(); // undefined
+        });
+    
+    console_obj->set_property("log", Value(console_log_fn.release()));
+    set_global_property("console", Value(console_obj.release()));
+    
     set_global_property("setTimeout", Value(ObjectFactory::create_function().release()));
     set_global_property("setInterval", Value(ObjectFactory::create_function().release()));
 }
@@ -338,6 +366,14 @@ void Engine::setup_built_in_objects() {
 }
 
 void Engine::setup_built_in_functions() {
+    // Error constructor
+    register_function("Error", [](const std::vector<Value>& args) {
+        auto error_obj = ObjectFactory::create_error(
+            args.empty() ? "Error" : args[0].to_string()
+        );
+        return Value(error_obj.release());
+    });
+    
     // Global functions
     register_function("parseInt", [](const std::vector<Value>& args) {
         if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());

@@ -63,7 +63,23 @@ public:
     std::unique_ptr<ASTNode> parse_variable_declaration();
     std::unique_ptr<ASTNode> parse_block_statement();
     std::unique_ptr<ASTNode> parse_if_statement();
+    std::unique_ptr<ASTNode> parse_for_statement();
+    std::unique_ptr<ASTNode> parse_while_statement();
+    std::unique_ptr<ASTNode> parse_function_declaration();
+    std::unique_ptr<ASTNode> parse_return_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
+    
+    // Stage 9: Error handling and advanced control flow
+    std::unique_ptr<ASTNode> parse_try_statement();
+    std::unique_ptr<ASTNode> parse_throw_statement();
+    std::unique_ptr<ASTNode> parse_switch_statement();
+    std::unique_ptr<ASTNode> parse_catch_clause();
+    
+    // Stage 10: Modules
+    std::unique_ptr<ASTNode> parse_import_statement();
+    std::unique_ptr<ASTNode> parse_export_statement();
+    std::unique_ptr<ImportSpecifier> parse_import_specifier();
+    std::unique_ptr<ExportSpecifier> parse_export_specifier();
     
     // Expression parsing with precedence
     std::unique_ptr<ASTNode> parse_assignment_expression();
@@ -85,6 +101,9 @@ public:
     std::unique_ptr<ASTNode> parse_member_expression();
     std::unique_ptr<ASTNode> parse_primary_expression();
     std::unique_ptr<ASTNode> parse_parenthesized_expression();
+    std::unique_ptr<ASTNode> parse_function_expression();
+    std::unique_ptr<ASTNode> parse_object_literal();
+    std::unique_ptr<ASTNode> parse_array_literal();
     
     // Literal parsing
     std::unique_ptr<ASTNode> parse_number_literal();

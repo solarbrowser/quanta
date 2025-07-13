@@ -55,6 +55,33 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::IF:
             return parse_if_statement();
             
+        case TokenType::FOR:
+            return parse_for_statement();
+            
+        case TokenType::WHILE:
+            return parse_while_statement();
+            
+        case TokenType::FUNCTION:
+            return parse_function_declaration();
+            
+        case TokenType::RETURN:
+            return parse_return_statement();
+            
+        case TokenType::TRY:
+            return parse_try_statement();
+            
+        case TokenType::THROW:
+            return parse_throw_statement();
+            
+        case TokenType::SWITCH:
+            return parse_switch_statement();
+            
+        case TokenType::IMPORT:
+            return parse_import_statement();
+            
+        case TokenType::EXPORT:
+            return parse_export_statement();
+            
         default:
             return parse_expression_statement();
     }
@@ -192,6 +219,44 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
+    // Handle 'new' expression
+    if (current_token().get_type() == TokenType::NEW) {
+        Position start = current_token().get_start();
+        advance(); // consume 'new'
+        
+        auto constructor = parse_member_expression();
+        if (!constructor) {
+            add_error("Expected constructor expression after 'new'");
+            return nullptr;
+        }
+        
+        std::vector<std::unique_ptr<ASTNode>> arguments;
+        
+        // Parse arguments if parentheses are present
+        if (current_token().get_type() == TokenType::LEFT_PAREN) {
+            advance(); // consume '('
+            
+            if (current_token().get_type() != TokenType::RIGHT_PAREN) {
+                do {
+                    auto arg = parse_assignment_expression();
+                    if (!arg) {
+                        add_error("Expected argument expression");
+                        return nullptr;
+                    }
+                    arguments.push_back(std::move(arg));
+                } while (consume_if_match(TokenType::COMMA));
+            }
+            
+            if (!consume(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ')' after arguments");
+                return nullptr;
+            }
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<NewExpression>(std::move(constructor), std::move(arguments), start, end);
+    }
+    
     if (is_unary_operator(current_token().get_type())) {
         TokenType op_token = current_token().get_type();
         Position start = current_token().get_start();
@@ -213,8 +278,25 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
-    // For Stage 2, no postfix operators yet
-    return parse_call_expression();
+    auto expr = parse_call_expression();
+    if (!expr) return nullptr;
+    
+    // Handle postfix increment/decrement (x++, x--)
+    while (current_token().get_type() == TokenType::INCREMENT || 
+           current_token().get_type() == TokenType::DECREMENT) {
+        TokenType op_token = current_token().get_type();
+        Position start = expr->get_start();
+        Position end = current_token().get_end();
+        advance(); // consume ++ or --
+        
+        UnaryExpression::Operator op = (op_token == TokenType::INCREMENT) ? 
+            UnaryExpression::Operator::POST_INCREMENT : 
+            UnaryExpression::Operator::POST_DECREMENT;
+        
+        expr = std::make_unique<UnaryExpression>(op, std::move(expr), false, start, end);
+    }
+    
+    return expr;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_call_expression() {
@@ -314,6 +396,12 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_identifier();
         case TokenType::LEFT_PAREN:
             return parse_parenthesized_expression();
+        case TokenType::FUNCTION:
+            return parse_function_expression();
+        case TokenType::LEFT_BRACE:
+            return parse_object_literal();
+        case TokenType::LEFT_BRACKET:
+            return parse_array_literal();
         default:
             add_error("Unexpected token: " + token.get_value());
             return nullptr;
@@ -446,6 +534,8 @@ UnaryExpression::Operator Parser::token_to_unary_operator(TokenType type) {
         case TokenType::TYPEOF: return UnaryExpression::Operator::TYPEOF;
         case TokenType::VOID: return UnaryExpression::Operator::VOID;
         case TokenType::DELETE: return UnaryExpression::Operator::DELETE;
+        case TokenType::INCREMENT: return UnaryExpression::Operator::PRE_INCREMENT;
+        case TokenType::DECREMENT: return UnaryExpression::Operator::PRE_DECREMENT;
         default: return UnaryExpression::Operator::PLUS; // fallback
     }
 }
@@ -573,7 +663,9 @@ bool Parser::is_unary_operator(TokenType type) const {
            type == TokenType::BITWISE_NOT ||
            type == TokenType::TYPEOF ||
            type == TokenType::VOID ||
-           type == TokenType::DELETE;
+           type == TokenType::DELETE ||
+           type == TokenType::INCREMENT ||
+           type == TokenType::DECREMENT;
 }
 
 //=============================================================================
@@ -711,6 +803,116 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
                                         std::move(alternate), start, end);
 }
 
+std::unique_ptr<ASTNode> Parser::parse_for_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::FOR)) {
+        add_error("Expected 'for'");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'for'");
+        return nullptr;
+    }
+    
+    // Parse init (can be variable declaration or expression)
+    std::unique_ptr<ASTNode> init = nullptr;
+    if (!match(TokenType::SEMICOLON)) {
+        if (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST)) {
+            init = parse_variable_declaration();
+        } else {
+            init = parse_expression();
+        }
+        if (!init) {
+            add_error("Expected initialization in for loop");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::SEMICOLON)) {
+        add_error("Expected ';' after for loop init");
+        return nullptr;
+    }
+    
+    // Parse test condition
+    std::unique_ptr<ASTNode> test = nullptr;
+    if (!match(TokenType::SEMICOLON)) {
+        test = parse_expression();
+        if (!test) {
+            add_error("Expected test condition in for loop");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::SEMICOLON)) {
+        add_error("Expected ';' after for loop test");
+        return nullptr;
+    }
+    
+    // Parse update expression
+    std::unique_ptr<ASTNode> update = nullptr;
+    if (!match(TokenType::RIGHT_PAREN)) {
+        update = parse_expression();
+        if (!update) {
+            add_error("Expected update expression in for loop");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after for loop");
+        return nullptr;
+    }
+    
+    // Parse body
+    auto body = parse_statement();
+    if (!body) {
+        add_error("Expected statement for for loop body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ForStatement>(std::move(init), std::move(test), 
+                                         std::move(update), std::move(body), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_while_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::WHILE)) {
+        add_error("Expected 'while'");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'while'");
+        return nullptr;
+    }
+    
+    // Parse test condition
+    auto test = parse_expression();
+    if (!test) {
+        add_error("Expected condition in while loop");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after while condition");
+        return nullptr;
+    }
+    
+    // Parse body
+    auto body = parse_statement();
+    if (!body) {
+        add_error("Expected statement for while loop body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<WhileStatement>(std::move(test), std::move(body), start, end);
+}
+
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     auto expr = parse_expression();
     if (!expr) {
@@ -724,6 +926,159 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     consume_if_match(TokenType::SEMICOLON);
     
     return std::make_unique<ExpressionStatement>(std::move(expr), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::FUNCTION)) {
+        add_error("Expected 'function'");
+        return nullptr;
+    }
+    
+    // Parse function name
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected function name");
+        return nullptr;
+    }
+    
+    auto id = std::make_unique<Identifier>(current_token().get_value(), 
+                                         current_token().get_start(), current_token().get_end());
+    advance();
+    
+    // Parse parameter list
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after function name");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<Identifier>> params;
+    while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected parameter name");
+            return nullptr;
+        }
+        
+        auto param = std::make_unique<Identifier>(current_token().get_value(),
+                                                current_token().get_start(), current_token().get_end());
+        params.push_back(std::move(param));
+        advance();
+        
+        if (match(TokenType::COMMA)) {
+            advance();
+        } else if (!match(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ',' or ')' in parameter list");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after parameters");
+        return nullptr;
+    }
+    
+    // Parse function body
+    auto body = parse_block_statement();
+    if (!body) {
+        add_error("Expected function body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<FunctionDeclaration>(
+        std::move(id), std::move(params), 
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, end
+    );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_function_expression() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::FUNCTION)) {
+        add_error("Expected 'function'");
+        return nullptr;
+    }
+    
+    // Parse optional function name
+    std::unique_ptr<Identifier> id = nullptr;
+    if (current_token().get_type() == TokenType::IDENTIFIER) {
+        id = std::make_unique<Identifier>(current_token().get_value(),
+                                        current_token().get_start(), current_token().get_end());
+        advance();
+    }
+    
+    // Parse parameter list
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'function'");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<Identifier>> params;
+    while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected parameter name");
+            return nullptr;
+        }
+        
+        auto param = std::make_unique<Identifier>(current_token().get_value(),
+                                                current_token().get_start(), current_token().get_end());
+        params.push_back(std::move(param));
+        advance();
+        
+        if (match(TokenType::COMMA)) {
+            advance();
+        } else if (!match(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ',' or ')' in parameter list");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after parameters");
+        return nullptr;
+    }
+    
+    // Parse function body
+    auto body = parse_block_statement();
+    if (!body) {
+        add_error("Expected function body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<FunctionExpression>(
+        std::move(id), std::move(params),
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, end
+    );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_return_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::RETURN)) {
+        add_error("Expected 'return'");
+        return nullptr;
+    }
+    
+    std::unique_ptr<ASTNode> argument = nullptr;
+    
+    // Check if there's an expression after return
+    if (!match(TokenType::SEMICOLON) && !at_end() && 
+        current_token().get_start().line == start.line) { // same line
+        argument = parse_expression();
+        if (!argument) {
+            add_error("Invalid return expression");
+            return nullptr;
+        }
+    }
+    
+    // Consume optional semicolon
+    consume_if_match(TokenType::SEMICOLON);
+    
+    Position end = get_current_position();
+    return std::make_unique<ReturnStatement>(std::move(argument), start, end);
 }
 
 //=============================================================================
@@ -753,5 +1108,601 @@ std::unique_ptr<Parser> create_module_parser(const std::string& source) {
 }
 
 } // namespace ParserFactory
+
+std::unique_ptr<ASTNode> Parser::parse_object_literal() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::LEFT_BRACE)) {
+        add_error("Expected '{'");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<ObjectLiteral::Property>> properties;
+    
+    // Handle empty object {}
+    if (match(TokenType::RIGHT_BRACE)) {
+        advance();
+        Position end = get_current_position();
+        return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
+    }
+    
+    // Parse properties
+    do {
+        // Parse property key
+        std::unique_ptr<ASTNode> key;
+        bool computed = false;
+        
+        if (match(TokenType::LEFT_BRACKET)) {
+            // Computed property [expr]: value
+            advance(); // consume '['
+            computed = true;
+            key = parse_assignment_expression();
+            if (!key) {
+                add_error("Expected expression for computed property key");
+                return nullptr;
+            }
+            if (!consume(TokenType::RIGHT_BRACKET)) {
+                add_error("Expected ']' after computed property key");
+                return nullptr;
+            }
+        } else if (match(TokenType::IDENTIFIER)) {
+            // Regular property key
+            key = parse_identifier();
+        } else if (match(TokenType::STRING)) {
+            // String property key
+            key = parse_string_literal();
+        } else if (match(TokenType::NUMBER)) {
+            // Numeric property key
+            key = parse_number_literal();
+        } else {
+            add_error("Expected property key");
+            return nullptr;
+        }
+        
+        if (!consume(TokenType::COLON)) {
+            add_error("Expected ':' after property key");
+            return nullptr;
+        }
+        
+        // Parse property value
+        auto value = parse_assignment_expression();
+        if (!value) {
+            add_error("Expected property value");
+            return nullptr;
+        }
+        
+        // Create property
+        auto property = std::make_unique<ObjectLiteral::Property>(
+            std::move(key), std::move(value), computed, false
+        );
+        properties.push_back(std::move(property));
+        
+        // Continue if there's a comma
+        if (match(TokenType::COMMA)) {
+            advance();
+            // Allow trailing comma
+            if (match(TokenType::RIGHT_BRACE)) {
+                break;
+            }
+        } else {
+            break;
+        }
+        
+    } while (!at_end() && !match(TokenType::RIGHT_BRACE));
+    
+    if (!consume(TokenType::RIGHT_BRACE)) {
+        add_error("Expected '}' to close object literal");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_array_literal() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::LEFT_BRACKET)) {
+        add_error("Expected '['");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<ASTNode>> elements;
+    
+    // Handle empty array []
+    if (match(TokenType::RIGHT_BRACKET)) {
+        advance();
+        Position end = get_current_position();
+        return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
+    }
+    
+    // Parse array elements
+    do {
+        // Handle sparse arrays (e.g., [1, , 3])
+        if (match(TokenType::COMMA)) {
+            // Add undefined for empty slots
+            elements.push_back(std::make_unique<UndefinedLiteral>(get_current_position(), get_current_position()));
+        } else {
+            // Parse element expression
+            auto element = parse_assignment_expression();
+            if (!element) {
+                add_error("Expected array element");
+                return nullptr;
+            }
+            elements.push_back(std::move(element));
+        }
+        
+        // Continue if there's a comma
+        if (match(TokenType::COMMA)) {
+            advance();
+            // Allow trailing comma
+            if (match(TokenType::RIGHT_BRACKET)) {
+                break;
+            }
+        } else {
+            break;
+        }
+        
+    } while (!at_end() && !match(TokenType::RIGHT_BRACKET));
+    
+    if (!consume(TokenType::RIGHT_BRACKET)) {
+        add_error("Expected ']' to close array literal");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
+}
+
+//=============================================================================
+// Stage 9: Error Handling & Advanced Control Flow Parsing
+//=============================================================================
+
+std::unique_ptr<ASTNode> Parser::parse_try_statement() {
+    Position start = current_token().get_start();
+    advance(); // consume 'try'
+    
+    // Parse try block (must be a block statement)
+    auto try_block = parse_block_statement();
+    if (!try_block) {
+        add_error("Expected block statement after 'try'");
+        return nullptr;
+    }
+    
+    std::unique_ptr<ASTNode> catch_clause = nullptr;
+    std::unique_ptr<ASTNode> finally_block = nullptr;
+    
+    // Parse optional catch clause
+    if (match(TokenType::CATCH)) {
+        catch_clause = parse_catch_clause();
+        if (!catch_clause) {
+            add_error("Invalid catch clause");
+            return nullptr;
+        }
+    }
+    
+    // Parse optional finally block
+    if (match(TokenType::FINALLY)) {
+        advance(); // consume 'finally'
+        finally_block = parse_block_statement();
+        if (!finally_block) {
+            add_error("Expected block statement after 'finally'");
+            return nullptr;
+        }
+    }
+    
+    // Must have either catch or finally (or both)
+    if (!catch_clause && !finally_block) {
+        add_error("Missing catch or finally after try");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<TryStatement>(
+        std::move(try_block),
+        std::move(catch_clause),
+        std::move(finally_block),
+        start, end
+    );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
+    Position start = current_token().get_start();
+    advance(); // consume 'catch'
+    
+    // Parse parameter: catch (e)
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'catch'");
+        return nullptr;
+    }
+    
+    if (!match(TokenType::IDENTIFIER)) {
+        add_error("Expected identifier in catch clause");
+        return nullptr;
+    }
+    
+    std::string parameter_name = current_token().get_value();
+    advance(); // consume identifier
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after catch parameter");
+        return nullptr;
+    }
+    
+    // Parse catch body (must be a block statement)
+    auto body = parse_block_statement();
+    if (!body) {
+        add_error("Expected block statement in catch clause");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<CatchClause>(parameter_name, std::move(body), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_throw_statement() {
+    Position start = current_token().get_start();
+    advance(); // consume 'throw'
+    
+    // No line terminator allowed between 'throw' and expression
+    auto expression = parse_expression();
+    if (!expression) {
+        add_error("Expected expression after 'throw'");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ThrowStatement>(std::move(expression), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
+    Position start = current_token().get_start();
+    advance(); // consume 'switch'
+    
+    // Parse discriminant: switch (expr)
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'switch'");
+        return nullptr;
+    }
+    
+    auto discriminant = parse_expression();
+    if (!discriminant) {
+        add_error("Expected expression in switch statement");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after switch expression");
+        return nullptr;
+    }
+    
+    // Parse switch body: { case ... default ... }
+    if (!consume(TokenType::LEFT_BRACE)) {
+        add_error("Expected '{' after switch expression");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<ASTNode>> cases;
+    
+    while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+        if (match(TokenType::CASE)) {
+            // Parse case clause
+            Position case_start = current_token().get_start();
+            advance(); // consume 'case'
+            
+            auto test = parse_expression();
+            if (!test) {
+                add_error("Expected expression after 'case'");
+                return nullptr;
+            }
+            
+            if (!consume(TokenType::COLON)) {
+                add_error("Expected ':' after case expression");
+                return nullptr;
+            }
+            
+            // Parse consequent statements until next case/default/}
+            std::vector<std::unique_ptr<ASTNode>> consequent;
+            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) && 
+                   !match(TokenType::RIGHT_BRACE) && !at_end()) {
+                auto stmt = parse_statement();
+                if (stmt) {
+                    consequent.push_back(std::move(stmt));
+                } else {
+                    break;
+                }
+            }
+            
+            Position case_end = get_current_position();
+            cases.push_back(std::make_unique<CaseClause>(
+                std::move(test), std::move(consequent), case_start, case_end
+            ));
+            
+        } else if (match(TokenType::DEFAULT)) {
+            // Parse default clause
+            Position default_start = current_token().get_start();
+            advance(); // consume 'default'
+            
+            if (!consume(TokenType::COLON)) {
+                add_error("Expected ':' after 'default'");
+                return nullptr;
+            }
+            
+            // Parse consequent statements
+            std::vector<std::unique_ptr<ASTNode>> consequent;
+            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) && 
+                   !match(TokenType::RIGHT_BRACE) && !at_end()) {
+                auto stmt = parse_statement();
+                if (stmt) {
+                    consequent.push_back(std::move(stmt));
+                } else {
+                    break;
+                }
+            }
+            
+            Position default_end = get_current_position();
+            cases.push_back(std::make_unique<CaseClause>(
+                nullptr, std::move(consequent), default_start, default_end
+            ));
+            
+        } else {
+            add_error("Expected 'case' or 'default' in switch body");
+            skip_to(TokenType::RIGHT_BRACE);
+            break;
+        }
+    }
+    
+    if (!consume(TokenType::RIGHT_BRACE)) {
+        add_error("Expected '}' to close switch statement");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<SwitchStatement>(
+        std::move(discriminant), std::move(cases), start, end
+    );
+}
+
+//=============================================================================
+// Stage 10: Module parsing
+//=============================================================================
+
+std::unique_ptr<ASTNode> Parser::parse_import_statement() {
+    Position start = current_token().get_start();
+    advance(); // consume 'import'
+    
+    // Check for different import patterns
+    if (match(TokenType::MULTIPLY)) {
+        // import * as name from "module"
+        advance(); // consume '*'
+        
+        if (!match(TokenType::IDENTIFIER) || current_token().get_value() != "as") {
+            add_error("Expected 'as' after '*' in import statement");
+            return nullptr;
+        }
+        advance(); // consume 'as'
+        
+        if (!match(TokenType::IDENTIFIER)) {
+            add_error("Expected identifier after 'as'");
+            return nullptr;
+        }
+        std::string namespace_alias = current_token().get_value();
+        advance();
+        
+        if (!match(TokenType::FROM)) {
+            add_error("Expected 'from' in import statement");
+            return nullptr;
+        }
+        advance(); // consume 'from'
+        
+        if (!match(TokenType::STRING)) {
+            add_error("Expected string literal after 'from'");
+            return nullptr;
+        }
+        std::string module_source = current_token().get_value();
+        advance();
+        
+        Position end = get_current_position();
+        return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
+    }
+    
+    if (match(TokenType::LEFT_BRACE)) {
+        // import { name1, name2 as alias } from "module"
+        advance(); // consume '{'
+        
+        std::vector<std::unique_ptr<ImportSpecifier>> specifiers;
+        
+        while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+            auto specifier = parse_import_specifier();
+            if (specifier) {
+                specifiers.push_back(std::move(specifier));
+            }
+            
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_BRACE)) {
+                add_error("Expected ',' or '}' in import specifiers");
+                break;
+            }
+        }
+        
+        if (!match(TokenType::RIGHT_BRACE)) {
+            add_error("Expected '}' after import specifiers");
+            return nullptr;
+        }
+        advance(); // consume '}'
+        
+        if (!match(TokenType::FROM)) {
+            add_error("Expected 'from' in import statement");
+            return nullptr;
+        }
+        advance(); // consume 'from'
+        
+        if (!match(TokenType::STRING)) {
+            add_error("Expected string literal after 'from'");
+            return nullptr;
+        }
+        std::string module_source = current_token().get_value();
+        advance();
+        
+        Position end = get_current_position();
+        return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
+    }
+    
+    if (match(TokenType::IDENTIFIER)) {
+        // import name from "module" (default import)
+        std::string default_alias = current_token().get_value();
+        advance();
+        
+        if (!match(TokenType::FROM)) {
+            add_error("Expected 'from' in import statement");
+            return nullptr;
+        }
+        advance(); // consume 'from'
+        
+        if (!match(TokenType::STRING)) {
+            add_error("Expected string literal after 'from'");
+            return nullptr;
+        }
+        std::string module_source = current_token().get_value();
+        advance();
+        
+        Position end = get_current_position();
+        return std::make_unique<ImportStatement>(default_alias, module_source, true, start, end);
+    }
+    
+    add_error("Invalid import statement syntax");
+    return nullptr;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_export_statement() {
+    Position start = current_token().get_start();
+    advance(); // consume 'export'
+    
+    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "default") {
+        // export default expression
+        advance(); // consume 'default'
+        
+        auto default_export = parse_assignment_expression();
+        if (!default_export) {
+            add_error("Expected expression after 'export default'");
+            return nullptr;
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<ExportStatement>(std::move(default_export), true, start, end);
+    }
+    
+    if (match(TokenType::LEFT_BRACE)) {
+        // export { name1, name2 as alias } [from "module"]
+        advance(); // consume '{'
+        
+        std::vector<std::unique_ptr<ExportSpecifier>> specifiers;
+        
+        while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+            auto specifier = parse_export_specifier();
+            if (specifier) {
+                specifiers.push_back(std::move(specifier));
+            }
+            
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_BRACE)) {
+                add_error("Expected ',' or '}' in export specifiers");
+                break;
+            }
+        }
+        
+        if (!match(TokenType::RIGHT_BRACE)) {
+            add_error("Expected '}' after export specifiers");
+            return nullptr;
+        }
+        advance(); // consume '}'
+        
+        // Check for re-export: export { name } from "module"
+        if (match(TokenType::FROM)) {
+            advance(); // consume 'from'
+            
+            if (!match(TokenType::STRING)) {
+                add_error("Expected string literal after 'from'");
+                return nullptr;
+            }
+            std::string source_module = current_token().get_value();
+            advance();
+            
+            Position end = get_current_position();
+            return std::make_unique<ExportStatement>(std::move(specifiers), source_module, start, end);
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<ExportStatement>(std::move(specifiers), start, end);
+    }
+    
+    // export declaration (function, var, etc.)
+    auto declaration = parse_statement();
+    if (!declaration) {
+        add_error("Expected declaration after 'export'");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ExportStatement>(std::move(declaration), start, end);
+}
+
+std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
+    Position start = current_token().get_start();
+    
+    if (!match(TokenType::IDENTIFIER)) {
+        add_error("Expected identifier in import specifier");
+        return nullptr;
+    }
+    
+    std::string imported_name = current_token().get_value();
+    std::string local_name = imported_name; // Default to same name
+    advance();
+    
+    // Check for 'as' alias
+    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+        advance(); // consume 'as'
+        
+        if (!match(TokenType::IDENTIFIER)) {
+            add_error("Expected identifier after 'as'");
+            return nullptr;
+        }
+        local_name = current_token().get_value();
+        advance();
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ImportSpecifier>(imported_name, local_name, start, end);
+}
+
+std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
+    Position start = current_token().get_start();
+    
+    if (!match(TokenType::IDENTIFIER)) {
+        add_error("Expected identifier in export specifier");
+        return nullptr;
+    }
+    
+    std::string local_name = current_token().get_value();
+    std::string exported_name = local_name; // Default to same name
+    advance();
+    
+    // Check for 'as' alias
+    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+        advance(); // consume 'as'
+        
+        if (!match(TokenType::IDENTIFIER)) {
+            add_error("Expected identifier after 'as'");
+            return nullptr;
+        }
+        exported_name = current_token().get_value();
+        advance();
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ExportSpecifier>(local_name, exported_name, start, end);
+}
 
 } // namespace Quanta

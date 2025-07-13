@@ -332,11 +332,69 @@ private:
     void rebuild_property_map();
 };
 
+/**
+ * JavaScript Function object implementation
+ */
+class Function : public Object {
+public:
+    // Function call types
+    enum class CallType {
+        Normal,      // Regular function call
+        Constructor, // new Function() call
+        Method       // obj.method() call
+    };
+
+private:
+    std::string name_;                                    // Function name
+    std::vector<std::string> parameters_;                // Parameter names
+    std::unique_ptr<class ASTNode> body_;                // Function body AST
+    class Context* closure_context_;                     // Closure context
+    Object* prototype_;                                  // Function prototype
+    bool is_native_;                                     // Is native C++ function
+    std::function<Value(Context&, const std::vector<Value>&)> native_fn_; // Native function
+
+public:
+    // Constructors
+    Function(const std::string& name, 
+             const std::vector<std::string>& params,
+             std::unique_ptr<class ASTNode> body,
+             class Context* closure_context);
+             
+    Function(const std::string& name,
+             std::function<Value(Context&, const std::vector<Value>&)> native_fn);
+    
+    virtual ~Function() = default;
+
+    // Function properties
+    const std::string& get_name() const { return name_; }
+    const std::vector<std::string>& get_parameters() const { return parameters_; }
+    size_t get_arity() const { return parameters_.size(); }
+    bool is_native() const { return is_native_; }
+    
+    // Function execution
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    Value construct(Context& ctx, const std::vector<Value>& args);
+    
+    // Prototype management
+    Object* get_prototype() const { return prototype_; }
+    void set_prototype(Object* proto) { prototype_ = proto; }
+    static Function* create_function_prototype();
+    
+    // Debugging
+    std::string to_string() const;
+};
+
 // Object factory functions
 namespace ObjectFactory {
     std::unique_ptr<Object> create_object(Object* prototype = nullptr);
     std::unique_ptr<Object> create_array(uint32_t length = 0);
     std::unique_ptr<Object> create_function();
+    std::unique_ptr<Function> create_js_function(const std::string& name,
+                                                 const std::vector<std::string>& params,
+                                                 std::unique_ptr<class ASTNode> body,
+                                                 class Context* closure_context);
+    std::unique_ptr<Function> create_native_function(const std::string& name,
+                                                     std::function<Value(Context&, const std::vector<Value>&)> fn);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);
     std::unique_ptr<Object> create_boolean(bool value);

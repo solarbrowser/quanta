@@ -62,6 +62,10 @@ private:
     bool has_exception_;
     std::vector<std::pair<size_t, size_t>> try_catch_blocks_;
     
+    // Return value handling
+    Value return_value_;
+    bool has_return_value_;
+    
     // Engine reference
     Engine* engine_;
     
@@ -112,6 +116,12 @@ public:
     const Value& get_exception() const { return current_exception_; }
     void throw_exception(const Value& exception);
     void clear_exception();
+    
+    // Return value handling
+    bool has_return_value() const { return has_return_value_; }
+    const Value& get_return_value() const { return return_value_; }
+    void set_return_value(const Value& value);
+    void clear_return_value();
 
     // Built-in objects
     void register_built_in_object(const std::string& name, Object* object);

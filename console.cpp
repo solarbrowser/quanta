@@ -30,12 +30,11 @@ private:
     int current_stage_;
     
 public:
-    QuantaConsole() : current_stage_(3) {
+    QuantaConsole() : current_stage_(7) {
         engine_ = std::make_unique<Engine>();
         engine_->initialize();
         
-        // Setup console object for console.log
-        engine_->set_global_property("console", Value(ObjectFactory::create_object().release()));
+        // Console is already set up in engine initialization
     }
     
     void print_banner() {
@@ -47,7 +46,6 @@ public:
         std::cout << RESET;
         std::cout << "\n" << GREEN << "Welcome to Quanta! Type " << BOLD << ".help" << RESET << GREEN 
                   << " for commands, " << BOLD << ".quit" << RESET << GREEN << " to exit.\n" << RESET;
-        std::cout << YELLOW << "Current Stage: " << current_stage_ << " (Variables & Control Flow)\n" << RESET;
         std::cout << "\n";
     }
     
@@ -108,6 +106,46 @@ public:
                 std::cout << "• If/else conditional statements\n";
                 break;
                 
+            case 4:
+                std::cout << YELLOW << "Stage 4: Functions\n" << RESET;
+                std::cout << "• Function declarations\n";
+                std::cout << "• Function expressions\n";
+                std::cout << "• Function calls with parameters\n";
+                std::cout << "• Return statements\n";
+                std::cout << "• Local scope and closures\n";
+                std::cout << "• Recursive functions\n";
+                break;
+                
+            case 5:
+                std::cout << YELLOW << "Stage 5: Loops\n" << RESET;
+                std::cout << "• for loops\n";
+                std::cout << "• while loops\n";
+                std::cout << "• do-while loops\n";
+                std::cout << "• break and continue\n";
+                std::cout << "• Nested loops\n";
+                break;
+                
+            case 6:
+                std::cout << YELLOW << "Stage 6: Objects\n" << RESET;
+                std::cout << "• Object literals {key: value}\n";
+                std::cout << "• Property access obj.prop and obj['prop']\n";
+                std::cout << "• Property assignment obj.prop = value\n";
+                std::cout << "• Object methods obj.method()\n";
+                std::cout << "• Nested objects\n";
+                std::cout << "• Dynamic property names\n";
+                break;
+                
+            case 7:
+                std::cout << YELLOW << "Stage 7: Arrays\n" << RESET;
+                std::cout << "• Array literals [1, 2, 3]\n";
+                std::cout << "• Array indexing arr[0] and arr[i]\n";
+                std::cout << "• Array assignment arr[0] = value\n";
+                std::cout << "• Array length property arr.length\n";
+                std::cout << "• Nested arrays [[1, 2], [3, 4]]\n";
+                std::cout << "• Mixed type arrays [1, \"str\", obj]\n";
+                std::cout << "• Array methods push, pop, etc\n";
+                break;
+                
             default:
                 std::cout << RED << "Stage " << stage << " not implemented yet.\n" << RESET;
         }
@@ -123,6 +161,14 @@ public:
             run_stage2_tests();
         } else if (current_stage_ == 3) {
             run_stage3_tests();
+        } else if (current_stage_ == 4) {
+            run_stage4_tests();
+        } else if (current_stage_ == 5) {
+            run_stage5_tests();
+        } else if (current_stage_ == 6) {
+            run_stage6_tests();
+        } else if (current_stage_ == 7) {
+            run_stage7_tests();
         }
     }
     
@@ -190,6 +236,148 @@ public:
         }
     }
     
+    void run_stage4_tests() {
+        std::cout << YELLOW << "Stage 4: Functions Tests\n" << RESET;
+        
+        std::vector<std::string> test_cases = {
+            "function greet() { console.log(\"Hello!\") }",
+            "function add(x, y) { return x + y }",
+            "var square = function(n) { return n * n }",
+            "function factorial(n) { if (n <= 1) return 1; return n * factorial(n - 1) }",
+            "greet()",
+            "add(5, 3)",
+            "square(4)",
+            "factorial(5)",
+            "function outer() { var x = 10; function inner() { return x; } return inner; }",
+            "var result = outer(); result()"
+        };
+        
+        for (const auto& test : test_cases) {
+            std::cout << GREEN << "Testing: " << RESET << test << "\n";
+            evaluate_expression(test, false);
+            std::cout << "\n";
+        }
+    }
+    
+    void run_stage5_tests() {
+        std::cout << YELLOW << "Stage 5: Loops Tests\n" << RESET;
+        std::cout << RED << "Stage 5 not implemented yet - use .stage 6 for objects!\n" << RESET;
+    }
+    
+    void run_stage6_tests() {
+        std::cout << YELLOW << "Stage 6: Objects Tests\n" << RESET;
+        
+        std::vector<std::string> test_cases = {
+            // Object literals
+            "var obj = {name: \"Alice\", age: 25}",
+            "var empty = {}",
+            "({x: 1, y: 2})",
+            
+            // Property access
+            "obj.name",
+            "obj[\"age\"]", 
+            "obj.name",
+            
+            // Property assignment
+            "obj.city = \"Boston\"",
+            "obj[\"country\"] = \"USA\"",
+            "empty.newProp = \"added\"",
+            
+            // Nested objects
+            "var person = {name: \"Bob\", address: {street: \"123 Main\", city: \"NYC\"}}",
+            "person.address.city",
+            "person.address.zip = \"10001\"",
+            
+            // Object methods
+            "var calculator = {add: function(a, b) { return a + b }}",
+            "calculator.add",
+            "calculator.add(5, 3)",
+            
+            // Dynamic properties
+            "var key = \"dynamic\"",
+            "obj[key] = \"value\"",
+            "obj[key]",
+            
+            // Method calls with brackets
+            "var api = {getData: function() { return \"data\" }}",
+            "api[\"getData\"]()"
+        };
+        
+        for (const auto& test : test_cases) {
+            std::cout << GREEN << "Testing: " << RESET << test << "\n";
+            evaluate_expression(test, false);
+            std::cout << "\n";
+        }
+    }
+    
+    void run_stage7_tests() {
+        std::cout << YELLOW << "Stage 7: Arrays Tests\n" << RESET;
+        
+        std::vector<std::string> test_cases = {
+            // Array literals
+            "[1, 2, 3]",
+            "var arr = [1, 2, 3]",
+            "var empty = []",
+            
+            // Array indexing
+            "arr[0]",
+            "arr[1]", 
+            "arr[2]",
+            "empty.length",
+            "arr.length",
+            
+            // Array assignment
+            "arr[0] = 10",
+            "arr[0]",
+            "arr[3] = 4",
+            "arr.length",
+            
+            // Nested arrays
+            "var nested = [[1, 2], [3, 4]]",
+            "nested[0]",
+            "nested[0][1]",
+            "nested[1][0]",
+            
+            // Mixed type arrays
+            "var mixed = [1, \"hello\", {name: \"test\"}, [5, 6]]",
+            "mixed[1]",
+            "mixed[2].name",
+            "mixed[3][0]",
+            "mixed.length",
+            
+            // Dynamic indexing
+            "var index = 1",
+            "arr[index]",
+            "mixed[index + 1]",
+            
+            // Array of objects
+            "var people = [{name: \"Alice\"}, {name: \"Bob\"}]",
+            "people[0].name",
+            "people[1].name",
+            
+            // Sparse arrays
+            "[1, , 3]",
+            "var sparse = [1, , 3]",
+            "sparse[1]",
+            
+            // Array methods
+            "var methods = [1, 2, 3]",
+            "methods.push(4)",
+            "methods.length",
+            "methods.pop()",
+            "methods.shift()", 
+            "methods.unshift(0)",
+            "methods.join(\", \")",
+            "methods.indexOf(2)"
+        };
+        
+        for (const auto& test : test_cases) {
+            std::cout << GREEN << "Testing: " << RESET << test << "\n";
+            evaluate_expression(test, false);
+            std::cout << "\n";
+        }
+    }
+    
     void show_tokens(const std::string& input) {
         try {
             Lexer lexer(input);
@@ -240,9 +428,33 @@ public:
             Parser parser(tokens);
             std::unique_ptr<ASTNode> ast;
             
-            // For Stage 3+, try parsing as statement first, fallback to expression
+            // For Stage 3+, try parsing as complete program first, fallback to expression
             if (current_stage_ >= 3) {
-                ast = parser.parse_statement();
+                auto program = parser.parse_program();
+                if (program && program->get_statements().size() > 0) {
+                    // Execute all statements in the program
+                    Context* ctx = engine_->get_global_context();
+                    Value result;
+                    for (const auto& statement : program->get_statements()) {
+                        result = statement->evaluate(*ctx);
+                        if (ctx->has_exception()) {
+                            break;
+                        }
+                    }
+                    
+                    if (ctx->has_exception()) {
+                        Value exception = ctx->get_exception();
+                        std::cout << RED << "Error: " << exception.to_string() << RESET << "\n";
+                        ctx->clear_exception();
+                    } else {
+                        if (show_prompt) {
+                            std::cout << MAGENTA << result.to_string() << RESET << "\n";
+                        }
+                    }
+                    return;
+                } else {
+                    ast = parser.parse_statement();
+                }
             } else {
                 ast = parser.parse_expression();
             }
@@ -327,7 +539,7 @@ public:
     
     std::string get_input() {
 #ifdef USE_READLINE
-        std::string prompt = GREEN + "quanta:" + std::to_string(current_stage_) + "> " + RESET;
+        std::string prompt = GREEN + ">> " + RESET;
         char* line = readline(prompt.c_str());
         if (!line) return ""; // EOF
         
@@ -338,7 +550,7 @@ public:
         free(line);
         return input;
 #else
-        std::cout << GREEN << "quanta:" << current_stage_ << "> " << RESET;
+        std::cout << GREEN << ">> " << RESET;
         std::string input;
         if (!std::getline(std::cin, input)) {
             return ""; // EOF
@@ -387,12 +599,12 @@ public:
                     if (iss >> stage_str) {
                         try {
                             int stage = std::stoi(stage_str);
-                            if (stage >= 1 && stage <= 3) {
+                            if (stage >= 1 && stage <= 7) {
                                 current_stage_ = stage;
                                 std::cout << GREEN << "Switched to Stage " << stage << "\n" << RESET;
                                 show_stage_info(stage);
                             } else {
-                                std::cout << RED << "Invalid stage. Available stages: 1-3\n" << RESET;
+                                std::cout << RED << "Invalid stage. Available stages: 1-7\n" << RESET;
                             }
                         } catch (...) {
                             show_stage_info();

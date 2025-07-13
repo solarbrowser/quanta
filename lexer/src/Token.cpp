@@ -130,7 +130,18 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::DIVIDE, "DIVIDE"},
         {TokenType::MODULO, "MODULO"},
         {TokenType::EXPONENT, "EXPONENT"},
+        
         {TokenType::ASSIGN, "ASSIGN"},
+        {TokenType::PLUS_ASSIGN, "PLUS_ASSIGN"},
+        {TokenType::MINUS_ASSIGN, "MINUS_ASSIGN"},
+        {TokenType::MULTIPLY_ASSIGN, "MULTIPLY_ASSIGN"},
+        {TokenType::DIVIDE_ASSIGN, "DIVIDE_ASSIGN"},
+        {TokenType::MODULO_ASSIGN, "MODULO_ASSIGN"},
+        {TokenType::EXPONENT_ASSIGN, "EXPONENT_ASSIGN"},
+        
+        {TokenType::INCREMENT, "INCREMENT"},
+        {TokenType::DECREMENT, "DECREMENT"},
+        
         {TokenType::EQUAL, "EQUAL"},
         {TokenType::NOT_EQUAL, "NOT_EQUAL"},
         {TokenType::STRICT_EQUAL, "STRICT_EQUAL"},

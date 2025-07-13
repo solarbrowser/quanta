@@ -4,6 +4,7 @@
 #include "Value.h"
 #include "Object.h"
 #include "Context.h"
+#include "ModuleLoader.h"
 #include <string>
 #include <memory>
 #include <vector>
@@ -50,6 +51,7 @@ public:
 private:
     Config config_;
     std::unique_ptr<Context> global_context_;
+    std::unique_ptr<ModuleLoader> module_loader_;
     
     // Engine state
     bool initialized_;
@@ -117,6 +119,9 @@ public:
     // Configuration
     const Config& get_config() const { return config_; }
     void update_config(const Config& config);
+
+    // Module system
+    ModuleLoader* get_module_loader() { return module_loader_.get(); }
 
     // Browser integration helpers
     void inject_dom(Object* document);

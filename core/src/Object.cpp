@@ -1,5 +1,6 @@
 #include "Object.h"
 #include "Value.h"
+#include "../../parser/include/AST.h"
 #include <algorithm>
 #include <sstream>
 #include <iostream>
@@ -381,6 +382,41 @@ Value Object::pop() {
     return result;
 }
 
+void Object::unshift(const Value& value) {
+    uint32_t length = get_length();
+    
+    // Shift all elements to the right
+    for (uint32_t i = length; i > 0; --i) {
+        Value element = get_element(i - 1);
+        set_element(i, element);
+    }
+    
+    // Set the new element at index 0
+    set_element(0, value);
+    set_length(length + 1);
+}
+
+Value Object::shift() {
+    uint32_t length = get_length();
+    if (length == 0) {
+        return Value(); // undefined
+    }
+    
+    // Get the first element
+    Value result = get_element(0);
+    
+    // Shift all elements to the left
+    for (uint32_t i = 0; i < length - 1; ++i) {
+        Value element = get_element(i + 1);
+        set_element(i, element);
+    }
+    
+    // Remove the last element and update length
+    delete_element(length - 1);
+    set_length(length - 1);
+    return result;
+}
+
 bool Object::is_extensible() const {
     return !(header_.flags & 0x01);
 }
@@ -612,7 +648,7 @@ std::unique_ptr<Object> create_function() {
 
 std::unique_ptr<Object> create_string(const std::string& value) {
     auto str_obj = std::make_unique<Object>(Object::ObjectType::String);
-    str_obj->set_property("value", Value(value));
+    // Store string properties without creating recursive Value calls
     str_obj->set_property("length", Value(static_cast<double>(value.length())));
     return str_obj;
 }

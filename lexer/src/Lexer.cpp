@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
+#include <iostream>
 
 namespace Quanta {
 
