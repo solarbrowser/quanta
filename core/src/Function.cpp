@@ -17,7 +17,6 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), name_(name), parameters_(params), 
       body_(std::move(body)), closure_context_(closure_context), 
       prototype_(nullptr), is_native_(false) {
-    std::cerr << "DEBUG: Function constructor 1 called for: " << name << std::endl;
     // Create default prototype object
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
@@ -29,22 +28,6 @@ Function::Function(const std::string& name,
     this->set_property("name", Value(name_));
     this->set_property("length", Value(static_cast<double>(parameters_.size())));
     
-    // DEBUG: Print what we're setting
-    std::cerr << "DEBUG: Setting function properties - name: " << name_ << ", length: " << parameters_.size() << std::endl;
-    
-    // DEBUG: Force property setting using Object base class
-    Object::set_property("prototype", Value(prototype_));
-    Object::set_property("name", Value(name_));
-    Object::set_property("length", Value(static_cast<double>(parameters_.size())));
-    
-    // DEBUG: Verify the properties were set
-    std::cout << "DEBUG: Checking properties after setting (constructor 2):" << std::endl;
-    Value name_check = this->get_property("name");
-    Value length_check = this->get_property("length");
-    Value prototype_check = this->get_property("prototype");
-    std::cout << "DEBUG: name = " << name_check.to_string() << std::endl;
-    std::cout << "DEBUG: length = " << length_check.to_string() << std::endl;
-    std::cout << "DEBUG: prototype = " << prototype_check.to_string() << std::endl;
 }
 
 Function::Function(const std::string& name,
@@ -54,7 +37,6 @@ Function::Function(const std::string& name,
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context), 
       prototype_(nullptr), is_native_(false) {
-    std::cerr << "DEBUG: Function constructor 2 called for: " << name << std::endl;
     // Extract parameter names for compatibility
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
@@ -92,16 +74,30 @@ Function::Function(const std::string& name,
     this->set_property("name", Value(name_));
     this->set_property("length", Value(0.0));  // Native functions default to 0
     
-    // DEBUG: Force property setting using Object base class
-    Object::set_property("prototype", Value(prototype_));
-    Object::set_property("name", Value(name_));
-    Object::set_property("length", Value(0.0));
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     if (is_native_) {
+        // Check for excessive recursion depth to prevent infinite loops
+        if (!ctx.check_execution_depth()) {
+            ctx.throw_exception(Value("Maximum call stack size exceeded"));
+            return Value();
+        }
+        
+        // Set up 'this' binding for native function
+        Object* old_this = ctx.get_this_binding();
+        if (this_value.is_object() || this_value.is_function()) {
+            Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+            ctx.set_this_binding(this_obj);
+        }
+        
         // Call native C++ function
-        return native_fn_(ctx, args);
+        Value result = native_fn_(ctx, args);
+        
+        // Restore old 'this' binding
+        ctx.set_this_binding(old_this);
+        
+        return result;
     }
     
     // Create new execution context for function
@@ -180,6 +176,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
     
+    // Create arguments object (ES5 feature)
+    auto arguments_obj = ObjectFactory::create_array(args.size());
+    for (size_t i = 0; i < args.size(); i++) {
+        arguments_obj->set_element(i, args[i]);
+    }
+    arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+    function_context.create_binding("arguments", Value(arguments_obj.release()), false);
+    
     // Bind 'this' value
     function_context.create_binding("this", this_value, false);
     
@@ -204,7 +208,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 }
 
 Value Function::get_property(const std::string& key) const {
-    // Handle standard function properties
+    // Handle standard function properties first
     if (key == "name") {
         return Value(name_);
     }
@@ -215,8 +219,111 @@ Value Function::get_property(const std::string& key) const {
         return Value(prototype_);
     }
     
-    // For other properties, use the base Object implementation
-    return Object::get_property(key);
+    // Handle Function.prototype methods - available on all function instances
+    if (key == "call") {
+        auto call_fn = ObjectFactory::create_native_function("call",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                // Get the function that call was invoked on
+                Object* function_obj = ctx.get_this_binding();
+                if (!function_obj || !function_obj->is_function()) {
+                    ctx.throw_exception(Value("Function.call called on non-function"));
+                    return Value();
+                }
+                
+                Function* func = static_cast<Function*>(function_obj);
+                Value this_arg = args.size() > 0 ? args[0] : Value();
+                
+                // Prepare arguments (skip the first 'this' argument)
+                std::vector<Value> call_args;
+                for (size_t i = 1; i < args.size(); i++) {
+                    call_args.push_back(args[i]);
+                }
+                
+                return func->call(ctx, call_args, this_arg);
+            });
+        return Value(call_fn.release());
+    }
+    
+    if (key == "apply") {
+        auto apply_fn = ObjectFactory::create_native_function("apply",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                // Get the function that apply was invoked on
+                Object* function_obj = ctx.get_this_binding();
+                if (!function_obj || !function_obj->is_function()) {
+                    ctx.throw_exception(Value("Function.apply called on non-function"));
+                    return Value();
+                }
+                
+                Function* func = static_cast<Function*>(function_obj);
+                Value this_arg = args.size() > 0 ? args[0] : Value();
+                
+                // Prepare arguments from array
+                std::vector<Value> call_args;
+                if (args.size() > 1 && args[1].is_object()) {
+                    Object* args_array = args[1].as_object();
+                    if (args_array->is_array()) {
+                        uint32_t length = args_array->get_length();
+                        for (uint32_t i = 0; i < length; i++) {
+                            call_args.push_back(args_array->get_element(i));
+                        }
+                    }
+                }
+                
+                return func->call(ctx, call_args, this_arg);
+            });
+        return Value(apply_fn.release());
+    }
+    
+    if (key == "bind") {
+        auto bind_fn = ObjectFactory::create_native_function("bind",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                // Get the function that bind was invoked on
+                Object* function_obj = ctx.get_this_binding();
+                if (!function_obj || !function_obj->is_function()) {
+                    ctx.throw_exception(Value("Function.bind called on non-function"));
+                    return Value();
+                }
+                
+                Function* original_func = static_cast<Function*>(function_obj);
+                Value bound_this = args.size() > 0 ? args[0] : Value();
+                
+                // Create bound arguments (skip the first 'this' argument)
+                std::vector<Value> bound_args;
+                for (size_t i = 1; i < args.size(); i++) {
+                    bound_args.push_back(args[i]);
+                }
+                
+                // Create a new function that when called, calls the original with bound this and args
+                auto bound_fn = ObjectFactory::create_native_function("bound " + original_func->get_name(),
+                    [original_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
+                        // Combine bound args with call args
+                        std::vector<Value> final_args = bound_args;
+                        final_args.insert(final_args.end(), call_args.begin(), call_args.end());
+                        
+                        return original_func->call(ctx, final_args, bound_this);
+                    });
+                return Value(bound_fn.release());
+            });
+        return Value(bind_fn.release());
+    }
+    
+    // For other properties, check own properties directly
+    Value result = get_own_property(key);
+    if (!result.is_undefined()) {
+        return result;
+    }
+    
+    // Check prototype chain manually to avoid calling Object::get_property
+    Object* current = get_prototype();
+    while (current) {
+        Value result = current->get_own_property(key);
+        if (!result.is_undefined()) {
+            return result;
+        }
+        current = current->get_prototype();
+    }
+    
+    return Value(); // undefined
 }
 
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
@@ -274,7 +381,6 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
                                              std::vector<std::unique_ptr<Parameter>> params,
                                              std::unique_ptr<ASTNode> body,
                                              Context* closure_context) {
-    std::cerr << "DEBUG: ObjectFactory::create_js_function called for: " << name << std::endl;
     return std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
 }
 

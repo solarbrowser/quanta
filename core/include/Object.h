@@ -416,6 +416,7 @@ namespace ObjectFactory {
                                                  class Context* closure_context);
     std::unique_ptr<Function> create_native_function(const std::string& name,
                                                      std::function<Value(Context&, const std::vector<Value>&)> fn);
+    std::unique_ptr<Function> create_array_method(const std::string& method_name);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);
     std::unique_ptr<Object> create_boolean(bool value);

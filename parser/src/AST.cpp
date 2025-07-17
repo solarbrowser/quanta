@@ -7,6 +7,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cctype>
+#include <iomanip>
 
 namespace Quanta {
 
@@ -180,7 +181,10 @@ std::unique_ptr<ASTNode> Parameter::clone() const {
 //=============================================================================
 
 Value Identifier::evaluate(Context& ctx) {
-    return ctx.get_binding(name_);
+    std::cout << "DEBUG: Identifier::evaluate for '" << name_ << "'" << std::endl;
+    Value result = ctx.get_binding(name_);
+    std::cout << "DEBUG: Identifier got value type: " << result.to_string() << std::endl;
+    return result;
 }
 
 std::string Identifier::to_string() const {
@@ -801,8 +805,10 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
 //=============================================================================
 
 Value CallExpression::evaluate(Context& ctx) {
+    std::cout << "DEBUG: CallExpression::evaluate - callee type = " << (int)callee_->get_type() << std::endl;
     // Handle member expressions (obj.method()) directly first
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        std::cout << "DEBUG: CallExpression::evaluate - calling handle_member_expression_call" << std::endl;
         return handle_member_expression_call(ctx);
     }
     
@@ -1267,6 +1273,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
 }
 
 Value CallExpression::handle_member_expression_call(Context& ctx) {
+    std::cout << "DEBUG: handle_member_expression_call - START" << std::endl;
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
     
     // Check if it's console.log
@@ -1296,11 +1303,18 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
     }
     
+    std::cout << "DEBUG: handle_member_expression_call - after console.log check" << std::endl;
+    
     // Handle general object method calls (obj.method())
     Value object_value = member->get_object()->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
+    std::cout << "DEBUG: handle_member_expression_call - object_value is_function: " << object_value.is_function() << std::endl;
+    if (ctx.has_exception()) {
+        std::cout << "DEBUG: handle_member_expression_call - exception after object evaluation" << std::endl;
+        return Value();
+    }
     
     if (object_value.is_string()) {
+        std::cout << "DEBUG: handle_member_expression_call - is_string branch" << std::endl;
         // Handle string method calls
         std::string str_value = object_value.to_string();
         
@@ -1322,8 +1336,54 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         return handle_string_method_call(str_value, method_name, ctx);
         
-    } else if (object_value.is_object()) {
-        Object* obj = object_value.as_object();
+    } else if (object_value.is_number()) {
+        std::cout << "DEBUG: handle_member_expression_call - is_number branch" << std::endl;
+        // Handle number method calls using MemberExpression to get the function
+        Value method_value = member->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        
+        if (method_value.is_function()) {
+            // Evaluate arguments
+            std::vector<Value> arg_values;
+            for (const auto& arg : arguments_) {
+                Value val = arg->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                arg_values.push_back(val);
+            }
+            
+            // Call the method
+            Function* method = method_value.as_function();
+            return method->call(ctx, arg_values, object_value);
+        } else {
+            ctx.throw_exception(Value("Property is not a function"));
+            return Value();
+        }
+        
+    } else if (object_value.is_boolean()) {
+        std::cout << "DEBUG: handle_member_expression_call - is_boolean branch" << std::endl;
+        // Handle boolean method calls using MemberExpression to get the function
+        Value method_value = member->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        
+        if (method_value.is_function()) {
+            // Evaluate arguments
+            std::vector<Value> arg_values;
+            for (const auto& arg : arguments_) {
+                Value val = arg->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                arg_values.push_back(val);
+            }
+            
+            // Call the method
+            Function* method = method_value.as_function();
+            return method->call(ctx, arg_values, object_value);
+        } else {
+            ctx.throw_exception(Value("Property is not a function"));
+            return Value();
+        }
+        
+    } else if (object_value.is_object() || object_value.is_function()) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
         
         // Get the method name
         std::string method_name;
@@ -1345,6 +1405,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         // Get the method function
         Value method_value = obj->get_property(method_name);
+        std::cout << "DEBUG: handle_member_expression_call - method_name = " << method_name << std::endl;
+        std::cout << "DEBUG: handle_member_expression_call - method_value.is_function() = " << method_value.is_function() << std::endl;
         if (method_value.is_function()) {
             // Evaluate arguments
             std::vector<Value> arg_values;
@@ -1354,6 +1416,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 arg_values.push_back(val);
             }
             
+            std::cout << "DEBUG: handle_member_expression_call - calling method with " << arg_values.size() << " args" << std::endl;
             // Call the method with 'this' bound to the object
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -1364,6 +1427,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     }
     
     // If we reach here, it's an unsupported method call
+    std::cout << "DEBUG: handle_member_expression_call - unsupported method call" << std::endl;
     ctx.throw_exception(Value("Unsupported method call"));
     return Value();
 }
@@ -1376,27 +1440,114 @@ Value MemberExpression::evaluate(Context& ctx) {
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
-    // For Stage 2, we'll handle basic property access
-    // This is a simplified implementation
+    // Get property name first
+    std::string prop_name;
+    if (computed_) {
+        Value prop_value = property_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        prop_name = prop_value.to_string();
+    } else {
+        if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+            Identifier* prop = static_cast<Identifier*>(property_.get());
+            prop_name = prop->get_name();
+        }
+    }
+    
+    // 🚀 PRIMITIVE BOXING - Handle primitive types
     if (object_value.is_string()) {
         std::string str_value = object_value.to_string();
-        
-        // Get property name
-        std::string prop_name;
-        if (computed_) {
-            Value prop_value = property_->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            prop_name = prop_value.to_string();
-        } else {
-            if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
-                Identifier* prop = static_cast<Identifier*>(property_.get());
-                prop_name = prop->get_name();
-            }
-        }
         
         // Handle string properties
         if (prop_name == "length") {
             return Value(static_cast<double>(str_value.length()));
+        }
+        
+        // Handle string methods - CREATE BOUND METHODS
+        if (prop_name == "charAt") {
+            auto char_at_fn = ObjectFactory::create_native_function("charAt",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value("");
+                    int index = static_cast<int>(args[0].to_number());
+                    if (index >= 0 && index < static_cast<int>(str_value.length())) {
+                        return Value(std::string(1, str_value[index]));
+                    }
+                    return Value("");
+                });
+            return Value(char_at_fn.release());
+        }
+        
+        if (prop_name == "indexOf") {
+            auto index_of_fn = ObjectFactory::create_native_function("indexOf",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value(-1.0);
+                    std::string search = args[0].to_string();
+                    size_t pos = str_value.find(search);
+                    return Value(pos != std::string::npos ? static_cast<double>(pos) : -1.0);
+                });
+            return Value(index_of_fn.release());
+        }
+        
+        if (prop_name == "toUpperCase") {
+            auto upper_fn = ObjectFactory::create_native_function("toUpperCase",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    std::string result = str_value;
+                    std::transform(result.begin(), result.end(), result.begin(), ::toupper);
+                    return Value(result);
+                });
+            return Value(upper_fn.release());
+        }
+        
+        if (prop_name == "toLowerCase") {
+            auto lower_fn = ObjectFactory::create_native_function("toLowerCase",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    std::string result = str_value;
+                    std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+                    return Value(result);
+                });
+            return Value(lower_fn.release());
+        }
+        
+        if (prop_name == "substring") {
+            auto substring_fn = ObjectFactory::create_native_function("substring",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value(str_value);
+                    int start = static_cast<int>(args[0].to_number());
+                    int end = args.size() > 1 ? static_cast<int>(args[1].to_number()) : str_value.length();
+                    start = std::max(0, std::min(start, static_cast<int>(str_value.length())));
+                    end = std::max(0, std::min(end, static_cast<int>(str_value.length())));
+                    if (start > end) std::swap(start, end);
+                    return Value(str_value.substr(start, end - start));
+                });
+            return Value(substring_fn.release());
+        }
+        
+        if (prop_name == "substr") {
+            auto substr_fn = ObjectFactory::create_native_function("substr",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value(str_value);
+                    int start = static_cast<int>(args[0].to_number());
+                    int length = args.size() > 1 ? static_cast<int>(args[1].to_number()) : str_value.length();
+                    if (start < 0) start = std::max(0, static_cast<int>(str_value.length()) + start);
+                    start = std::min(start, static_cast<int>(str_value.length()));
+                    return Value(str_value.substr(start, length));
+                });
+            return Value(substr_fn.release());
+        }
+        
+        if (prop_name == "slice") {
+            auto slice_fn = ObjectFactory::create_native_function("slice",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value(str_value);
+                    int start = static_cast<int>(args[0].to_number());
+                    int end = args.size() > 1 ? static_cast<int>(args[1].to_number()) : str_value.length();
+                    if (start < 0) start = std::max(0, static_cast<int>(str_value.length()) + start);
+                    if (end < 0) end = std::max(0, static_cast<int>(str_value.length()) + end);
+                    start = std::min(start, static_cast<int>(str_value.length()));
+                    end = std::min(end, static_cast<int>(str_value.length()));
+                    if (start >= end) return Value("");
+                    return Value(str_value.substr(start, end - start));
+                });
+            return Value(slice_fn.release());
         }
         
         // Handle numeric indices
@@ -1412,9 +1563,76 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
         
         return Value(); // undefined for other properties
+    }
+    
+    // 🚀 NUMBER PRIMITIVE BOXING
+    else if (object_value.is_number()) {
+        double num_value = object_value.to_number();
         
-    } else if (object_value.is_object()) {
-        Object* obj = object_value.as_object();
+        if (prop_name == "toString") {
+            auto to_string_fn = ObjectFactory::create_native_function("toString",
+                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    // Format number properly - remove trailing zeros
+                    std::string result = std::to_string(num_value);
+                    if (result.find('.') != std::string::npos) {
+                        result.erase(result.find_last_not_of('0') + 1, std::string::npos);
+                        result.erase(result.find_last_not_of('.') + 1, std::string::npos);
+                    }
+                    return Value(result);
+                });
+            return Value(to_string_fn.release());
+        }
+        
+        if (prop_name == "valueOf") {
+            auto value_of_fn = ObjectFactory::create_native_function("valueOf",
+                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    return Value(num_value);
+                });
+            return Value(value_of_fn.release());
+        }
+        
+        if (prop_name == "toFixed") {
+            auto to_fixed_fn = ObjectFactory::create_native_function("toFixed",
+                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    int digits = args.empty() ? 0 : static_cast<int>(args[0].to_number());
+                    std::ostringstream oss;
+                    oss << std::fixed << std::setprecision(digits) << num_value;
+                    return Value(oss.str());
+                });
+            return Value(to_fixed_fn.release());
+        }
+        
+        return Value(); // undefined for other properties
+    }
+    
+    // 🚀 BOOLEAN PRIMITIVE BOXING
+    else if (object_value.is_boolean()) {
+        bool bool_value = object_value.as_boolean();  // Use as_boolean() instead of to_boolean()
+        std::cout << "DEBUG: MemberExpression boolean boxing for " << prop_name << " - bool_value=" << bool_value << std::endl;
+        
+        if (prop_name == "toString") {
+            auto to_string_fn = ObjectFactory::create_native_function("toString",
+                [bool_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    std::cout << "DEBUG: LAMBDA toString called with bool_value=" << bool_value << std::endl;
+                    return Value(bool_value ? "true" : "false");
+                });
+            return Value(to_string_fn.release());
+        }
+        
+        if (prop_name == "valueOf") {
+            auto value_of_fn = ObjectFactory::create_native_function("valueOf",
+                [bool_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    return Value(bool_value);
+                });
+            return Value(value_of_fn.release());
+        }
+        
+        return Value(); // undefined for other properties
+    }
+    
+    // Handle objects and functions
+    else if (object_value.is_object() || object_value.is_function()) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
         if (computed_) {
             Value prop_value = property_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
@@ -1424,12 +1642,9 @@ Value MemberExpression::evaluate(Context& ctx) {
                 Identifier* prop = static_cast<Identifier*>(property_.get());
                 std::string prop_name = prop->get_name();
                 
-                // DEBUG: Check what type of object we're accessing
-                std::cout << "DEBUG: Accessing property '" << prop_name << "' on object type: " << (int)obj->get_type() << std::endl;
-                std::cout << "DEBUG: Object is_function: " << obj->is_function() << std::endl;
-                
+                std::cout << "DEBUG: MemberExpression accessing '" << prop_name << "' on object type " << (int)obj->get_type() << std::endl;
                 Value result = obj->get_property(prop_name);
-                std::cout << "DEBUG: Property value: " << result.to_string() << std::endl;
+                std::cout << "DEBUG: MemberExpression got result: " << result.to_string() << std::endl;
                 return result;
             }
         }
@@ -1933,16 +2148,13 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         }
     }
     
-    // Wrap in Value
-    Value function_value(function_obj.release());
+    // Wrap in Value - ensure Function type is preserved
+    Function* func_ptr = function_obj.release();
+    std::cout << "DEBUG: Function object type before Value creation: " << (int)func_ptr->get_type() << std::endl;
+    Value function_value(func_ptr);
     
-    // DEBUG: Check function value before storing
+    // Store function in context (removed problematic debug)
     std::cout << "DEBUG: About to store function in context" << std::endl;
-    if (function_value.is_function()) {
-        Function* func = function_value.as_function();
-        std::cout << "DEBUG: Function name before storing: " << func->get_property("name").to_string() << std::endl;
-        std::cout << "DEBUG: Function length before storing: " << func->get_property("length").to_string() << std::endl;
-    }
     
     // Create binding in current context
     if (!ctx.create_binding(function_name, function_value, true)) {
@@ -1952,6 +2164,8 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     
     // DEBUG: Check function value after storing
     std::cout << "DEBUG: Function stored in context" << std::endl;
+    
+    // Skip debug retrieval for now to avoid hanging
     
     return Value(); // Function declarations return undefined
 }

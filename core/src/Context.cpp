@@ -1,8 +1,10 @@
 #include "Context.h"
 #include "Engine.h"
 #include "Error.h"
+#include "JSON.h"
 #include <iostream>
 #include <sstream>
+#include <limits>
 
 namespace Quanta {
 
@@ -241,8 +243,51 @@ void Context::initialize_global_context() {
 void Context::initialize_built_ins() {
     // Create built-in objects (placeholder implementations)
     
-    // Object constructor
-    auto object_constructor = ObjectFactory::create_function();
+    // Object constructor - create as a proper native function
+    auto object_constructor = ObjectFactory::create_native_function("Object",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Object constructor implementation - for now just create empty object
+            if (args.size() == 0) {
+                return Value(ObjectFactory::create_object().release());
+            }
+            // TODO: Handle Object(value) constructor calls
+            return Value(ObjectFactory::create_object().release());
+        });
+    
+    // Add Object static methods
+    // Object.keys(obj) - returns array of own enumerable property names
+    auto keys_fn = ObjectFactory::create_native_function("keys", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() == 0 || !args[0].is_object()) {
+                ctx.throw_exception(Value("Object.keys called on non-object"));
+                return Value();
+            }
+            
+            Object* obj = args[0].as_object();
+            auto keys = obj->get_enumerable_keys();
+            
+            auto result_array = ObjectFactory::create_array(keys.size());
+            for (size_t i = 0; i < keys.size(); i++) {
+                result_array->set_element(i, Value(keys[i]));
+            }
+            
+            return Value(result_array.release());
+        });
+    object_constructor->set_property("keys", Value(keys_fn.release()));
+    
+    // Object.create(prototype) - creates new object with specified prototype
+    auto create_fn = ObjectFactory::create_native_function("create",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* prototype = nullptr;
+            if (args.size() > 0 && args[0].is_object()) {
+                prototype = args[0].as_object();
+            }
+            
+            auto new_obj = ObjectFactory::create_object(prototype);
+            return Value(new_obj.release());
+        });
+    object_constructor->set_property("create", Value(create_fn.release()));
+    
     register_built_in_object("Object", object_constructor.release());
     
     // Array constructor
@@ -250,24 +295,120 @@ void Context::initialize_built_ins() {
     register_built_in_object("Array", array_constructor.release());
     
     // Function constructor
-    auto function_constructor = ObjectFactory::create_function();
+    auto function_constructor = ObjectFactory::create_native_function("Function",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Function constructor implementation - basic placeholder
+            return Value(ObjectFactory::create_function().release());
+        });
+    
+    // Add Function.prototype methods that will be inherited by all functions
+    // These will be added to the prototype, but for now add them as static methods
+    
+    // Function.prototype.call
+    auto call_fn = ObjectFactory::create_native_function("call",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get the function that call was invoked on
+            Object* function_obj = ctx.get_this_binding();
+            if (!function_obj || !function_obj->is_function()) {
+                ctx.throw_exception(Value("Function.call called on non-function"));
+                return Value();
+            }
+            
+            Function* func = static_cast<Function*>(function_obj);
+            Value this_arg = args.size() > 0 ? args[0] : Value();
+            
+            // Prepare arguments (skip the first 'this' argument)
+            std::vector<Value> call_args;
+            for (size_t i = 1; i < args.size(); i++) {
+                call_args.push_back(args[i]);
+            }
+            
+            return func->call(ctx, call_args, this_arg);
+        });
+    function_constructor->set_property("call", Value(call_fn.release()));
+    
+    // Function.prototype.apply
+    auto apply_fn = ObjectFactory::create_native_function("apply",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get the function that apply was invoked on
+            Object* function_obj = ctx.get_this_binding();
+            if (!function_obj || !function_obj->is_function()) {
+                ctx.throw_exception(Value("Function.apply called on non-function"));
+                return Value();
+            }
+            
+            Function* func = static_cast<Function*>(function_obj);
+            Value this_arg = args.size() > 0 ? args[0] : Value();
+            
+            // Prepare arguments from array
+            std::vector<Value> call_args;
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* args_array = args[1].as_object();
+                if (args_array->is_array()) {
+                    uint32_t length = args_array->get_length();
+                    for (uint32_t i = 0; i < length; i++) {
+                        call_args.push_back(args_array->get_element(i));
+                    }
+                }
+            }
+            
+            return func->call(ctx, call_args, this_arg);
+        });
+    function_constructor->set_property("apply", Value(apply_fn.release()));
+    
     register_built_in_object("Function", function_constructor.release());
     
-    // String constructor
-    auto string_constructor = ObjectFactory::create_function();
+    // String constructor - callable as function
+    auto string_constructor = ObjectFactory::create_native_function("String",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value("");
+            return Value(args[0].to_string());
+        });
     register_built_in_object("String", string_constructor.release());
     
-    // Number constructor
-    auto number_constructor = ObjectFactory::create_function();
+    // Number constructor - callable as function with ES5 constants
+    auto number_constructor = ObjectFactory::create_native_function("Number",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(0.0);
+            return Value(args[0].to_number());
+        });
+    number_constructor->set_property("MAX_VALUE", Value(1.7976931348623157e+308));
+    number_constructor->set_property("MIN_VALUE", Value(5e-324));
+    number_constructor->set_property("NaN", Value(std::numeric_limits<double>::quiet_NaN()));
+    number_constructor->set_property("POSITIVE_INFINITY", Value(std::numeric_limits<double>::infinity()));
+    number_constructor->set_property("NEGATIVE_INFINITY", Value(-std::numeric_limits<double>::infinity()));
     register_built_in_object("Number", number_constructor.release());
     
-    // Boolean constructor
-    auto boolean_constructor = ObjectFactory::create_function();
+    // Boolean constructor - callable as function
+    auto boolean_constructor = ObjectFactory::create_native_function("Boolean",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(false);
+            return Value(args[0].to_boolean());
+        });
     register_built_in_object("Boolean", boolean_constructor.release());
     
     // Error constructor
     auto error_constructor = ObjectFactory::create_function();
     register_built_in_object("Error", error_constructor.release());
+    
+    // JSON object
+    auto json_object = ObjectFactory::create_object();
+    
+    // JSON.parse
+    auto json_parse = ObjectFactory::create_native_function("parse", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return JSON::js_parse(ctx, args);
+        });
+    json_object->set_property("parse", Value(json_parse.release()));
+    
+    // JSON.stringify  
+    auto json_stringify = ObjectFactory::create_native_function("stringify",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return JSON::js_stringify(ctx, args);
+        });
+    json_object->set_property("stringify", Value(json_stringify.release()));
+    
+    register_built_in_object("JSON", json_object.release());
 }
 
 void Context::setup_global_bindings() {
@@ -283,7 +424,51 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("NaN", Value(std::numeric_limits<double>::quiet_NaN()), false);
     lexical_environment_->create_binding("Infinity", Value(std::numeric_limits<double>::infinity()), false);
     
-    // Built-in objects are registered separately via register_built_in_object
+    // Missing global functions
+    auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value("");
+            std::string input = args[0].to_string();
+            // Basic implementation - just return the input for now
+            return Value(input);
+        });
+    lexical_environment_->create_binding("encodeURI", Value(encode_uri_fn.release()), false);
+    
+    auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value("");
+            std::string input = args[0].to_string();
+            // Basic implementation - just return the input for now
+            return Value(input);
+        });
+    lexical_environment_->create_binding("decodeURI", Value(decode_uri_fn.release()), false);
+    
+    auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value("");
+            std::string input = args[0].to_string();
+            // Basic implementation - just return the input for now
+            return Value(input);
+        });
+    lexical_environment_->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), false);
+    
+    auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value("");
+            std::string input = args[0].to_string();
+            // Basic implementation - just return the input for now
+            return Value(input);
+        });
+    lexical_environment_->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), false);
+    
+    // Bind built-in objects to global environment
+    for (const auto& pair : built_in_objects_) {
+        bool bound = lexical_environment_->create_binding(pair.first, Value(pair.second), false);
+        // Also ensure it's bound to global object for property access
+        if (global_object_ && pair.second) {
+            global_object_->set_property(pair.first, Value(pair.second));
+        }
+    }
 }
 
 //=============================================================================
