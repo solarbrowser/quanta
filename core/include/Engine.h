@@ -5,6 +5,8 @@
 #include "Object.h"
 #include "Context.h"
 #include "ModuleLoader.h"
+#include "JIT.h"
+#include "GC.h"
 #include <string>
 #include <memory>
 #include <vector>
@@ -52,6 +54,10 @@ private:
     Config config_;
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
+    
+    // Advanced performance systems
+    std::unique_ptr<JITCompiler> jit_compiler_;
+    std::unique_ptr<GarbageCollector> garbage_collector_;
     
     // Engine state
     bool initialized_;
@@ -104,6 +110,18 @@ public:
     size_t get_heap_size() const;
     void set_heap_limit(size_t limit);
     
+    // JIT Compilation
+    void enable_jit(bool enable);
+    bool is_jit_enabled() const;
+    void set_jit_threshold(uint32_t threshold);
+    std::string get_jit_stats() const;
+    
+    // Garbage Collection
+    void enable_gc(bool enable);
+    void set_gc_mode(GarbageCollector::CollectionMode mode);
+    void force_gc();
+    std::string get_gc_stats() const;
+    
     // Performance and debugging
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);
@@ -134,6 +152,7 @@ private:
     void setup_built_in_objects();
     void setup_built_in_functions();
     void setup_error_types();
+    // void setup_es6_features(); // Removed due to segfault
     
     // Execution helpers
     Result execute_internal(const std::string& source, const std::string& filename);

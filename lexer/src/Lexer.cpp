@@ -137,13 +137,15 @@ Token Lexer::next_token() {
         return create_token(TokenType::NEWLINE, start);
     }
     
-    // Comments
+    // Comments and regex literals
     if (ch == '/') {
         char next = peek_char();
         if (next == '/') {
             return read_single_line_comment();
         } else if (next == '*') {
             return read_multi_line_comment();
+        } else if (can_be_regex_literal()) {
+            return read_regex();
         }
         // Fall through to operator parsing
     }
@@ -715,6 +717,92 @@ TokenType Lexer::lookup_keyword(const std::string& identifier) const {
 
 bool Lexer::is_reserved_word(const std::string& word) const {
     return keywords_.find(word) != keywords_.end();
+}
+
+bool Lexer::can_be_regex_literal() const {
+    // Simple heuristic: regex literals can appear after:
+    // - assignment operators (=, +=, -=, etc.)
+    // - comparison operators (==, !=, <, >, etc.)
+    // - logical operators (&&, ||, !)
+    // - control flow keywords (if, for, while, return, etc.)
+    // - opening parentheses, brackets, braces
+    // - commas, semicolons
+    // - beginning of input
+    
+    if (position_ == 0) return true;
+    
+    // Look backwards to find the last non-whitespace character
+    size_t pos = position_ - 1;
+    while (pos > 0 && is_whitespace(source_[pos])) {
+        pos--;
+    }
+    
+    if (pos == 0) return true;
+    
+    char prev_char = source_[pos];
+    
+    // Check for characters that typically precede regex literals
+    return prev_char == '=' || prev_char == '(' || prev_char == '[' || 
+           prev_char == '{' || prev_char == ',' || prev_char == ';' || 
+           prev_char == ':' || prev_char == '!' || prev_char == '&' || 
+           prev_char == '|' || prev_char == '?' || prev_char == '+' || 
+           prev_char == '-' || prev_char == '*' || prev_char == '%' || 
+           prev_char == '<' || prev_char == '>' || prev_char == '^' || 
+           prev_char == '~';
+}
+
+Token Lexer::read_regex() {
+    Position start = current_position_;
+    advance(); // consume initial '/'
+    
+    std::string pattern;
+    
+    // Read the pattern until we find the closing '/'
+    while (!at_end() && current_char() != '/') {
+        char ch = current_char();
+        
+        if (ch == '\\') {
+            // Handle escape sequences
+            pattern += ch;
+            advance();
+            if (!at_end()) {
+                pattern += current_char();
+                advance();
+            }
+        } else if (ch == '\n' || ch == '\r') {
+            // Regex literals cannot contain unescaped newlines
+            add_error("Unterminated regex literal");
+            return create_token(TokenType::INVALID, start);
+        } else {
+            pattern += ch;
+            advance();
+        }
+    }
+    
+    if (at_end()) {
+        add_error("Unterminated regex literal");
+        return create_token(TokenType::INVALID, start);
+    }
+    
+    advance(); // consume closing '/'
+    
+    // Read flags
+    std::string flags;
+    while (!at_end() && is_identifier_part(current_char())) {
+        char flag = current_char();
+        // Valid regex flags: g, i, m, s, u, y
+        if (flag == 'g' || flag == 'i' || flag == 'm' || 
+            flag == 's' || flag == 'u' || flag == 'y') {
+            flags += flag;
+            advance();
+        } else {
+            break;
+        }
+    }
+    
+    // Create the regex token with the full regex string
+    std::string regex_value = "/" + pattern + "/" + flags;
+    return create_token(TokenType::REGEX, regex_value, start);
 }
 
 } // namespace Quanta

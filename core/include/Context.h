@@ -15,6 +15,7 @@ class Engine;
 class Function;
 class StackFrame;
 class Environment;
+class Error;
 
 /**
  * JavaScript execution context
@@ -51,6 +52,10 @@ private:
     
     // Execution stack
     std::vector<std::unique_ptr<StackFrame>> call_stack_;
+    
+    // Recursion protection
+    mutable int execution_depth_;
+    static const int max_execution_depth_ = 500;
     
     // Global objects and built-ins
     Object* global_object_;
@@ -110,12 +115,24 @@ public:
     StackFrame* current_frame() const;
     size_t stack_depth() const { return call_stack_.size(); }
     bool is_stack_overflow() const { return stack_depth() > 10000; }
+    
+    // Recursion protection
+    bool check_execution_depth() const;
+    void increment_execution_depth() const { execution_depth_++; }
+    void decrement_execution_depth() const { execution_depth_--; }
 
     // Exception handling
     bool has_exception() const { return has_exception_; }
     const Value& get_exception() const { return current_exception_; }
     void throw_exception(const Value& exception);
     void clear_exception();
+    
+    // Error throwing helpers
+    void throw_error(const std::string& message);
+    void throw_type_error(const std::string& message);
+    void throw_reference_error(const std::string& message);
+    void throw_syntax_error(const std::string& message);
+    void throw_range_error(const std::string& message);
     
     // Return value handling
     bool has_return_value() const { return has_return_value_; }
@@ -246,6 +263,7 @@ public:
     // Binding operations
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
+    Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool delete_binding(const std::string& name);

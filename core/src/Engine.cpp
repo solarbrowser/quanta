@@ -1,5 +1,20 @@
 #include "Engine.h"
+#include "JSON.h"
+#include "Math.h"
+#include "Date.h"
+#include "Symbol.h"
+#include "WebAPI.h"
+#include "NodeJS.h"
+#include "Promise.h"
+// ES6+ includes disabled due to segfault
+// #include "Generator.h"
+// #include "MapSet.h"
+// #include "Iterator.h"
+// #include "Async.h"
+// #include "ProxyReflect.h"
 #include "../../parser/include/AST.h"
+#include "../../parser/include/Parser.h"
+#include "../../lexer/include/Lexer.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -13,6 +28,11 @@ namespace Quanta {
 
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
+    // Initialize JIT compiler
+    jit_compiler_ = std::make_unique<JITCompiler>();
+    
+    // Initialize garbage collector
+    garbage_collector_ = std::make_unique<GarbageCollector>();
     config_.strict_mode = false;
     config_.enable_jit = true;
     config_.enable_optimizations = true;
@@ -103,52 +123,32 @@ Engine::Result Engine::evaluate(const std::string& expression) {
         return Result("Engine not initialized");
     }
     
-    // For Stage 1, we'll implement a simple expression evaluator
-    // This is a placeholder that handles basic literals and operations
-    
     try {
-        // Remove whitespace
-        std::string trimmed = expression;
-        trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r"));
-        trimmed.erase(trimmed.find_last_not_of(" \t\n\r") + 1);
+        // Create lexer and parser for expression evaluation
+        Lexer lexer(expression);
+        Parser parser(lexer.tokenize());
         
-        if (trimmed.empty()) {
-            return Result(Value());
+        // Parse the expression into AST
+        auto expr_ast = parser.parse_expression();
+        if (!expr_ast) {
+            return Result("Parse error: Failed to parse expression");
         }
         
-        // Handle basic literals
-        if (trimmed == "undefined") {
-            return Result(Value());
-        } else if (trimmed == "null") {
-            return Result(Value::null());
-        } else if (trimmed == "true") {
-            return Result(Value(true));
-        } else if (trimmed == "false") {
-            return Result(Value(false));
-        } else if (trimmed[0] == '"' && trimmed.back() == '"') {
-            // String literal
-            std::string str = trimmed.substr(1, trimmed.length() - 2);
-            return Result(Value(str));
-        } else if (trimmed[0] == '\'' && trimmed.back() == '\'') {
-            // String literal
-            std::string str = trimmed.substr(1, trimmed.length() - 2);
-            return Result(Value(str));
-        } else {
-            // Try to parse as number
-            char* end;
-            double num = std::strtod(trimmed.c_str(), &end);
-            if (end == trimmed.c_str() + trimmed.length()) {
-                return Result(Value(num));
+        // Evaluate the expression AST
+        if (global_context_) {
+            Value result = expr_ast->evaluate(*global_context_);
+            
+            // Check if the context has any thrown exceptions
+            if (global_context_->has_exception()) {
+                Value exception = global_context_->get_exception();
+                global_context_->clear_exception();
+                return Result("JavaScript Error: " + exception.to_string());
             }
+            
+            return Result(result);
+        } else {
+            return Result("Engine context not initialized");
         }
-        
-        // Check global variables
-        if (global_context_->has_binding(trimmed)) {
-            Value value = global_context_->get_binding(trimmed);
-            return Result(value);
-        }
-        
-        return Result("ReferenceError: " + trimmed + " is not defined");
         
     } catch (const std::exception& e) {
         return Result("Error evaluating expression: " + std::string(e.what()));
@@ -206,17 +206,24 @@ Context* Engine::get_current_context() const {
 }
 
 void Engine::collect_garbage() {
-    // Placeholder for GC - will be implemented in later stages
-    total_gc_runs_++;
+    if (garbage_collector_) {
+        garbage_collector_->collect_garbage();
+        total_gc_runs_++;
+    }
 }
 
 size_t Engine::get_heap_usage() const {
-    // Placeholder - return estimated usage
-    return total_allocations_ * 64; // Rough estimate
+    if (garbage_collector_) {
+        return garbage_collector_->get_heap_size();
+    }
+    return 0;
 }
 
 size_t Engine::get_heap_size() const {
-    return config_.max_heap_size;
+    if (garbage_collector_) {
+        return garbage_collector_->get_heap_size();
+    }
+    return 0;
 }
 
 bool Engine::has_pending_exception() const {
@@ -272,26 +279,301 @@ void Engine::setup_browser_globals() {
     // Browser-specific globals (placeholder implementations)
     set_global_property("window", Value(global_context_->get_global_object()));
     
-    // Create console object with log method
-    auto console_obj = ObjectFactory::create_object();
-    
-    // Create console.log function
-    auto console_log_fn = ObjectFactory::create_native_function("log", 
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused parameter warning
-            for (size_t i = 0; i < args.size(); ++i) {
-                if (i > 0) std::cout << " ";
-                std::cout << args[i].to_string();
-            }
-            std::cout << std::endl;
-            return Value(); // undefined
-        });
+    // Create enhanced console object with multiple methods
+    auto console_obj = std::make_unique<Object>();
+    auto console_log_fn = ObjectFactory::create_native_function("log", WebAPI::console_log);
+    auto console_error_fn = ObjectFactory::create_native_function("error", WebAPI::console_error);
+    auto console_warn_fn = ObjectFactory::create_native_function("warn", WebAPI::console_warn);
+    auto console_info_fn = ObjectFactory::create_native_function("info", WebAPI::console_info);
+    auto console_debug_fn = ObjectFactory::create_native_function("debug", WebAPI::console_debug);
+    auto console_trace_fn = ObjectFactory::create_native_function("trace", WebAPI::console_trace);
+    auto console_time_fn = ObjectFactory::create_native_function("time", WebAPI::console_time);
+    auto console_timeEnd_fn = ObjectFactory::create_native_function("timeEnd", WebAPI::console_timeEnd);
     
     console_obj->set_property("log", Value(console_log_fn.release()));
+    console_obj->set_property("error", Value(console_error_fn.release()));
+    console_obj->set_property("warn", Value(console_warn_fn.release()));
+    console_obj->set_property("info", Value(console_info_fn.release()));
+    console_obj->set_property("debug", Value(console_debug_fn.release()));
+    console_obj->set_property("trace", Value(console_trace_fn.release()));
+    console_obj->set_property("time", Value(console_time_fn.release()));
+    console_obj->set_property("timeEnd", Value(console_timeEnd_fn.release()));
+    
     set_global_property("console", Value(console_obj.release()));
     
-    set_global_property("setTimeout", Value(ObjectFactory::create_function().release()));
-    set_global_property("setInterval", Value(ObjectFactory::create_function().release()));
+    // Create JSON object
+    auto json_obj = std::make_unique<Object>();
+    
+    // Create JSON.parse function
+    auto json_parse_fn = ObjectFactory::create_native_function("parse",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return JSON::js_parse(ctx, args);
+        });
+    
+    // Create JSON.stringify function
+    auto json_stringify_fn = ObjectFactory::create_native_function("stringify",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return JSON::js_stringify(ctx, args);
+        });
+    
+    json_obj->set_property("parse", Value(json_parse_fn.release()));
+    json_obj->set_property("stringify", Value(json_stringify_fn.release()));
+    set_global_property("JSON", Value(json_obj.release()));
+    
+    // Create Math object with native functions
+    auto math_obj = std::make_unique<Object>();
+    
+    // Add Math constants
+    math_obj->set_property("E", Value(Math::E));
+    math_obj->set_property("LN2", Value(Math::LN2));
+    math_obj->set_property("LN10", Value(Math::LN10));
+    math_obj->set_property("LOG2E", Value(Math::LOG2E));
+    math_obj->set_property("LOG10E", Value(Math::LOG10E));
+    math_obj->set_property("PI", Value(Math::PI));
+    math_obj->set_property("SQRT1_2", Value(Math::SQRT1_2));
+    math_obj->set_property("SQRT2", Value(Math::SQRT2));
+    
+    // Add Math methods as native functions
+    auto math_abs = ObjectFactory::create_native_function("abs", Math::abs);
+    auto math_max = ObjectFactory::create_native_function("max", Math::max);
+    auto math_min = ObjectFactory::create_native_function("min", Math::min);
+    auto math_round = ObjectFactory::create_native_function("round", Math::round);
+    auto math_floor = ObjectFactory::create_native_function("floor", Math::floor);
+    auto math_ceil = ObjectFactory::create_native_function("ceil", Math::ceil);
+    auto math_pow = ObjectFactory::create_native_function("pow", Math::pow);
+    auto math_sqrt = ObjectFactory::create_native_function("sqrt", Math::sqrt);
+    auto math_sin = ObjectFactory::create_native_function("sin", Math::sin);
+    auto math_cos = ObjectFactory::create_native_function("cos", Math::cos);
+    auto math_tan = ObjectFactory::create_native_function("tan", Math::tan);
+    auto math_random = ObjectFactory::create_native_function("random", Math::random);
+    
+    math_obj->set_property("abs", Value(math_abs.release()));
+    math_obj->set_property("max", Value(math_max.release()));
+    math_obj->set_property("min", Value(math_min.release()));
+    math_obj->set_property("round", Value(math_round.release()));
+    math_obj->set_property("floor", Value(math_floor.release()));
+    math_obj->set_property("ceil", Value(math_ceil.release()));
+    math_obj->set_property("pow", Value(math_pow.release()));
+    math_obj->set_property("sqrt", Value(math_sqrt.release()));
+    math_obj->set_property("sin", Value(math_sin.release()));
+    math_obj->set_property("cos", Value(math_cos.release()));
+    math_obj->set_property("tan", Value(math_tan.release()));
+    math_obj->set_property("random", Value(math_random.release()));
+    
+    set_global_property("Math", Value(math_obj.release()));
+    
+    // Create Date constructor function
+    auto date_constructor_fn = ObjectFactory::create_native_function("Date", Date::date_constructor);
+    
+    // Add Date static methods
+    auto date_now = ObjectFactory::create_native_function("now", Date::now);
+    auto date_parse = ObjectFactory::create_native_function("parse", Date::parse);
+    auto date_UTC = ObjectFactory::create_native_function("UTC", Date::UTC);
+    
+    date_constructor_fn->set_property("now", Value(date_now.release()));
+    date_constructor_fn->set_property("parse", Value(date_parse.release()));
+    date_constructor_fn->set_property("UTC", Value(date_UTC.release()));
+    
+    // Add Date instance methods (callable as Date.methodName for testing)
+    auto date_getTime = ObjectFactory::create_native_function("getTime", Date::getTime);
+    auto date_getFullYear = ObjectFactory::create_native_function("getFullYear", Date::getFullYear);
+    auto date_getMonth = ObjectFactory::create_native_function("getMonth", Date::getMonth);
+    auto date_getDate = ObjectFactory::create_native_function("getDate", Date::getDate);
+    auto date_getDay = ObjectFactory::create_native_function("getDay", Date::getDay);
+    auto date_getHours = ObjectFactory::create_native_function("getHours", Date::getHours);
+    auto date_getMinutes = ObjectFactory::create_native_function("getMinutes", Date::getMinutes);
+    auto date_getSeconds = ObjectFactory::create_native_function("getSeconds", Date::getSeconds);
+    auto date_getMilliseconds = ObjectFactory::create_native_function("getMilliseconds", Date::getMilliseconds);
+    
+    // Add Date string methods
+    auto date_toString = ObjectFactory::create_native_function("toString", Date::toString);
+    auto date_toISOString = ObjectFactory::create_native_function("toISOString", Date::toISOString);
+    auto date_toJSON = ObjectFactory::create_native_function("toJSON", Date::toJSON);
+    
+    // Add setter methods
+    auto date_setTime = ObjectFactory::create_native_function("setTime", Date::setTime);
+    auto date_setFullYear = ObjectFactory::create_native_function("setFullYear", Date::setFullYear);
+    auto date_setMonth = ObjectFactory::create_native_function("setMonth", Date::setMonth);
+    auto date_setDate = ObjectFactory::create_native_function("setDate", Date::setDate);
+    auto date_setHours = ObjectFactory::create_native_function("setHours", Date::setHours);
+    auto date_setMinutes = ObjectFactory::create_native_function("setMinutes", Date::setMinutes);
+    auto date_setSeconds = ObjectFactory::create_native_function("setSeconds", Date::setSeconds);
+    auto date_setMilliseconds = ObjectFactory::create_native_function("setMilliseconds", Date::setMilliseconds);
+    
+    // Create Date.prototype for instance methods
+    auto date_prototype = ObjectFactory::create_object();
+    date_prototype->set_property("getTime", Value(date_getTime.release()));
+    date_prototype->set_property("getFullYear", Value(date_getFullYear.release()));
+    date_prototype->set_property("getMonth", Value(date_getMonth.release()));
+    date_prototype->set_property("getDate", Value(date_getDate.release()));
+    date_prototype->set_property("getDay", Value(date_getDay.release()));
+    date_prototype->set_property("getHours", Value(date_getHours.release()));
+    date_prototype->set_property("getMinutes", Value(date_getMinutes.release()));
+    date_prototype->set_property("getSeconds", Value(date_getSeconds.release()));
+    date_prototype->set_property("getMilliseconds", Value(date_getMilliseconds.release()));
+    
+    date_prototype->set_property("toString", Value(date_toString.release()));
+    date_prototype->set_property("toISOString", Value(date_toISOString.release()));
+    date_prototype->set_property("toJSON", Value(date_toJSON.release()));
+    
+    date_prototype->set_property("setTime", Value(date_setTime.release()));
+    date_prototype->set_property("setFullYear", Value(date_setFullYear.release()));
+    date_prototype->set_property("setMonth", Value(date_setMonth.release()));
+    date_prototype->set_property("setDate", Value(date_setDate.release()));
+    date_prototype->set_property("setHours", Value(date_setHours.release()));
+    date_prototype->set_property("setMinutes", Value(date_setMinutes.release()));
+    date_prototype->set_property("setSeconds", Value(date_setSeconds.release()));
+    date_prototype->set_property("setMilliseconds", Value(date_setMilliseconds.release()));
+    
+    date_constructor_fn->set_property("prototype", Value(date_prototype.release()));
+    
+    set_global_property("Date", Value(date_constructor_fn.release()));
+    
+    // Web APIs - Timer functions
+    auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout", WebAPI::setTimeout);
+    auto setInterval_fn = ObjectFactory::create_native_function("setInterval", WebAPI::setInterval);
+    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout", WebAPI::clearTimeout);
+    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval", WebAPI::clearInterval);
+    
+    set_global_property("setTimeout", Value(setTimeout_fn.release()));
+    set_global_property("setInterval", Value(setInterval_fn.release()));
+    set_global_property("clearTimeout", Value(clearTimeout_fn.release()));
+    set_global_property("clearInterval", Value(clearInterval_fn.release()));
+    
+    
+    // Fetch API
+    auto fetch_fn = ObjectFactory::create_native_function("fetch", WebAPI::fetch);
+    set_global_property("fetch", Value(fetch_fn.release()));
+    
+    // Window API
+    auto alert_fn = ObjectFactory::create_native_function("alert", WebAPI::window_alert);
+    auto confirm_fn = ObjectFactory::create_native_function("confirm", WebAPI::window_confirm);
+    auto prompt_fn = ObjectFactory::create_native_function("prompt", WebAPI::window_prompt);
+    
+    set_global_property("alert", Value(alert_fn.release()));
+    set_global_property("confirm", Value(confirm_fn.release()));
+    set_global_property("prompt", Value(prompt_fn.release()));
+    
+    // Document API (basic)
+    auto document_obj = std::make_unique<Object>();
+    auto getElementById_fn = ObjectFactory::create_native_function("getElementById", WebAPI::document_getElementById);
+    auto createElement_fn = ObjectFactory::create_native_function("createElement", WebAPI::document_createElement);
+    auto querySelector_fn = ObjectFactory::create_native_function("querySelector", WebAPI::document_querySelector);
+    
+    document_obj->set_property("getElementById", Value(getElementById_fn.release()));
+    document_obj->set_property("createElement", Value(createElement_fn.release()));
+    document_obj->set_property("querySelector", Value(querySelector_fn.release()));
+    
+    set_global_property("document", Value(document_obj.release()));
+    
+    // LocalStorage API
+    auto localStorage_obj = std::make_unique<Object>();
+    auto getItem_fn = ObjectFactory::create_native_function("getItem", WebAPI::localStorage_getItem);
+    auto setItem_fn = ObjectFactory::create_native_function("setItem", WebAPI::localStorage_setItem);
+    auto removeItem_fn = ObjectFactory::create_native_function("removeItem", WebAPI::localStorage_removeItem);
+    auto clear_fn = ObjectFactory::create_native_function("clear", WebAPI::localStorage_clear);
+    
+    localStorage_obj->set_property("getItem", Value(getItem_fn.release()));
+    localStorage_obj->set_property("setItem", Value(setItem_fn.release()));
+    localStorage_obj->set_property("removeItem", Value(removeItem_fn.release()));
+    localStorage_obj->set_property("clear", Value(clear_fn.release()));
+    
+    set_global_property("localStorage", Value(localStorage_obj.release()));
+    
+    // Node.js File System module
+    auto fs_obj = std::make_unique<Object>();
+    auto fs_readFile_fn = ObjectFactory::create_native_function("readFile", NodeJS::fs_readFile);
+    auto fs_writeFile_fn = ObjectFactory::create_native_function("writeFile", NodeJS::fs_writeFile);
+    auto fs_readFileSync_fn = ObjectFactory::create_native_function("readFileSync", NodeJS::fs_readFileSync);
+    auto fs_writeFileSync_fn = ObjectFactory::create_native_function("writeFileSync", NodeJS::fs_writeFileSync);
+    auto fs_existsSync_fn = ObjectFactory::create_native_function("existsSync", NodeJS::fs_existsSync);
+    auto fs_mkdirSync_fn = ObjectFactory::create_native_function("mkdirSync", NodeJS::fs_mkdirSync);
+    auto fs_readdirSync_fn = ObjectFactory::create_native_function("readdirSync", NodeJS::fs_readdirSync);
+    
+    fs_obj->set_property("readFile", Value(fs_readFile_fn.release()));
+    fs_obj->set_property("writeFile", Value(fs_writeFile_fn.release()));
+    fs_obj->set_property("readFileSync", Value(fs_readFileSync_fn.release()));
+    fs_obj->set_property("writeFileSync", Value(fs_writeFileSync_fn.release()));
+    fs_obj->set_property("existsSync", Value(fs_existsSync_fn.release()));
+    fs_obj->set_property("mkdirSync", Value(fs_mkdirSync_fn.release()));
+    fs_obj->set_property("readdirSync", Value(fs_readdirSync_fn.release()));
+    
+    set_global_property("fs", Value(fs_obj.release()));
+    
+    // Node.js Path module
+    auto path_obj = std::make_unique<Object>();
+    auto path_join_fn = ObjectFactory::create_native_function("join", NodeJS::path_join);
+    auto path_dirname_fn = ObjectFactory::create_native_function("dirname", NodeJS::path_dirname);
+    auto path_basename_fn = ObjectFactory::create_native_function("basename", NodeJS::path_basename);
+    auto path_extname_fn = ObjectFactory::create_native_function("extname", NodeJS::path_extname);
+    
+    path_obj->set_property("join", Value(path_join_fn.release()));
+    path_obj->set_property("dirname", Value(path_dirname_fn.release()));
+    path_obj->set_property("basename", Value(path_basename_fn.release()));
+    path_obj->set_property("extname", Value(path_extname_fn.release()));
+    
+    set_global_property("path", Value(path_obj.release()));
+    
+    // Node.js HTTP module
+    auto http_obj = std::make_unique<Object>();
+    auto http_createServer_fn = ObjectFactory::create_native_function("createServer", NodeJS::http_createServer);
+    auto http_request_fn = ObjectFactory::create_native_function("request", NodeJS::http_request);
+    auto http_get_fn = ObjectFactory::create_native_function("get", NodeJS::http_get);
+    
+    http_obj->set_property("createServer", Value(http_createServer_fn.release()));
+    http_obj->set_property("request", Value(http_request_fn.release()));
+    http_obj->set_property("get", Value(http_get_fn.release()));
+    
+    set_global_property("http", Value(http_obj.release()));
+    
+    // Node.js OS module
+    auto os_obj = std::make_unique<Object>();
+    auto os_platform_fn = ObjectFactory::create_native_function("platform", NodeJS::os_platform);
+    auto os_arch_fn = ObjectFactory::create_native_function("arch", NodeJS::os_arch);
+    auto os_hostname_fn = ObjectFactory::create_native_function("hostname", NodeJS::os_hostname);
+    auto os_homedir_fn = ObjectFactory::create_native_function("homedir", NodeJS::os_homedir);
+    auto os_tmpdir_fn = ObjectFactory::create_native_function("tmpdir", NodeJS::os_tmpdir);
+    
+    os_obj->set_property("platform", Value(os_platform_fn.release()));
+    os_obj->set_property("arch", Value(os_arch_fn.release()));
+    os_obj->set_property("hostname", Value(os_hostname_fn.release()));
+    os_obj->set_property("homedir", Value(os_homedir_fn.release()));
+    os_obj->set_property("tmpdir", Value(os_tmpdir_fn.release()));
+    
+    set_global_property("os", Value(os_obj.release()));
+    
+    // Node.js Process object
+    auto process_obj = std::make_unique<Object>();
+    auto process_exit_fn = ObjectFactory::create_native_function("exit", NodeJS::process_exit);
+    auto process_cwd_fn = ObjectFactory::create_native_function("cwd", NodeJS::process_cwd);
+    
+    process_obj->set_property("exit", Value(process_exit_fn.release()));
+    process_obj->set_property("cwd", Value(process_cwd_fn.release()));
+    
+    set_global_property("process", Value(process_obj.release()));
+    
+    // Node.js Crypto module
+    auto crypto_obj = std::make_unique<Object>();
+    auto crypto_randomBytes_fn = ObjectFactory::create_native_function("randomBytes", NodeJS::crypto_randomBytes);
+    auto crypto_createHash_fn = ObjectFactory::create_native_function("createHash", NodeJS::crypto_createHash);
+    
+    crypto_obj->set_property("randomBytes", Value(crypto_randomBytes_fn.release()));
+    crypto_obj->set_property("createHash", Value(crypto_createHash_fn.release()));
+    
+    set_global_property("crypto", Value(crypto_obj.release()));
+    
+    // Node.js Util module
+    auto util_obj = std::make_unique<Object>();
+    auto util_format_fn = ObjectFactory::create_native_function("format", NodeJS::util_format);
+    auto util_inspect_fn = ObjectFactory::create_native_function("inspect", NodeJS::util_inspect);
+    
+    util_obj->set_property("format", Value(util_format_fn.release()));
+    util_obj->set_property("inspect", Value(util_inspect_fn.release()));
+    
+    set_global_property("util", Value(util_obj.release()));
+    
+    // Setup new ES6+ features - DISABLED due to segfault
+    // setup_es6_features();
 }
 
 void Engine::register_web_apis() {
@@ -303,48 +585,37 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
     try {
         execution_count_++;
         
-        // For Stage 1, we'll implement a very basic interpreter
-        // This will be replaced with proper parsing and execution in later stages
+        // Create lexer and parser for full JavaScript execution
+        Lexer lexer(source);
+        Parser parser(lexer.tokenize());
         
-        // Handle simple statements
-        std::string trimmed = source;
-        trimmed.erase(0, trimmed.find_first_not_of(" \t\n\r"));
-        trimmed.erase(trimmed.find_last_not_of(" \t\n\r") + 1);
+        std::cout << "DEBUG: Parser created, about to parse" << std::endl;
         
-        // Remove trailing semicolon if present
-        if (!trimmed.empty() && trimmed.back() == ';') {
-            trimmed.pop_back();
+        // Parse the program into AST
+        auto program = parser.parse_program();
+        if (!program) {
+            return Result("Parse error: Failed to parse JavaScript code");
         }
         
-        if (trimmed.empty()) {
-            return Result(Value());
-        }
+        std::cout << "DEBUG: Program parsed successfully" << std::endl;
         
-        // Check for variable declarations
-        if (trimmed.substr(0, 3) == "var") {
-            // Simple var declaration: var x = value;
-            size_t eq_pos = trimmed.find('=');
-            if (eq_pos != std::string::npos) {
-                std::string var_part = trimmed.substr(3, eq_pos - 3);
-                std::string value_part = trimmed.substr(eq_pos + 1);
-                
-                // Clean up variable name
-                var_part.erase(0, var_part.find_first_not_of(" \t"));
-                var_part.erase(var_part.find_last_not_of(" \t") + 1);
-                
-                // Evaluate the value
-                Result value_result = evaluate(value_part);
-                if (value_result.success) {
-                    set_global_property(var_part, value_result.value);
-                    return Result(Value()); // var declarations return undefined
-                } else {
-                    return value_result;
-                }
+        // Execute the AST with full Stage 10 support
+        if (global_context_) {
+            std::cout << "DEBUG: About to call program->evaluate()" << std::endl;
+            Value result = program->evaluate(*global_context_);
+            std::cout << "DEBUG: program->evaluate() returned" << std::endl;
+            
+            // Check if the context has any thrown exceptions
+            if (global_context_->has_exception()) {
+                Value exception = global_context_->get_exception();
+                global_context_->clear_exception();
+                return Result("JavaScript Error: " + exception.to_string());
             }
+            
+            return Result(result);
+        } else {
+            return Result("Engine context not initialized");
         }
-        
-        // Otherwise, treat as expression
-        return evaluate(trimmed);
         
     } catch (const std::exception& e) {
         return Result("Runtime error: " + std::string(e.what()));
@@ -362,10 +633,295 @@ void Engine::setup_global_object() {
 }
 
 void Engine::setup_built_in_objects() {
-    // Built-in objects are already set up in Context initialization
+    // Set up Array.prototype methods
+    if (!global_context_) return;
+    
+    // Create Array constructor if it doesn't exist
+    Object* global_obj = global_context_->get_global_object();
+    if (!global_obj) return;
+    
+    // Create Array constructor
+    auto array_constructor = ObjectFactory::create_native_function("Array", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            
+            // Create array with specified length or elements
+            if (args.empty()) {
+                return Value(ObjectFactory::create_array(0).release());
+            } else if (args.size() == 1 && args[0].is_number()) {
+                // new Array(length)
+                uint32_t length = static_cast<uint32_t>(args[0].as_number());
+                return Value(ObjectFactory::create_array(length).release());
+            } else {
+                // new Array(element1, element2, ...)
+                auto array = ObjectFactory::create_array(args.size());
+                for (size_t i = 0; i < args.size(); ++i) {
+                    array->set_element(static_cast<uint32_t>(i), args[i]);
+                }
+                return Value(array.release());
+            }
+        });
+    global_context_->create_binding("Array", Value(array_constructor.get()));
+    
+    // Create Array.prototype
+    auto array_prototype = ObjectFactory::create_object();
+    array_constructor->set_property("prototype", Value(array_prototype.get()));
+    
+    // Add Array.prototype.map
+    auto map_fn = ObjectFactory::create_native_function("map", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.map called on non-object"));
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("TypeError: callback is not a function"));
+                return Value();
+            }
+            
+            // Get callback function from the Value
+            Function* callback = static_cast<Function*>(args[0].as_object());
+            auto result = this_obj->map(callback, ctx);
+            return result ? Value(result.release()) : Value();
+        });
+    
+    array_prototype->set_property("map", Value(map_fn.release()));
+    
+    // Add Array.prototype.filter
+    auto filter_fn = ObjectFactory::create_native_function("filter", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.filter called on non-object"));
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("TypeError: callback is not a function"));
+                return Value();
+            }
+            
+            Function* callback = static_cast<Function*>(args[0].as_object());
+            auto result = this_obj->filter(callback, ctx);
+            return result ? Value(result.release()) : Value();
+        });
+    
+    array_prototype->set_property("filter", Value(filter_fn.release()));
+    
+    // Add Array.prototype.forEach
+    auto forEach_fn = ObjectFactory::create_native_function("forEach", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.forEach called on non-object"));
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("TypeError: callback is not a function"));
+                return Value();
+            }
+            
+            Function* callback = static_cast<Function*>(args[0].as_object());
+            this_obj->forEach(callback, ctx);
+            return Value(); // undefined
+        });
+    
+    array_prototype->set_property("forEach", Value(forEach_fn.release()));
+    
+    // Add Array.prototype.reduce
+    auto reduce_fn = ObjectFactory::create_native_function("reduce", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.reduce called on non-object"));
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("TypeError: callback is not a function"));
+                return Value();
+            }
+            
+            Function* callback = static_cast<Function*>(args[0].as_object());
+            Value initial_value = args.size() > 1 ? args[1] : Value();
+            return this_obj->reduce(callback, initial_value, ctx);
+        });
+    
+    array_prototype->set_property("reduce", Value(reduce_fn.release()));
+    
+    // Create Promise constructor
+    auto promise_constructor = ObjectFactory::create_native_function("Promise", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("TypeError: Promise constructor requires a function argument"));
+                return Value();
+            }
+            
+            // Create a new Promise object
+            auto promise = new Promise();
+            
+            // Get the executor function
+            Function* executor = static_cast<Function*>(args[0].as_object());
+            
+            // Create resolve and reject functions
+            auto resolve_fn = ObjectFactory::create_native_function("resolve", 
+                [=](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused parameter warning
+                    Value resolve_value = args.empty() ? Value() : args[0];
+                    promise->fulfill(resolve_value);
+                    return Value();
+                });
+                
+            auto reject_fn = ObjectFactory::create_native_function("reject", 
+                [=](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused parameter warning
+                    Value reject_reason = args.empty() ? Value() : args[0];
+                    promise->reject(reject_reason);
+                    return Value();
+                });
+            
+            // Call executor with resolve and reject functions
+            std::vector<Value> executor_args = {
+                Value(resolve_fn.release()),
+                Value(reject_fn.release())
+            };
+            
+            try {
+                executor->call(ctx, executor_args);
+            } catch (...) {
+                // If executor throws, reject the promise
+                promise->reject(Value("Promise executor threw an exception"));
+            }
+            
+            return Value(promise);
+        });
+    
+    global_context_->create_binding("Promise", Value(promise_constructor.get()));
+    
+    // Create Intl object for internationalization
+    auto intl_obj = ObjectFactory::create_object();
+    
+    // Add Intl.NumberFormat
+    auto number_format = ObjectFactory::create_native_function("NumberFormat", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            
+            // Create a NumberFormat object
+            auto formatter = ObjectFactory::create_object();
+            
+            // Get locale (default to "en-US")
+            std::string locale = "en-US";
+            if (!args.empty()) {
+                locale = args[0].to_string();
+            }
+            
+            formatter->set_property("locale", Value(locale));
+            
+            // Add format method
+            auto format_fn = ObjectFactory::create_native_function("format", 
+                [locale](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused parameter warning
+                    
+                    if (args.empty()) {
+                        return Value("NaN");
+                    }
+                    
+                    // Simple number formatting
+                    if (args[0].is_number()) {
+                        double num = args[0].as_number();
+                        
+                        // Basic formatting based on locale
+                        if (locale == "de-DE") {
+                            // German format uses comma as decimal separator
+                            std::string result = std::to_string(num);
+                            // Replace . with ,
+                            size_t pos = result.find('.');
+                            if (pos != std::string::npos) {
+                                result[pos] = ',';
+                            }
+                            return Value(result);
+                        } else {
+                            // Default US format
+                            return Value(std::to_string(num));
+                        }
+                    }
+                    
+                    return Value(args[0].to_string());
+                });
+            
+            formatter->set_property("format", Value(format_fn.release()));
+            return Value(formatter.release());
+        });
+    
+    intl_obj->set_property("NumberFormat", Value(number_format.release()));
+    
+    // Add Intl.Collator (basic implementation)
+    auto collator = ObjectFactory::create_native_function("Collator", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            
+            // Create a Collator object
+            auto coll = ObjectFactory::create_object();
+            
+            // Get locale (default to "en-US")
+            std::string locale = "en-US";
+            if (!args.empty()) {
+                locale = args[0].to_string();
+            }
+            
+            coll->set_property("locale", Value(locale));
+            
+            // Add compare method
+            auto compare_fn = ObjectFactory::create_native_function("compare", 
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused parameter warning
+                    
+                    if (args.size() < 2) {
+                        return Value(0);
+                    }
+                    
+                    std::string str1 = args[0].to_string();
+                    std::string str2 = args[1].to_string();
+                    
+                    if (str1 < str2) return Value(-1);
+                    if (str1 > str2) return Value(1);
+                    return Value(0);
+                });
+            
+            coll->set_property("compare", Value(compare_fn.release()));
+            return Value(coll.release());
+        });
+    
+    intl_obj->set_property("Collator", Value(collator.release()));
+    
+    // Set Intl in global scope
+    global_context_->create_binding("Intl", Value(intl_obj.release()));
+    
+    // Add a test property to verify global object works
+    global_context_->create_binding("TEST_GLOBAL", Value("test_value"));
+    
+    // Prevent garbage collection of these objects
+    array_constructor.release();
+    array_prototype.release();
+    promise_constructor.release();
 }
 
 void Engine::setup_built_in_functions() {
+    // Initialize Symbol well-known symbols
+    Symbol::initialize_well_known_symbols();
+    
+    // Symbol constructor
+    register_function("Symbol", [](const std::vector<Value>& args) {
+        std::string description = "";
+        if (!args.empty() && !args[0].is_undefined()) {
+            description = args[0].to_string();
+        }
+        auto symbol = Symbol::create(description);
+        return Value(symbol.release());
+    });
+    
+    // Add Symbol.for static method
+    // Note: This is simplified - in a full implementation we'd set up the Symbol object with its methods
+    
     // Error constructor
     register_function("Error", [](const std::vector<Value>& args) {
         auto error_obj = ObjectFactory::create_error(
@@ -412,6 +968,9 @@ void Engine::initialize_gc() {
     // Placeholder for garbage collector initialization
 }
 
+// ES6+ features setup removed due to segfault - will be re-added safely later
+// void Engine::setup_es6_features() { ... }
+
 //=============================================================================
 // NativeFunction Implementation
 //=============================================================================
@@ -422,6 +981,92 @@ NativeFunction::NativeFunction(const std::string& name, FunctionType func, size_
 
 Value NativeFunction::call(Context& ctx, const std::vector<Value>& args) {
     return function_(ctx, args);
+}
+
+//=============================================================================
+// JIT and GC Method Implementations
+//=============================================================================
+
+void Engine::enable_jit(bool enable) {
+    config_.enable_jit = enable;
+    if (jit_compiler_) {
+        jit_compiler_->enable_jit(enable);
+    }
+}
+
+bool Engine::is_jit_enabled() const {
+    return config_.enable_jit && jit_compiler_ && jit_compiler_->is_jit_enabled();
+}
+
+void Engine::set_jit_threshold(uint32_t threshold) {
+    if (jit_compiler_) {
+        jit_compiler_->set_hotspot_threshold(threshold);
+    }
+}
+
+std::string Engine::get_jit_stats() const {
+    if (!jit_compiler_) {
+        return "JIT Compiler not initialized";
+    }
+    
+    std::ostringstream oss;
+    oss << "=== JIT Compiler Statistics ===" << std::endl;
+    oss << "JIT Enabled: " << (is_jit_enabled() ? "Yes" : "No") << std::endl;
+    oss << "Total Compilations: " << jit_compiler_->get_total_compilations() << std::endl;
+    oss << "Cache Hits: " << jit_compiler_->get_cache_hits() << std::endl;
+    oss << "Cache Misses: " << jit_compiler_->get_cache_misses() << std::endl;
+    oss << "Hit Ratio: " << (jit_compiler_->get_cache_hit_ratio() * 100) << "%" << std::endl;
+    
+    return oss.str();
+}
+
+void Engine::enable_gc(bool enable) {
+    if (garbage_collector_) {
+        garbage_collector_->set_collection_mode(enable ? 
+            GarbageCollector::CollectionMode::Automatic : 
+            GarbageCollector::CollectionMode::Manual);
+    }
+}
+
+void Engine::set_gc_mode(GarbageCollector::CollectionMode mode) {
+    if (garbage_collector_) {
+        garbage_collector_->set_collection_mode(mode);
+    }
+}
+
+void Engine::force_gc() {
+    if (garbage_collector_) {
+        garbage_collector_->force_full_collection();
+        total_gc_runs_++;
+    }
+}
+
+std::string Engine::get_gc_stats() const {
+    if (!garbage_collector_) {
+        return "Garbage Collector not initialized";
+    }
+    
+    std::ostringstream oss;
+    const auto& stats = garbage_collector_->get_statistics();
+    
+    oss << "=== Garbage Collector Statistics ===" << std::endl;
+    oss << "Total Allocations: " << stats.total_allocations << std::endl;
+    oss << "Total Deallocations: " << stats.total_deallocations << std::endl;
+    oss << "Total Collections: " << stats.total_collections << std::endl;
+    oss << "Bytes Allocated: " << stats.bytes_allocated << std::endl;
+    oss << "Bytes Freed: " << stats.bytes_freed << std::endl;
+    oss << "Peak Memory Usage: " << stats.peak_memory_usage << " bytes" << std::endl;
+    oss << "Current Heap Size: " << garbage_collector_->get_heap_size() << " bytes" << std::endl;
+    oss << "Average GC Time: " << stats.average_gc_time.count() << "ms" << std::endl;
+    
+    return oss.str();
+}
+
+void Engine::set_heap_limit(size_t limit) {
+    config_.max_heap_size = limit;
+    if (garbage_collector_) {
+        garbage_collector_->set_heap_size_limit(limit);
+    }
 }
 
 //=============================================================================

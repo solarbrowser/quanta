@@ -14,6 +14,8 @@ namespace Quanta {
 class PropertyDescriptor;
 class Shape;
 class Context;
+class ASTNode;
+class Parameter;
 
 /**
  * High-performance JavaScript object implementation
@@ -104,7 +106,7 @@ public:
     bool has_property(const std::string& key) const;
     bool has_own_property(const std::string& key) const;
     
-    Value get_property(const std::string& key) const;
+    virtual Value get_property(const std::string& key) const;
     Value get_own_property(const std::string& key) const;
     
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
@@ -139,6 +141,12 @@ public:
     Value pop();
     void unshift(const Value& value);
     Value shift();
+    
+    // Modern array methods
+    std::unique_ptr<Object> map(Function* callback, Context& ctx);
+    std::unique_ptr<Object> filter(Function* callback, Context& ctx);
+    void forEach(Function* callback, Context& ctx);
+    Value reduce(Function* callback, const Value& initial_value, Context& ctx);
     
     // Function operations (for Function objects)
     Value call(Context& ctx, const Value& this_value, const std::vector<Value>& args);
@@ -346,7 +354,8 @@ public:
 
 private:
     std::string name_;                                    // Function name
-    std::vector<std::string> parameters_;                // Parameter names
+    std::vector<std::string> parameters_;                // Parameter names (for compatibility)
+    std::vector<std::unique_ptr<class Parameter>> parameter_objects_; // Parameter objects with defaults
     std::unique_ptr<class ASTNode> body_;                // Function body AST
     class Context* closure_context_;                     // Closure context
     Object* prototype_;                                  // Function prototype
@@ -357,6 +366,11 @@ public:
     // Constructors
     Function(const std::string& name, 
              const std::vector<std::string>& params,
+             std::unique_ptr<class ASTNode> body,
+             class Context* closure_context);
+             
+    Function(const std::string& name,
+             std::vector<std::unique_ptr<class Parameter>> params,
              std::unique_ptr<class ASTNode> body,
              class Context* closure_context);
              
@@ -375,6 +389,9 @@ public:
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
     Value construct(Context& ctx, const std::vector<Value>& args);
     
+    // Property override to ensure function properties work
+    Value get_property(const std::string& key) const override;
+    
     // Prototype management
     Object* get_prototype() const { return prototype_; }
     void set_prototype(Object* proto) { prototype_ = proto; }
@@ -391,6 +408,10 @@ namespace ObjectFactory {
     std::unique_ptr<Object> create_function();
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
+                                                 std::unique_ptr<class ASTNode> body,
+                                                 class Context* closure_context);
+    std::unique_ptr<Function> create_js_function(const std::string& name,
+                                                 std::vector<std::unique_ptr<class Parameter>> params,
                                                  std::unique_ptr<class ASTNode> body,
                                                  class Context* closure_context);
     std::unique_ptr<Function> create_native_function(const std::string& name,

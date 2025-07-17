@@ -1,5 +1,6 @@
 #include "../include/Parser.h"
 #include <algorithm>
+#include <iostream>
 
 namespace Quanta {
 
@@ -13,10 +14,33 @@ Parser::Parser(TokenSequence tokens)
     options_.allow_await_outside_async = false;
     options_.strict_mode = false;
     options_.source_type_module = false;
+    
+    // Skip initial newlines, whitespace, and comments
+    while (current_token_index_ < tokens_.size() && 
+           (current_token().get_type() == TokenType::NEWLINE || 
+            current_token().get_type() == TokenType::WHITESPACE ||
+            current_token().get_type() == TokenType::COMMENT)) {
+        if (current_token_index_ < tokens_.size() - 1) {
+            current_token_index_++;
+        } else {
+            break;
+        }
+    }
 }
 
 Parser::Parser(TokenSequence tokens, const ParseOptions& options)
     : tokens_(std::move(tokens)), options_(options), current_token_index_(0) {
+    // Skip initial newlines, whitespace, and comments
+    while (current_token_index_ < tokens_.size() && 
+           (current_token().get_type() == TokenType::NEWLINE || 
+            current_token().get_type() == TokenType::WHITESPACE ||
+            current_token().get_type() == TokenType::COMMENT)) {
+        if (current_token_index_ < tokens_.size() - 1) {
+            current_token_index_++;
+        } else {
+            break;
+        }
+    }
 }
 
 std::unique_ptr<Program> Parser::parse_program() {
@@ -28,6 +52,9 @@ std::unique_ptr<Program> Parser::parse_program() {
             auto statement = parse_statement();
             if (statement) {
                 statements.push_back(std::move(statement));
+            } else {
+                // If parse_statement returns nullptr, we need to advance to avoid infinite loops
+                skip_to_statement_boundary();
             }
         } catch (const std::exception& e) {
             add_error("Parse error: " + std::string(e.what()));
@@ -64,6 +91,9 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::FUNCTION:
             return parse_function_declaration();
             
+        case TokenType::CLASS:
+            return parse_class_declaration();
+            
         case TokenType::RETURN:
             return parse_return_statement();
             
@@ -92,6 +122,23 @@ std::unique_ptr<ASTNode> Parser::parse_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
+    // Check for arrow function: identifier => expression
+    if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
+        return parse_arrow_function();
+    }
+    
+    // Check for arrow function: (params) => expression
+    if (match(TokenType::LEFT_PAREN)) {
+        size_t saved_pos = current_token_index_;
+        if (try_parse_arrow_function_params()) {
+            // Restore position and parse as arrow function
+            current_token_index_ = saved_pos;
+            return parse_arrow_function();
+        }
+        // Restore position and continue with normal parsing
+        current_token_index_ = saved_pos;
+    }
+    
     auto left = parse_conditional_expression();
     if (!left) return nullptr;
     
@@ -118,8 +165,52 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_conditional_expression() {
-    // For Stage 2, just delegate to logical OR
-    return parse_logical_or_expression();
+    return parse_conditional_expression_impl(0);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
+    // Prevent infinite recursion with depth limit
+    if (depth > 100) {
+        add_error("Maximum ternary nesting depth exceeded");
+        return nullptr;
+    }
+    
+    // Parse the test condition (logical OR expression)
+    auto test = parse_logical_or_expression();
+    if (!test) return nullptr;
+    
+    // Check for ternary operator
+    if (current_token().get_type() == TokenType::QUESTION) {
+        advance(); // consume '?'
+        Position start = test->get_start();
+        
+        // Parse consequent - use logical OR to avoid mutual recursion
+        auto consequent = parse_logical_or_expression();
+        if (!consequent) {
+            add_error("Expected expression after '?' in conditional expression");
+            return nullptr;
+        }
+        
+        if (current_token().get_type() != TokenType::COLON) {
+            add_error("Expected ':' after consequent in conditional expression");
+            return nullptr;
+        }
+        advance(); // consume ':'
+        
+        // For right-associativity, recursively parse another conditional expression
+        // but with depth tracking to prevent infinite recursion
+        auto alternate = parse_conditional_expression_impl(depth + 1);
+        if (!alternate) {
+            add_error("Expected expression after ':' in conditional expression");
+            return nullptr;
+        }
+        
+        Position end = alternate->get_end();
+        return std::make_unique<ConditionalExpression>(std::move(test), std::move(consequent), 
+                                                      std::move(alternate), start, end);
+    }
+    
+    return test;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
@@ -219,6 +310,21 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
+    // Handle 'await' expression
+    if (current_token().get_type() == TokenType::AWAIT) {
+        Position start = current_token().get_start();
+        advance(); // consume 'await'
+        
+        auto argument = parse_unary_expression();
+        if (!argument) {
+            add_error("Expected expression after 'await'");
+            return nullptr;
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<AwaitExpression>(std::move(argument), start, end);
+    }
+    
     // Handle 'new' expression
     if (current_token().get_type() == TokenType::NEW) {
         Position start = current_token().get_start();
@@ -394,14 +500,22 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_undefined_literal();
         case TokenType::IDENTIFIER:
             return parse_identifier();
+        case TokenType::THIS:
+            return parse_this_expression();
         case TokenType::LEFT_PAREN:
             return parse_parenthesized_expression();
+        case TokenType::ASYNC:
+            return parse_async_function_expression();
         case TokenType::FUNCTION:
             return parse_function_expression();
         case TokenType::LEFT_BRACE:
             return parse_object_literal();
         case TokenType::LEFT_BRACKET:
             return parse_array_literal();
+        case TokenType::TEMPLATE_LITERAL:
+            return parse_template_literal();
+        case TokenType::REGEX:
+            return parse_regex_literal();
         default:
             add_error("Unexpected token: " + token.get_value());
             return nullptr;
@@ -428,6 +542,112 @@ std::unique_ptr<ASTNode> Parser::parse_string_literal() {
     advance();
     
     return std::make_unique<StringLiteral>(value, start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_this_expression() {
+    const Token& token = current_token();
+    Position start = token.get_start();
+    Position end = token.get_end();
+    advance();
+    
+    // Create a special identifier for 'this'
+    return std::make_unique<Identifier>("this", start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_template_literal() {
+    const Token& token = current_token();
+    Position start = token.get_start();
+    Position end = token.get_end();
+    std::string template_str = token.get_value();
+    
+    if (!match(TokenType::TEMPLATE_LITERAL)) {
+        add_error("Expected template literal");
+        return nullptr;
+    }
+    
+    advance(); // consume template literal token
+    
+    std::vector<TemplateLiteral::Element> elements;
+    
+    // Parse the template string for ${} expressions
+    size_t pos = 0;
+    while (pos < template_str.length()) {
+        size_t expr_start = template_str.find("${", pos);
+        
+        if (expr_start == std::string::npos) {
+            // No more expressions, add remaining text
+            if (pos < template_str.length()) {
+                elements.emplace_back(template_str.substr(pos));
+            }
+            break;
+        }
+        
+        // Add text before expression
+        if (expr_start > pos) {
+            elements.emplace_back(template_str.substr(pos, expr_start - pos));
+        }
+        
+        // Find the closing }
+        size_t expr_end = template_str.find("}", expr_start + 2);
+        if (expr_end == std::string::npos) {
+            add_error("Unterminated expression in template literal");
+            return nullptr;
+        }
+        
+        // Extract and parse the expression
+        std::string expr_str = template_str.substr(expr_start + 2, expr_end - expr_start - 2);
+        
+        // Create a mini-lexer and parser for the expression
+        Lexer expr_lexer(expr_str);
+        TokenSequence expr_tokens = expr_lexer.tokenize();
+        Parser expr_parser(std::move(expr_tokens));
+        
+        auto expression = expr_parser.parse_expression();
+        if (!expression) {
+            add_error("Invalid expression in template literal: " + expr_str);
+            return nullptr;
+        }
+        
+        elements.emplace_back(std::move(expression));
+        pos = expr_end + 1;
+    }
+    
+    return std::make_unique<TemplateLiteral>(std::move(elements), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
+    const Token& token = current_token();
+    Position start = token.get_start();
+    Position end = token.get_end();
+    std::string regex_str = token.get_value();
+    
+    if (!match(TokenType::REGEX)) {
+        add_error("Expected regex literal");
+        return nullptr;
+    }
+    
+    advance(); // consume regex token
+    
+    // Parse the regex string to extract pattern and flags
+    // Expected format: /pattern/flags
+    if (regex_str.length() < 2 || regex_str[0] != '/') {
+        add_error("Invalid regex literal format");
+        return nullptr;
+    }
+    
+    // Find the closing slash
+    size_t closing_slash = regex_str.find_last_of('/');
+    if (closing_slash == 0 || closing_slash == std::string::npos) {
+        add_error("Invalid regex literal: missing closing slash");
+        return nullptr;
+    }
+    
+    // Extract pattern and flags
+    std::string pattern = regex_str.substr(1, closing_slash - 1);
+    std::string flags = (closing_slash < regex_str.length() - 1) ? 
+                        regex_str.substr(closing_slash + 1) : "";
+    
+    return std::make_unique<RegexLiteral>(pattern, flags, start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_boolean_literal() {
@@ -555,6 +775,17 @@ const Token& Parser::peek_token(size_t offset) const {
 void Parser::advance() {
     if (current_token_index_ < tokens_.size() - 1) {
         current_token_index_++;
+        // Skip newlines, whitespace, and comments
+        while (current_token_index_ < tokens_.size() && 
+               (current_token().get_type() == TokenType::NEWLINE || 
+                current_token().get_type() == TokenType::WHITESPACE ||
+                current_token().get_type() == TokenType::COMMENT)) {
+            if (current_token_index_ < tokens_.size() - 1) {
+                current_token_index_++;
+            } else {
+                break;
+            }
+        }
     }
 }
 
@@ -673,6 +904,10 @@ bool Parser::is_unary_operator(TokenType type) const {
 //=============================================================================
 
 std::unique_ptr<ASTNode> Parser::parse_variable_declaration() {
+    return parse_variable_declaration(true);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicolon) {
     Position start = get_current_position();
     
     // Get declaration kind (var, let, const)
@@ -691,6 +926,45 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration() {
     std::vector<std::unique_ptr<VariableDeclarator>> declarations;
     
     do {
+        // Check for destructuring pattern
+        if (current_token().get_type() == TokenType::LEFT_BRACKET || 
+            current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Parse destructuring pattern
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern");
+                return nullptr;
+            }
+            
+            // Destructuring must have an initializer
+            if (!consume_if_match(TokenType::ASSIGN)) {
+                add_error("Destructuring declaration must have an initializer");
+                return nullptr;
+            }
+            
+            auto init = parse_assignment_expression();
+            if (!init) {
+                add_error("Expected expression after '=' in destructuring declaration");
+                return nullptr;
+            }
+            
+            // Set the source for the destructuring assignment
+            DestructuringAssignment* dest = static_cast<DestructuringAssignment*>(destructuring.get());
+            dest->set_source(std::move(init));
+            
+            // Create a special variable declarator that wraps the destructuring assignment
+            auto declarator = std::make_unique<VariableDeclarator>(
+                std::make_unique<Identifier>("", start, start), // dummy identifier
+                std::move(destructuring),
+                kind,
+                start,
+                get_current_position()
+            );
+            
+            declarations.push_back(std::move(declarator));
+            break; // Only one destructuring per declaration
+        }
+        
         // Parse identifier
         if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier in variable declaration");
@@ -723,8 +997,10 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration() {
         
     } while (consume_if_match(TokenType::COMMA));
     
-    // Consume semicolon
-    consume_if_match(TokenType::SEMICOLON);
+    // Consume semicolon only if requested
+    if (consume_semicolon) {
+        consume_if_match(TokenType::SEMICOLON);
+    }
     
     Position end = get_current_position();
     return std::make_unique<VariableDeclaration>(std::move(declarations), kind, start, end);
@@ -820,7 +1096,8 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
         if (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST)) {
-            init = parse_variable_declaration();
+            // Parse variable declaration in for-loop (don't consume semicolon)
+            init = parse_variable_declaration(false);
         } else {
             init = parse_expression();
         }
@@ -952,17 +1229,53 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
     
-    std::vector<std::unique_ptr<Identifier>> params;
+    std::vector<std::unique_ptr<Parameter>> params;
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        Position param_start = current_token().get_start();
+        bool is_rest = false;
+        
+        // Check for rest parameter syntax: ...args
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            advance(); // consume '...'
+        }
+        
         if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected parameter name");
             return nullptr;
         }
         
-        auto param = std::make_unique<Identifier>(current_token().get_value(),
-                                                current_token().get_start(), current_token().get_end());
-        params.push_back(std::move(param));
+        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
         advance();
+        
+        // Check for default parameter syntax: param = value
+        // Note: Rest parameters cannot have default values
+        std::unique_ptr<ASTNode> default_value = nullptr;
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            advance(); // consume '='
+            default_value = parse_assignment_expression();
+            if (!default_value) {
+                add_error("Invalid default parameter value");
+                return nullptr;
+            }
+        } else if (is_rest && match(TokenType::ASSIGN)) {
+            add_error("Rest parameter cannot have default value");
+            return nullptr;
+        }
+        
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+        params.push_back(std::move(param));
+        
+        // Rest parameter must be last
+        if (is_rest) {
+            if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
         
         if (match(TokenType::COMMA)) {
             advance();
@@ -992,6 +1305,215 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     );
 }
 
+std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::CLASS)) {
+        add_error("Expected 'class'");
+        return nullptr;
+    }
+    
+    // Parse class name
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected class name");
+        return nullptr;
+    }
+    
+    auto id = parse_identifier();
+    if (!id) return nullptr;
+    
+    // Check for extends clause
+    std::unique_ptr<Identifier> superclass = nullptr;
+    if (match(TokenType::EXTENDS)) {
+        advance(); // consume 'extends'
+        
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected superclass name after 'extends'");
+            return nullptr;
+        }
+        
+        superclass = std::unique_ptr<Identifier>(static_cast<Identifier*>(parse_identifier().release()));
+        if (!superclass) return nullptr;
+    }
+    
+    // Parse class body with methods
+    if (!match(TokenType::LEFT_BRACE)) {
+        add_error("Expected '{' to start class body");
+        return nullptr;
+    }
+    
+    advance(); // consume '{'
+    
+    // Parse class body - now parse methods properly
+    std::vector<std::unique_ptr<ASTNode>> statements;
+    
+    // Parse methods within the class
+    while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
+        if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Parse method definition
+            auto method = parse_method_definition();
+            if (method) {
+                statements.push_back(std::move(method));
+            } else {
+                // If method parsing fails, skip this token to avoid infinite loop
+                advance();
+            }
+        } else {
+            // Skip non-identifier tokens
+            advance();
+        }
+    }
+    
+    if (!match(TokenType::RIGHT_BRACE)) {
+        add_error("Expected '}' to close class body");
+        return nullptr;
+    }
+    
+    advance(); // consume '}'
+    
+    auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
+    
+    Position end = get_current_position();
+    
+    if (superclass) {
+        return std::make_unique<ClassDeclaration>(
+            std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
+            std::move(superclass),
+            std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+            start, end
+        );
+    } else {
+        return std::make_unique<ClassDeclaration>(
+            std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
+            std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+            start, end
+        );
+    }
+}
+
+std::unique_ptr<ASTNode> Parser::parse_method_definition() {
+    Position start = get_current_position();
+    
+    // Check for static keyword
+    bool is_static = false;
+    if (current_token().get_value() == "static") {
+        is_static = true;
+        advance(); // consume 'static'
+    }
+    
+    // Parse method name
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected method name");
+        return nullptr;
+    }
+    
+    auto key = parse_identifier();
+    if (!key) return nullptr;
+    
+    // Determine method kind
+    MethodDefinition::Kind kind = MethodDefinition::METHOD;
+    if (Identifier* key_id = static_cast<Identifier*>(key.get())) {
+        if (key_id->get_name() == "constructor") {
+            kind = MethodDefinition::CONSTRUCTOR;
+        }
+    }
+    
+    // Parse function parameters and body
+    if (current_token().get_type() != TokenType::LEFT_PAREN) {
+        add_error("Expected '(' for method parameters");
+        return nullptr;
+    }
+    
+    advance(); // consume '('
+    
+    // Parse parameters
+    std::vector<std::unique_ptr<Parameter>> params;
+    while (current_token().get_type() != TokenType::RIGHT_PAREN && !at_end()) {
+        Position param_start = get_current_position();
+        bool is_rest = false;
+        
+        // Check for rest parameter syntax: ...args
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            advance(); // consume '...'
+        }
+        
+        if (current_token().get_type() == TokenType::IDENTIFIER) {
+            auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                          current_token().get_start(), current_token().get_end());
+            advance();
+            
+            // Check for default parameter syntax: param = value
+            // Note: Rest parameters cannot have default values
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
+                advance(); // consume '='
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
+            } else if (is_rest && match(TokenType::ASSIGN)) {
+                add_error("Rest parameter cannot have default value");
+                return nullptr;
+            }
+            
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            params.push_back(std::move(param));
+        }
+        
+        // Rest parameter must be last
+        if (is_rest) {
+            if (current_token().get_type() != TokenType::RIGHT_PAREN) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
+        
+        if (current_token().get_type() == TokenType::COMMA) {
+            advance(); // consume ','
+        } else if (current_token().get_type() != TokenType::RIGHT_PAREN) {
+            add_error("Expected ',' or ')' in parameter list");
+            return nullptr;
+        }
+    }
+    
+    if (!match(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after parameters");
+        return nullptr;
+    }
+    advance(); // consume ')'
+    
+    // Parse method body
+    if (current_token().get_type() != TokenType::LEFT_BRACE) {
+        add_error("Expected '{' for method body");
+        return nullptr;
+    }
+    
+    auto body = parse_block_statement();
+    if (!body) {
+        add_error("Expected method body");
+        return nullptr;
+    }
+    
+    // Create function expression for the method
+    auto function_expr = std::make_unique<FunctionExpression>(
+        nullptr, // no name for method functions
+        std::move(params),
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, get_current_position()
+    );
+    
+    Position end = get_current_position();
+    return std::make_unique<MethodDefinition>(
+        std::unique_ptr<Identifier>(static_cast<Identifier*>(key.release())),
+        std::move(function_expr),
+        kind, is_static, start, end
+    );
+}
+
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     Position start = get_current_position();
     
@@ -1014,17 +1536,53 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         return nullptr;
     }
     
-    std::vector<std::unique_ptr<Identifier>> params;
+    std::vector<std::unique_ptr<Parameter>> params;
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        Position param_start = get_current_position();
+        bool is_rest = false;
+        
+        // Check for rest parameter syntax: ...args
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            advance(); // consume '...'
+        }
+        
         if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected parameter name");
             return nullptr;
         }
         
-        auto param = std::make_unique<Identifier>(current_token().get_value(),
-                                                current_token().get_start(), current_token().get_end());
-        params.push_back(std::move(param));
+        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
         advance();
+        
+        // Check for default parameter syntax: param = value
+        // Note: Rest parameters cannot have default values
+        std::unique_ptr<ASTNode> default_value = nullptr;
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            advance(); // consume '='
+            default_value = parse_assignment_expression();
+            if (!default_value) {
+                add_error("Invalid default parameter value");
+                return nullptr;
+            }
+        } else if (is_rest && match(TokenType::ASSIGN)) {
+            add_error("Rest parameter cannot have default value");
+            return nullptr;
+        }
+        
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+        params.push_back(std::move(param));
+        
+        // Rest parameter must be last
+        if (is_rest) {
+            if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
         
         if (match(TokenType::COMMA)) {
             advance();
@@ -1052,6 +1610,201 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end
     );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::ASYNC)) {
+        add_error("Expected 'async'");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::FUNCTION)) {
+        add_error("Expected 'function' after 'async'");
+        return nullptr;
+    }
+    
+    // Parse optional function name
+    std::unique_ptr<Identifier> id = nullptr;
+    if (current_token().get_type() == TokenType::IDENTIFIER) {
+        id = std::make_unique<Identifier>(current_token().get_value(),
+                                        current_token().get_start(), current_token().get_end());
+        advance();
+    }
+    
+    // Parse parameters
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after async function name");
+        return nullptr;
+    }
+    
+    std::vector<std::unique_ptr<Parameter>> params;
+    while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected parameter name");
+            return nullptr;
+        }
+        
+        Position param_start = get_current_position();
+        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+        advance();
+        
+        // Check for default parameter syntax: param = value
+        std::unique_ptr<ASTNode> default_value = nullptr;
+        if (match(TokenType::ASSIGN)) {
+            advance(); // consume '='
+            default_value = parse_assignment_expression();
+            if (!default_value) {
+                add_error("Invalid default parameter value");
+                return nullptr;
+            }
+        }
+        
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), false, param_start, param_end);
+        params.push_back(std::move(param));
+        
+        if (match(TokenType::COMMA)) {
+            advance();
+        } else if (!match(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ',' or ')' in parameter list");
+            return nullptr;
+        }
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after parameters");
+        return nullptr;
+    }
+    
+    // Parse function body
+    auto body = parse_block_statement();
+    if (!body) {
+        add_error("Expected async function body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<AsyncFunctionExpression>(
+        std::move(id), std::move(params),
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, end
+    );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
+    Position start = get_current_position();
+    std::vector<std::unique_ptr<Parameter>> params;
+    
+    // Parse parameters
+    if (match(TokenType::IDENTIFIER)) {
+        // Single parameter without parentheses: x => x + 1
+        Position param_start = get_current_position();
+        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+        advance();
+        
+        // Arrow functions with single param don't support default values without parentheses
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
+        params.push_back(std::move(param));
+    } else if (match(TokenType::LEFT_PAREN)) {
+        // Multiple parameters with parentheses: (x, y) => x + y
+        advance(); // consume '('
+        
+        while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+            if (current_token().get_type() != TokenType::IDENTIFIER) {
+                add_error("Expected parameter name in arrow function");
+                return nullptr;
+            }
+            
+            Position param_start = get_current_position();
+            auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                          current_token().get_start(), current_token().get_end());
+            advance();
+            
+            // Check for default parameter syntax: param = value
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (match(TokenType::ASSIGN)) {
+                advance(); // consume '='
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
+            }
+            
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), false, param_start, param_end);
+            params.push_back(std::move(param));
+            
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in arrow function parameter list");
+                return nullptr;
+            }
+        }
+        
+        if (!consume(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ')' after arrow function parameters");
+            return nullptr;
+        }
+    }
+    
+    // Consume '=>'
+    if (!consume(TokenType::ARROW)) {
+        add_error("Expected '=>' in arrow function");
+        return nullptr;
+    }
+    
+    // Parse body (can be expression or block statement)
+    std::unique_ptr<ASTNode> body;
+    if (match(TokenType::LEFT_BRACE)) {
+        body = parse_block_statement();
+    } else {
+        body = parse_assignment_expression();
+    }
+    
+    if (!body) {
+        add_error("Expected arrow function body");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<ArrowFunctionExpression>(
+        std::move(params), std::move(body), false, start, end
+    );
+}
+
+bool Parser::try_parse_arrow_function_params() {
+    // Try to parse parameter list and look for '=>'
+    if (!match(TokenType::LEFT_PAREN)) {
+        return false;
+    }
+    
+    size_t paren_count = 1;
+    size_t lookahead = 1;
+    
+    // Look ahead to find matching ')' and then check for '=>'
+    while (lookahead < tokens_.size() && paren_count > 0) {
+        TokenType type = peek_token(lookahead).get_type();
+        if (type == TokenType::LEFT_PAREN) {
+            paren_count++;
+        } else if (type == TokenType::RIGHT_PAREN) {
+            paren_count--;
+        }
+        lookahead++;
+    }
+    
+    // Check if next token after ')' is '=>'
+    if (lookahead < tokens_.size()) {
+        return peek_token(lookahead).get_type() == TokenType::ARROW;
+    }
+    
+    return false;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_return_statement() {
@@ -1223,13 +1976,23 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
             // Add undefined for empty slots
             elements.push_back(std::make_unique<UndefinedLiteral>(get_current_position(), get_current_position()));
         } else {
-            // Parse element expression
-            auto element = parse_assignment_expression();
-            if (!element) {
-                add_error("Expected array element");
-                return nullptr;
+            // Check for spread element
+            if (match(TokenType::ELLIPSIS)) {
+                auto spread = parse_spread_element();
+                if (!spread) {
+                    add_error("Invalid spread element");
+                    return nullptr;
+                }
+                elements.push_back(std::move(spread));
+            } else {
+                // Parse element expression
+                auto element = parse_assignment_expression();
+                if (!element) {
+                    add_error("Expected array element");
+                    return nullptr;
+                }
+                elements.push_back(std::move(element));
             }
-            elements.push_back(std::move(element));
         }
         
         // Continue if there's a comma
@@ -1476,26 +2239,26 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         // import * as name from "module"
         advance(); // consume '*'
         
-        if (!match(TokenType::IDENTIFIER) || current_token().get_value() != "as") {
+        if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
             add_error("Expected 'as' after '*' in import statement");
             return nullptr;
         }
         advance(); // consume 'as'
         
-        if (!match(TokenType::IDENTIFIER)) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
         std::string namespace_alias = current_token().get_value();
         advance();
         
-        if (!match(TokenType::FROM)) {
+        if (current_token().get_type() != TokenType::FROM) {
             add_error("Expected 'from' in import statement");
             return nullptr;
         }
         advance(); // consume 'from'
         
-        if (!match(TokenType::STRING)) {
+        if (current_token().get_type() != TokenType::STRING) {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
@@ -1532,13 +2295,13 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         }
         advance(); // consume '}'
         
-        if (!match(TokenType::FROM)) {
+        if (current_token().get_type() != TokenType::FROM) {
             add_error("Expected 'from' in import statement");
             return nullptr;
         }
         advance(); // consume 'from'
         
-        if (!match(TokenType::STRING)) {
+        if (current_token().get_type() != TokenType::STRING) {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
@@ -1554,13 +2317,13 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         std::string default_alias = current_token().get_value();
         advance();
         
-        if (!match(TokenType::FROM)) {
+        if (current_token().get_type() != TokenType::FROM) {
             add_error("Expected 'from' in import statement");
             return nullptr;
         }
         advance(); // consume 'from'
         
-        if (!match(TokenType::STRING)) {
+        if (current_token().get_type() != TokenType::STRING) {
             add_error("Expected string literal after 'from'");
             return nullptr;
         }
@@ -1665,7 +2428,7 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
     if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
         advance(); // consume 'as'
         
-        if (!match(TokenType::IDENTIFIER)) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
@@ -1693,7 +2456,7 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
         advance(); // consume 'as'
         
-        if (!match(TokenType::IDENTIFIER)) {
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier after 'as'");
             return nullptr;
         }
@@ -1703,6 +2466,111 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     
     Position end = get_current_position();
     return std::make_unique<ExportSpecifier>(local_name, exported_name, start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
+    Position start = get_current_position();
+    
+    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        // Array destructuring: [a, b, c]
+        advance(); // consume '['
+        
+        std::vector<std::unique_ptr<Identifier>> targets;
+        
+        while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
+            if (current_token().get_type() == TokenType::IDENTIFIER) {
+                auto id = std::make_unique<Identifier>(
+                    current_token().get_value(),
+                    current_token().get_start(),
+                    current_token().get_end()
+                );
+                targets.push_back(std::move(id));
+                advance();
+            } else {
+                add_error("Expected identifier in array destructuring");
+                return nullptr;
+            }
+            
+            if (match(TokenType::COMMA)) {
+                advance(); // consume ','
+            } else {
+                // If no comma, we expect the closing bracket
+                break;
+            }
+        }
+        
+        if (!consume(TokenType::RIGHT_BRACKET)) {
+            add_error("Expected ']' to close array destructuring");
+            return nullptr;
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<DestructuringAssignment>(
+            std::move(targets), nullptr, DestructuringAssignment::Type::ARRAY, start, end
+        );
+        
+    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+        // Object destructuring: {a, b, c}
+        advance(); // consume '{'
+        
+        std::vector<std::unique_ptr<Identifier>> targets;
+        
+        while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+            if (current_token().get_type() == TokenType::IDENTIFIER) {
+                auto id = std::make_unique<Identifier>(
+                    current_token().get_value(),
+                    current_token().get_start(),
+                    current_token().get_end()
+                );
+                targets.push_back(std::move(id));
+                advance();
+            } else {
+                add_error("Expected identifier in object destructuring");
+                return nullptr;
+            }
+            
+            if (match(TokenType::COMMA)) {
+                advance(); // consume ','
+            } else {
+                // If no comma, we expect the closing brace
+                break;
+            }
+        }
+        
+        if (!consume(TokenType::RIGHT_BRACE)) {
+            add_error("Expected '}' to close object destructuring");
+            return nullptr;
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<DestructuringAssignment>(
+            std::move(targets), nullptr, DestructuringAssignment::Type::OBJECT, start, end
+        );
+    }
+    
+    add_error("Expected '[' or '{' for destructuring pattern");
+    return nullptr;
+}
+
+std::unique_ptr<ASTNode> Parser::parse_spread_element() {
+    Position start = get_current_position();
+    
+    if (current_token().get_type() != TokenType::ELLIPSIS) {
+        add_error("Expected '...' for spread element");
+        return nullptr;
+    }
+    
+    advance(); // consume '...'
+    
+    // Parse the argument
+    auto argument = parse_assignment_expression();
+    if (!argument) {
+        add_error("Expected expression after '...'");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<SpreadElement>(std::move(argument), start, end);
 }
 
 } // namespace Quanta

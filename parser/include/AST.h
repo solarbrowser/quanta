@@ -11,6 +11,7 @@ namespace Quanta {
 
 // Forward declarations
 class Context;
+class FunctionExpression;
 
 /**
  * Abstract Syntax Tree nodes for JavaScript
@@ -30,17 +31,26 @@ public:
         
         // Identifiers
         IDENTIFIER,
+        PARAMETER,
         
         // Expressions
         BINARY_EXPRESSION,
         UNARY_EXPRESSION,
         ASSIGNMENT_EXPRESSION,
+        CONDITIONAL_EXPRESSION,
+        DESTRUCTURING_ASSIGNMENT,
         CALL_EXPRESSION,
         MEMBER_EXPRESSION,
         NEW_EXPRESSION,
         FUNCTION_EXPRESSION,
+        ARROW_FUNCTION_EXPRESSION,
+        ASYNC_FUNCTION_EXPRESSION,
+        AWAIT_EXPRESSION,
         OBJECT_LITERAL,
         ARRAY_LITERAL,
+        TEMPLATE_LITERAL,
+        REGEX_LITERAL,
+        SPREAD_ELEMENT,
         
         // Statements
         EXPRESSION_STATEMENT,
@@ -51,6 +61,8 @@ public:
         FOR_STATEMENT,
         WHILE_STATEMENT,
         FUNCTION_DECLARATION,
+        CLASS_DECLARATION,
+        METHOD_DEFINITION,
         RETURN_STATEMENT,
         TRY_STATEMENT,
         CATCH_CLAUSE,
@@ -151,6 +163,56 @@ class UndefinedLiteral : public ASTNode {
 public:
     UndefinedLiteral(const Position& start, const Position& end)
         : ASTNode(Type::UNDEFINED_LITERAL, start, end) {}
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Template literal (e.g., `Hello ${name}!`)
+ */
+class TemplateLiteral : public ASTNode {
+public:
+    struct Element {
+        enum class Type { TEXT, EXPRESSION };
+        Type type;
+        std::string text;  // For text elements
+        std::unique_ptr<ASTNode> expression;  // For expression elements
+        
+        Element(const std::string& t) : type(Type::TEXT), text(t) {}
+        Element(std::unique_ptr<ASTNode> expr) : type(Type::EXPRESSION), expression(std::move(expr)) {}
+    };
+
+private:
+    std::vector<Element> elements_;
+
+public:
+    TemplateLiteral(std::vector<Element> elements, const Position& start, const Position& end)
+        : ASTNode(Type::TEMPLATE_LITERAL, start, end), elements_(std::move(elements)) {}
+    
+    const std::vector<Element>& get_elements() const { return elements_; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Regular expression literal (e.g., /pattern/flags)
+ */
+class RegexLiteral : public ASTNode {
+private:
+    std::string pattern_;
+    std::string flags_;
+
+public:
+    RegexLiteral(const std::string& pattern, const std::string& flags,
+                 const Position& start, const Position& end)
+        : ASTNode(Type::REGEX_LITERAL, start, end), pattern_(pattern), flags_(flags) {}
+    
+    const std::string& get_pattern() const { return pattern_; }
+    const std::string& get_flags() const { return flags_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -287,6 +349,96 @@ public:
 };
 
 /**
+ * Conditional expression (ternary operator: test ? consequent : alternate)
+ */
+class ConditionalExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> test_;
+    std::unique_ptr<ASTNode> consequent_;
+    std::unique_ptr<ASTNode> alternate_;
+
+public:
+    ConditionalExpression(std::unique_ptr<ASTNode> test, std::unique_ptr<ASTNode> consequent,
+                         std::unique_ptr<ASTNode> alternate, const Position& start, const Position& end)
+        : ASTNode(Type::CONDITIONAL_EXPRESSION, start, end),
+          test_(std::move(test)), consequent_(std::move(consequent)), alternate_(std::move(alternate)) {}
+    
+    ASTNode* get_test() const { return test_.get(); }
+    ASTNode* get_consequent() const { return consequent_.get(); }
+    ASTNode* get_alternate() const { return alternate_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Assignment expression (e.g., x = 5, y += 10)
+ */
+class AssignmentExpression : public ASTNode {
+public:
+    enum class Operator {
+        ASSIGN,        // =
+        PLUS_ASSIGN,   // +=
+        MINUS_ASSIGN,  // -=
+        MUL_ASSIGN,    // *=
+        DIV_ASSIGN,    // /=
+        MOD_ASSIGN     // %=
+    };
+
+private:
+    std::unique_ptr<ASTNode> left_;
+    std::unique_ptr<ASTNode> right_;
+    Operator operator_;
+
+public:
+    AssignmentExpression(std::unique_ptr<ASTNode> left, Operator op, std::unique_ptr<ASTNode> right,
+                        const Position& start, const Position& end)
+        : ASTNode(Type::ASSIGNMENT_EXPRESSION, start, end),
+          left_(std::move(left)), right_(std::move(right)), operator_(op) {}
+    
+    ASTNode* get_left() const { return left_.get(); }
+    ASTNode* get_right() const { return right_.get(); }
+    Operator get_operator() const { return operator_; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Destructuring assignment (e.g., [a, b] = array, {x, y} = obj)
+ */
+class DestructuringAssignment : public ASTNode {
+public:
+    enum class Type {
+        ARRAY,    // [a, b] = array
+        OBJECT    // {x, y} = obj
+    };
+
+private:
+    std::vector<std::unique_ptr<Identifier>> targets_;
+    std::unique_ptr<ASTNode> source_;
+    Type type_;
+
+public:
+    DestructuringAssignment(std::vector<std::unique_ptr<Identifier>> targets,
+                           std::unique_ptr<ASTNode> source, Type type,
+                           const Position& start, const Position& end)
+        : ASTNode(ASTNode::Type::DESTRUCTURING_ASSIGNMENT, start, end),
+          targets_(std::move(targets)), source_(std::move(source)), type_(type) {}
+    
+    const std::vector<std::unique_ptr<Identifier>>& get_targets() const { return targets_; }
+    ASTNode* get_source() const { return source_.get(); }
+    Type get_type() const { return type_; }
+    void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
  * Call expression (e.g., func(a, b), console.log("hello"))
  */
 class CallExpression : public ASTNode {
@@ -310,6 +462,8 @@ public:
     
 private:
     Value handle_array_method_call(Object* array, const std::string& method_name, Context& ctx);
+    Value handle_string_method_call(const std::string& str, const std::string& method_name, Context& ctx);
+    Value handle_member_expression_call(Context& ctx);
 };
 
 /**
@@ -510,24 +664,49 @@ public:
 };
 
 /**
+ * Function parameter with optional default value
+ */
+class Parameter : public ASTNode {
+private:
+    std::unique_ptr<Identifier> name_;
+    std::unique_ptr<ASTNode> default_value_; // nullptr if no default
+    bool is_rest_; // true if this is a rest parameter (...args)
+
+public:
+    Parameter(std::unique_ptr<Identifier> name, std::unique_ptr<ASTNode> default_value,
+              bool is_rest, const Position& start, const Position& end)
+        : ASTNode(Type::PARAMETER, start, end), 
+          name_(std::move(name)), default_value_(std::move(default_value)), is_rest_(is_rest) {}
+    
+    Identifier* get_name() const { return name_.get(); }
+    ASTNode* get_default_value() const { return default_value_.get(); }
+    bool has_default() const { return default_value_ != nullptr; }
+    bool is_rest() const { return is_rest_; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
  * Function declaration (e.g., "function foo(x, y) { return x + y; }")
  */
 class FunctionDeclaration : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
-    std::vector<std::unique_ptr<Identifier>> params_;
+    std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
 
 public:
     FunctionDeclaration(std::unique_ptr<Identifier> id, 
-                       std::vector<std::unique_ptr<Identifier>> params,
+                       std::vector<std::unique_ptr<Parameter>> params,
                        std::unique_ptr<BlockStatement> body,
                        const Position& start, const Position& end)
         : ASTNode(Type::FUNCTION_DECLARATION, start, end), 
           id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
     
     Identifier* get_id() const { return id_.get(); }
-    const std::vector<std::unique_ptr<Identifier>>& get_params() const { return params_; }
+    const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
     
@@ -537,27 +716,173 @@ public:
 };
 
 /**
+ * Class declaration (e.g., "class MyClass extends BaseClass { constructor() {} method() {} }")
+ */
+class ClassDeclaration : public ASTNode {
+private:
+    std::unique_ptr<Identifier> id_;
+    std::unique_ptr<Identifier> superclass_;
+    std::unique_ptr<BlockStatement> body_;
+
+public:
+    ClassDeclaration(std::unique_ptr<Identifier> id,
+                    std::unique_ptr<Identifier> superclass,
+                    std::unique_ptr<BlockStatement> body,
+                    const Position& start, const Position& end)
+        : ASTNode(Type::CLASS_DECLARATION, start, end),
+          id_(std::move(id)), superclass_(std::move(superclass)), body_(std::move(body)) {}
+
+    ClassDeclaration(std::unique_ptr<Identifier> id,
+                    std::unique_ptr<BlockStatement> body,
+                    const Position& start, const Position& end)
+        : ASTNode(Type::CLASS_DECLARATION, start, end),
+          id_(std::move(id)), superclass_(nullptr), body_(std::move(body)) {}
+    
+    Identifier* get_id() const { return id_.get(); }
+    Identifier* get_superclass() const { return superclass_.get(); }
+    BlockStatement* get_body() const { return body_.get(); }
+    bool has_superclass() const { return superclass_ != nullptr; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Method definition within a class (e.g., "constructor() { ... }", "method() { ... }")
+ */
+class MethodDefinition : public ASTNode {
+public:
+    enum Kind {
+        CONSTRUCTOR,
+        METHOD,
+        STATIC_METHOD,
+        GETTER,
+        SETTER
+    };
+
+private:
+    std::unique_ptr<Identifier> key_;
+    std::unique_ptr<FunctionExpression> value_;
+    Kind kind_;
+    bool is_static_;
+
+public:
+    MethodDefinition(std::unique_ptr<Identifier> key,
+                    std::unique_ptr<FunctionExpression> value,
+                    Kind kind,
+                    bool is_static,
+                    const Position& start, const Position& end)
+        : ASTNode(Type::METHOD_DEFINITION, start, end),
+          key_(std::move(key)), value_(std::move(value)), kind_(kind), is_static_(is_static) {}
+    
+    Identifier* get_key() const { return key_.get(); }
+    FunctionExpression* get_value() const { return value_.get(); }
+    Kind get_kind() const { return kind_; }
+    bool is_static() const { return is_static_; }
+    bool is_constructor() const { return kind_ == CONSTRUCTOR; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+
+/**
  * Function expression (e.g., "function(x) { return x * 2; }" or "var f = function() { ... }")
  */
 class FunctionExpression : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_; // optional name for named function expressions
-    std::vector<std::unique_ptr<Identifier>> params_;
+    std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
-                      std::vector<std::unique_ptr<Identifier>> params,
+                      std::vector<std::unique_ptr<Parameter>> params,
                       std::unique_ptr<BlockStatement> body,
                       const Position& start, const Position& end)
         : ASTNode(Type::FUNCTION_EXPRESSION, start, end), 
           id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
     
     Identifier* get_id() const { return id_.get(); }
-    const std::vector<std::unique_ptr<Identifier>>& get_params() const { return params_; }
+    const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
     bool is_named() const { return id_ != nullptr; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Arrow function expression (e.g., "(x, y) => x + y", "x => x * 2")
+ */
+class ArrowFunctionExpression : public ASTNode {
+private:
+    std::vector<std::unique_ptr<Parameter>> params_;
+    std::unique_ptr<ASTNode> body_; // Can be BlockStatement or Expression
+    bool is_async_;
+
+public:
+    ArrowFunctionExpression(std::vector<std::unique_ptr<Parameter>> params,
+                           std::unique_ptr<ASTNode> body,
+                           bool is_async,
+                           const Position& start, const Position& end)
+        : ASTNode(Type::ARROW_FUNCTION_EXPRESSION, start, end), 
+          params_(std::move(params)), body_(std::move(body)), is_async_(is_async) {}
+    
+    const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
+    ASTNode* get_body() const { return body_.get(); }
+    size_t param_count() const { return params_.size(); }
+    bool is_async() const { return is_async_; }
+    bool has_block_body() const { return body_->get_type() == Type::BLOCK_STATEMENT; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Await expression (e.g., "await promise")
+ */
+class AwaitExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> argument_;
+
+public:
+    AwaitExpression(std::unique_ptr<ASTNode> argument, const Position& start, const Position& end)
+        : ASTNode(Type::AWAIT_EXPRESSION, start, end), argument_(std::move(argument)) {}
+    
+    ASTNode* get_argument() const { return argument_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Async function expression (e.g., "async function() { ... }")
+ */
+class AsyncFunctionExpression : public ASTNode {
+private:
+    std::unique_ptr<Identifier> id_;
+    std::vector<std::unique_ptr<Parameter>> params_;
+    std::unique_ptr<BlockStatement> body_;
+
+public:
+    AsyncFunctionExpression(std::unique_ptr<Identifier> id,
+                           std::vector<std::unique_ptr<Parameter>> params,
+                           std::unique_ptr<BlockStatement> body,
+                           const Position& start, const Position& end)
+        : ASTNode(Type::ASYNC_FUNCTION_EXPRESSION, start, end),
+          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
+    
+    Identifier* get_id() const { return id_.get(); }
+    const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
+    BlockStatement* get_body() const { return body_.get(); }
+    size_t param_count() const { return params_.size(); }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -609,6 +934,25 @@ public:
     
     const std::vector<std::unique_ptr<ASTNode>>& get_elements() const { return elements_; }
     size_t element_count() const { return elements_.size(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Spread element (e.g., "...array" in function calls or array literals)
+ */
+class SpreadElement : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> argument_;
+
+public:
+    explicit SpreadElement(std::unique_ptr<ASTNode> argument, 
+                          const Position& start, const Position& end)
+        : ASTNode(Type::SPREAD_ELEMENT, start, end), argument_(std::move(argument)) {}
+    
+    ASTNode* get_argument() const { return argument_.get(); }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

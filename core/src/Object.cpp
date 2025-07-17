@@ -1,4 +1,5 @@
 #include "Object.h"
+#include "Context.h"
 #include "Value.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
@@ -91,6 +92,20 @@ bool Object::has_own_property(const std::string& key) const {
 }
 
 Value Object::get_property(const std::string& key) const {
+    // For Function objects, handle special properties
+    if (this->get_type() == ObjectType::Function) {
+        const Function* func = static_cast<const Function*>(this);
+        if (key == "name") {
+            return Value(func->get_name());
+        }
+        if (key == "length") {
+            return Value(static_cast<double>(func->get_arity()));
+        }
+        if (key == "prototype") {
+            return Value(func->get_prototype());
+        }
+    }
+    
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
         return result;
@@ -417,6 +432,103 @@ Value Object::shift() {
     return result;
 }
 
+// Modern Array Methods Implementation
+std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return nullptr;
+    }
+    
+    uint32_t length = get_length();
+    auto result = ObjectFactory::create_array(length);
+    
+    for (uint32_t i = 0; i < length; i++) {
+        Value element = get_element(i);
+        if (!element.is_undefined()) {
+            // Call callback(element, index, array)
+            std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+            Value mapped_value = callback->call(ctx, args);
+            if (ctx.has_exception()) return nullptr;
+            
+            result->set_element(i, mapped_value);
+        }
+    }
+    
+    return result;
+}
+
+std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return nullptr;
+    }
+    
+    uint32_t length = get_length();
+    auto result = ObjectFactory::create_array(0);
+    uint32_t result_index = 0;
+    
+    for (uint32_t i = 0; i < length; i++) {
+        Value element = get_element(i);
+        if (!element.is_undefined()) {
+            // Call callback(element, index, array)
+            std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+            Value should_include = callback->call(ctx, args);
+            if (ctx.has_exception()) return nullptr;
+            
+            if (should_include.to_boolean()) {
+                result->set_element(result_index++, element);
+            }
+        }
+    }
+    
+    result->set_length(result_index);
+    return result;
+}
+
+void Object::forEach(Function* callback, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return;
+    }
+    
+    uint32_t length = get_length();
+    
+    for (uint32_t i = 0; i < length; i++) {
+        Value element = get_element(i);
+        if (!element.is_undefined()) {
+            // Call callback(element, index, array)
+            std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+            callback->call(ctx, args);
+            if (ctx.has_exception()) return;
+        }
+    }
+}
+
+Value Object::reduce(Function* callback, const Value& initial_value, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return Value();
+    }
+    
+    uint32_t length = get_length();
+    Value accumulator = initial_value;
+    uint32_t start_index = 0;
+    
+    // If no initial value provided, use first element
+    if (initial_value.is_undefined() && length > 0) {
+        accumulator = get_element(0);
+        start_index = 1;
+    }
+    
+    for (uint32_t i = start_index; i < length; i++) {
+        Value element = get_element(i);
+        if (!element.is_undefined()) {
+            // Call callback(accumulator, element, index, array)
+            std::vector<Value> args = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
+            accumulator = callback->call(ctx, args);
+            if (ctx.has_exception()) return Value();
+        }
+    }
+    
+    return accumulator;
+}
+
 bool Object::is_extensible() const {
     return !(header_.flags & 0x01);
 }
@@ -639,6 +751,11 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 std::unique_ptr<Object> create_array(uint32_t length) {
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     array->set_length(length);
+    
+    // TODO: Set Array.prototype as prototype
+    // This is a temporary workaround - arrays won't have proper prototype chain
+    // The proper fix requires access to the global Array.prototype
+    
     return array;
 }
 

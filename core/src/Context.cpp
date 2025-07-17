@@ -1,5 +1,6 @@
 #include "Context.h"
 #include "Engine.h"
+#include "Error.h"
 #include <iostream>
 #include <sstream>
 
@@ -15,7 +16,7 @@ uint32_t Context::next_context_id_ = 1;
 Context::Context(Engine* engine, Type type) 
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
-      global_object_(nullptr), current_exception_(), has_exception_(false), 
+      execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false), 
       return_value_(), has_return_value_(false), engine_(engine) {
     
     if (type == Type::Global) {
@@ -26,7 +27,7 @@ Context::Context(Engine* engine, Type type)
 Context::Context(Engine* engine, Context* parent, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
-      global_object_(parent ? parent->global_object_ : nullptr),
+      execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), engine_(engine) {
     
     // Inherit built-ins from parent
@@ -53,10 +54,23 @@ bool Context::has_binding(const std::string& name) const {
 }
 
 Value Context::get_binding(const std::string& name) const {
-    if (lexical_environment_) {
-        return lexical_environment_->get_binding(name);
+    if (!check_execution_depth()) {
+        // Prevent infinite recursion
+        const_cast<Context*>(this)->throw_exception(Value("Maximum execution depth exceeded"));
+        return Value();
     }
-    return Value(); // undefined
+    
+    increment_execution_depth();
+    Value result;
+    
+    if (lexical_environment_) {
+        result = lexical_environment_->get_binding(name);
+    } else {
+        result = Value(); // undefined
+    }
+    
+    decrement_execution_depth();
+    return result;
 }
 
 bool Context::set_binding(const std::string& name, const Value& value) {
@@ -119,6 +133,31 @@ void Context::clear_exception() {
     }
 }
 
+void Context::throw_error(const std::string& message) {
+    auto error = Error::create_error(message);
+    throw_exception(Value(error.release()));
+}
+
+void Context::throw_type_error(const std::string& message) {
+    auto error = Error::create_type_error(message);
+    throw_exception(Value(error.release()));
+}
+
+void Context::throw_reference_error(const std::string& message) {
+    auto error = Error::create_reference_error(message);
+    throw_exception(Value(error.release()));
+}
+
+void Context::throw_syntax_error(const std::string& message) {
+    auto error = Error::create_syntax_error(message);
+    throw_exception(Value(error.release()));
+}
+
+void Context::throw_range_error(const std::string& message) {
+    auto error = Error::create_range_error(message);
+    throw_exception(Value(error.release()));
+}
+
 void Context::register_built_in_object(const std::string& name, Object* object) {
     built_in_objects_[name] = object;
     
@@ -178,6 +217,10 @@ std::string Context::debug_string() const {
         << ", stack_depth=" << stack_depth()
         << ", has_exception=" << has_exception_ << ")";
     return oss.str();
+}
+
+bool Context::check_execution_depth() const {
+    return execution_depth_ < max_execution_depth_;
 }
 
 void Context::initialize_global_context() {
@@ -343,6 +386,15 @@ bool Environment::has_binding(const std::string& name) const {
 }
 
 Value Environment::get_binding(const std::string& name) const {
+    return get_binding_with_depth(name, 0);
+}
+
+Value Environment::get_binding_with_depth(const std::string& name, int depth) const {
+    // Prevent infinite recursion
+    if (depth > 100) {
+        return Value(); // undefined
+    }
+    
     if (has_own_binding(name)) {
         if (type_ == Type::Object && binding_object_) {
             return binding_object_->get_property(name);
@@ -355,7 +407,7 @@ Value Environment::get_binding(const std::string& name) const {
     }
     
     if (outer_environment_) {
-        return outer_environment_->get_binding(name);
+        return outer_environment_->get_binding_with_depth(name, depth + 1);
     }
     
     return Value(); // undefined

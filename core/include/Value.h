@@ -84,6 +84,9 @@ public:
     explicit Value(String* str) : bits_(QUIET_NAN | TAG_STRING | reinterpret_cast<uint64_t>(str)) {}
     explicit Value(const std::string& str);
     
+    // Symbol constructor
+    explicit Value(class Symbol* sym) : bits_(QUIET_NAN | TAG_SYMBOL | reinterpret_cast<uint64_t>(sym)) {}
+    
     // Object constructor
     explicit Value(Object* obj);
     
@@ -133,6 +136,10 @@ public:
     
     inline String* as_string() const {
         return reinterpret_cast<String*>(bits_ & PAYLOAD_MASK);
+    }
+    
+    inline class Symbol* as_symbol() const {
+        return reinterpret_cast<class Symbol*>(bits_ & PAYLOAD_MASK);
     }
     
     inline Object* as_object() const {

@@ -78,6 +78,9 @@ private:
     Token read_single_line_comment();
     Token read_multi_line_comment();
     
+    // Regex literal detection
+    bool can_be_regex_literal() const;
+    
     // Operator parsing
     Token read_operator();
     Token read_assignment_or_equality();

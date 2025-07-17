@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cmath>
 #include <limits>
+#include <iostream>
 
 namespace Quanta {
 
@@ -41,7 +42,25 @@ std::string Value::to_string() const {
         return as_string()->str();
     }
     if (is_object()) {
-        return "[object Object]";
+        Object* obj = as_object();
+        if (obj->is_array()) {
+            // Display array contents
+            std::string result = "[";
+            uint32_t length = obj->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                if (i > 0) result += ", ";
+                Value element = obj->get_element(i);
+                if (element.is_string()) {
+                    result += "\"" + element.to_string() + "\"";
+                } else {
+                    result += element.to_string();
+                }
+            }
+            result += "]";
+            return result;
+        } else {
+            return "[object Object]";
+        }
     }
     if (is_function()) {
         return "[function Function]";
@@ -80,13 +99,13 @@ bool Value::to_boolean() const {
 }
 
 Value Value::typeof_op() const {
-    if (is_undefined()) return Value("undefined");
-    if (is_null()) return Value("object");
-    if (is_boolean()) return Value("boolean");
-    if (is_number()) return Value("number");
-    if (is_string()) return Value("string");
-    if (is_function()) return Value("function");
-    return Value("object");
+    if (is_undefined()) return Value(std::string("undefined"));
+    if (is_null()) return Value(std::string("object"));
+    if (is_boolean()) return Value(std::string("boolean"));
+    if (is_number()) return Value(std::string("number"));
+    if (is_string()) return Value(std::string("string"));
+    if (is_function()) return Value(std::string("function"));
+    return Value(std::string("object"));
 }
 
 bool Value::strict_equals(const Value& other) const {

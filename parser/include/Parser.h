@@ -61,11 +61,14 @@ public:
     
     // Statement parsing
     std::unique_ptr<ASTNode> parse_variable_declaration();
+    std::unique_ptr<ASTNode> parse_variable_declaration(bool consume_semicolon);
     std::unique_ptr<ASTNode> parse_block_statement();
     std::unique_ptr<ASTNode> parse_if_statement();
     std::unique_ptr<ASTNode> parse_for_statement();
     std::unique_ptr<ASTNode> parse_while_statement();
     std::unique_ptr<ASTNode> parse_function_declaration();
+    std::unique_ptr<ASTNode> parse_class_declaration();
+    std::unique_ptr<ASTNode> parse_method_definition();
     std::unique_ptr<ASTNode> parse_return_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
     
@@ -84,6 +87,7 @@ public:
     // Expression parsing with precedence
     std::unique_ptr<ASTNode> parse_assignment_expression();
     std::unique_ptr<ASTNode> parse_conditional_expression();
+    std::unique_ptr<ASTNode> parse_conditional_expression_impl(int depth);
     std::unique_ptr<ASTNode> parse_logical_or_expression();
     std::unique_ptr<ASTNode> parse_logical_and_expression();
     std::unique_ptr<ASTNode> parse_bitwise_or_expression();
@@ -102,12 +106,20 @@ public:
     std::unique_ptr<ASTNode> parse_primary_expression();
     std::unique_ptr<ASTNode> parse_parenthesized_expression();
     std::unique_ptr<ASTNode> parse_function_expression();
+    std::unique_ptr<ASTNode> parse_async_function_expression();
+    std::unique_ptr<ASTNode> parse_arrow_function();
+    bool try_parse_arrow_function_params();
     std::unique_ptr<ASTNode> parse_object_literal();
     std::unique_ptr<ASTNode> parse_array_literal();
+    std::unique_ptr<ASTNode> parse_destructuring_pattern();
+    std::unique_ptr<ASTNode> parse_spread_element();
     
     // Literal parsing
     std::unique_ptr<ASTNode> parse_number_literal();
     std::unique_ptr<ASTNode> parse_string_literal();
+    std::unique_ptr<ASTNode> parse_this_expression();
+    std::unique_ptr<ASTNode> parse_template_literal();
+    std::unique_ptr<ASTNode> parse_regex_literal();
     std::unique_ptr<ASTNode> parse_boolean_literal();
     std::unique_ptr<ASTNode> parse_null_literal();
     std::unique_ptr<ASTNode> parse_undefined_literal();
