@@ -8,7 +8,7 @@
 #include "Promise.h"
 // ES6+ includes disabled due to segfault
 // #include "Generator.h"
-// #include "MapSet.h"
+#include "MapSet.h"
 // #include "Iterator.h"
 // #include "Async.h"
 // #include "ProxyReflect.h"
@@ -921,6 +921,92 @@ void Engine::setup_built_in_functions() {
     
     // Add Symbol.for static method
     // Note: This is simplified - in a full implementation we'd set up the Symbol object with its methods
+    
+    // Map constructor
+    register_function("Map", [](const std::vector<Value>& args) {
+        (void)args; // Suppress unused parameter warning
+        auto map_obj = std::make_unique<Map>();
+        
+        // Set up Map prototype methods
+        map_obj->set_property("set", Value(ObjectFactory::create_native_function("set", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Map::map_set(ctx, args);
+            }
+        ).release()));
+        
+        map_obj->set_property("get", Value(ObjectFactory::create_native_function("get", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Map::map_get(ctx, args);
+            }
+        ).release()));
+        
+        map_obj->set_property("has", Value(ObjectFactory::create_native_function("has", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Map::map_has(ctx, args);
+            }
+        ).release()));
+        
+        map_obj->set_property("delete", Value(ObjectFactory::create_native_function("delete", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Map::map_delete(ctx, args);
+            }
+        ).release()));
+        
+        map_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Map::map_clear(ctx, args);
+            }
+        ).release()));
+        
+        return Value(map_obj.release());
+    });
+    
+    // Set constructor
+    register_function("Set", [](const std::vector<Value>& args) {
+        (void)args; // Suppress unused parameter warning
+        auto set_obj = std::make_unique<Set>();
+        
+        // Set up Set prototype methods
+        set_obj->set_property("add", Value(ObjectFactory::create_native_function("add", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Set::set_add(ctx, args);
+            }
+        ).release()));
+        
+        set_obj->set_property("has", Value(ObjectFactory::create_native_function("has", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Set::set_has(ctx, args);
+            }
+        ).release()));
+        
+        set_obj->set_property("delete", Value(ObjectFactory::create_native_function("delete", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Set::set_delete(ctx, args);
+            }
+        ).release()));
+        
+        set_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", 
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                return Set::set_clear(ctx, args);
+            }
+        ).release()));
+        
+        return Value(set_obj.release());
+    });
+    
+    // WeakMap constructor
+    register_function("WeakMap", [](const std::vector<Value>& args) {
+        (void)args; // Suppress unused parameter warning
+        auto weakmap_obj = std::make_unique<WeakMap>();
+        return Value(weakmap_obj.release());
+    });
+    
+    // WeakSet constructor
+    register_function("WeakSet", [](const std::vector<Value>& args) {
+        (void)args; // Suppress unused parameter warning
+        auto weakset_obj = std::make_unique<WeakSet>();
+        return Value(weakset_obj.release());
+    });
     
     // Error constructor
     register_function("Error", [](const std::vector<Value>& args) {

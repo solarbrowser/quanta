@@ -3,6 +3,7 @@
 #include "Symbol.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
+#include <iostream>
 
 namespace Quanta {
 
@@ -48,6 +49,13 @@ bool Map::delete_key(const Value& key) {
 void Map::clear() {
     entries_.clear();
     size_ = 0;
+}
+
+Value Map::get_property(const std::string& key) const {
+    if (key == "size") {
+        return Value(static_cast<double>(size_));
+    }
+    return Object::get_property(key);
 }
 
 std::vector<Value> Map::keys() const {
@@ -107,13 +115,11 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Map.prototype.set called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
         ctx.throw_exception(Value("Map.prototype.set called on non-Map"));
         return Value();
@@ -124,17 +130,15 @@ Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
     Value value = args.size() < 2 ? Value() : args[1];
     
     map->set(key, value);
-    return this_value; // Return the Map object for chaining
+    return Value(obj); // Return the Map object for chaining
 }
 
 Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Map.prototype.get called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
         ctx.throw_exception(Value("Map.prototype.get called on non-Map"));
         return Value();
@@ -147,13 +151,11 @@ Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Map::map_has(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Map.prototype.has called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
         ctx.throw_exception(Value("Map.prototype.has called on non-Map"));
         return Value();
@@ -207,13 +209,11 @@ Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
 Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
     (void)args; // Unused parameter
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Map.prototype.size called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
         ctx.throw_exception(Value("Map.prototype.size called on non-Map"));
         return Value();
@@ -282,6 +282,13 @@ void Set::clear() {
     size_ = 0;
 }
 
+Value Set::get_property(const std::string& key) const {
+    if (key == "size") {
+        return Value(static_cast<double>(size_));
+    }
+    return Object::get_property(key);
+}
+
 std::vector<Value> Set::values() const {
     return values_;
 }
@@ -325,13 +332,11 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Set.prototype.add called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Set) {
         ctx.throw_exception(Value("Set.prototype.add called on non-Set"));
         return Value();
@@ -341,17 +346,15 @@ Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
     Value value = args.empty() ? Value() : args[0];
     
     set->add(value);
-    return this_value; // Return the Set object for chaining
+    return Value(obj); // Return the Set object for chaining
 }
 
 Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Set.prototype.has called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Set) {
         ctx.throw_exception(Value("Set.prototype.has called on non-Set"));
         return Value();
@@ -364,13 +367,11 @@ Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Set.prototype.delete called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Set) {
         ctx.throw_exception(Value("Set.prototype.delete called on non-Set"));
         return Value();
@@ -385,13 +386,11 @@ Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
 Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
     (void)args; // Unused parameter
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Set.prototype.clear called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Set) {
         ctx.throw_exception(Value("Set.prototype.clear called on non-Set"));
         return Value();
@@ -405,13 +404,11 @@ Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
 Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
     (void)args; // Unused parameter
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
         ctx.throw_exception(Value("Set.prototype.size called on non-object"));
         return Value();
     }
-    
-    Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Set) {
         ctx.throw_exception(Value("Set.prototype.size called on non-Set"));
         return Value();

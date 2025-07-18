@@ -55,6 +55,9 @@ public:
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
     
+    // Override get_property to handle size property
+    Value get_property(const std::string& key) const override;
+    
     // Iterator support
     std::vector<Value> keys() const;
     std::vector<Value> values() const;
@@ -103,6 +106,9 @@ public:
     // Set properties
     size_t size() const { return size_; }
     bool empty() const { return size_ == 0; }
+    
+    // Override get_property to handle size property
+    Value get_property(const std::string& key) const override;
     
     // Iterator support
     std::vector<Value> values() const;

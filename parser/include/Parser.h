@@ -67,6 +67,7 @@ public:
     std::unique_ptr<ASTNode> parse_for_statement();
     std::unique_ptr<ASTNode> parse_while_statement();
     std::unique_ptr<ASTNode> parse_function_declaration();
+    std::unique_ptr<ASTNode> parse_async_function_declaration();
     std::unique_ptr<ASTNode> parse_class_declaration();
     std::unique_ptr<ASTNode> parse_method_definition();
     std::unique_ptr<ASTNode> parse_return_statement();
@@ -108,6 +109,7 @@ public:
     std::unique_ptr<ASTNode> parse_function_expression();
     std::unique_ptr<ASTNode> parse_async_function_expression();
     std::unique_ptr<ASTNode> parse_arrow_function();
+    std::unique_ptr<ASTNode> parse_yield_expression();
     bool try_parse_arrow_function_params();
     std::unique_ptr<ASTNode> parse_object_literal();
     std::unique_ptr<ASTNode> parse_array_literal();

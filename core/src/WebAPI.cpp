@@ -1,4 +1,6 @@
 #include "../include/WebAPI.h"
+#include "Object.h"
+#include "AST.h"
 #include <iostream>
 #include <sstream>
 #include <map>
@@ -213,7 +215,25 @@ Value WebAPI::document_createElement(Context& ctx, const std::vector<Value>& arg
     std::string tagName = args[0].to_string();
     std::cout << "createElement: Created <" << tagName << "> element (simulated)" << std::endl;
     
-    return Value("Element: <" + tagName + ">");
+    // Create a proper element object with properties
+    auto element = ObjectFactory::create_object();
+    element->set_property("tagName", Value(tagName));
+    element->set_property("textContent", Value(""));
+    element->set_property("onclick", Value()); // null initially
+    element->set_property("id", Value(""));
+    element->set_property("className", Value(""));
+    element->set_property("href", Value(""));
+    
+    // Add click method to simulate clicking
+    auto click_fn = ObjectFactory::create_native_function("click", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            std::cout << "Element clicked!" << std::endl;
+            return Value();
+        });
+    element->set_property("click", Value(click_fn.release()));
+    
+    return Value(element.release());
 }
 
 Value WebAPI::document_querySelector(Context& ctx, const std::vector<Value>& args) {

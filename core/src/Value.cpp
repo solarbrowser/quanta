@@ -104,6 +104,7 @@ Value Value::typeof_op() const {
     if (is_boolean()) return Value(std::string("boolean"));
     if (is_number()) return Value(std::string("number"));
     if (is_string()) return Value(std::string("string"));
+    if (is_symbol()) return Value(std::string("symbol"));
     if (is_function()) return Value(std::string("function"));
     return Value(std::string("object"));
 }

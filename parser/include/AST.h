@@ -46,6 +46,7 @@ public:
         ARROW_FUNCTION_EXPRESSION,
         ASYNC_FUNCTION_EXPRESSION,
         AWAIT_EXPRESSION,
+        YIELD_EXPRESSION,
         OBJECT_LITERAL,
         ARRAY_LITERAL,
         TEMPLATE_LITERAL,
@@ -59,6 +60,7 @@ public:
         BLOCK_STATEMENT,
         IF_STATEMENT,
         FOR_STATEMENT,
+        FOR_OF_STATEMENT,
         WHILE_STATEMENT,
         FUNCTION_DECLARATION,
         CLASS_DECLARATION,
@@ -436,6 +438,9 @@ public:
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
+    
+private:
+    bool handle_complex_object_destructuring(Object* obj, Context& ctx);
 };
 
 /**
@@ -642,6 +647,29 @@ public:
 };
 
 /**
+ * For...of loop statement (e.g., "for (const item of array) { ... }")
+ */
+class ForOfStatement : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> left_;     // variable declaration or identifier
+    std::unique_ptr<ASTNode> right_;    // iterable expression  
+    std::unique_ptr<ASTNode> body_;     // loop body
+public:
+    ForOfStatement(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
+                   std::unique_ptr<ASTNode> body, const Position& start, const Position& end)
+        : ASTNode(Type::FOR_OF_STATEMENT, start, end), 
+          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)) {}
+    
+    ASTNode* get_left() const { return left_.get(); }
+    ASTNode* get_right() const { return right_.get(); }
+    ASTNode* get_body() const { return body_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
  * While loop statement (e.g., "while (condition) { ... }")
  */
 class WhileStatement : public ASTNode {
@@ -696,19 +724,24 @@ private:
     std::unique_ptr<Identifier> id_;
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
+    bool is_async_;
+    bool is_generator_;
 
 public:
     FunctionDeclaration(std::unique_ptr<Identifier> id, 
                        std::vector<std::unique_ptr<Parameter>> params,
                        std::unique_ptr<BlockStatement> body,
-                       const Position& start, const Position& end)
+                       const Position& start, const Position& end,
+                       bool is_async = false, bool is_generator = false)
         : ASTNode(Type::FUNCTION_DECLARATION, start, end), 
-          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
+          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)), is_async_(is_async), is_generator_(is_generator) {}
     
     Identifier* get_id() const { return id_.get(); }
     const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
+    bool is_async() const { return is_async_; }
+    bool is_generator() const { return is_generator_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -856,6 +889,26 @@ public:
         : ASTNode(Type::AWAIT_EXPRESSION, start, end), argument_(std::move(argument)) {}
     
     ASTNode* get_argument() const { return argument_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Yield expression (e.g., "yield value", "yield* iterator")
+ */
+class YieldExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> argument_;
+    bool is_delegate_;  // true for yield*, false for yield
+
+public:
+    YieldExpression(std::unique_ptr<ASTNode> argument, bool is_delegate, const Position& start, const Position& end)
+        : ASTNode(Type::YIELD_EXPRESSION, start, end), argument_(std::move(argument)), is_delegate_(is_delegate) {}
+    
+    ASTNode* get_argument() const { return argument_.get(); }
+    bool is_delegate() const { return is_delegate_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

@@ -2,9 +2,12 @@
 #include "Engine.h"
 #include "Error.h"
 #include "JSON.h"
+#include "ProxyReflect.h"
+#include "WebAPI.h"
 #include <iostream>
 #include <sstream>
 #include <limits>
+#include <cstdlib>
 
 namespace Quanta {
 
@@ -409,6 +412,343 @@ void Context::initialize_built_ins() {
     json_object->set_property("stringify", Value(json_stringify.release()));
     
     register_built_in_object("JSON", json_object.release());
+    
+    // Proxy constructor
+    auto proxy_constructor = ObjectFactory::create_native_function("Proxy",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) {
+                ctx.throw_exception(Value("Proxy constructor requires target and handler arguments"));
+                return Value();
+            }
+            
+            if (!args[0].is_object() || !args[1].is_object()) {
+                ctx.throw_exception(Value("Proxy constructor arguments must be objects"));
+                return Value();
+            }
+            
+            Object* target = args[0].as_object();
+            Object* handler = args[1].as_object();
+            
+            // Create a new Proxy object
+            auto proxy = std::make_unique<Proxy>(target, handler);
+            return Value(proxy.release());
+        });
+    
+    register_built_in_object("Proxy", proxy_constructor.release());
+    
+    // Reflect object with static methods
+    auto reflect_object = ObjectFactory::create_object();
+    
+    // Reflect.get(target, propertyKey[, receiver])
+    auto reflect_get = ObjectFactory::create_native_function("get",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) {
+                ctx.throw_exception(Value("Reflect.get requires target and propertyKey arguments"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("Reflect.get target must be an object"));
+                return Value();
+            }
+            
+            Object* target = args[0].as_object();
+            std::string property = args[1].to_string();
+            
+            return target->get_property(property);
+        });
+    reflect_object->set_property("get", Value(reflect_get.release()));
+    
+    // Reflect.set(target, propertyKey, value[, receiver])
+    auto reflect_set = ObjectFactory::create_native_function("set",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 3) {
+                ctx.throw_exception(Value("Reflect.set requires target, propertyKey, and value arguments"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("Reflect.set target must be an object"));
+                return Value();
+            }
+            
+            Object* target = args[0].as_object();
+            std::string property = args[1].to_string();
+            Value value = args[2];
+            
+            bool success = target->set_property(property, value);
+            return Value(success);
+        });
+    reflect_object->set_property("set", Value(reflect_set.release()));
+    
+    // Reflect.has(target, propertyKey)
+    auto reflect_has = ObjectFactory::create_native_function("has",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) {
+                ctx.throw_exception(Value("Reflect.has requires target and propertyKey arguments"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("Reflect.has target must be an object"));
+                return Value();
+            }
+            
+            Object* target = args[0].as_object();
+            std::string property = args[1].to_string();
+            
+            bool has = target->has_property(property);
+            return Value(has);
+        });
+    reflect_object->set_property("has", Value(reflect_has.release()));
+    
+    register_built_in_object("Reflect", reflect_object.release());
+    
+    // Web APIs
+    setup_web_apis();
+}
+
+void Context::setup_web_apis() {
+    // Timer APIs
+    auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout", WebAPI::setTimeout);
+    lexical_environment_->create_binding("setTimeout", Value(setTimeout_fn.release()), false);
+    
+    auto setInterval_fn = ObjectFactory::create_native_function("setInterval", WebAPI::setInterval);
+    lexical_environment_->create_binding("setInterval", Value(setInterval_fn.release()), false);
+    
+    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout", WebAPI::clearTimeout);
+    lexical_environment_->create_binding("clearTimeout", Value(clearTimeout_fn.release()), false);
+    
+    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval", WebAPI::clearInterval);
+    lexical_environment_->create_binding("clearInterval", Value(clearInterval_fn.release()), false);
+    
+    // Enhanced Console API
+    auto console_obj = ObjectFactory::create_object();
+    console_obj->set_property("error", Value(ObjectFactory::create_native_function("error", WebAPI::console_error).release()));
+    console_obj->set_property("warn", Value(ObjectFactory::create_native_function("warn", WebAPI::console_warn).release()));
+    console_obj->set_property("info", Value(ObjectFactory::create_native_function("info", WebAPI::console_info).release()));
+    console_obj->set_property("debug", Value(ObjectFactory::create_native_function("debug", WebAPI::console_debug).release()));
+    console_obj->set_property("trace", Value(ObjectFactory::create_native_function("trace", WebAPI::console_trace).release()));
+    console_obj->set_property("time", Value(ObjectFactory::create_native_function("time", WebAPI::console_time).release()));
+    console_obj->set_property("timeEnd", Value(ObjectFactory::create_native_function("timeEnd", WebAPI::console_timeEnd).release()));
+    
+    // Update existing console object if it exists
+    if (has_binding("console")) {
+        Value existing_console = get_binding("console");
+        if (existing_console.is_object()) {
+            Object* console_existing = existing_console.as_object();
+            console_existing->set_property("error", Value(ObjectFactory::create_native_function("error", WebAPI::console_error).release()));
+            console_existing->set_property("warn", Value(ObjectFactory::create_native_function("warn", WebAPI::console_warn).release()));
+            console_existing->set_property("info", Value(ObjectFactory::create_native_function("info", WebAPI::console_info).release()));
+            console_existing->set_property("debug", Value(ObjectFactory::create_native_function("debug", WebAPI::console_debug).release()));
+            console_existing->set_property("trace", Value(ObjectFactory::create_native_function("trace", WebAPI::console_trace).release()));
+            console_existing->set_property("time", Value(ObjectFactory::create_native_function("time", WebAPI::console_time).release()));
+            console_existing->set_property("timeEnd", Value(ObjectFactory::create_native_function("timeEnd", WebAPI::console_timeEnd).release()));
+        }
+    }
+    
+    // Fetch API
+    auto fetch_fn = ObjectFactory::create_native_function("fetch", WebAPI::fetch);
+    lexical_environment_->create_binding("fetch", Value(fetch_fn.release()), false);
+    
+    // DOM API - Document object
+    auto document_obj = ObjectFactory::create_object();
+    document_obj->set_property("getElementById", Value(ObjectFactory::create_native_function("getElementById", WebAPI::document_getElementById).release()));
+    document_obj->set_property("createElement", Value(ObjectFactory::create_native_function("createElement", WebAPI::document_createElement).release()));
+    document_obj->set_property("querySelector", Value(ObjectFactory::create_native_function("querySelector", WebAPI::document_querySelector).release()));
+    lexical_environment_->create_binding("document", Value(document_obj.release()), false);
+    
+    // Window API
+    auto alert_fn = ObjectFactory::create_native_function("alert", WebAPI::window_alert);
+    lexical_environment_->create_binding("alert", Value(alert_fn.release()), false);
+    
+    auto confirm_fn = ObjectFactory::create_native_function("confirm", WebAPI::window_confirm);
+    lexical_environment_->create_binding("confirm", Value(confirm_fn.release()), false);
+    
+    auto prompt_fn = ObjectFactory::create_native_function("prompt", WebAPI::window_prompt);
+    lexical_environment_->create_binding("prompt", Value(prompt_fn.release()), false);
+    
+    // Storage API - localStorage
+    auto localStorage_obj = ObjectFactory::create_object();
+    localStorage_obj->set_property("getItem", Value(ObjectFactory::create_native_function("getItem", WebAPI::localStorage_getItem).release()));
+    localStorage_obj->set_property("setItem", Value(ObjectFactory::create_native_function("setItem", WebAPI::localStorage_setItem).release()));
+    localStorage_obj->set_property("removeItem", Value(ObjectFactory::create_native_function("removeItem", WebAPI::localStorage_removeItem).release()));
+    localStorage_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", WebAPI::localStorage_clear).release()));
+    lexical_environment_->create_binding("localStorage", Value(localStorage_obj.release()), false);
+    
+    // Storage API - sessionStorage (same as localStorage for now)
+    auto sessionStorage_obj = ObjectFactory::create_object();
+    sessionStorage_obj->set_property("getItem", Value(ObjectFactory::create_native_function("getItem", WebAPI::localStorage_getItem).release()));
+    sessionStorage_obj->set_property("setItem", Value(ObjectFactory::create_native_function("setItem", WebAPI::localStorage_setItem).release()));
+    sessionStorage_obj->set_property("removeItem", Value(ObjectFactory::create_native_function("removeItem", WebAPI::localStorage_removeItem).release()));
+    sessionStorage_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", WebAPI::localStorage_clear).release()));
+    lexical_environment_->create_binding("sessionStorage", Value(sessionStorage_obj.release()), false);
+    
+    // URL API
+    auto URL_constructor_fn = ObjectFactory::create_native_function("URL", WebAPI::URL_constructor);
+    lexical_environment_->create_binding("URL", Value(URL_constructor_fn.release()), false);
+    
+    // Event system - Global event functions
+    auto addEventListener_fn = ObjectFactory::create_native_function("addEventListener", WebAPI::addEventListener);
+    lexical_environment_->create_binding("addEventListener", Value(addEventListener_fn.release()), false);
+    
+    auto removeEventListener_fn = ObjectFactory::create_native_function("removeEventListener", WebAPI::removeEventListener);
+    lexical_environment_->create_binding("removeEventListener", Value(removeEventListener_fn.release()), false);
+    
+    auto dispatchEvent_fn = ObjectFactory::create_native_function("dispatchEvent", WebAPI::dispatchEvent);
+    lexical_environment_->create_binding("dispatchEvent", Value(dispatchEvent_fn.release()), false);
+    
+    // Crypto API
+    auto crypto_obj = ObjectFactory::create_object();
+    auto crypto_randomUUID_fn = ObjectFactory::create_native_function("randomUUID",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            // Generate a simple UUID v4
+            std::string uuid = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
+            const char* chars = "0123456789abcdef";
+            for (char& c : uuid) {
+                if (c == 'x') {
+                    c = chars[rand() % 16];
+                } else if (c == 'y') {
+                    c = chars[8 + (rand() % 4)];
+                }
+            }
+            return Value(uuid);
+        });
+    crypto_obj->set_property("randomUUID", Value(crypto_randomUUID_fn.release()));
+    
+    auto crypto_getRandomValues_fn = ObjectFactory::create_native_function("getRandomValues",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            std::cout << "crypto.getRandomValues: Generating random values (simulated)" << std::endl;
+            return Value("random-values-array");
+        });
+    crypto_obj->set_property("getRandomValues", Value(crypto_getRandomValues_fn.release()));
+    
+    lexical_environment_->create_binding("crypto", Value(crypto_obj.release()), false);
+    
+    // FormData API
+    auto FormData_constructor_fn = ObjectFactory::create_native_function("FormData",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            auto formData = ObjectFactory::create_object();
+            
+            // FormData.append method
+            auto append_fn = ObjectFactory::create_native_function("append",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    if (args.size() >= 2) {
+                        std::string key = args[0].to_string();
+                        std::string value = args[1].to_string();
+                        std::cout << "FormData.append: '" << key << "' = '" << value << "'" << std::endl;
+                    }
+                    return Value();
+                });
+            formData->set_property("append", Value(append_fn.release()));
+            
+            // FormData.get method
+            auto get_fn = ObjectFactory::create_native_function("get",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    if (args.size() >= 1) {
+                        std::string key = args[0].to_string();
+                        std::cout << "FormData.get: Getting '" << key << "'" << std::endl;
+                        return Value("form-data-value-" + key);
+                    }
+                    return Value();
+                });
+            formData->set_property("get", Value(get_fn.release()));
+            
+            return Value(formData.release());
+        });
+    lexical_environment_->create_binding("FormData", Value(FormData_constructor_fn.release()), false);
+    
+    // Blob API
+    auto Blob_constructor_fn = ObjectFactory::create_native_function("Blob",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            auto blob = ObjectFactory::create_object();
+            
+            // Blob.size property
+            blob->set_property("size", Value(1024.0));
+            
+            // Blob.type property
+            blob->set_property("type", Value("application/octet-stream"));
+            
+            // Blob.text method
+            auto text_fn = ObjectFactory::create_native_function("text",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    std::cout << "Blob.text: Reading blob as text (simulated)" << std::endl;
+                    return Value("blob-text-content");
+                });
+            blob->set_property("text", Value(text_fn.release()));
+            
+            std::cout << "Blob: Created new blob object" << std::endl;
+            return Value(blob.release());
+        });
+    lexical_environment_->create_binding("Blob", Value(Blob_constructor_fn.release()), false);
+    
+    // URLSearchParams API
+    auto URLSearchParams_constructor_fn = ObjectFactory::create_native_function("URLSearchParams",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            auto urlParams = ObjectFactory::create_object();
+            
+            // URLSearchParams.append method
+            auto append_fn = ObjectFactory::create_native_function("append",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    if (args.size() >= 2) {
+                        std::string key = args[0].to_string();
+                        std::string value = args[1].to_string();
+                        std::cout << "URLSearchParams.append: '" << key << "' = '" << value << "'" << std::endl;
+                    }
+                    return Value();
+                });
+            urlParams->set_property("append", Value(append_fn.release()));
+            
+            // URLSearchParams.get method
+            auto get_fn = ObjectFactory::create_native_function("get",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    if (args.size() >= 1) {
+                        std::string key = args[0].to_string();
+                        std::cout << "URLSearchParams.get: Getting '" << key << "'" << std::endl;
+                        return Value("param-value-" + key);
+                    }
+                    return Value();
+                });
+            urlParams->set_property("get", Value(get_fn.release()));
+            
+            std::cout << "URLSearchParams: Created new URLSearchParams object" << std::endl;
+            return Value(urlParams.release());
+        });
+    lexical_environment_->create_binding("URLSearchParams", Value(URLSearchParams_constructor_fn.release()), false);
+    
+    // RequestAnimationFrame API
+    auto requestAnimationFrame_fn = ObjectFactory::create_native_function("requestAnimationFrame",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.size() >= 1) {
+                static int animation_frame_id = 1;
+                std::cout << "requestAnimationFrame: Scheduled callback for next frame (simulated)" << std::endl;
+                return Value(static_cast<double>(animation_frame_id++));
+            }
+            return Value();
+        });
+    lexical_environment_->create_binding("requestAnimationFrame", Value(requestAnimationFrame_fn.release()), false);
+    
+    auto cancelAnimationFrame_fn = ObjectFactory::create_native_function("cancelAnimationFrame",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.size() >= 1) {
+                double id = args[0].to_number();
+                std::cout << "cancelAnimationFrame: Cancelled animation frame " << id << " (simulated)" << std::endl;
+            }
+            return Value();
+        });
+    lexical_environment_->create_binding("cancelAnimationFrame", Value(cancelAnimationFrame_fn.release()), false);
 }
 
 void Context::setup_global_bindings() {

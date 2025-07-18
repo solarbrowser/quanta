@@ -163,6 +163,7 @@ private:
     void initialize_global_context();
     void initialize_built_ins();
     void setup_global_bindings();
+    void setup_web_apis();
 };
 
 /**
