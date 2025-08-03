@@ -229,32 +229,6 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     return std::make_unique<Generator>(this, gen_context.release(), std::move(body_clone));
 }
 
-//=============================================================================
-// YieldExpression Implementation
-//=============================================================================
-
-YieldExpression::YieldExpression(Type type, std::unique_ptr<ASTNode> argument)
-    : type_(type), argument_(std::move(argument)) {
-}
-
-Value YieldExpression::evaluate(Context& ctx, Generator* generator) {
-    Value yield_value = Value();
-    
-    if (argument_) {
-        yield_value = argument_->evaluate(ctx);
-    }
-    
-    if (type_ == Type::Yield) {
-        // Simple yield - suspend generator and return value
-        // This is a simplified implementation
-        // In a full implementation, we'd need to integrate with the AST evaluator
-        return yield_value;
-    } else {
-        // yield* - delegate to another iterable
-        // This is a complex operation that requires iterator protocol
-        // For now, just return the value
-        return yield_value;
-    }
-}
+// YieldExpression is now implemented in AST.cpp to avoid conflicts
 
 } // namespace Quanta

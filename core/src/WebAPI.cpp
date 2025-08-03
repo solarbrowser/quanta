@@ -116,7 +116,7 @@ Value WebAPI::console_info(Context& ctx, const std::vector<Value>& args) {
 
 Value WebAPI::console_debug(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
-    std::cout << "DEBUG: ";
+    // std::cout << "DEBUG: ";
     for (size_t i = 0; i < args.size(); ++i) {
         if (i > 0) std::cout << " ";
         std::cout << args[i].to_string();

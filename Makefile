@@ -22,7 +22,7 @@ EXAMPLES_DIR = examples
 # Create directories
 $(shell mkdir -p $(OBJ_DIR)/{core,lexer,parser,runtime,vm,stdlib} $(BIN_DIR))
 
-# Source files
+# Source files (NodeJS now works on Windows with minimal headers)
 CORE_SOURCES = $(wildcard $(CORE_SRC)/*.cpp)
 LEXER_SOURCES = $(wildcard $(LEXER_SRC)/*.cpp)
 PARSER_SOURCES = $(wildcard $(PARSER_SRC)/*.cpp)

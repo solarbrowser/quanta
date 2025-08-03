@@ -54,6 +54,20 @@ public:
     static Value clz32(Context& ctx, const std::vector<Value>& args);
     static Value imul(Context& ctx, const std::vector<Value>& args);
     
+    // ES2026 enhanced numeric methods
+    static Value sumPrecise(Context& ctx, const std::vector<Value>& args);
+    static Value f16round(Context& ctx, const std::vector<Value>& args);
+    static Value log10(Context& ctx, const std::vector<Value>& args);
+    static Value log2(Context& ctx, const std::vector<Value>& args);
+    static Value log1p(Context& ctx, const std::vector<Value>& args);
+    static Value expm1(Context& ctx, const std::vector<Value>& args);
+    static Value acosh(Context& ctx, const std::vector<Value>& args);
+    static Value asinh(Context& ctx, const std::vector<Value>& args);
+    static Value atanh(Context& ctx, const std::vector<Value>& args);
+    static Value cosh(Context& ctx, const std::vector<Value>& args);
+    static Value sinh(Context& ctx, const std::vector<Value>& args);
+    static Value tanh(Context& ctx, const std::vector<Value>& args);
+    
     // Create Math global object
     static std::unique_ptr<Object> create_math_object();
 

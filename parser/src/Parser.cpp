@@ -1088,7 +1088,7 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
 std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     Position start = get_current_position();
     
-    std::cout << "DEBUG: parse_for_statement called" << std::endl;
+    // std::cout << "DEBUG: parse_for_statement called" << std::endl;
     
     if (!consume(TokenType::FOR)) {
         add_error("Expected 'for'");
@@ -1104,7 +1104,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
         if (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST)) {
-            std::cout << "DEBUG: Found variable declaration in for loop" << std::endl;
+            // std::cout << "DEBUG: Found variable declaration in for loop" << std::endl;
             
             // For for...of loops, we need to parse the variable part manually
             // since parse_variable_declaration expects a full declaration
@@ -1134,11 +1134,23 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             Position var_end = current_token().get_end();
             advance(); // consume identifier
             
-            // Create a variable declarator for the for...of loop
+            // Create a variable declarator - check for initializer
             auto identifier = std::make_unique<Identifier>(var_name, var_start, var_end);
+            
+            // Check for initializer (= expression) for regular for loops
+            std::unique_ptr<ASTNode> initializer = nullptr;
+            if (current_token().get_type() == TokenType::ASSIGN) {
+                advance(); // consume '='
+                initializer = parse_assignment_expression();
+                if (!initializer) {
+                    add_error("Expected expression after '=' in variable declaration");
+                    return nullptr;
+                }
+            }
+            
             auto declarator = std::make_unique<VariableDeclarator>(
                 std::move(identifier), 
-                nullptr, // no initializer in for...of
+                std::move(initializer), // include initializer if present
                 kind,
                 var_start,
                 var_end
@@ -1150,7 +1162,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             Position decl_end = get_current_position();
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
-            std::cout << "DEBUG: After parsing variable declaration, init = " << (init ? "SUCCESS" : "NULL") << std::endl;
+            // std::cout << "DEBUG: After parsing variable declaration, init = " << (init ? "SUCCESS" : "NULL") << std::endl;
         } else {
             init = parse_expression();
         }
@@ -1161,9 +1173,9 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
     
     // Check for for...of syntax (FIXED - now works properly)
-    std::cout << "DEBUG: Checking for 'of' keyword, current token type: " << static_cast<int>(current_token().get_type()) << " value: '" << current_token().get_value() << "'" << std::endl;
+    // std::cout << "DEBUG: Checking for 'of' keyword, current token type: " << static_cast<int>(current_token().get_type()) << " value: '" << current_token().get_value() << "'" << std::endl;
     if (current_token().get_type() == TokenType::OF) {
-        std::cout << "DEBUG: Found 'of' keyword, creating ForOfStatement" << std::endl;
+        // std::cout << "DEBUG: Found 'of' keyword, creating ForOfStatement" << std::endl;
         advance(); // consume 'of'
         
         // Safety check for end of input

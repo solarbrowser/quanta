@@ -84,6 +84,9 @@ public:
     // Static type name mapping
     static std::string type_to_name(Type type);
     
+    // ES2025 Static methods
+    static Value isError(Context& ctx, const std::vector<Value>& args);
+    
 private:
     void initialize_properties();
     void set_error_name();

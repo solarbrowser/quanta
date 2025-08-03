@@ -95,28 +95,7 @@ public:
     std::unique_ptr<Generator> create_generator(Context& ctx, const std::vector<Value>& args);
 };
 
-/**
- * Yield expression implementation
- * Represents yield and yield* expressions
- */
-class YieldExpression {
-public:
-    enum class Type {
-        Yield,      // yield expression
-        YieldStar   // yield* expression
-    };
-    
-private:
-    Type type_;
-    std::unique_ptr<ASTNode> argument_;
-    
-public:
-    YieldExpression(Type type, std::unique_ptr<ASTNode> argument);
-    
-    Value evaluate(Context& ctx, Generator* generator);
-    
-    Type get_type() const { return type_; }
-    const ASTNode* get_argument() const { return argument_.get(); }
-};
+// Forward declaration - YieldExpression is defined in AST.h
+class YieldExpression;
 
 } // namespace Quanta

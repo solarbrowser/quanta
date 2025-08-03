@@ -74,6 +74,9 @@ private:
     
     // Property descriptors for non-default attributes
     std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> descriptors_;
+    
+    // Track property insertion order for enumeration
+    std::vector<std::string> property_insertion_order_;
 
 public:
     // Constructors
@@ -147,6 +150,9 @@ public:
     std::unique_ptr<Object> filter(Function* callback, Context& ctx);
     void forEach(Function* callback, Context& ctx);
     Value reduce(Function* callback, const Value& initial_value, Context& ctx);
+    
+    // ES2026 Array methods
+    Value groupBy(Function* callback, Context& ctx);
     
     // Function operations (for Function objects)
     Value call(Context& ctx, const Value& this_value, const std::vector<Value>& args);

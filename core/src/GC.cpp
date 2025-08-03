@@ -2,7 +2,7 @@
 #include "Context.h"
 #include <iostream>
 #include <algorithm>
-#include <cstring>
+#include <string.h>
 
 namespace Quanta {
 

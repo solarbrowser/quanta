@@ -167,6 +167,10 @@ namespace AsyncUtils {
     // Promise.reject implementation
     std::unique_ptr<Promise> promise_reject(const Value& reason, Context& ctx);
     
+    // ES2026 Promise enhancements
+    std::unique_ptr<Promise> promise_with_resolvers(Context& ctx);
+    std::unique_ptr<Promise> promise_try(std::function<Value()> fn, Context& ctx);
+    
     // For-await-of loop implementation
     void for_await_of_loop(const Value& async_iterable, 
                           std::function<std::unique_ptr<Promise>(const Value&)> callback, 

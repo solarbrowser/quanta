@@ -333,6 +333,152 @@ Value Math::imul(Context& ctx, const std::vector<Value>& args) {
 }
 
 //=============================================================================
+// ES2026 Enhanced Numeric Methods
+//=============================================================================
+
+Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    // Implements Kahan summation algorithm for more precise floating-point addition
+    if (args.empty()) {
+        return Value(0.0);
+    }
+    
+    double sum = 0.0;
+    double compensation = 0.0;
+    
+    for (const auto& arg : args) {
+        double value = safe_to_number(arg);
+        if (!is_finite_number(value)) {
+            return Value(value); // Return NaN or infinity
+        }
+        
+        double y = value - compensation;
+        double t = sum + y;
+        compensation = (t - sum) - y;
+        sum = t;
+    }
+    
+    return Value(sum);
+}
+
+Value Math::f16round(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    // Round to nearest 16-bit floating point representation
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    if (!is_finite_number(value)) {
+        return Value(value);
+    }
+    
+    // Simple approximation - in real implementation would use proper float16 conversion
+    float f16_val = static_cast<float>(value);
+    return Value(static_cast<double>(f16_val));
+}
+
+Value Math::log10(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::log10(value));
+}
+
+Value Math::log2(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::log2(value));
+}
+
+Value Math::log1p(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::log1p(value));
+}
+
+Value Math::expm1(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::expm1(value));
+}
+
+Value Math::acosh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::acosh(value));
+}
+
+Value Math::asinh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::asinh(value));
+}
+
+Value Math::atanh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::atanh(value));
+}
+
+Value Math::cosh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::cosh(value));
+}
+
+Value Math::sinh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::sinh(value));
+}
+
+Value Math::tanh(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    
+    double value = safe_to_number(args[0]);
+    return Value(std::tanh(value));
+}
+
+//=============================================================================
 // Helper Functions
 //=============================================================================
 

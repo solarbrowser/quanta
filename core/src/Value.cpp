@@ -121,8 +121,50 @@ bool Value::strict_equals(const Value& other) const {
 }
 
 bool Value::loose_equals(const Value& other) const {
-    // For now, just use strict equality - full loose equality is complex
-    return strict_equals(other);
+    // Implement JavaScript loose equality (==) according to ECMAScript spec
+    
+    // 1. If types are the same, use strict equality
+    if ((is_undefined() && other.is_undefined()) ||
+        (is_null() && other.is_null()) ||
+        (is_boolean() && other.is_boolean()) ||
+        (is_number() && other.is_number()) ||
+        (is_string() && other.is_string()) ||
+        (is_object() && other.is_object()) ||
+        (is_function() && other.is_function())) {
+        return strict_equals(other);
+    }
+    
+    // 2. null == undefined
+    if ((is_null() && other.is_undefined()) || (is_undefined() && other.is_null())) {
+        return true;
+    }
+    
+    // 3. Number and String comparison (coerce string to number)
+    if (is_number() && other.is_string()) {
+        return as_number() == other.to_number();
+    }
+    if (is_string() && other.is_number()) {
+        return to_number() == other.as_number();
+    }
+    
+    // 4. Boolean comparison (coerce boolean to number)
+    if (is_boolean()) {
+        return Value(to_number()).loose_equals(other);
+    }
+    if (other.is_boolean()) {
+        return loose_equals(Value(other.to_number()));
+    }
+    
+    // 5. Object to primitive comparison
+    if (is_object() && (other.is_string() || other.is_number())) {
+        return Value(to_string()).loose_equals(other);
+    }
+    if ((is_string() || is_number()) && other.is_object()) {
+        return loose_equals(Value(other.to_string()));
+    }
+    
+    // 6. No other cases match
+    return false;
 }
 
 Value Value::add(const Value& other) const {

@@ -6,6 +6,7 @@
 #include "WebAPI.h"
 #include "NodeJS.h"
 #include "Promise.h"
+#include "Error.h"
 // ES6+ includes disabled due to segfault
 // #include "Generator.h"
 #include "MapSet.h"
@@ -275,6 +276,111 @@ void Engine::inject_dom(Object* document) {
     setup_browser_globals();
 }
 
+void Engine::setup_nodejs_apis() {
+    // Node.js File System API
+    auto fs_obj = std::make_unique<Object>();
+    
+    auto fs_readFile = ObjectFactory::create_native_function("readFile", NodeJS::fs_readFile);
+    auto fs_writeFile = ObjectFactory::create_native_function("writeFile", NodeJS::fs_writeFile);
+    auto fs_appendFile = ObjectFactory::create_native_function("appendFile", NodeJS::fs_appendFile);
+    auto fs_exists = ObjectFactory::create_native_function("exists", NodeJS::fs_exists);
+    auto fs_mkdir = ObjectFactory::create_native_function("mkdir", NodeJS::fs_mkdir);
+    auto fs_rmdir = ObjectFactory::create_native_function("rmdir", NodeJS::fs_rmdir);
+    auto fs_unlink = ObjectFactory::create_native_function("unlink", NodeJS::fs_unlink);
+    auto fs_stat = ObjectFactory::create_native_function("stat", NodeJS::fs_stat);
+    auto fs_readdir = ObjectFactory::create_native_function("readdir", NodeJS::fs_readdir);
+    
+    // Sync versions
+    auto fs_readFileSync = ObjectFactory::create_native_function("readFileSync", NodeJS::fs_readFileSync);
+    auto fs_writeFileSync = ObjectFactory::create_native_function("writeFileSync", NodeJS::fs_writeFileSync);
+    auto fs_existsSync = ObjectFactory::create_native_function("existsSync", NodeJS::fs_existsSync);
+    auto fs_mkdirSync = ObjectFactory::create_native_function("mkdirSync", NodeJS::fs_mkdirSync);
+    auto fs_statSync = ObjectFactory::create_native_function("statSync", NodeJS::fs_statSync);
+    auto fs_readdirSync = ObjectFactory::create_native_function("readdirSync", NodeJS::fs_readdirSync);
+    
+    fs_obj->set_property("readFile", Value(fs_readFile.release()));
+    fs_obj->set_property("writeFile", Value(fs_writeFile.release()));
+    fs_obj->set_property("appendFile", Value(fs_appendFile.release()));
+    fs_obj->set_property("exists", Value(fs_exists.release()));
+    fs_obj->set_property("mkdir", Value(fs_mkdir.release()));
+    fs_obj->set_property("rmdir", Value(fs_rmdir.release()));
+    fs_obj->set_property("unlink", Value(fs_unlink.release()));
+    fs_obj->set_property("stat", Value(fs_stat.release()));
+    fs_obj->set_property("readdir", Value(fs_readdir.release()));
+    fs_obj->set_property("readFileSync", Value(fs_readFileSync.release()));
+    fs_obj->set_property("writeFileSync", Value(fs_writeFileSync.release()));
+    fs_obj->set_property("existsSync", Value(fs_existsSync.release()));
+    fs_obj->set_property("mkdirSync", Value(fs_mkdirSync.release()));
+    fs_obj->set_property("statSync", Value(fs_statSync.release()));
+    fs_obj->set_property("readdirSync", Value(fs_readdirSync.release()));
+    
+    set_global_property("fs", Value(fs_obj.release()));
+    
+    // Node.js Path API
+    auto path_obj = std::make_unique<Object>();
+    
+    auto path_join = ObjectFactory::create_native_function("join", NodeJS::path_join);
+    auto path_resolve = ObjectFactory::create_native_function("resolve", NodeJS::path_resolve);
+    auto path_dirname = ObjectFactory::create_native_function("dirname", NodeJS::path_dirname);
+    auto path_basename = ObjectFactory::create_native_function("basename", NodeJS::path_basename);
+    auto path_extname = ObjectFactory::create_native_function("extname", NodeJS::path_extname);
+    auto path_normalize = ObjectFactory::create_native_function("normalize", NodeJS::path_normalize);
+    auto path_isAbsolute = ObjectFactory::create_native_function("isAbsolute", NodeJS::path_isAbsolute);
+    
+    path_obj->set_property("join", Value(path_join.release()));
+    path_obj->set_property("resolve", Value(path_resolve.release()));
+    path_obj->set_property("dirname", Value(path_dirname.release()));
+    path_obj->set_property("basename", Value(path_basename.release()));
+    path_obj->set_property("extname", Value(path_extname.release()));
+    path_obj->set_property("normalize", Value(path_normalize.release()));
+    path_obj->set_property("isAbsolute", Value(path_isAbsolute.release()));
+    
+    set_global_property("path", Value(path_obj.release()));
+    
+    // Node.js OS API
+    auto os_obj = std::make_unique<Object>();
+    
+    auto os_platform = ObjectFactory::create_native_function("platform", NodeJS::os_platform);
+    auto os_arch = ObjectFactory::create_native_function("arch", NodeJS::os_arch);
+    auto os_cpus = ObjectFactory::create_native_function("cpus", NodeJS::os_cpus);
+    auto os_hostname = ObjectFactory::create_native_function("hostname", NodeJS::os_hostname);
+    auto os_homedir = ObjectFactory::create_native_function("homedir", NodeJS::os_homedir);
+    auto os_tmpdir = ObjectFactory::create_native_function("tmpdir", NodeJS::os_tmpdir);
+    
+    os_obj->set_property("platform", Value(os_platform.release()));
+    os_obj->set_property("arch", Value(os_arch.release()));
+    os_obj->set_property("cpus", Value(os_cpus.release()));
+    os_obj->set_property("hostname", Value(os_hostname.release()));
+    os_obj->set_property("homedir", Value(os_homedir.release()));
+    os_obj->set_property("tmpdir", Value(os_tmpdir.release()));
+    
+    set_global_property("os", Value(os_obj.release()));
+    
+    // Node.js Process API
+    auto process_obj = std::make_unique<Object>();
+    
+    auto process_exit = ObjectFactory::create_native_function("exit", NodeJS::process_exit);
+    auto process_cwd = ObjectFactory::create_native_function("cwd", NodeJS::process_cwd);
+    auto process_chdir = ObjectFactory::create_native_function("chdir", NodeJS::process_chdir);
+    
+    process_obj->set_property("exit", Value(process_exit.release()));
+    process_obj->set_property("cwd", Value(process_cwd.release()));
+    process_obj->set_property("chdir", Value(process_chdir.release()));
+    
+    set_global_property("process", Value(process_obj.release()));
+    
+    // Node.js Crypto API
+    auto crypto_obj = std::make_unique<Object>();
+    
+    auto crypto_randomBytes = ObjectFactory::create_native_function("randomBytes", NodeJS::crypto_randomBytes);
+    auto crypto_createHash = ObjectFactory::create_native_function("createHash", NodeJS::crypto_createHash);
+    
+    crypto_obj->set_property("randomBytes", Value(crypto_randomBytes.release()));
+    crypto_obj->set_property("createHash", Value(crypto_createHash.release()));
+    
+    set_global_property("crypto", Value(crypto_obj.release()));
+}
+
 void Engine::setup_browser_globals() {
     // Browser-specific globals (placeholder implementations)
     set_global_property("window", Value(global_context_->get_global_object()));
@@ -359,6 +465,33 @@ void Engine::setup_browser_globals() {
     math_obj->set_property("cos", Value(math_cos.release()));
     math_obj->set_property("tan", Value(math_tan.release()));
     math_obj->set_property("random", Value(math_random.release()));
+    
+    // Add ES2026 enhanced Math methods
+    auto math_sumPrecise = ObjectFactory::create_native_function("sumPrecise", Math::sumPrecise);
+    auto math_f16round = ObjectFactory::create_native_function("f16round", Math::f16round);
+    auto math_log10 = ObjectFactory::create_native_function("log10", Math::log10);
+    auto math_log2 = ObjectFactory::create_native_function("log2", Math::log2);
+    auto math_log1p = ObjectFactory::create_native_function("log1p", Math::log1p);
+    auto math_expm1 = ObjectFactory::create_native_function("expm1", Math::expm1);
+    auto math_acosh = ObjectFactory::create_native_function("acosh", Math::acosh);
+    auto math_asinh = ObjectFactory::create_native_function("asinh", Math::asinh);
+    auto math_atanh = ObjectFactory::create_native_function("atanh", Math::atanh);
+    auto math_cosh = ObjectFactory::create_native_function("cosh", Math::cosh);
+    auto math_sinh = ObjectFactory::create_native_function("sinh", Math::sinh);
+    auto math_tanh = ObjectFactory::create_native_function("tanh", Math::tanh);
+    
+    math_obj->set_property("sumPrecise", Value(math_sumPrecise.release()));
+    math_obj->set_property("f16round", Value(math_f16round.release()));
+    math_obj->set_property("log10", Value(math_log10.release()));
+    math_obj->set_property("log2", Value(math_log2.release()));
+    math_obj->set_property("log1p", Value(math_log1p.release()));
+    math_obj->set_property("expm1", Value(math_expm1.release()));
+    math_obj->set_property("acosh", Value(math_acosh.release()));
+    math_obj->set_property("asinh", Value(math_asinh.release()));
+    math_obj->set_property("atanh", Value(math_atanh.release()));
+    math_obj->set_property("cosh", Value(math_cosh.release()));
+    math_obj->set_property("sinh", Value(math_sinh.release()));
+    math_obj->set_property("tanh", Value(math_tanh.release()));
     
     set_global_property("Math", Value(math_obj.release()));
     
@@ -480,97 +613,8 @@ void Engine::setup_browser_globals() {
     
     set_global_property("localStorage", Value(localStorage_obj.release()));
     
-    // Node.js File System module
-    auto fs_obj = std::make_unique<Object>();
-    auto fs_readFile_fn = ObjectFactory::create_native_function("readFile", NodeJS::fs_readFile);
-    auto fs_writeFile_fn = ObjectFactory::create_native_function("writeFile", NodeJS::fs_writeFile);
-    auto fs_readFileSync_fn = ObjectFactory::create_native_function("readFileSync", NodeJS::fs_readFileSync);
-    auto fs_writeFileSync_fn = ObjectFactory::create_native_function("writeFileSync", NodeJS::fs_writeFileSync);
-    auto fs_existsSync_fn = ObjectFactory::create_native_function("existsSync", NodeJS::fs_existsSync);
-    auto fs_mkdirSync_fn = ObjectFactory::create_native_function("mkdirSync", NodeJS::fs_mkdirSync);
-    auto fs_readdirSync_fn = ObjectFactory::create_native_function("readdirSync", NodeJS::fs_readdirSync);
-    
-    fs_obj->set_property("readFile", Value(fs_readFile_fn.release()));
-    fs_obj->set_property("writeFile", Value(fs_writeFile_fn.release()));
-    fs_obj->set_property("readFileSync", Value(fs_readFileSync_fn.release()));
-    fs_obj->set_property("writeFileSync", Value(fs_writeFileSync_fn.release()));
-    fs_obj->set_property("existsSync", Value(fs_existsSync_fn.release()));
-    fs_obj->set_property("mkdirSync", Value(fs_mkdirSync_fn.release()));
-    fs_obj->set_property("readdirSync", Value(fs_readdirSync_fn.release()));
-    
-    set_global_property("fs", Value(fs_obj.release()));
-    
-    // Node.js Path module
-    auto path_obj = std::make_unique<Object>();
-    auto path_join_fn = ObjectFactory::create_native_function("join", NodeJS::path_join);
-    auto path_dirname_fn = ObjectFactory::create_native_function("dirname", NodeJS::path_dirname);
-    auto path_basename_fn = ObjectFactory::create_native_function("basename", NodeJS::path_basename);
-    auto path_extname_fn = ObjectFactory::create_native_function("extname", NodeJS::path_extname);
-    
-    path_obj->set_property("join", Value(path_join_fn.release()));
-    path_obj->set_property("dirname", Value(path_dirname_fn.release()));
-    path_obj->set_property("basename", Value(path_basename_fn.release()));
-    path_obj->set_property("extname", Value(path_extname_fn.release()));
-    
-    set_global_property("path", Value(path_obj.release()));
-    
-    // Node.js HTTP module
-    auto http_obj = std::make_unique<Object>();
-    auto http_createServer_fn = ObjectFactory::create_native_function("createServer", NodeJS::http_createServer);
-    auto http_request_fn = ObjectFactory::create_native_function("request", NodeJS::http_request);
-    auto http_get_fn = ObjectFactory::create_native_function("get", NodeJS::http_get);
-    
-    http_obj->set_property("createServer", Value(http_createServer_fn.release()));
-    http_obj->set_property("request", Value(http_request_fn.release()));
-    http_obj->set_property("get", Value(http_get_fn.release()));
-    
-    set_global_property("http", Value(http_obj.release()));
-    
-    // Node.js OS module
-    auto os_obj = std::make_unique<Object>();
-    auto os_platform_fn = ObjectFactory::create_native_function("platform", NodeJS::os_platform);
-    auto os_arch_fn = ObjectFactory::create_native_function("arch", NodeJS::os_arch);
-    auto os_hostname_fn = ObjectFactory::create_native_function("hostname", NodeJS::os_hostname);
-    auto os_homedir_fn = ObjectFactory::create_native_function("homedir", NodeJS::os_homedir);
-    auto os_tmpdir_fn = ObjectFactory::create_native_function("tmpdir", NodeJS::os_tmpdir);
-    
-    os_obj->set_property("platform", Value(os_platform_fn.release()));
-    os_obj->set_property("arch", Value(os_arch_fn.release()));
-    os_obj->set_property("hostname", Value(os_hostname_fn.release()));
-    os_obj->set_property("homedir", Value(os_homedir_fn.release()));
-    os_obj->set_property("tmpdir", Value(os_tmpdir_fn.release()));
-    
-    set_global_property("os", Value(os_obj.release()));
-    
-    // Node.js Process object
-    auto process_obj = std::make_unique<Object>();
-    auto process_exit_fn = ObjectFactory::create_native_function("exit", NodeJS::process_exit);
-    auto process_cwd_fn = ObjectFactory::create_native_function("cwd", NodeJS::process_cwd);
-    
-    process_obj->set_property("exit", Value(process_exit_fn.release()));
-    process_obj->set_property("cwd", Value(process_cwd_fn.release()));
-    
-    set_global_property("process", Value(process_obj.release()));
-    
-    // Node.js Crypto module
-    auto crypto_obj = std::make_unique<Object>();
-    auto crypto_randomBytes_fn = ObjectFactory::create_native_function("randomBytes", NodeJS::crypto_randomBytes);
-    auto crypto_createHash_fn = ObjectFactory::create_native_function("createHash", NodeJS::crypto_createHash);
-    
-    crypto_obj->set_property("randomBytes", Value(crypto_randomBytes_fn.release()));
-    crypto_obj->set_property("createHash", Value(crypto_createHash_fn.release()));
-    
-    set_global_property("crypto", Value(crypto_obj.release()));
-    
-    // Node.js Util module
-    auto util_obj = std::make_unique<Object>();
-    auto util_format_fn = ObjectFactory::create_native_function("format", NodeJS::util_format);
-    auto util_inspect_fn = ObjectFactory::create_native_function("inspect", NodeJS::util_inspect);
-    
-    util_obj->set_property("format", Value(util_format_fn.release()));
-    util_obj->set_property("inspect", Value(util_inspect_fn.release()));
-    
-    set_global_property("util", Value(util_obj.release()));
+    // NodeJS API registration - now working on Windows with minimal headers
+    setup_nodejs_apis();
     
     // Setup new ES6+ features - DISABLED due to segfault
     // setup_es6_features();
@@ -589,7 +633,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         Lexer lexer(source);
         Parser parser(lexer.tokenize());
         
-        std::cout << "DEBUG: Parser created, about to parse" << std::endl;
+        // std::cout << "DEBUG: Parser created, about to parse" << std::endl;
         
         // Parse the program into AST
         auto program = parser.parse_program();
@@ -597,13 +641,13 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             return Result("Parse error: Failed to parse JavaScript code");
         }
         
-        std::cout << "DEBUG: Program parsed successfully" << std::endl;
+        // std::cout << "DEBUG: Program parsed successfully" << std::endl;
         
         // Execute the AST with full Stage 10 support
         if (global_context_) {
-            std::cout << "DEBUG: About to call program->evaluate()" << std::endl;
+            // std::cout << "DEBUG: About to call program->evaluate()" << std::endl;
             Value result = program->evaluate(*global_context_);
-            std::cout << "DEBUG: program->evaluate() returned" << std::endl;
+            // std::cout << "DEBUG: program->evaluate() returned" << std::endl;
             
             // Check if the context has any thrown exceptions
             if (global_context_->has_exception()) {
@@ -748,6 +792,9 @@ void Engine::setup_built_in_objects() {
     
     array_prototype->set_property("reduce", Value(reduce_fn.release()));
     
+    // Note: GroupBy method temporarily disabled due to runtime issues
+    // Will be re-enabled after debugging the function calling mechanism
+    
     // Create Promise constructor
     auto promise_constructor = ObjectFactory::create_native_function("Promise", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -794,6 +841,13 @@ void Engine::setup_built_in_objects() {
             
             return Value(promise);
         });
+    
+    // Add ES2025 Promise static methods
+    auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers", Promise::withResolvers);
+    auto promise_try = ObjectFactory::create_native_function("try", Promise::try_method);
+    
+    promise_constructor->set_property("withResolvers", Value(promise_withResolvers.release()));
+    promise_constructor->set_property("try", Value(promise_try.release()));
     
     global_context_->create_binding("Promise", Value(promise_constructor.get()));
     
@@ -1008,13 +1062,7 @@ void Engine::setup_built_in_functions() {
         return Value(weakset_obj.release());
     });
     
-    // Error constructor
-    register_function("Error", [](const std::vector<Value>& args) {
-        auto error_obj = ObjectFactory::create_error(
-            args.empty() ? "Error" : args[0].to_string()
-        );
-        return Value(error_obj.release());
-    });
+    // Error constructor is now set up in Context.cpp with ES2025 static methods
     
     // Global functions
     register_function("parseInt", [](const std::vector<Value>& args) {

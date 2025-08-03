@@ -166,4 +166,28 @@ const char* JavaScriptException::what() const noexcept {
     return what_message_.c_str();
 }
 
+//=============================================================================
+// ES2025 Static Methods
+//=============================================================================
+
+// ES2025: Error.isError()
+Value Error::isError(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused parameter warning
+    
+    if (args.empty()) {
+        return Value(false);
+    }
+    
+    const Value& value = args[0];
+    
+    // Check if the value is an object and has Error type
+    if (value.is_object()) {
+        Object* obj = value.as_object();
+        // Check if it's an Error object or inherits from Error
+        return Value(obj->get_type() == Object::ObjectType::Error);
+    }
+    
+    return Value(false);
+}
+
 } // namespace Quanta

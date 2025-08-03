@@ -181,9 +181,9 @@ std::unique_ptr<ASTNode> Parameter::clone() const {
 //=============================================================================
 
 Value Identifier::evaluate(Context& ctx) {
-    std::cout << "DEBUG: Identifier::evaluate for '" << name_ << "'" << std::endl;
+    // std::cout << "DEBUG: Identifier::evaluate for '" << name_ << "'" << std::endl;
     Value result = ctx.get_binding(name_);
-    std::cout << "DEBUG: Identifier got value type: " << result.to_string() << std::endl;
+    // std::cout << "DEBUG: Identifier got value type: " << result.to_string() << std::endl;
     return result;
 }
 
@@ -817,10 +817,10 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
 //=============================================================================
 
 Value CallExpression::evaluate(Context& ctx) {
-    std::cout << "DEBUG: CallExpression::evaluate - callee type = " << (int)callee_->get_type() << std::endl;
+    // std::cout << "DEBUG: CallExpression::evaluate - callee type = " << (int)callee_->get_type() << std::endl;
     // Handle member expressions (obj.method()) directly first
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-        std::cout << "DEBUG: CallExpression::evaluate - calling handle_member_expression_call" << std::endl;
+        // std::cout << "DEBUG: CallExpression::evaluate - calling handle_member_expression_call" << std::endl;
         return handle_member_expression_call(ctx);
     }
     
@@ -1285,7 +1285,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
 }
 
 Value CallExpression::handle_member_expression_call(Context& ctx) {
-    std::cout << "DEBUG: handle_member_expression_call - START" << std::endl;
+    // std::cout << "DEBUG: handle_member_expression_call - START" << std::endl;
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
     
     // Check if it's console.log
@@ -1315,18 +1315,18 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
     }
     
-    std::cout << "DEBUG: handle_member_expression_call - after console.log check" << std::endl;
+    // std::cout << "DEBUG: handle_member_expression_call - after console.log check" << std::endl;
     
     // Handle general object method calls (obj.method())
     Value object_value = member->get_object()->evaluate(ctx);
-    std::cout << "DEBUG: handle_member_expression_call - object_value is_function: " << object_value.is_function() << std::endl;
+    // std::cout << "DEBUG: handle_member_expression_call - object_value is_function: " << object_value.is_function() << std::endl;
     if (ctx.has_exception()) {
-        std::cout << "DEBUG: handle_member_expression_call - exception after object evaluation" << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - exception after object evaluation" << std::endl;
         return Value();
     }
     
     if (object_value.is_string()) {
-        std::cout << "DEBUG: handle_member_expression_call - is_string branch" << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - is_string branch" << std::endl;
         // Handle string method calls
         std::string str_value = object_value.to_string();
         
@@ -1349,7 +1349,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         return handle_string_method_call(str_value, method_name, ctx);
         
     } else if (object_value.is_number()) {
-        std::cout << "DEBUG: handle_member_expression_call - is_number branch" << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - is_number branch" << std::endl;
         // Handle number method calls using MemberExpression to get the function
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
@@ -1372,7 +1372,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
         
     } else if (object_value.is_boolean()) {
-        std::cout << "DEBUG: handle_member_expression_call - is_boolean branch" << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - is_boolean branch" << std::endl;
         // Handle boolean method calls using MemberExpression to get the function
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
@@ -1417,8 +1417,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         // Get the method function
         Value method_value = obj->get_property(method_name);
-        std::cout << "DEBUG: handle_member_expression_call - method_name = " << method_name << std::endl;
-        std::cout << "DEBUG: handle_member_expression_call - method_value.is_function() = " << method_value.is_function() << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - method_name = " << method_name << std::endl;
+        // std::cout << "DEBUG: handle_member_expression_call - method_value.is_function() = " << method_value.is_function() << std::endl;
         if (method_value.is_function()) {
             // Evaluate arguments
             std::vector<Value> arg_values;
@@ -1428,7 +1428,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 arg_values.push_back(val);
             }
             
-            std::cout << "DEBUG: handle_member_expression_call - calling method with " << arg_values.size() << " args" << std::endl;
+            // std::cout << "DEBUG: handle_member_expression_call - calling method with " << arg_values.size() << " args" << std::endl;
             // Call the method with 'this' bound to the object
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -1439,7 +1439,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     }
     
     // If we reach here, it's an unsupported method call
-    std::cout << "DEBUG: handle_member_expression_call - unsupported method call" << std::endl;
+    // std::cout << "DEBUG: handle_member_expression_call - unsupported method call" << std::endl;
     ctx.throw_exception(Value("Unsupported method call"));
     return Value();
 }
@@ -1620,12 +1620,12 @@ Value MemberExpression::evaluate(Context& ctx) {
     // 🚀 BOOLEAN PRIMITIVE BOXING
     else if (object_value.is_boolean()) {
         bool bool_value = object_value.as_boolean();  // Use as_boolean() instead of to_boolean()
-        std::cout << "DEBUG: MemberExpression boolean boxing for " << prop_name << " - bool_value=" << bool_value << std::endl;
+        // std::cout << "DEBUG: MemberExpression boolean boxing for " << prop_name << " - bool_value=" << bool_value << std::endl;
         
         if (prop_name == "toString") {
             auto to_string_fn = ObjectFactory::create_native_function("toString",
                 [bool_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    std::cout << "DEBUG: LAMBDA toString called with bool_value=" << bool_value << std::endl;
+                    // std::cout << "DEBUG: LAMBDA toString called with bool_value=" << bool_value << std::endl;
                     return Value(bool_value ? "true" : "false");
                 });
             return Value(to_string_fn.release());
@@ -1654,9 +1654,9 @@ Value MemberExpression::evaluate(Context& ctx) {
                 Identifier* prop = static_cast<Identifier*>(property_.get());
                 std::string prop_name = prop->get_name();
                 
-                std::cout << "DEBUG: MemberExpression accessing '" << prop_name << "' on object type " << (int)obj->get_type() << std::endl;
+                // std::cout << "DEBUG: MemberExpression accessing '" << prop_name << "' on object type " << (int)obj->get_type() << std::endl;
                 Value result = obj->get_property(prop_name);
-                std::cout << "DEBUG: MemberExpression got result: " << result.to_string() << std::endl;
+                // std::cout << "DEBUG: MemberExpression got result: " << result.to_string() << std::endl;
                 return result;
             }
         }
@@ -1749,12 +1749,12 @@ std::unique_ptr<ASTNode> ExpressionStatement::clone() const {
 Value Program::evaluate(Context& ctx) {
     Value last_value;
     
-    std::cout << "DEBUG: Program::evaluate called with " << statements_.size() << " statements" << std::endl;
+    // std::cout << "DEBUG: Program::evaluate called with " << statements_.size() << " statements" << std::endl;
     
     // HOISTING FIX: First pass - process function declarations
     for (const auto& statement : statements_) {
         if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-            std::cout << "DEBUG: Processing function declaration in hoisting" << std::endl;
+            // std::cout << "DEBUG: Processing function declaration in hoisting" << std::endl;
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
                 return Value();
@@ -1765,7 +1765,7 @@ Value Program::evaluate(Context& ctx) {
     // Second pass - process all other statements
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-            std::cout << "DEBUG: Processing statement type: " << static_cast<int>(statement->get_type()) << std::endl;
+            // std::cout << "DEBUG: Processing statement type: " << static_cast<int>(statement->get_type()) << std::endl;
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
                 return Value();
@@ -2062,10 +2062,10 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 //=============================================================================
 
 Value ForOfStatement::evaluate(Context& ctx) {
-    std::cout << "DEBUG: ForOfStatement::evaluate called!" << std::endl;
+    // std::cout << "DEBUG: ForOfStatement::evaluate called!" << std::endl;
     // Evaluate the iterable expression safely
     Value iterable = right_->evaluate(ctx);
-    std::cout << "DEBUG: ForOfStatement iterable type: " << iterable.to_string() << std::endl;
+    // std::cout << "DEBUG: ForOfStatement iterable type: " << iterable.to_string() << std::endl;
     if (ctx.has_exception()) return Value();
     
     // Handle array iteration only (safe implementation)
@@ -2112,7 +2112,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 iteration_count++;
                 
                 Value element = obj->get_element(i);
-                std::cout << "DEBUG: ForOfStatement loop iteration " << i << ", element = " << element.to_string() << std::endl;
+                // std::cout << "DEBUG: ForOfStatement loop iteration " << i << ", element = " << element.to_string() << std::endl;
                 
                 // Set loop variable in the current context
                 bool is_const = (var_kind == VariableDeclarator::Kind::CONST);
@@ -2121,27 +2121,27 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 if (is_var) {
                     // For var declarations, use set_binding (mutable)
                     if (loop_ctx->has_binding(var_name)) {
-                        std::cout << "DEBUG: Setting existing var binding '" << var_name << "' to " << element.to_string() << std::endl;
+                        // std::cout << "DEBUG: Setting existing var binding '" << var_name << "' to " << element.to_string() << std::endl;
                         bool success = loop_ctx->set_binding(var_name, element);
-                        std::cout << "DEBUG: set_binding returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+                        // std::cout << "DEBUG: set_binding returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
                     } else {
-                        std::cout << "DEBUG: Creating new var binding '" << var_name << "' with value " << element.to_string() << std::endl;
+                        // std::cout << "DEBUG: Creating new var binding '" << var_name << "' with value " << element.to_string() << std::endl;
                         bool success = loop_ctx->create_binding(var_name, element, true); // mutable
-                        std::cout << "DEBUG: create_binding returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+                        // std::cout << "DEBUG: create_binding returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
                     }
                 } else {
                     // For const/let declarations, always create a new binding (this iteration only)
                     // We'll force the creation even if it exists
-                    std::cout << "DEBUG: Force creating const/let binding '" << var_name << "' with value " << element.to_string() << std::endl;
+                    // std::cout << "DEBUG: Force creating const/let binding '" << var_name << "' with value " << element.to_string() << std::endl;
                     
                     // Try to create the binding - if it fails, try to set it
                     // For for...of loops, we need mutable bindings even for const/let (new binding each iteration)
                     bool success = loop_ctx->create_binding(var_name, element, true); // Force mutable
                     if (!success) {
-                        std::cout << "DEBUG: create_binding failed, trying set_binding..." << std::endl;
+                        // std::cout << "DEBUG: create_binding failed, trying set_binding..." << std::endl;
                         success = loop_ctx->set_binding(var_name, element);
                     }
-                    std::cout << "DEBUG: Final binding operation returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
+                    // std::cout << "DEBUG: Final binding operation returned: " << (success ? "SUCCESS" : "FAILED") << std::endl;
                 }
                 
                 // Execute loop body
@@ -2286,7 +2286,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     }
     
     // DEBUG: Print function creation info
-    std::cout << "DEBUG: FunctionDeclaration::evaluate called for '" << function_name << "'" << std::endl;
+    // std::cout << "DEBUG: FunctionDeclaration::evaluate called for '" << function_name << "'" << std::endl;
     
     // CLOSURE FIX: Capture current context bindings in function
     if (function_obj) {
@@ -2304,11 +2304,11 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     
     // Wrap in Value - ensure Function type is preserved
     Function* func_ptr = function_obj.release();
-    std::cout << "DEBUG: Function object type before Value creation: " << (int)func_ptr->get_type() << std::endl;
+    // std::cout << "DEBUG: Function object type before Value creation: " << (int)func_ptr->get_type() << std::endl;
     Value function_value(func_ptr);
     
     // Store function in context (removed problematic debug)
-    std::cout << "DEBUG: About to store function in context" << std::endl;
+    // std::cout << "DEBUG: About to store function in context" << std::endl;
     
     // Create binding in current context
     if (!ctx.create_binding(function_name, function_value, true)) {
@@ -2317,7 +2317,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     }
     
     // DEBUG: Check function value after storing
-    std::cout << "DEBUG: Function stored in context" << std::endl;
+    // std::cout << "DEBUG: Function stored in context" << std::endl;
     
     // Skip debug retrieval for now to avoid hanging
     
@@ -3276,6 +3276,82 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             return Value(); // undefined
         });
     array->set_property("forEach", Value(forEach_fn.release()));
+    
+    // Create includes function
+    auto includes_fn = ObjectFactory::create_native_function("includes", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.includes called on non-object"));
+                return Value();
+            }
+            if (args.empty()) {
+                return Value(false);
+            }
+            
+            Value search_element = args[0];
+            uint32_t length = this_obj->get_length();
+            
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                if (element.strict_equals(search_element)) {
+                    return Value(true);
+                }
+            }
+            return Value(false);
+        });
+    array->set_property("includes", Value(includes_fn.release()));
+    
+    // Create reverse function
+    auto reverse_fn = ObjectFactory::create_native_function("reverse", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args; // unused
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.reverse called on non-object"));
+                return Value();
+            }
+            
+            uint32_t length = this_obj->get_length();
+            for (uint32_t i = 0; i < length / 2; i++) {
+                Value temp = this_obj->get_element(i);
+                this_obj->set_element(i, this_obj->get_element(length - 1 - i));
+                this_obj->set_element(length - 1 - i, temp);
+            }
+            return Value(this_obj); // return the same array
+        });
+    array->set_property("reverse", Value(reverse_fn.release()));
+    
+    // Create sort function
+    auto sort_fn = ObjectFactory::create_native_function("sort", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.sort called on non-object"));
+                return Value();
+            }
+            
+            uint32_t length = this_obj->get_length();
+            
+            // Simple bubble sort for now (could be optimized later)
+            for (uint32_t i = 0; i < length; i++) {
+                for (uint32_t j = 0; j < length - 1 - i; j++) {
+                    Value a = this_obj->get_element(j);
+                    Value b = this_obj->get_element(j + 1);
+                    
+                    // Convert to strings for comparison (default sort behavior)
+                    std::string str_a = a.to_string();
+                    std::string str_b = b.to_string();
+                    
+                    if (str_a > str_b) {
+                        this_obj->set_element(j, b);
+                        this_obj->set_element(j + 1, a);
+                    }
+                }
+            }
+            return Value(this_obj); // return the same array
+        });
+    array->set_property("sort", Value(sort_fn.release()));
     
     return Value(array.release());
 }

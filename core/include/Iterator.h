@@ -165,6 +165,15 @@ namespace IterableUtils {
     void setup_string_iterator_methods(Context& ctx);
     void setup_map_iterator_methods(Context& ctx);
     void setup_set_iterator_methods(Context& ctx);
+    
+    // ES2026 iterator enhancements
+    std::unique_ptr<Iterator> create_range_iterator(double start, double end, double step = 1.0);
+    std::unique_ptr<Iterator> create_filter_iterator(std::unique_ptr<Iterator> source, 
+                                                    std::function<bool(const Value&)> predicate);
+    std::unique_ptr<Iterator> create_map_iterator(std::unique_ptr<Iterator> source, 
+                                                 std::function<Value(const Value&)> mapper);
+    std::unique_ptr<Iterator> create_take_iterator(std::unique_ptr<Iterator> source, size_t count);
+    std::unique_ptr<Iterator> create_drop_iterator(std::unique_ptr<Iterator> source, size_t count);
 }
 
 } // namespace Quanta

@@ -143,6 +143,7 @@ public:
 
     // Browser integration helpers
     void inject_dom(Object* document);
+    void setup_nodejs_apis();
     void setup_browser_globals();
     void register_web_apis();
 

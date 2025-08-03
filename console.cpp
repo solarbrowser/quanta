@@ -7,6 +7,10 @@
 #include <fstream>
 #include <cstdio>
 
+#ifdef _WIN32
+#include <conio.h>
+#endif
+
 // Optional readline support for better UX
 #ifdef USE_READLINE
 #include <readline/readline.h>
@@ -242,6 +246,9 @@ int main(int argc, char* argv[]) {
         
         // If file argument provided, execute it instead of interactive mode
         if (argc > 1) {
+            // Show banner for file execution too
+            console.print_banner();
+            
             std::ifstream file(argv[1]);
             if (!file.is_open()) {
                 std::cerr << "Error: Cannot open file " << argv[1] << std::endl;
@@ -252,10 +259,18 @@ int main(int argc, char* argv[]) {
             buffer << file.rdbuf();
             std::string content = buffer.str();
             
-            // Debug: Show what we're executing
-            std::cerr << "DEBUG: Executing file content: " << content << std::endl;
-            
+            // Execute the file content
             console.evaluate_expression(content, true);
+            
+            // Wait for user input before closing
+            std::cout << "\nPress any key to exit...";
+            std::cout.flush();
+#ifdef _WIN32
+            _getch();
+#else
+            std::cin.get();
+#endif
+            
             return 0;
         }
         

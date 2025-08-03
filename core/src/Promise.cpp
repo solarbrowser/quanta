@@ -1,5 +1,6 @@
 #include "../include/Promise.h"
 #include "../include/Context.h"
+#include "../../parser/include/AST.h"
 #include <iostream>
 
 namespace Quanta {
@@ -109,6 +110,73 @@ void Promise::execute_handlers() {
         fulfillment_handlers_.clear();
         rejection_handlers_.clear();
     }
+}
+
+// ES2025: Promise.withResolvers()
+Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args; // Suppress unused parameter warnings
+    
+    auto* promise = new Promise();
+    auto result_obj = ObjectFactory::create_object();
+    
+    // Create resolve function
+    auto resolve_fn = ObjectFactory::create_native_function("resolve",
+        [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            Value resolve_value = args.empty() ? Value() : args[0];
+            promise->fulfill(resolve_value);
+            return Value();
+        });
+    
+    // Create reject function  
+    auto reject_fn = ObjectFactory::create_native_function("reject",
+        [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            Value reject_value = args.empty() ? Value("Promise rejected") : args[0];
+            promise->reject(reject_value);
+            return Value();
+        });
+    
+    // Return object with promise, resolve, reject
+    result_obj->set_property("promise", Value(promise));
+    result_obj->set_property("resolve", Value(resolve_fn.release()));
+    result_obj->set_property("reject", Value(reject_fn.release()));
+    
+    return Value(result_obj.release());
+}
+
+// ES2025: Promise.try()
+Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
+    if (args.empty() || !args[0].is_function()) {
+        ctx.throw_exception(Value("Promise.try requires a function argument"));
+        return Value();
+    }
+    
+    Function* callback = args[0].as_function();
+    auto* promise = new Promise();
+    
+    try {
+        // Execute the callback immediately
+        std::vector<Value> callback_args;
+        Value result = callback->call(ctx, callback_args);
+        
+        // If result is a Promise, chain it
+        if (result.is_object() && result.as_object()->get_type() == ObjectType::Promise) {
+            Promise* result_promise = static_cast<Promise*>(result.as_object());
+            if (result_promise->state_ == PromiseState::FULFILLED) {
+                promise->fulfill(result_promise->value_);
+            } else if (result_promise->state_ == PromiseState::REJECTED) {
+                promise->reject(result_promise->value_);
+            }
+        } else {
+            // Fulfill with the direct result
+            promise->fulfill(result);
+        }
+    } catch (const std::exception& e) {
+        promise->reject(Value(std::string("Promise.try caught exception: ") + e.what()));
+    }
+    
+    return Value(promise);
 }
 
 } // namespace Quanta

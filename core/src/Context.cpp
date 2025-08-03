@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "Error.h"
 #include "JSON.h"
+#include "Promise.h"
 #include "ProxyReflect.h"
 #include "WebAPI.h"
 #include <iostream>
@@ -267,7 +268,7 @@ void Context::initialize_built_ins() {
             }
             
             Object* obj = args[0].as_object();
-            auto keys = obj->get_enumerable_keys();
+            auto keys = obj->get_own_property_keys();  // Use direct method instead of enumerable
             
             auto result_array = ObjectFactory::create_array(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
@@ -277,6 +278,27 @@ void Context::initialize_built_ins() {
             return Value(result_array.release());
         });
     object_constructor->set_property("keys", Value(keys_fn.release()));
+    
+    // Object.values(obj) - returns array of own enumerable property values
+    auto values_fn = ObjectFactory::create_native_function("values", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() == 0 || !args[0].is_object()) {
+                ctx.throw_exception(Value("Object.values called on non-object"));
+                return Value();
+            }
+            
+            Object* obj = args[0].as_object();
+            auto keys = obj->get_own_property_keys();  // Use direct method instead of enumerable
+            
+            auto result_array = ObjectFactory::create_array(keys.size());
+            for (size_t i = 0; i < keys.size(); i++) {
+                Value value = obj->get_property(keys[i]);
+                result_array->set_element(i, value);
+            }
+            
+            return Value(result_array.release());
+        });
+    object_constructor->set_property("values", Value(values_fn.release()));
     
     // Object.create(prototype) - creates new object with specified prototype
     auto create_fn = ObjectFactory::create_native_function("create",
@@ -293,9 +315,7 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Object", object_constructor.release());
     
-    // Array constructor
-    auto array_constructor = ObjectFactory::create_function();
-    register_built_in_object("Array", array_constructor.release());
+    // Array constructor is now set up in Engine.cpp with proper constructor logic
     
     // Function constructor
     auto function_constructor = ObjectFactory::create_native_function("Function",
@@ -390,8 +410,20 @@ void Context::initialize_built_ins() {
         });
     register_built_in_object("Boolean", boolean_constructor.release());
     
-    // Error constructor
-    auto error_constructor = ObjectFactory::create_function();
+    // Error constructor (with ES2025 static methods)
+    auto error_constructor = ObjectFactory::create_native_function("Error",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            auto error_obj = ObjectFactory::create_error(
+                args.empty() ? "Error" : args[0].to_string()
+            );
+            return Value(error_obj.release());
+        });
+    
+    // Add ES2025 Error static methods
+    auto error_isError = ObjectFactory::create_native_function("isError", Error::isError);
+    error_constructor->set_property("isError", Value(error_isError.release()));
+    
     register_built_in_object("Error", error_constructor.release());
     
     // JSON object
@@ -412,6 +444,155 @@ void Context::initialize_built_ins() {
     json_object->set_property("stringify", Value(json_stringify.release()));
     
     register_built_in_object("JSON", json_object.release());
+    
+    // Math object
+    auto math_object = ObjectFactory::create_object();
+    
+    // Math constants
+    math_object->set_property("E", Value(2.718281828459045));
+    math_object->set_property("LN2", Value(0.6931471805599453));
+    math_object->set_property("LN10", Value(2.302585092994046));
+    math_object->set_property("LOG2E", Value(1.4426950408889634));
+    math_object->set_property("LOG10E", Value(0.4342944819032518));
+    math_object->set_property("PI", Value(3.141592653589793));
+    math_object->set_property("SQRT1_2", Value(0.7071067811865476));
+    math_object->set_property("SQRT2", Value(1.4142135623730951));
+    
+    // Math.log10
+    auto math_log10 = ObjectFactory::create_native_function("log10",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            double x = args[0].to_number();
+            return Value(std::log10(x));
+        });
+    math_object->set_property("log10", Value(math_log10.release()));
+    
+    // Math.cosh
+    auto math_cosh = ObjectFactory::create_native_function("cosh",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            double x = args[0].to_number();
+            return Value(std::cosh(x));
+        });
+    math_object->set_property("cosh", Value(math_cosh.release()));
+    
+    // Math.sinh
+    auto math_sinh = ObjectFactory::create_native_function("sinh",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            double x = args[0].to_number();
+            return Value(std::sinh(x));
+        });
+    math_object->set_property("sinh", Value(math_sinh.release()));
+    
+    register_built_in_object("Math", math_object.release());
+    
+    // Promise constructor
+    auto promise_constructor = ObjectFactory::create_native_function("Promise",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("Promise executor must be a function"));
+                return Value();
+            }
+            
+            auto promise = std::make_unique<Promise>();
+            
+            // Execute the executor function with resolve and reject
+            Function* executor = args[0].as_function();
+            
+            // Create resolve function
+            auto resolve_fn = ObjectFactory::create_native_function("resolve",
+                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    Value value = args.empty() ? Value() : args[0];
+                    promise_ptr->fulfill(value);
+                    return Value();
+                });
+            
+            // Create reject function
+            auto reject_fn = ObjectFactory::create_native_function("reject",
+                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    Value reason = args.empty() ? Value() : args[0];
+                    promise_ptr->reject(reason);
+                    return Value();
+                });
+            
+            // Call executor with resolve and reject
+            std::vector<Value> executor_args = {
+                Value(resolve_fn.release()),
+                Value(reject_fn.release())
+            };
+            
+            try {
+                executor->call(ctx, executor_args);
+            } catch (...) {
+                promise->reject(Value("Promise executor threw"));
+            }
+            
+            return Value(promise.release());
+        });
+    
+    // Promise.try - ES2025 static method
+    auto promise_try = ObjectFactory::create_native_function("try",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_exception(Value("Promise.try requires a function"));
+                return Value();
+            }
+            
+            Function* fn = args[0].as_function();
+            auto promise = std::make_unique<Promise>();
+            
+            try {
+                Value result = fn->call(ctx, {});
+                promise->fulfill(result);
+            } catch (...) {
+                promise->reject(Value("Function threw in Promise.try"));
+            }
+            
+            return Value(promise.release());
+        });
+    promise_constructor->set_property("try", Value(promise_try.release()));
+    
+    // Promise.withResolvers - ES2025 static method
+    auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args; // Suppress unused parameter warning
+            auto promise = std::make_unique<Promise>();
+            
+            // Create resolve function
+            auto resolve_fn = ObjectFactory::create_native_function("resolve",
+                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    Value value = args.empty() ? Value() : args[0];
+                    promise_ptr->fulfill(value);
+                    return Value();
+                });
+            
+            // Create reject function
+            auto reject_fn = ObjectFactory::create_native_function("reject",
+                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx;
+                    Value reason = args.empty() ? Value() : args[0];
+                    promise_ptr->reject(reason);
+                    return Value();
+                });
+            
+            // Create result object
+            auto result_obj = ObjectFactory::create_object();
+            result_obj->set_property("promise", Value(promise.release()));
+            result_obj->set_property("resolve", Value(resolve_fn.release()));
+            result_obj->set_property("reject", Value(reject_fn.release()));
+            
+            return Value(result_obj.release());
+        });
+    promise_constructor->set_property("withResolvers", Value(promise_withResolvers.release()));
+    
+    register_built_in_object("Promise", promise_constructor.release());
     
     // Proxy constructor
     auto proxy_constructor = ObjectFactory::create_native_function("Proxy",
