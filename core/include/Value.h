@@ -125,6 +125,7 @@ public:
     }
     inline bool is_nullish() const { return is_undefined() || is_null(); }
     inline bool is_numeric() const { return is_number() || is_bigint(); }
+    inline bool is_object_like() const { return is_object() || is_function(); }
 
     // Type getter
     Type get_type() const;

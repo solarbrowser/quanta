@@ -5,6 +5,7 @@
 #include "../../core/include/RegExp.h"
 #include "../../core/include/Async.h"
 #include "../../core/include/BigInt.h"
+#include "../../core/include/Promise.h"
 #include <sstream>
 #include <iostream>
 #include <algorithm>
@@ -3087,11 +3088,38 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 //=============================================================================
 
 Value AwaitExpression::evaluate(Context& ctx) {
-    (void)ctx; // Suppress unused parameter warning
+    // Evaluate the argument expression
+    Value arg_value = argument_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
     
-    // For now, just return a simple placeholder to test parsing
-    // TODO: Implement proper async await behavior
-    return Value("AWAITED_VALUE");
+    // If the value is already a resolved value (not a Promise), return it directly
+    if (!arg_value.is_object()) {
+        return arg_value;
+    }
+    
+    Object* obj = arg_value.as_object();
+    
+    // Check if it's a Promise object
+    if (obj->get_type() == Object::ObjectType::Promise) {
+        Promise* promise = static_cast<Promise*>(obj);
+        
+        // For now, simulate awaiting by returning the promise's value if resolved
+        // In a full implementation, this would suspend execution until the promise resolves
+        switch (promise->get_state()) {
+            case PromiseState::FULFILLED:
+                return promise->get_value();
+            case PromiseState::REJECTED:
+                ctx.throw_error("Promise rejected: " + promise->get_value().to_string());
+                return Value();
+            case PromiseState::PENDING:
+                // In a full async implementation, this would suspend the execution
+                // For now, return a placeholder to indicate async operation
+                return Value("Promise<pending>");
+        }
+    }
+    
+    // If not a Promise, just return the value (thenable support could be added later)
+    return arg_value;
 }
 
 std::string AwaitExpression::to_string() const {

@@ -2273,6 +2273,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
     
     // Parse properties
     do {
+        // Check for async method
+        bool is_async = false;
+        if (match(TokenType::ASYNC)) {
+            is_async = true;
+            advance(); // consume 'async'
+        }
+        
         // Parse property key
         std::unique_ptr<ASTNode> key;
         bool computed = false;
@@ -2304,23 +2311,104 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             return nullptr;
         }
         
-        if (!consume(TokenType::COLON)) {
-            add_error("Expected ':' after property key");
-            return nullptr;
+        // Check for method syntax: key() {} or async key() {}
+        if (match(TokenType::LEFT_PAREN)) {
+            // This is a method (ES6+ syntax)
+            advance(); // consume '('
+            
+            // Parse parameters
+            std::vector<std::unique_ptr<Parameter>> params;
+            if (!match(TokenType::RIGHT_PAREN)) {
+                do {
+                    if (!match(TokenType::IDENTIFIER)) {
+                        add_error("Expected parameter name");
+                        return nullptr;
+                    }
+                    auto param_name = std::make_unique<Identifier>(
+                        current_token().get_value(),
+                        current_token().get_start(),
+                        current_token().get_end()
+                    );
+                    advance();
+                    
+                    // Create parameter with proper constructor arguments
+                    auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_name->get_start(), param_name->get_end());
+                    params.push_back(std::move(param));
+                    
+                    if (match(TokenType::COMMA)) {
+                        advance();
+                    } else {
+                        break;
+                    }
+                } while (!at_end());
+            }
+            
+            if (!consume(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ')' after parameters");
+                return nullptr;
+            }
+            
+            // Parse method body
+            if (!match(TokenType::LEFT_BRACE)) {
+                add_error("Expected '{' for method body");
+                return nullptr;
+            }
+            
+            auto body = parse_block_statement();
+            if (!body) {
+                add_error("Expected method body");
+                return nullptr;
+            }
+            
+            // Create method (function expression)
+            std::unique_ptr<ASTNode> method_value;
+            if (is_async) {
+                // Create AsyncFunctionExpression with proper constructor arguments
+                auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                method_value = std::make_unique<AsyncFunctionExpression>(
+                    nullptr, // no name for method
+                    std::move(params),
+                    std::move(block_body),
+                    key->get_start(),
+                    get_current_position()
+                );
+            } else {
+                // Create regular FunctionExpression with proper constructor arguments
+                auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                method_value = std::make_unique<FunctionExpression>(
+                    nullptr, // no name for method
+                    std::move(params),
+                    std::move(block_body),
+                    key->get_start(),
+                    get_current_position()
+                );
+            }
+            
+            // Create property with method value
+            auto property = std::make_unique<ObjectLiteral::Property>(
+                std::move(key), std::move(method_value), computed, true // is_method = true
+            );
+            properties.push_back(std::move(property));
+        } else {
+            // Regular property with colon syntax: key: value
+            if (!consume(TokenType::COLON)) {
+                add_error("Expected ':' after property key");
+                return nullptr;
+            }
+            
+            // Parse property value
+            auto value = parse_assignment_expression();
+            if (!value) {
+                add_error("Expected property value");
+                return nullptr;
+            }
+            
+            // Create property
+            auto property = std::make_unique<ObjectLiteral::Property>(
+                std::move(key), std::move(value), computed, false
+            );
+            properties.push_back(std::move(property));
         }
-        
-        // Parse property value
-        auto value = parse_assignment_expression();
-        if (!value) {
-            add_error("Expected property value");
-            return nullptr;
-        }
-        
-        // Create property
-        auto property = std::make_unique<ObjectLiteral::Property>(
-            std::move(key), std::move(value), computed, false
-        );
-        properties.push_back(std::move(property));
         
         // Continue if there's a comma
         if (match(TokenType::COMMA)) {

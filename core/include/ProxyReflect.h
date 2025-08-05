@@ -67,6 +67,9 @@ public:
     void revoke();
     bool is_revoked() const { return target_ == nullptr; }
     
+    // Override Object methods to use traps
+    Value get_property(const std::string& key) const override;
+    
 private:
     void parse_handler();
     void throw_if_revoked(Context& ctx) const;

@@ -514,6 +514,10 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Symbol", symbol_constructor.release());
     
+    // 🚀 PROXY AND REFLECT - ES2023+ METAPROGRAMMING 🚀
+    Proxy::setup_proxy(*this);
+    Reflect::setup_reflect(*this);
+    
     // Number constructor - callable as function with ES5 constants
     auto number_constructor = ObjectFactory::create_native_function("Number",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
