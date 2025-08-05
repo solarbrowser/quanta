@@ -2,6 +2,7 @@
 #include "../include/Object.h"
 #include "../include/String.h"
 #include "../include/BigInt.h"
+#include "../include/Symbol.h"
 #include <sstream>
 #include <cmath>
 #include <limits>
@@ -44,6 +45,9 @@ std::string Value::to_string() const {
     }
     if (is_bigint()) {
         return as_bigint()->to_string();
+    }
+    if (is_symbol()) {
+        return as_symbol()->to_string();
     }
     if (is_object()) {
         Object* obj = as_object();
@@ -139,6 +143,7 @@ bool Value::strict_equals(const Value& other) const {
     if (is_number() && other.is_number()) return as_number() == other.as_number();
     if (is_string() && other.is_string()) return as_string()->str() == other.as_string()->str();
     if (is_bigint() && other.is_bigint()) return *as_bigint() == *other.as_bigint();
+    if (is_symbol() && other.is_symbol()) return as_symbol()->equals(other.as_symbol());
     if (is_object() && other.is_object()) return as_object() == other.as_object();
     if (is_function() && other.is_function()) return as_function() == other.as_function();
     return false;

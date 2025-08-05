@@ -7,6 +7,7 @@
 #include "WebAPI.h"
 #include "Async.h"
 #include "BigInt.h"
+#include "Symbol.h"
 #include <iostream>
 #include <sstream>
 #include <limits>
@@ -451,6 +452,67 @@ void Context::initialize_built_ins() {
             }
         });
     register_built_in_object("BigInt", bigint_constructor.release());
+    
+    // Symbol constructor - NOT callable with 'new', only as function
+    auto symbol_constructor = ObjectFactory::create_native_function("Symbol",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Symbol() can only be called as a function, not with 'new'
+            std::string description = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                description = args[0].to_string();
+            }
+            
+            auto symbol = Symbol::create(description);
+            return Value(symbol.release());
+        });
+    
+    // Add Symbol.for static method
+    auto symbol_for_fn = ObjectFactory::create_native_function("for",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_error("Symbol.for requires a key argument");
+                return Value();
+            }
+            
+            std::string key = args[0].to_string();
+            Symbol* symbol = Symbol::for_key(key);
+            return Value(symbol);
+        });
+    symbol_constructor->set_property("for", Value(symbol_for_fn.release()));
+    
+    // Add Symbol.keyFor static method
+    auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_symbol()) {
+                ctx.throw_error("Symbol.keyFor requires a symbol argument");
+                return Value();
+            }
+            
+            Symbol* symbol = args[0].as_symbol();
+            std::string key = Symbol::key_for(symbol);
+            if (key.empty()) {
+                return Value(); // undefined
+            }
+            return Value(key);
+        });
+    symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()));
+    
+    // Initialize well-known symbols and add them as static properties
+    Symbol::initialize_well_known_symbols();
+    symbol_constructor->set_property("iterator", Value(Symbol::get_well_known(Symbol::ITERATOR)));
+    symbol_constructor->set_property("asyncIterator", Value(Symbol::get_well_known(Symbol::ASYNC_ITERATOR)));
+    symbol_constructor->set_property("match", Value(Symbol::get_well_known(Symbol::MATCH)));
+    symbol_constructor->set_property("replace", Value(Symbol::get_well_known(Symbol::REPLACE)));
+    symbol_constructor->set_property("search", Value(Symbol::get_well_known(Symbol::SEARCH)));
+    symbol_constructor->set_property("split", Value(Symbol::get_well_known(Symbol::SPLIT)));
+    symbol_constructor->set_property("hasInstance", Value(Symbol::get_well_known(Symbol::HAS_INSTANCE)));
+    symbol_constructor->set_property("isConcatSpreadable", Value(Symbol::get_well_known(Symbol::IS_CONCAT_SPREADABLE)));
+    symbol_constructor->set_property("species", Value(Symbol::get_well_known(Symbol::SPECIES)));
+    symbol_constructor->set_property("toPrimitive", Value(Symbol::get_well_known(Symbol::TO_PRIMITIVE)));
+    symbol_constructor->set_property("toStringTag", Value(Symbol::get_well_known(Symbol::TO_STRING_TAG)));
+    symbol_constructor->set_property("unscopables", Value(Symbol::get_well_known(Symbol::UNSCOPABLES)));
+    
+    register_built_in_object("Symbol", symbol_constructor.release());
     
     // Number constructor - callable as function with ES5 constants
     auto number_constructor = ObjectFactory::create_native_function("Number",
