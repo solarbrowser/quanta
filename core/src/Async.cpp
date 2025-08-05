@@ -27,24 +27,57 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 }
 
 std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::vector<Value>& args) {
-    // Create new context for async execution
-    auto async_context = std::make_unique<Context>(ctx.get_engine(), &ctx, Context::Type::Function);
-    
-    // Bind parameters
-    const auto& params = get_parameters();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg = i < args.size() ? args[i] : Value();
-        async_context->create_binding(params[i], arg);
-    }
+    // Simplified approach: execute in current context with parameter binding
+    // This avoids complex Context creation issues
     
     // Create promise for async execution
-    auto promise = std::make_unique<Promise>(async_context.get());
+    auto promise = std::make_unique<Promise>(&ctx);
     
-    // Schedule async execution
-    EventLoop::instance().schedule_microtask([this, promise_ptr = promise.get(), context = async_context.release()]() {
-        execute_async_body(*context, promise_ptr);
-        delete context;
-    });
+    // Bind parameters to current context temporarily
+    const auto& params = get_parameters();
+    std::vector<std::pair<std::string, Value>> old_bindings;
+    
+    // Save old parameter bindings and set new ones
+    for (size_t i = 0; i < params.size(); ++i) {
+        Value arg = i < args.size() ? args[i] : Value();
+        
+        // Save old binding if it exists
+        try {
+            Value old_value = ctx.get_binding(params[i]);
+            old_bindings.push_back({params[i], old_value});
+        } catch (...) {
+            // Parameter didn't exist before, that's fine
+            old_bindings.push_back({params[i], Value()}); // Use undefined as sentinel
+        }
+        
+        // Create new binding
+        ctx.create_binding(params[i], arg);
+    }
+    
+    // Execute function body
+    try {
+        if (body_) {
+            Value result = body_->evaluate(ctx);
+            if (ctx.has_exception()) {
+                promise->reject(ctx.get_exception());
+                ctx.clear_exception(); // Clear the exception
+            } else {
+                promise->fulfill(result);
+            }
+        } else {
+            promise->fulfill(Value());
+        }
+    } catch (const std::exception& e) {
+        promise->reject(Value(e.what()));
+    }
+    
+    // Restore old parameter bindings
+    for (const auto& binding : old_bindings) {
+        if (!binding.second.is_undefined()) {
+            ctx.create_binding(binding.first, binding.second);
+        }
+        // If old value was undefined, we leave the new binding in place
+    }
     
     return promise;
 }

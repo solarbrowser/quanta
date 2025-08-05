@@ -7,6 +7,12 @@
 
 namespace Quanta {
 
+// Initialize static prototype references
+Object* Map::prototype_object = nullptr;
+Object* Set::prototype_object = nullptr;
+Object* WeakMap::prototype_object = nullptr;
+Object* WeakSet::prototype_object = nullptr;
+
 //=============================================================================
 // Map Implementation
 //=============================================================================
@@ -101,9 +107,12 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
 
 // Map built-in methods
 Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
-    
     auto map = std::make_unique<Map>();
+    
+    // Set up prototype chain using static reference
+    if (Map::prototype_object) {
+        map->set_prototype(Map::prototype_object);
+    }
     
     // If iterable argument provided, populate map
     if (!args.empty() && args[0].is_object()) {
@@ -245,6 +254,9 @@ void Map::setup_map_prototype(Context& ctx) {
     map_prototype->set_property("clear", Value(clear_fn.release()));
     map_prototype->set_property("size", Value(size_fn.release()));
     
+    // Store reference for constructor use
+    Map::prototype_object = map_prototype.get();
+    
     map_constructor_fn->set_property("prototype", Value(map_prototype.release()));
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
@@ -318,9 +330,12 @@ std::vector<Value>::const_iterator Set::find_value(const Value& value) const {
 
 // Set built-in methods
 Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
-    
     auto set = std::make_unique<Set>();
+    
+    // Set up prototype chain using static reference
+    if (Set::prototype_object) {
+        set->set_prototype(Set::prototype_object);
+    }
     
     // If iterable argument provided, populate set
     if (!args.empty() && args[0].is_object()) {
@@ -438,6 +453,9 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("clear", Value(clear_fn.release()));
     set_prototype->set_property("size", Value(size_fn.release()));
     
+    // Store reference for constructor use
+    Set::prototype_object = set_prototype.get();
+    
     set_constructor_fn->set_property("prototype", Value(set_prototype.release()));
     ctx.create_binding("Set", Value(set_constructor_fn.release()));
 }
@@ -492,6 +510,9 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     weakmap_prototype->set_property("has", Value(has_fn.release()));
     weakmap_prototype->set_property("delete", Value(delete_fn.release()));
     
+    // Store reference for constructor use
+    WeakMap::prototype_object = weakmap_prototype.get();
+    
     weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()));
     ctx.create_binding("WeakMap", Value(weakmap_constructor_fn.release()));
 }
@@ -536,6 +557,9 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     weakset_prototype->set_property("has", Value(has_fn.release()));
     weakset_prototype->set_property("delete", Value(delete_fn.release()));
     
+    // Store reference for constructor use
+    WeakSet::prototype_object = weakset_prototype.get();
+    
     weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()));
     ctx.create_binding("WeakSet", Value(weakset_constructor_fn.release()));
 }
@@ -544,22 +568,29 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
 Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args) {
     (void)args; // Unused parameter
     auto weakmap = std::make_unique<WeakMap>();
+    
+    // Set up prototype chain using static reference
+    if (WeakMap::prototype_object) {
+        weakmap->set_prototype(WeakMap::prototype_object);
+    }
+    
     return Value(weakmap.release());
 }
 
 Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.size() < 2) {
+        ctx.throw_exception(Value("WeakMap.prototype.set requires 2 arguments"));
         return Value();
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakMap.prototype.set called on non-object"));
         return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
+        ctx.throw_exception(Value("WeakMap.prototype.set called on non-WeakMap"));
         return Value();
     }
     
@@ -568,24 +599,26 @@ Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
     if (args[0].is_object()) {
         Object* key = args[0].as_object();
         weakmap->set(key, args[1]);
+        return Value(this_obj);
+    } else {
+        ctx.throw_exception(Value("WeakMap key must be an object"));
+        return Value();
     }
-    
-    return this_value;
 }
 
 Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
         return Value();
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakMap.prototype.get called on non-object"));
         return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
+        ctx.throw_exception(Value("WeakMap.prototype.get called on non-WeakMap"));
         return Value();
     }
     
@@ -600,19 +633,19 @@ Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
         return Value(false);
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        return Value(false);
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakMap.prototype.has called on non-object"));
+        return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        return Value(false);
+        ctx.throw_exception(Value("WeakMap.prototype.has called on non-WeakMap"));
+        return Value();
     }
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
@@ -626,19 +659,19 @@ Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
         return Value(false);
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        return Value(false);
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakMap.prototype.delete called on non-object"));
+        return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        return Value(false);
+        ctx.throw_exception(Value("WeakMap.prototype.delete called on non-WeakMap"));
+        return Value();
     }
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
@@ -653,25 +686,31 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
 
 // WeakSet static methods
 Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     (void)args; // Unused parameter
     auto weakset = std::make_unique<WeakSet>();
+    
+    // Set up prototype chain using static reference
+    if (WeakSet::prototype_object) {
+        weakset->set_prototype(WeakSet::prototype_object);
+    }
+    
     return Value(weakset.release());
 }
 
 Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
+        ctx.throw_exception(Value("WeakSet.prototype.add requires an argument"));
         return Value();
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakSet.prototype.add called on non-object"));
         return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
+        ctx.throw_exception(Value("WeakSet.prototype.add called on non-WeakSet"));
         return Value();
     }
     
@@ -680,25 +719,27 @@ Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
     if (args[0].is_object()) {
         Object* value = args[0].as_object();
         weakset->add(value);
+        return Value(this_obj);
+    } else {
+        ctx.throw_exception(Value("WeakSet value must be an object"));
+        return Value();
     }
-    
-    return this_value;
 }
 
 Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
         return Value(false);
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        return Value(false);
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakSet.prototype.has called on non-object"));
+        return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
-        return Value(false);
+        ctx.throw_exception(Value("WeakSet.prototype.has called on non-WeakSet"));
+        return Value();
     }
     
     WeakSet* weakset = static_cast<WeakSet*>(this_obj);
@@ -712,19 +753,19 @@ Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
     if (args.empty()) {
         return Value(false);
     }
     
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        return Value(false);
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("WeakSet.prototype.delete called on non-object"));
+        return Value();
     }
     
-    Object* this_obj = this_value.as_object();
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
-        return Value(false);
+        ctx.throw_exception(Value("WeakSet.prototype.delete called on non-WeakSet"));
+        return Value();
     }
     
     WeakSet* weakset = static_cast<WeakSet*>(this_obj);

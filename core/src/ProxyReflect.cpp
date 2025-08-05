@@ -205,22 +205,22 @@ void Proxy::parse_handler() {
         return;
     }
     
-    // For now, skip trap parsing to avoid Context issues
-    // TODO: Implement proper trap handling with correct Context management
-    // This allows basic proxy functionality (forwarding to target) to work
-    
-    // Parse handler methods (temporarily disabled)
-    // Value get_method = handler_->get_property("get");
-    // if (get_method.is_function()) {
-    //     Function* get_fn = get_method.as_function();
-    //     parsed_handler_.get = [get_fn](const Value& key) -> Value {
-    //         Context dummy_ctx(nullptr);
-    //         return get_fn->call(dummy_ctx, {key});
-    //     };
-    // }
-    
-    // Temporarily disable all trap parsing to avoid Context issues
-    // TODO: Implement proper trap handling with correct Context management
+    // Basic trap parsing - enable get trap for now
+    Value get_method = handler_->get_property("get");
+    if (get_method.is_function()) {
+        Function* get_fn = get_method.as_function();
+        parsed_handler_.get = [get_fn, this](const Value& key) -> Value {
+            // Try to call the get trap safely
+            try {
+                Context dummy_ctx(nullptr);
+                std::vector<Value> args = {Value(target_), key};
+                return get_fn->call(dummy_ctx, args);
+            } catch (...) {
+                // If trap fails, fall back to default behavior
+                return target_->get_property(key.to_string());
+            }
+        };
+    }
     
     // Value set_method = handler_->get_property("set");
     // if (set_method.is_function()) {
@@ -264,13 +264,8 @@ Value Proxy::get_property(const std::string& key) const {
         throw std::runtime_error("Proxy has been revoked");
     }
     
-    // For now, skip traps and just forward to target to avoid segfaults
-    // TODO: Fix trap handling properly
-    if (target_) {
-        return target_->get_property(key);
-    }
-    
-    return Value(); // undefined
+    // Use the get trap method which already handles traps properly
+    return const_cast<Proxy*>(this)->get_trap(Value(key));
 }
 
 
@@ -334,7 +329,7 @@ void Proxy::setup_proxy(Context& ctx) {
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
     
-    ctx.create_binding("Proxy", Value(proxy_constructor_fn.release()));
+    ctx.register_built_in_object("Proxy", proxy_constructor_fn.release());
 }
 
 //=============================================================================
@@ -580,7 +575,7 @@ void Reflect::setup_reflect(Context& ctx) {
     reflect_obj->set_property("apply", Value(apply_fn.release()));
     reflect_obj->set_property("construct", Value(construct_fn.release()));
     
-    ctx.create_binding("Reflect", Value(reflect_obj.release()));
+    ctx.register_built_in_object("Reflect", reflect_obj.release());
 }
 
 Object* Reflect::to_object(const Value& value, Context& ctx) {

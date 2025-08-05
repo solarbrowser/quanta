@@ -7,7 +7,9 @@
 #include "WebAPI.h"
 #include "Async.h"
 #include "BigInt.h"
+#include "String.h"
 #include "Symbol.h"
+#include "MapSet.h"
 #include <iostream>
 #include <sstream>
 #include <limits>
@@ -426,7 +428,7 @@ void Context::initialize_built_ins() {
     auto bigint_constructor = ObjectFactory::create_native_function("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_error("BigInt constructor requires an argument");
+                ctx.throw_exception(Value("BigInt constructor requires an argument"));
                 return Value();
             }
             
@@ -434,7 +436,7 @@ void Context::initialize_built_ins() {
                 if (args[0].is_number()) {
                     double num = args[0].as_number();
                     if (std::floor(num) != num) {
-                        ctx.throw_error("Cannot convert non-integer Number to BigInt");
+                        ctx.throw_exception(Value("Cannot convert non-integer Number to BigInt"));
                         return Value();
                     }
                     auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(num));
@@ -443,11 +445,11 @@ void Context::initialize_built_ins() {
                     auto bigint = std::make_unique<BigInt>(args[0].to_string());
                     return Value(bigint.release());
                 } else {
-                    ctx.throw_error("Cannot convert value to BigInt");
+                    ctx.throw_exception(Value("Cannot convert value to BigInt"));
                     return Value();
                 }
             } catch (const std::exception& e) {
-                ctx.throw_error("Invalid BigInt: " + std::string(e.what()));
+                ctx.throw_exception(Value("Invalid BigInt: " + std::string(e.what())));
                 return Value();
             }
         });
@@ -467,56 +469,90 @@ void Context::initialize_built_ins() {
         });
     
     // Add Symbol.for static method
-    auto symbol_for_fn = ObjectFactory::create_native_function("for",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_error("Symbol.for requires a key argument");
-                return Value();
-            }
-            
-            std::string key = args[0].to_string();
-            Symbol* symbol = Symbol::for_key(key);
-            return Value(symbol);
-        });
+    auto symbol_for_fn = ObjectFactory::create_native_function("for", Symbol::symbol_for);
     symbol_constructor->set_property("for", Value(symbol_for_fn.release()));
     
     // Add Symbol.keyFor static method
-    auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_symbol()) {
-                ctx.throw_error("Symbol.keyFor requires a symbol argument");
-                return Value();
-            }
-            
-            Symbol* symbol = args[0].as_symbol();
-            std::string key = Symbol::key_for(symbol);
-            if (key.empty()) {
-                return Value(); // undefined
-            }
-            return Value(key);
-        });
+    auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor", Symbol::symbol_key_for);
     symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()));
     
     // Initialize well-known symbols and add them as static properties
     Symbol::initialize_well_known_symbols();
-    symbol_constructor->set_property("iterator", Value(Symbol::get_well_known(Symbol::ITERATOR)));
-    symbol_constructor->set_property("asyncIterator", Value(Symbol::get_well_known(Symbol::ASYNC_ITERATOR)));
-    symbol_constructor->set_property("match", Value(Symbol::get_well_known(Symbol::MATCH)));
-    symbol_constructor->set_property("replace", Value(Symbol::get_well_known(Symbol::REPLACE)));
-    symbol_constructor->set_property("search", Value(Symbol::get_well_known(Symbol::SEARCH)));
-    symbol_constructor->set_property("split", Value(Symbol::get_well_known(Symbol::SPLIT)));
-    symbol_constructor->set_property("hasInstance", Value(Symbol::get_well_known(Symbol::HAS_INSTANCE)));
-    symbol_constructor->set_property("isConcatSpreadable", Value(Symbol::get_well_known(Symbol::IS_CONCAT_SPREADABLE)));
-    symbol_constructor->set_property("species", Value(Symbol::get_well_known(Symbol::SPECIES)));
-    symbol_constructor->set_property("toPrimitive", Value(Symbol::get_well_known(Symbol::TO_PRIMITIVE)));
-    symbol_constructor->set_property("toStringTag", Value(Symbol::get_well_known(Symbol::TO_STRING_TAG)));
-    symbol_constructor->set_property("unscopables", Value(Symbol::get_well_known(Symbol::UNSCOPABLES)));
+    
+    // Add well-known symbols with null checks
+    Symbol* iterator_sym = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iterator_sym) {
+        symbol_constructor->set_property("iterator", Value(iterator_sym));
+    }
+    
+    Symbol* async_iterator_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
+    if (async_iterator_sym) {
+        symbol_constructor->set_property("asyncIterator", Value(async_iterator_sym));
+    }
+    
+    Symbol* match_sym = Symbol::get_well_known(Symbol::MATCH);
+    if (match_sym) {
+        symbol_constructor->set_property("match", Value(match_sym));
+    }
+    
+    Symbol* replace_sym = Symbol::get_well_known(Symbol::REPLACE);
+    if (replace_sym) {
+        symbol_constructor->set_property("replace", Value(replace_sym));
+    }
+    
+    Symbol* search_sym = Symbol::get_well_known(Symbol::SEARCH);
+    if (search_sym) {
+        symbol_constructor->set_property("search", Value(search_sym));
+    }
+    
+    Symbol* split_sym = Symbol::get_well_known(Symbol::SPLIT);
+    if (split_sym) {
+        symbol_constructor->set_property("split", Value(split_sym));
+    }
+    
+    Symbol* has_instance_sym = Symbol::get_well_known(Symbol::HAS_INSTANCE);
+    if (has_instance_sym) {
+        symbol_constructor->set_property("hasInstance", Value(has_instance_sym));
+    }
+    
+    Symbol* is_concat_spreadable_sym = Symbol::get_well_known(Symbol::IS_CONCAT_SPREADABLE);
+    if (is_concat_spreadable_sym) {
+        symbol_constructor->set_property("isConcatSpreadable", Value(is_concat_spreadable_sym));
+    }
+    
+    Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+    if (species_sym) {
+        symbol_constructor->set_property("species", Value(species_sym));
+    }
+    
+    Symbol* to_primitive_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    if (to_primitive_sym) {
+        symbol_constructor->set_property("toPrimitive", Value(to_primitive_sym));
+    }
+    
+    Symbol* to_string_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (to_string_tag_sym) {
+        symbol_constructor->set_property("toStringTag", Value(to_string_tag_sym));
+    }
+    
+    Symbol* unscopables_sym = Symbol::get_well_known(Symbol::UNSCOPABLES);
+    if (unscopables_sym) {
+        symbol_constructor->set_property("unscopables", Value(unscopables_sym));
+    }
     
     register_built_in_object("Symbol", symbol_constructor.release());
     
     // 🚀 PROXY AND REFLECT - ES2023+ METAPROGRAMMING 🚀
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
+    
+    // 🚀 MAP AND SET COLLECTIONS 🚀
+    Map::setup_map_prototype(*this);
+    Set::setup_set_prototype(*this);
+    
+    // 🚀 WEAKMAP AND WEAKSET - ES2023+ WEAK COLLECTIONS 🚀
+    WeakMap::setup_weakmap_prototype(*this);
+    WeakSet::setup_weakset_prototype(*this);
     
     // Number constructor - callable as function with ES5 constants
     auto number_constructor = ObjectFactory::create_native_function("Number",
@@ -848,96 +884,9 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Promise", promise_constructor.release());
     
-    // Proxy constructor
-    auto proxy_constructor = ObjectFactory::create_native_function("Proxy",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) {
-                ctx.throw_exception(Value("Proxy constructor requires target and handler arguments"));
-                return Value();
-            }
-            
-            if (!args[0].is_object() || !args[1].is_object()) {
-                ctx.throw_exception(Value("Proxy constructor arguments must be objects"));
-                return Value();
-            }
-            
-            Object* target = args[0].as_object();
-            Object* handler = args[1].as_object();
-            
-            // Create a new Proxy object
-            auto proxy = std::make_unique<Proxy>(target, handler);
-            return Value(proxy.release());
-        });
-    
-    register_built_in_object("Proxy", proxy_constructor.release());
-    
-    // Reflect object with static methods
-    auto reflect_object = ObjectFactory::create_object();
-    
-    // Reflect.get(target, propertyKey[, receiver])
-    auto reflect_get = ObjectFactory::create_native_function("get",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) {
-                ctx.throw_exception(Value("Reflect.get requires target and propertyKey arguments"));
-                return Value();
-            }
-            
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value("Reflect.get target must be an object"));
-                return Value();
-            }
-            
-            Object* target = args[0].as_object();
-            std::string property = args[1].to_string();
-            
-            return target->get_property(property);
-        });
-    reflect_object->set_property("get", Value(reflect_get.release()));
-    
-    // Reflect.set(target, propertyKey, value[, receiver])
-    auto reflect_set = ObjectFactory::create_native_function("set",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 3) {
-                ctx.throw_exception(Value("Reflect.set requires target, propertyKey, and value arguments"));
-                return Value();
-            }
-            
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value("Reflect.set target must be an object"));
-                return Value();
-            }
-            
-            Object* target = args[0].as_object();
-            std::string property = args[1].to_string();
-            Value value = args[2];
-            
-            bool success = target->set_property(property, value);
-            return Value(success);
-        });
-    reflect_object->set_property("set", Value(reflect_set.release()));
-    
-    // Reflect.has(target, propertyKey)
-    auto reflect_has = ObjectFactory::create_native_function("has",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) {
-                ctx.throw_exception(Value("Reflect.has requires target and propertyKey arguments"));
-                return Value();
-            }
-            
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value("Reflect.has target must be an object"));
-                return Value();
-            }
-            
-            Object* target = args[0].as_object();
-            std::string property = args[1].to_string();
-            
-            bool has = target->has_property(property);
-            return Value(has);
-        });
-    reflect_object->set_property("has", Value(reflect_has.release()));
-    
-    register_built_in_object("Reflect", reflect_object.release());
+    // Setup Proxy and Reflect using the proper implementation
+    Proxy::setup_proxy(*this);
+    Reflect::setup_reflect(*this);
     
     // Web APIs
     setup_web_apis();
@@ -1235,6 +1184,45 @@ void Context::setup_global_bindings() {
             return Value(input);
         });
     lexical_environment_->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), false);
+    
+    // BigInt constructor
+    auto bigint_fn = ObjectFactory::create_native_function("BigInt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_type_error("BigInt constructor requires an argument");
+                return Value();
+            }
+            
+            Value arg = args[0];
+            if (arg.is_bigint()) {
+                return arg; // Already a BigInt
+            }
+            
+            if (arg.is_number()) {
+                double num = arg.as_number();
+                if (std::isnan(num) || std::isinf(num) || std::fmod(num, 1.0) != 0.0) {
+                    ctx.throw_range_error("Cannot convert Number to BigInt");
+                    return Value();
+                }
+                auto bigint = std::make_unique<Quanta::BigInt>(static_cast<int64_t>(num));
+                return Value(bigint.release());
+            }
+            
+            if (arg.is_string()) {
+                try {
+                    std::string str = arg.as_string()->str();
+                    auto bigint = std::make_unique<Quanta::BigInt>(str);
+                    return Value(bigint.release());
+                } catch (const std::exception& e) {
+                    ctx.throw_syntax_error("Cannot convert string to BigInt");
+                    return Value();
+                }
+            }
+            
+            ctx.throw_type_error("Cannot convert value to BigInt");
+            return Value();
+        });
+    lexical_environment_->create_binding("BigInt", Value(bigint_fn.release()), false);
     
     // Bind built-in objects to global environment
     for (const auto& pair : built_in_objects_) {

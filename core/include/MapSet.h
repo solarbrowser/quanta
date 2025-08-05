@@ -79,6 +79,9 @@ public:
     // Setup Map prototype
     static void setup_map_prototype(Context& ctx);
     
+    // Static prototype reference
+    static Object* prototype_object;
+    
 private:
     std::vector<MapEntry>::iterator find_entry(const Value& key);
     std::vector<MapEntry>::const_iterator find_entry(const Value& key) const;
@@ -129,6 +132,9 @@ public:
     // Setup Set prototype
     static void setup_set_prototype(Context& ctx);
     
+    // Static prototype reference
+    static Object* prototype_object;
+    
 private:
     std::vector<Value>::iterator find_value(const Value& value);
     std::vector<Value>::const_iterator find_value(const Value& value) const;
@@ -161,6 +167,9 @@ public:
     
     // Setup WeakMap prototype
     static void setup_weakmap_prototype(Context& ctx);
+    
+    // Static prototype reference
+    static Object* prototype_object;
 };
 
 /**
@@ -188,6 +197,9 @@ public:
     
     // Setup WeakSet prototype
     static void setup_weakset_prototype(Context& ctx);
+    
+    // Static prototype reference
+    static Object* prototype_object;
 };
 
 } // namespace Quanta
