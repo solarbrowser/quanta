@@ -29,9 +29,10 @@ private:
     Value value_;  // Fulfillment value or rejection reason
     std::vector<Function*> fulfillment_handlers_;
     std::vector<Function*> rejection_handlers_;
+    Context* context_;  // Context for callback execution
 
 public:
-    Promise() : Object(), state_(PromiseState::PENDING) {}
+    Promise(Context* ctx = nullptr) : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx) {}
     
     // Core Promise methods
     void fulfill(const Value& value);

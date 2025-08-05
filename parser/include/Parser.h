@@ -66,11 +66,14 @@ public:
     std::unique_ptr<ASTNode> parse_if_statement();
     std::unique_ptr<ASTNode> parse_for_statement();
     std::unique_ptr<ASTNode> parse_while_statement();
+    std::unique_ptr<ASTNode> parse_do_while_statement();
     std::unique_ptr<ASTNode> parse_function_declaration();
     std::unique_ptr<ASTNode> parse_async_function_declaration();
     std::unique_ptr<ASTNode> parse_class_declaration();
     std::unique_ptr<ASTNode> parse_method_definition();
     std::unique_ptr<ASTNode> parse_return_statement();
+    std::unique_ptr<ASTNode> parse_break_statement();
+    std::unique_ptr<ASTNode> parse_continue_statement();
     std::unique_ptr<ASTNode> parse_expression_statement();
     
     // Stage 9: Error handling and advanced control flow
@@ -90,6 +93,7 @@ public:
     std::unique_ptr<ASTNode> parse_conditional_expression();
     std::unique_ptr<ASTNode> parse_conditional_expression_impl(int depth);
     std::unique_ptr<ASTNode> parse_logical_or_expression();
+    std::unique_ptr<ASTNode> parse_nullish_coalescing_expression();
     std::unique_ptr<ASTNode> parse_logical_and_expression();
     std::unique_ptr<ASTNode> parse_bitwise_or_expression();
     std::unique_ptr<ASTNode> parse_bitwise_xor_expression();
@@ -120,10 +124,18 @@ public:
     std::unique_ptr<ASTNode> parse_number_literal();
     std::unique_ptr<ASTNode> parse_string_literal();
     std::unique_ptr<ASTNode> parse_this_expression();
+    std::unique_ptr<ASTNode> parse_super_expression();
     std::unique_ptr<ASTNode> parse_template_literal();
+    
+    // JSX parsing
+    std::unique_ptr<ASTNode> parse_jsx_element();
+    std::unique_ptr<ASTNode> parse_jsx_text();
+    std::unique_ptr<ASTNode> parse_jsx_expression();
+    std::unique_ptr<ASTNode> parse_jsx_attribute();
     std::unique_ptr<ASTNode> parse_regex_literal();
     std::unique_ptr<ASTNode> parse_boolean_literal();
     std::unique_ptr<ASTNode> parse_null_literal();
+    std::unique_ptr<ASTNode> parse_bigint_literal();
     std::unique_ptr<ASTNode> parse_undefined_literal();
     std::unique_ptr<ASTNode> parse_identifier();
     

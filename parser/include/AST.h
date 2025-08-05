@@ -27,6 +27,7 @@ public:
         STRING_LITERAL,
         BOOLEAN_LITERAL,
         NULL_LITERAL,
+        BIGINT_LITERAL,
         UNDEFINED_LITERAL,
         
         // Identifiers
@@ -41,6 +42,8 @@ public:
         DESTRUCTURING_ASSIGNMENT,
         CALL_EXPRESSION,
         MEMBER_EXPRESSION,
+        OPTIONAL_CHAINING_EXPRESSION,
+        NULLISH_COALESCING_EXPRESSION,
         NEW_EXPRESSION,
         FUNCTION_EXPRESSION,
         ARROW_FUNCTION_EXPRESSION,
@@ -62,10 +65,13 @@ public:
         FOR_STATEMENT,
         FOR_OF_STATEMENT,
         WHILE_STATEMENT,
+        DO_WHILE_STATEMENT,
         FUNCTION_DECLARATION,
         CLASS_DECLARATION,
         METHOD_DEFINITION,
         RETURN_STATEMENT,
+        BREAK_STATEMENT,
+        CONTINUE_STATEMENT,
         TRY_STATEMENT,
         CATCH_CLAUSE,
         THROW_STATEMENT,
@@ -77,6 +83,12 @@ public:
         EXPORT_STATEMENT,
         IMPORT_SPECIFIER,
         EXPORT_SPECIFIER,
+        
+        // JSX
+        JSX_ELEMENT,
+        JSX_TEXT,
+        JSX_EXPRESSION,
+        JSX_ATTRIBUTE,
         
         // Program
         PROGRAM
@@ -155,6 +167,21 @@ class NullLiteral : public ASTNode {
 public:
     NullLiteral(const Position& start, const Position& end)
         : ASTNode(Type::NULL_LITERAL, start, end) {}
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+class BigIntLiteral : public ASTNode {
+private:
+    std::string value_;
+
+public:
+    BigIntLiteral(const std::string& value, const Position& start, const Position& end)
+        : ASTNode(Type::BIGINT_LITERAL, start, end), value_(value) {}
+    
+    const std::string& get_value() const { return value_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -417,9 +444,29 @@ public:
         ARRAY,    // [a, b] = array
         OBJECT    // {x, y} = obj
     };
+    
+    // Structure to handle object property mapping (renaming)
+    struct PropertyMapping {
+        std::string property_name;  // Original property name in the object
+        std::string variable_name;  // Variable name to bind to
+        
+        PropertyMapping(const std::string& prop, const std::string& var)
+            : property_name(prop), variable_name(var) {}
+    };
+    
+    // Structure to handle default values for array destructuring
+    struct DefaultValue {
+        size_t index;                      // Index in the targets array
+        std::unique_ptr<ASTNode> expr;     // Default value expression
+        
+        DefaultValue(size_t idx, std::unique_ptr<ASTNode> expression)
+            : index(idx), expr(std::move(expression)) {}
+    };
 
 private:
     std::vector<std::unique_ptr<Identifier>> targets_;
+    std::vector<PropertyMapping> property_mappings_; // For object destructuring with renaming
+    std::vector<DefaultValue> default_values_; // For array destructuring default values
     std::unique_ptr<ASTNode> source_;
     Type type_;
 
@@ -431,9 +478,17 @@ public:
           targets_(std::move(targets)), source_(std::move(source)), type_(type) {}
     
     const std::vector<std::unique_ptr<Identifier>>& get_targets() const { return targets_; }
+    const std::vector<PropertyMapping>& get_property_mappings() const { return property_mappings_; }
+    const std::vector<DefaultValue>& get_default_values() const { return default_values_; }
     ASTNode* get_source() const { return source_.get(); }
     Type get_type() const { return type_; }
     void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
+    void add_property_mapping(const std::string& property_name, const std::string& variable_name) {
+        property_mappings_.emplace_back(property_name, variable_name);
+    }
+    void add_default_value(size_t index, std::unique_ptr<ASTNode> expr) {
+        default_values_.emplace_back(index, std::move(expr));
+    }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -489,6 +544,52 @@ public:
     ASTNode* get_object() const { return object_.get(); }
     ASTNode* get_property() const { return property_.get(); }
     bool is_computed() const { return computed_; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Optional chaining expression (e.g., "obj?.prop", "obj?.method()")
+ */
+class OptionalChainingExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> object_;
+    std::unique_ptr<ASTNode> property_;
+    bool computed_; // true for obj?.[prop], false for obj?.prop
+
+public:
+    OptionalChainingExpression(std::unique_ptr<ASTNode> object, std::unique_ptr<ASTNode> property, 
+                              bool computed, const Position& start, const Position& end)
+        : ASTNode(Type::OPTIONAL_CHAINING_EXPRESSION, start, end), 
+          object_(std::move(object)), property_(std::move(property)), computed_(computed) {}
+    
+    ASTNode* get_object() const { return object_.get(); }
+    ASTNode* get_property() const { return property_.get(); }
+    bool is_computed() const { return computed_; }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Nullish coalescing expression (e.g., "a ?? b")
+ */
+class NullishCoalescingExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> left_;
+    std::unique_ptr<ASTNode> right_;
+
+public:
+    NullishCoalescingExpression(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
+                               const Position& start, const Position& end)
+        : ASTNode(Type::NULLISH_COALESCING_EXPRESSION, start, end), 
+          left_(std::move(left)), right_(std::move(right)) {}
+    
+    ASTNode* get_left() const { return left_.get(); }
+    ASTNode* get_right() const { return right_.get(); }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -685,6 +786,28 @@ public:
     
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_body() const { return body_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Do-while statement (e.g., "do statement while (condition)")
+ */
+class DoWhileStatement : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> body_;
+    std::unique_ptr<ASTNode> test_;
+
+public:
+    DoWhileStatement(std::unique_ptr<ASTNode> body, std::unique_ptr<ASTNode> test,
+                     const Position& start, const Position& end)
+        : ASTNode(Type::DO_WHILE_STATEMENT, start, end), 
+          body_(std::move(body)), test_(std::move(test)) {}
+    
+    ASTNode* get_body() const { return body_.get(); }
+    ASTNode* get_test() const { return test_.get(); }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1032,6 +1155,32 @@ public:
 };
 
 /**
+ * Break statement (e.g., "break;")
+ */
+class BreakStatement : public ASTNode {
+public:
+    explicit BreakStatement(const Position& start, const Position& end)
+        : ASTNode(Type::BREAK_STATEMENT, start, end) {}
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Continue statement (e.g., "continue;")
+ */
+class ContinueStatement : public ASTNode {
+public:
+    explicit ContinueStatement(const Position& start, const Position& end)
+        : ASTNode(Type::CONTINUE_STATEMENT, start, end) {}
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
  * Expression statement (e.g., "42;", "console.log('hello');")
  */
 class ExpressionStatement : public ASTNode {
@@ -1325,6 +1474,97 @@ public:
     bool is_default_export() const { return is_default_export_; }
     bool is_declaration_export() const { return is_declaration_export_; }
     bool is_re_export() const { return is_re_export_; }
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+//=============================================================================
+// JSX Nodes
+//=============================================================================
+
+/**
+ * JSX Element (e.g., <div>content</div>, <Component prop={value} />)
+ */
+class JSXElement : public ASTNode {
+private:
+    std::string tag_name_;
+    std::vector<std::unique_ptr<ASTNode>> attributes_;
+    std::vector<std::unique_ptr<ASTNode>> children_;
+    bool self_closing_;
+
+public:
+    JSXElement(const std::string& tag_name,
+               std::vector<std::unique_ptr<ASTNode>> attributes,
+               std::vector<std::unique_ptr<ASTNode>> children,
+               bool self_closing,
+               const Position& start, const Position& end)
+        : ASTNode(Type::JSX_ELEMENT, start, end),
+          tag_name_(tag_name), attributes_(std::move(attributes)),
+          children_(std::move(children)), self_closing_(self_closing) {}
+
+    const std::string& get_tag_name() const { return tag_name_; }
+    const std::vector<std::unique_ptr<ASTNode>>& get_attributes() const { return attributes_; }
+    const std::vector<std::unique_ptr<ASTNode>>& get_children() const { return children_; }
+    bool is_self_closing() const { return self_closing_; }
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * JSX Text (e.g., the "Hello World" in <div>Hello World</div>)
+ */
+class JSXText : public ASTNode {
+private:
+    std::string text_;
+
+public:
+    JSXText(const std::string& text, const Position& start, const Position& end)
+        : ASTNode(Type::JSX_TEXT, start, end), text_(text) {}
+
+    const std::string& get_text() const { return text_; }
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * JSX Expression (e.g., {expression} in JSX)
+ */
+class JSXExpression : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> expression_;
+
+public:
+    JSXExpression(std::unique_ptr<ASTNode> expression, const Position& start, const Position& end)
+        : ASTNode(Type::JSX_EXPRESSION, start, end), expression_(std::move(expression)) {}
+
+    ASTNode* get_expression() const { return expression_.get(); }
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * JSX Attribute (e.g., className="active" or onClick={handler})
+ */
+class JSXAttribute : public ASTNode {
+private:
+    std::string name_;
+    std::unique_ptr<ASTNode> value_; // Can be string literal or JSXExpression
+
+public:
+    JSXAttribute(const std::string& name, std::unique_ptr<ASTNode> value,
+                 const Position& start, const Position& end)
+        : ASTNode(Type::JSX_ATTRIBUTE, start, end), name_(name), value_(std::move(value)) {}
+
+    const std::string& get_name() const { return name_; }
+    ASTNode* get_value() const { return value_.get(); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

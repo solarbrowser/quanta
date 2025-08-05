@@ -71,6 +71,10 @@ private:
     Value return_value_;
     bool has_return_value_;
     
+    // Break/Continue handling
+    bool has_break_;
+    bool has_continue_;
+    
     // Engine reference
     Engine* engine_;
     
@@ -139,6 +143,13 @@ public:
     const Value& get_return_value() const { return return_value_; }
     void set_return_value(const Value& value);
     void clear_return_value();
+    
+    // Break/Continue handling
+    bool has_break() const { return has_break_; }
+    bool has_continue() const { return has_continue_; }
+    void set_break();
+    void set_continue();
+    void clear_break_continue();
 
     // Built-in objects
     void register_built_in_object(const std::string& name, Object* object);

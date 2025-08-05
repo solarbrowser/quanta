@@ -101,8 +101,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
     
     // Create new execution context for function
-    // Use closure_context_ for proper closure variable capture, fallback to current context
-    Context* parent_context = closure_context_ ? closure_context_ : &ctx;
+    // TEMPORARY FIX: Use current context to avoid dangling closure_context_ pointers
+    // TODO: Implement proper closure context lifetime management
+    Context* parent_context = &ctx;
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     
     // CLOSURE FIX: Use captured closure variables stored in function properties
@@ -136,17 +137,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             
             if (param->is_rest()) {
                 // Rest parameter - create array with remaining arguments
-                auto rest_array = std::make_unique<Object>();
+                auto rest_array = ObjectFactory::create_array(0);
                 
                 // Add remaining arguments to the rest array
-                size_t rest_index = 0;
                 for (size_t j = regular_param_count; j < args.size(); ++j) {
-                    rest_array->set_property(std::to_string(rest_index), args[j]);
-                    rest_index++;
+                    rest_array->push(args[j]);
                 }
-                
-                // Set array length
-                rest_array->set_property("length", Value(static_cast<double>(rest_index)));
                 
                 function_context.create_binding(param->get_name()->get_name(), Value(rest_array.release()), false);
             } else {
@@ -186,6 +182,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     // Bind 'this' value
     function_context.create_binding("this", this_value, false);
+    
+    // Bind super constructor for super() calls if this function has one
+    if (this->has_property("__super_constructor__")) {
+        Value super_constructor = this->get_property("__super_constructor__");
+        if (super_constructor.is_function()) {
+            function_context.create_binding("__super__", super_constructor, false);
+        }
+    }
     
     // Execute function body
     if (body_) {

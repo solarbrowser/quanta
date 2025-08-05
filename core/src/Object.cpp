@@ -641,16 +641,47 @@ Value Object::reduce(Function* callback, const Value& initial_value, Context& ct
 
 // ES2026 Array.prototype.groupBy implementation
 Value Object::groupBy(Function* callback, Context& ctx) {
-    (void)callback; // Suppress unused parameter warning for now
-    (void)ctx;      // Suppress unused parameter warning for now
-    
     if (header_.type != ObjectType::Array) {
         return Value();
     }
     
-    // Simple hardcoded implementation for now to prove the method works
+    // Proper GroupBy implementation with correct result formatting
     auto result = ObjectFactory::create_object();
-    result->set_property("message", Value("GroupBy method works!"));
+    
+    // Get array length
+    Value length_val = this->get_property("length");
+    if (!length_val.is_number()) {
+        return Value(result.release());
+    }
+    
+    int length = static_cast<int>(length_val.to_number());
+    
+    // Group elements by callback result
+    for (int i = 0; i < length; i++) {
+        Value element = this->get_property(std::to_string(i));
+        
+        // Call callback function
+        std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this)};
+        Value key = callback->call(ctx, callback_args);
+        std::string key_str = key.to_string();
+        
+        // Get or create group array
+        Value group = result->get_property(key_str);
+        if (!group.is_object()) {
+            auto new_group = ObjectFactory::create_array();
+            result->set_property(key_str, Value(new_group.release()));
+            group = result->get_property(key_str);
+        }
+        
+        // Add element to group
+        Object* group_array = group.as_object();
+        Value group_length = group_array->get_property("length");
+        int group_len = static_cast<int>(group_length.to_number());
+        group_array->set_property(std::to_string(group_len), element);
+        group_array->set_property("length", Value(static_cast<double>(group_len + 1)));
+    }
+    
+    std::cout << "Array.groupBy: Grouped " << length << " elements into object with proper formatting" << std::endl;
     return Value(result.release());
 }
 
@@ -841,8 +872,21 @@ std::vector<std::string> Shape::get_property_keys() const {
     std::vector<std::string> keys;
     keys.reserve(properties_.size());
     
-    for (const auto& pair : properties_) {
-        keys.push_back(pair.first);
+    // To preserve insertion order, walk up the parent chain and collect keys in reverse
+    std::vector<std::string> reverse_keys;
+    const Shape* current = this;
+    
+    while (current && current->parent_) {
+        if (!current->transition_key_.empty()) {
+            reverse_keys.push_back(current->transition_key_);
+        }
+        current = current->parent_;
+    }
+    
+    // Reverse to get insertion order
+    keys.reserve(reverse_keys.size());
+    for (auto it = reverse_keys.rbegin(); it != reverse_keys.rend(); ++it) {
+        keys.push_back(*it);
     }
     
     return keys;
@@ -1044,6 +1088,64 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             
             // Return the array itself
             return Value(array);
+        } else if (method_name == "shift") {
+            return array->shift();
+        } else if (method_name == "unshift") {
+            for (const Value& arg : args) {
+                array->unshift(arg);
+            }
+            return Value(static_cast<double>(array->get_length()));
+        } else if (method_name == "splice") {
+            uint32_t length = array->get_length();
+            uint32_t start = 0;
+            uint32_t deleteCount = length;
+            
+            if (args.size() > 0) {
+                double start_val = args[0].to_number();
+                start = start_val < 0 ? std::max(0.0, length + start_val) : std::min(start_val, static_cast<double>(length));
+            }
+            if (args.size() > 1) {
+                double delete_val = args[1].to_number();
+                deleteCount = std::max(0.0, std::min(delete_val, static_cast<double>(length - start)));
+            }
+            
+            // Create array of deleted elements
+            auto deleted = ObjectFactory::create_array(0);
+            for (uint32_t i = start; i < start + deleteCount; i++) {
+                deleted->push(array->get_element(i));
+            }
+            
+            // Calculate number of elements to insert
+            uint32_t insertCount = args.size() > 2 ? args.size() - 2 : 0;
+            
+            // Shift elements to make room for insertions or close gaps
+            if (insertCount > deleteCount) {
+                // Need to shift right to make room
+                uint32_t shiftBy = insertCount - deleteCount;
+                for (uint32_t i = length; i > start + deleteCount; i--) {
+                    array->set_element(i + shiftBy - 1, array->get_element(i - 1));
+                }
+            } else if (insertCount < deleteCount) {
+                // Need to shift left to close gaps
+                uint32_t shiftBy = deleteCount - insertCount;
+                for (uint32_t i = start + deleteCount; i < length; i++) {
+                    array->set_element(i - shiftBy, array->get_element(i));
+                }
+                // Clear the end elements
+                for (uint32_t i = length - shiftBy; i < length; i++) {
+                    array->delete_element(i);
+                }
+            }
+            
+            // Insert new elements
+            for (uint32_t i = 0; i < insertCount; i++) {
+                array->set_element(start + i, args[i + 2]);
+            }
+            
+            // Update length
+            array->set_length(length - deleteCount + insertCount);
+            
+            return Value(deleted.release());
         }
         
         ctx.throw_exception(Value("Invalid array method call"));

@@ -38,7 +38,7 @@ std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::v
     }
     
     // Create promise for async execution
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(async_context.get());
     
     // Schedule async execution
     EventLoop::instance().schedule_microtask([this, promise_ptr = promise.get(), context = async_context.release()]() {
@@ -124,7 +124,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     (void)value; // Unused parameter for now
     
     if (state_ == State::Completed) {
-        auto promise = std::make_unique<Promise>();
+        auto promise = std::make_unique<Promise>(generator_context_);
         
         // Create iterator result object
         auto result_obj = ObjectFactory::create_object();
@@ -136,7 +136,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     }
     
     // Create promise for async generator result
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(generator_context_);
     
     // Schedule async execution
     EventLoop::instance().schedule_microtask([this, promise_ptr = promise.get()]() {
@@ -170,7 +170,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& value) {
     state_ = State::Completed;
     
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(generator_context_);
     
     // Create iterator result object
     auto result_obj = ObjectFactory::create_object();
@@ -184,7 +184,7 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& v
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value& exception) {
     state_ = State::Completed;
     
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(generator_context_);
     promise->reject(exception);
     
     return AsyncGeneratorResult(std::move(promise));
@@ -252,7 +252,7 @@ AsyncIterator::AsyncIterator(AsyncNextFunction next_fn)
 
 std::unique_ptr<Promise> AsyncIterator::next() {
     if (done_) {
-        auto promise = std::make_unique<Promise>();
+        auto promise = std::make_unique<Promise>(nullptr);
         
         auto result_obj = ObjectFactory::create_object();
         result_obj->set_property("value", Value());
@@ -268,7 +268,7 @@ std::unique_ptr<Promise> AsyncIterator::next() {
 std::unique_ptr<Promise> AsyncIterator::return_value(const Value& value) {
     done_ = true;
     
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(nullptr);
     
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("value", value);
@@ -281,7 +281,7 @@ std::unique_ptr<Promise> AsyncIterator::return_value(const Value& value) {
 std::unique_ptr<Promise> AsyncIterator::throw_exception(const Value& exception) {
     done_ = true;
     
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(nullptr);
     promise->reject(exception);
     return promise;
 }
@@ -365,7 +365,7 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
         Object* promise_obj = value.as_object();
         Promise* existing_promise = static_cast<Promise*>(promise_obj);
         
-        auto new_promise = std::make_unique<Promise>();
+        auto new_promise = std::make_unique<Promise>(&ctx);
         
         // Copy state if resolved
         if (existing_promise->get_state() == PromiseState::FULFILLED) {
@@ -379,7 +379,7 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
     
     if (is_thenable(value)) {
         // Create promise and call then method
-        auto promise = std::make_unique<Promise>();
+        auto promise = std::make_unique<Promise>(&ctx);
         
         Object* thenable = value.as_object();
         Value then_method = thenable->get_property("then");
@@ -417,7 +417,7 @@ std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
     }
     
     // Create resolved promise
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(&ctx);
     promise->fulfill(value);
     return promise;
 }
@@ -427,9 +427,7 @@ std::unique_ptr<Promise> promise_resolve(const Value& value, Context& ctx) {
 }
 
 std::unique_ptr<Promise> promise_reject(const Value& reason, Context& ctx) {
-    (void)ctx; // Unused parameter
-    
-    auto promise = std::make_unique<Promise>();
+    auto promise = std::make_unique<Promise>(&ctx);
     promise->reject(reason);
     return promise;
 }

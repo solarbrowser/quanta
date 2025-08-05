@@ -392,7 +392,7 @@ public:
     bool is_native() const { return is_native_; }
     
     // Function execution
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    virtual Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
     Value construct(Context& ctx, const std::vector<Value>& args);
     
     // Property override to ensure function properties work

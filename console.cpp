@@ -1,4 +1,5 @@
 #include "core/include/Engine.h"
+#include "core/include/Async.h"
 #include "lexer/include/Lexer.h"
 #include "parser/include/Parser.h"
 #include <iostream>
@@ -262,14 +263,8 @@ int main(int argc, char* argv[]) {
             // Execute the file content
             console.evaluate_expression(content, true);
             
-            // Wait for user input before closing
-            std::cout << "\nPress any key to exit...";
-            std::cout.flush();
-#ifdef _WIN32
-            _getch();
-#else
-            std::cin.get();
-#endif
+            // Process any pending async tasks
+            EventLoop::instance().process_microtasks();
             
             return 0;
         }

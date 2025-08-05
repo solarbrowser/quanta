@@ -53,6 +53,7 @@ bool Token::is_literal() const {
            type_ == TokenType::STRING || 
            type_ == TokenType::BOOLEAN || 
            type_ == TokenType::NULL_LITERAL ||
+           type_ == TokenType::BIGINT_LITERAL ||
            type_ == TokenType::UNDEFINED ||
            type_ == TokenType::TEMPLATE_LITERAL;
 }
@@ -80,6 +81,7 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::TEMPLATE_LITERAL, "TEMPLATE_LITERAL"},
         {TokenType::BOOLEAN, "BOOLEAN"},
         {TokenType::NULL_LITERAL, "NULL"},
+        {TokenType::BIGINT_LITERAL, "BIGINT"},
         {TokenType::UNDEFINED, "UNDEFINED"},
         
         // Keywords
@@ -155,6 +157,13 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::LOGICAL_NOT, "LOGICAL_NOT"},
         {TokenType::ARROW, "ARROW"},
         {TokenType::ELLIPSIS, "ELLIPSIS"},
+        
+        // ES2020+ Operators
+        {TokenType::OPTIONAL_CHAINING, "OPTIONAL_CHAINING"},
+        {TokenType::NULLISH_COALESCING, "NULLISH_COALESCING"},
+        {TokenType::NULLISH_ASSIGN, "NULLISH_ASSIGN"},
+        {TokenType::LOGICAL_AND_ASSIGN, "LOGICAL_AND_ASSIGN"},
+        {TokenType::LOGICAL_OR_ASSIGN, "LOGICAL_OR_ASSIGN"},
         
         // Punctuation
         {TokenType::LEFT_PAREN, "LEFT_PAREN"},

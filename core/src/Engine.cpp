@@ -440,18 +440,78 @@ void Engine::setup_browser_globals() {
     math_obj->set_property("SQRT2", Value(Math::SQRT2));
     
     // Add Math methods as native functions
-    auto math_abs = ObjectFactory::create_native_function("abs", Math::abs);
-    auto math_max = ObjectFactory::create_native_function("max", Math::max);
-    auto math_min = ObjectFactory::create_native_function("min", Math::min);
-    auto math_round = ObjectFactory::create_native_function("round", Math::round);
-    auto math_floor = ObjectFactory::create_native_function("floor", Math::floor);
-    auto math_ceil = ObjectFactory::create_native_function("ceil", Math::ceil);
-    auto math_pow = ObjectFactory::create_native_function("pow", Math::pow);
-    auto math_sqrt = ObjectFactory::create_native_function("sqrt", Math::sqrt);
-    auto math_sin = ObjectFactory::create_native_function("sin", Math::sin);
-    auto math_cos = ObjectFactory::create_native_function("cos", Math::cos);
-    auto math_tan = ObjectFactory::create_native_function("tan", Math::tan);
-    auto math_random = ObjectFactory::create_native_function("random", Math::random);
+    auto math_abs = ObjectFactory::create_native_function("abs", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::abs(ctx, args);
+    });
+    auto math_max = ObjectFactory::create_native_function("max", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::max(ctx, args);
+    });
+    auto math_min = ObjectFactory::create_native_function("min", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::min(ctx, args);
+    });
+    auto math_round = ObjectFactory::create_native_function("round", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::round(ctx, args);
+    });
+    auto math_floor = ObjectFactory::create_native_function("floor", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::floor(ctx, args);
+    });
+    auto math_ceil = ObjectFactory::create_native_function("ceil", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::ceil(ctx, args);
+    });
+    auto math_pow = ObjectFactory::create_native_function("pow", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::pow(ctx, args);
+    });
+    auto math_sqrt = ObjectFactory::create_native_function("sqrt", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::sqrt(ctx, args);
+    });
+    auto math_sin = ObjectFactory::create_native_function("sin", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::sin(ctx, args);
+    });
+    auto math_cos = ObjectFactory::create_native_function("cos", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::cos(ctx, args);
+    });
+    auto math_tan = ObjectFactory::create_native_function("tan", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::tan(ctx, args);
+    });
+    auto math_random = ObjectFactory::create_native_function("random", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::random(ctx, args);
+    });
+    auto math_acos = ObjectFactory::create_native_function("acos", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::acos(ctx, args);
+    });
+    auto math_asin = ObjectFactory::create_native_function("asin", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::asin(ctx, args);
+    });
+    auto math_atan = ObjectFactory::create_native_function("atan", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::atan(ctx, args);
+    });
+    auto math_atan2 = ObjectFactory::create_native_function("atan2", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::atan2(ctx, args);
+    });
+    auto math_exp = ObjectFactory::create_native_function("exp", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::exp(ctx, args);
+    });
+    auto math_log = ObjectFactory::create_native_function("log", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::log(ctx, args);
+    });
+    auto math_trunc = ObjectFactory::create_native_function("trunc", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::trunc(ctx, args);
+    });
+    auto math_sign = ObjectFactory::create_native_function("sign", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::sign(ctx, args);
+    });
+    auto math_cbrt = ObjectFactory::create_native_function("cbrt", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::cbrt(ctx, args);
+    });
+    auto math_hypot = ObjectFactory::create_native_function("hypot", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::hypot(ctx, args);
+    });
+    auto math_clz32 = ObjectFactory::create_native_function("clz32", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::clz32(ctx, args);
+    });
+    auto math_imul = ObjectFactory::create_native_function("imul", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::imul(ctx, args);
+    });
     
     math_obj->set_property("abs", Value(math_abs.release()));
     math_obj->set_property("max", Value(math_max.release()));
@@ -465,20 +525,56 @@ void Engine::setup_browser_globals() {
     math_obj->set_property("cos", Value(math_cos.release()));
     math_obj->set_property("tan", Value(math_tan.release()));
     math_obj->set_property("random", Value(math_random.release()));
+    math_obj->set_property("acos", Value(math_acos.release()));
+    math_obj->set_property("asin", Value(math_asin.release()));
+    math_obj->set_property("atan", Value(math_atan.release()));
+    math_obj->set_property("atan2", Value(math_atan2.release()));
+    math_obj->set_property("exp", Value(math_exp.release()));
+    math_obj->set_property("log", Value(math_log.release()));
+    math_obj->set_property("trunc", Value(math_trunc.release()));
+    math_obj->set_property("sign", Value(math_sign.release()));
+    math_obj->set_property("cbrt", Value(math_cbrt.release()));
+    math_obj->set_property("hypot", Value(math_hypot.release()));
+    math_obj->set_property("clz32", Value(math_clz32.release()));
+    math_obj->set_property("imul", Value(math_imul.release()));
     
     // Add ES2026 enhanced Math methods
-    auto math_sumPrecise = ObjectFactory::create_native_function("sumPrecise", Math::sumPrecise);
-    auto math_f16round = ObjectFactory::create_native_function("f16round", Math::f16round);
-    auto math_log10 = ObjectFactory::create_native_function("log10", Math::log10);
-    auto math_log2 = ObjectFactory::create_native_function("log2", Math::log2);
-    auto math_log1p = ObjectFactory::create_native_function("log1p", Math::log1p);
-    auto math_expm1 = ObjectFactory::create_native_function("expm1", Math::expm1);
-    auto math_acosh = ObjectFactory::create_native_function("acosh", Math::acosh);
-    auto math_asinh = ObjectFactory::create_native_function("asinh", Math::asinh);
-    auto math_atanh = ObjectFactory::create_native_function("atanh", Math::atanh);
-    auto math_cosh = ObjectFactory::create_native_function("cosh", Math::cosh);
-    auto math_sinh = ObjectFactory::create_native_function("sinh", Math::sinh);
-    auto math_tanh = ObjectFactory::create_native_function("tanh", Math::tanh);
+    auto math_sumPrecise = ObjectFactory::create_native_function("sumPrecise", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::sumPrecise(ctx, args);
+    });
+    auto math_f16round = ObjectFactory::create_native_function("f16round", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::f16round(ctx, args);
+    });
+    auto math_log10 = ObjectFactory::create_native_function("log10", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::log10(ctx, args);
+    });
+    auto math_log2 = ObjectFactory::create_native_function("log2", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::log2(ctx, args);
+    });
+    auto math_log1p = ObjectFactory::create_native_function("log1p", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::log1p(ctx, args);
+    });
+    auto math_expm1 = ObjectFactory::create_native_function("expm1", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::expm1(ctx, args);
+    });
+    auto math_acosh = ObjectFactory::create_native_function("acosh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::acosh(ctx, args);
+    });
+    auto math_asinh = ObjectFactory::create_native_function("asinh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::asinh(ctx, args);
+    });
+    auto math_atanh = ObjectFactory::create_native_function("atanh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::atanh(ctx, args);
+    });
+    auto math_cosh = ObjectFactory::create_native_function("cosh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::cosh(ctx, args);
+    });
+    auto math_sinh = ObjectFactory::create_native_function("sinh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::sinh(ctx, args);
+    });
+    auto math_tanh = ObjectFactory::create_native_function("tanh", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        return Math::tanh(ctx, args);
+    });
     
     math_obj->set_property("sumPrecise", Value(math_sumPrecise.release()));
     math_obj->set_property("f16round", Value(math_f16round.release()));
@@ -612,6 +708,48 @@ void Engine::setup_browser_globals() {
     localStorage_obj->set_property("clear", Value(clear_fn.release()));
     
     set_global_property("localStorage", Value(localStorage_obj.release()));
+    
+    // React API
+    auto react_obj = std::make_unique<Object>();
+    auto react_createElement_fn = ObjectFactory::create_native_function("createElement", WebAPI::React_createElement);
+    auto react_createClass_fn = ObjectFactory::create_native_function("createClass", WebAPI::React_createClass);
+    auto react_Component_fn = ObjectFactory::create_native_function("Component", WebAPI::React_Component_constructor);
+    
+    react_obj->set_property("createElement", Value(react_createElement_fn.release()));
+    react_obj->set_property("createClass", Value(react_createClass_fn.release()));
+    react_obj->set_property("Component", Value(react_Component_fn.release()));
+    react_obj->set_property("version", Value("16.14.0-quanta"));
+    
+    set_global_property("React", Value(react_obj.release()));
+    
+    // ReactDOM API
+    auto reactdom_obj = std::make_unique<Object>();
+    auto reactdom_render_fn = ObjectFactory::create_native_function("render", WebAPI::ReactDOM_render);
+    auto vdom_diff_fn = ObjectFactory::create_native_function("diff", WebAPI::vdom_diff);
+    auto vdom_patch_fn = ObjectFactory::create_native_function("patch", WebAPI::vdom_patch);
+    
+    reactdom_obj->set_property("render", Value(reactdom_render_fn.release()));
+    reactdom_obj->set_property("diff", Value(vdom_diff_fn.release()));
+    reactdom_obj->set_property("patch", Value(vdom_patch_fn.release()));
+    reactdom_obj->set_property("version", Value("16.14.0-quanta"));
+    
+    set_global_property("ReactDOM", Value(reactdom_obj.release()));
+    
+    // 🎵 Web Audio API - SOUND PROCESSING BEAST! 🔊
+    auto audioContext_fn = ObjectFactory::create_native_function("AudioContext", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
+            return WebAPI::create_audio_context();
+        });
+    set_global_property("AudioContext", Value(audioContext_fn.release()));
+    
+    // Also add webkitAudioContext for compatibility
+    auto webkitAudioContext_fn = ObjectFactory::create_native_function("webkitAudioContext",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;  
+            return WebAPI::create_audio_context();
+        });
+    set_global_property("webkitAudioContext", Value(webkitAudioContext_fn.release()));
     
     // NodeJS API registration - now working on Windows with minimal headers
     setup_nodejs_apis();
@@ -795,61 +933,7 @@ void Engine::setup_built_in_objects() {
     // Note: GroupBy method temporarily disabled due to runtime issues
     // Will be re-enabled after debugging the function calling mechanism
     
-    // Create Promise constructor
-    auto promise_constructor = ObjectFactory::create_native_function("Promise", 
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_function()) {
-                ctx.throw_exception(Value("TypeError: Promise constructor requires a function argument"));
-                return Value();
-            }
-            
-            // Create a new Promise object
-            auto promise = new Promise();
-            
-            // Get the executor function
-            Function* executor = static_cast<Function*>(args[0].as_object());
-            
-            // Create resolve and reject functions
-            auto resolve_fn = ObjectFactory::create_native_function("resolve", 
-                [=](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; // Suppress unused parameter warning
-                    Value resolve_value = args.empty() ? Value() : args[0];
-                    promise->fulfill(resolve_value);
-                    return Value();
-                });
-                
-            auto reject_fn = ObjectFactory::create_native_function("reject", 
-                [=](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; // Suppress unused parameter warning
-                    Value reject_reason = args.empty() ? Value() : args[0];
-                    promise->reject(reject_reason);
-                    return Value();
-                });
-            
-            // Call executor with resolve and reject functions
-            std::vector<Value> executor_args = {
-                Value(resolve_fn.release()),
-                Value(reject_fn.release())
-            };
-            
-            try {
-                executor->call(ctx, executor_args);
-            } catch (...) {
-                // If executor throws, reject the promise
-                promise->reject(Value("Promise executor threw an exception"));
-            }
-            
-            return Value(promise);
-        });
-    
-    // Add ES2025 Promise static methods
-    auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers", Promise::withResolvers);
-    auto promise_try = ObjectFactory::create_native_function("try", Promise::try_method);
-    
-    promise_constructor->set_property("withResolvers", Value(promise_withResolvers.release()));
-    promise_constructor->set_property("try", Value(promise_try.release()));
-    
-    global_context_->create_binding("Promise", Value(promise_constructor.get()));
+    // Promise constructor is handled by Context.cpp to avoid duplicate setup
     
     // Create Intl object for internationalization
     auto intl_obj = ObjectFactory::create_object();
@@ -956,7 +1040,7 @@ void Engine::setup_built_in_objects() {
     // Prevent garbage collection of these objects
     array_constructor.release();
     array_prototype.release();
-    promise_constructor.release();
+    // Promise constructor handled in Context.cpp
 }
 
 void Engine::setup_built_in_functions() {

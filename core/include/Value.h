@@ -14,6 +14,7 @@ namespace Quanta {
 class Object;
 class String;
 class Function;
+class BigInt;
 
 /**
  * High-performance JavaScript value representation using NaN-boxing
@@ -87,6 +88,9 @@ public:
     // Symbol constructor
     explicit Value(class Symbol* sym) : bits_(QUIET_NAN | TAG_SYMBOL | reinterpret_cast<uint64_t>(sym)) {}
     
+    // BigInt constructor
+    explicit Value(class BigInt* bigint) : bits_(QUIET_NAN | TAG_BIGINT | reinterpret_cast<uint64_t>(bigint)) {}
+    
     // Object constructor
     explicit Value(Object* obj);
     
@@ -144,6 +148,10 @@ public:
     
     inline Object* as_object() const {
         return reinterpret_cast<Object*>(bits_ & PAYLOAD_MASK);
+    }
+    
+    inline class BigInt* as_bigint() const {
+        return reinterpret_cast<class BigInt*>(bits_ & PAYLOAD_MASK);
     }
     
     inline Function* as_function() const {

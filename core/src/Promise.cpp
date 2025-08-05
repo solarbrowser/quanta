@@ -1,5 +1,6 @@
 #include "../include/Promise.h"
 #include "../include/Context.h"
+#include "../include/Async.h"
 #include "../../parser/include/AST.h"
 #include <iostream>
 
@@ -22,21 +23,46 @@ void Promise::reject(const Value& reason) {
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
-    auto* new_promise = new Promise();
+    auto* new_promise = new Promise(context_);
     
     if (state_ == PromiseState::FULFILLED) {
         if (on_fulfilled) {
-            // Execute fulfillment handler immediately
-            // For now, just fulfill the new promise with the same value
-            new_promise->fulfill(value_);
+            // Schedule callback execution as microtask
+            EventLoop::instance().schedule_microtask([this, on_fulfilled, new_promise]() {
+                try {
+                    if (context_) {
+                        std::vector<Value> args = {value_};
+                        Value result = on_fulfilled->call(*context_, args);
+                        
+                        // Handle result - for now just fulfill with the result
+                        // TODO: Handle promise chaining properly
+                        new_promise->fulfill(result);
+                    } else {
+                        new_promise->reject(Value("No execution context for callback"));
+                    }
+                } catch (...) {
+                    new_promise->reject(Value("Handler execution failed"));
+                }
+            });
         } else {
             new_promise->fulfill(value_);
         }
     } else if (state_ == PromiseState::REJECTED) {
         if (on_rejected) {
-            // Execute rejection handler immediately
-            // For now, just fulfill the new promise (simulating handled rejection)
-            new_promise->fulfill(Value("handled_rejection"));
+            // Schedule rejection handler as microtask
+            EventLoop::instance().schedule_microtask([this, on_rejected, new_promise]() {
+                try {
+                    if (context_) {
+                        std::vector<Value> args = {value_};
+                        Value result = on_rejected->call(*context_, args);
+                        new_promise->fulfill(result);  // Rejection handler fulfills the new promise
+                    } else {
+                        new_promise->reject(Value("No execution context for callback"));
+                    }
+                } catch (...) {
+                    new_promise->reject(value_);  // Re-reject with original reason
+                }
+            });
         } else {
             new_promise->reject(value_);
         }
@@ -63,19 +89,19 @@ Promise* Promise::finally_method(Function* on_finally) {
 }
 
 Promise* Promise::resolve(const Value& value) {
-    auto* promise = new Promise();
+    auto* promise = new Promise(nullptr);  // Will be updated when bound to Context
     promise->fulfill(value);
     return promise;
 }
 
 Promise* Promise::reject_static(const Value& reason) {
-    auto* promise = new Promise();
+    auto* promise = new Promise(nullptr);  // Will be updated when bound to Context
     promise->reject(reason);
     return promise;
 }
 
 Promise* Promise::all(const std::vector<Promise*>& promises) {
-    auto* result_promise = new Promise();
+    auto* result_promise = new Promise(nullptr);
     
     if (promises.empty()) {
         result_promise->fulfill(Value("empty_array"));
@@ -88,7 +114,7 @@ Promise* Promise::all(const std::vector<Promise*>& promises) {
 }
 
 Promise* Promise::race(const std::vector<Promise*>& promises) {
-    auto* result_promise = new Promise();
+    auto* result_promise = new Promise(nullptr);
     
     if (promises.empty()) {
         // Never resolves if empty
@@ -102,13 +128,37 @@ Promise* Promise::race(const std::vector<Promise*>& promises) {
 
 void Promise::execute_handlers() {
     if (state_ == PromiseState::FULFILLED) {
-        // Execute fulfillment handlers
-        fulfillment_handlers_.clear();
+        // Execute fulfillment handlers using EventLoop
+        auto handlers = std::move(fulfillment_handlers_);
+        for (Function* handler : handlers) {
+            EventLoop::instance().schedule_microtask([this, handler]() {
+                try {
+                    if (context_) {
+                        std::vector<Value> args = {value_};
+                        handler->call(*context_, args);
+                    }
+                } catch (...) {
+                    // Handler failed, but don't affect this promise
+                }
+            });
+        }
         rejection_handlers_.clear();
     } else if (state_ == PromiseState::REJECTED) {
-        // Execute rejection handlers
+        // Execute rejection handlers using EventLoop  
+        auto handlers = std::move(rejection_handlers_);
+        for (Function* handler : handlers) {
+            EventLoop::instance().schedule_microtask([this, handler]() {
+                try {
+                    if (context_) {
+                        std::vector<Value> args = {value_};
+                        handler->call(*context_, args);
+                    }
+                } catch (...) {
+                    // Handler failed, but don't affect this promise
+                }
+            });
+        }
         fulfillment_handlers_.clear();
-        rejection_handlers_.clear();
     }
 }
 
@@ -116,7 +166,7 @@ void Promise::execute_handlers() {
 Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args; // Suppress unused parameter warnings
     
-    auto* promise = new Promise();
+    auto* promise = new Promise(nullptr);
     auto result_obj = ObjectFactory::create_object();
     
     // Create resolve function
@@ -153,7 +203,7 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     }
     
     Function* callback = args[0].as_function();
-    auto* promise = new Promise();
+    auto* promise = new Promise(nullptr);
     
     try {
         // Execute the callback immediately

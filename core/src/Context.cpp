@@ -5,6 +5,8 @@
 #include "Promise.h"
 #include "ProxyReflect.h"
 #include "WebAPI.h"
+#include "Async.h"
+#include "BigInt.h"
 #include <iostream>
 #include <sstream>
 #include <limits>
@@ -23,7 +25,7 @@ Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false), 
-      return_value_(), has_return_value_(false), engine_(engine) {
+      return_value_(), has_return_value_(false), has_break_(false), has_continue_(false), engine_(engine) {
     
     if (type == Type::Global) {
         initialize_global_context();
@@ -34,7 +36,7 @@ Context::Context(Engine* engine, Context* parent, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
-      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), engine_(engine) {
+      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), has_break_(false), has_continue_(false), engine_(engine) {
     
     // Inherit built-ins from parent
     if (parent) {
@@ -262,8 +264,23 @@ void Context::initialize_built_ins() {
     // Object.keys(obj) - returns array of own enumerable property names
     auto keys_fn = ObjectFactory::create_native_function("keys", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() == 0 || !args[0].is_object()) {
-                ctx.throw_exception(Value("Object.keys called on non-object"));
+            if (args.size() == 0) {
+                ctx.throw_exception(Value("TypeError: Object.keys requires at least 1 argument"));
+                return Value();
+            }
+            
+            // Check for null and undefined specifically
+            if (args[0].is_null()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+            if (args[0].is_undefined()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("TypeError: Object.keys called on non-object"));
                 return Value();
             }
             
@@ -282,8 +299,23 @@ void Context::initialize_built_ins() {
     // Object.values(obj) - returns array of own enumerable property values
     auto values_fn = ObjectFactory::create_native_function("values", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() == 0 || !args[0].is_object()) {
-                ctx.throw_exception(Value("Object.values called on non-object"));
+            if (args.size() == 0) {
+                ctx.throw_exception(Value("TypeError: Object.values requires at least 1 argument"));
+                return Value();
+            }
+            
+            // Check for null and undefined specifically
+            if (args[0].is_null()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+            if (args[0].is_undefined()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("TypeError: Object.values called on non-object"));
                 return Value();
             }
             
@@ -389,6 +421,37 @@ void Context::initialize_built_ins() {
         });
     register_built_in_object("String", string_constructor.release());
     
+    // BigInt constructor - callable as function
+    auto bigint_constructor = ObjectFactory::create_native_function("BigInt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_error("BigInt constructor requires an argument");
+                return Value();
+            }
+            
+            try {
+                if (args[0].is_number()) {
+                    double num = args[0].as_number();
+                    if (std::floor(num) != num) {
+                        ctx.throw_error("Cannot convert non-integer Number to BigInt");
+                        return Value();
+                    }
+                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(num));
+                    return Value(bigint.release());
+                } else if (args[0].is_string()) {
+                    auto bigint = std::make_unique<BigInt>(args[0].to_string());
+                    return Value(bigint.release());
+                } else {
+                    ctx.throw_error("Cannot convert value to BigInt");
+                    return Value();
+                }
+            } catch (const std::exception& e) {
+                ctx.throw_error("Invalid BigInt: " + std::string(e.what()));
+                return Value();
+            }
+        });
+    register_built_in_object("BigInt", bigint_constructor.release());
+    
     // Number constructor - callable as function with ES5 constants
     auto number_constructor = ObjectFactory::create_native_function("Number",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -445,60 +508,67 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("JSON", json_object.release());
     
-    // Math object
-    auto math_object = ObjectFactory::create_object();
+    // Math object is now created in Engine.cpp with complete function set
     
-    // Math constants
-    math_object->set_property("E", Value(2.718281828459045));
-    math_object->set_property("LN2", Value(0.6931471805599453));
-    math_object->set_property("LN10", Value(2.302585092994046));
-    math_object->set_property("LOG2E", Value(1.4426950408889634));
-    math_object->set_property("LOG10E", Value(0.4342944819032518));
-    math_object->set_property("PI", Value(3.141592653589793));
-    math_object->set_property("SQRT1_2", Value(0.7071067811865476));
-    math_object->set_property("SQRT2", Value(1.4142135623730951));
-    
-    // Math.log10
-    auto math_log10 = ObjectFactory::create_native_function("log10",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused parameter warning
-            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
-            double x = args[0].to_number();
-            return Value(std::log10(x));
-        });
-    math_object->set_property("log10", Value(math_log10.release()));
-    
-    // Math.cosh
-    auto math_cosh = ObjectFactory::create_native_function("cosh",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused parameter warning
-            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
-            double x = args[0].to_number();
-            return Value(std::cosh(x));
-        });
-    math_object->set_property("cosh", Value(math_cosh.release()));
-    
-    // Math.sinh
-    auto math_sinh = ObjectFactory::create_native_function("sinh",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused parameter warning
-            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
-            double x = args[0].to_number();
-            return Value(std::sinh(x));
-        });
-    math_object->set_property("sinh", Value(math_sinh.release()));
-    
-    register_built_in_object("Math", math_object.release());
+    // Helper function to add Promise methods to any Promise instance
+    auto add_promise_methods = [](Promise* promise) {
+        // Add .then method
+        auto then_method = ObjectFactory::create_native_function("then",
+            [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+                Function* on_fulfilled = nullptr;
+                Function* on_rejected = nullptr;
+                
+                if (args.size() > 0 && args[0].is_function()) {
+                    on_fulfilled = args[0].as_function();
+                }
+                if (args.size() > 1 && args[1].is_function()) {
+                    on_rejected = args[1].as_function();
+                }
+                
+                Promise* new_promise = promise->then(on_fulfilled, on_rejected);
+                // TODO: Add methods to new_promise recursively
+                return Value(new_promise);
+            });
+        promise->set_property("then", Value(then_method.release()));
+        
+        // Add .catch method
+        auto catch_method = ObjectFactory::create_native_function("catch",
+            [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+                Function* on_rejected = nullptr;
+                if (args.size() > 0 && args[0].is_function()) {
+                    on_rejected = args[0].as_function();
+                }
+                
+                Promise* new_promise = promise->catch_method(on_rejected);
+                // TODO: Add methods to new_promise recursively
+                return Value(new_promise);
+            });
+        promise->set_property("catch", Value(catch_method.release()));
+        
+        // Add .finally method
+        auto finally_method = ObjectFactory::create_native_function("finally",
+            [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+                Function* on_finally = nullptr;
+                if (args.size() > 0 && args[0].is_function()) {
+                    on_finally = args[0].as_function();
+                }
+                
+                Promise* new_promise = promise->finally_method(on_finally);
+                // TODO: Add methods to new_promise recursively
+                return Value(new_promise);
+            });
+        promise->set_property("finally", Value(finally_method.release()));
+    };
     
     // Promise constructor
     auto promise_constructor = ObjectFactory::create_native_function("Promise",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_exception(Value("Promise executor must be a function"));
                 return Value();
             }
             
-            auto promise = std::make_unique<Promise>();
+            auto promise = std::make_unique<Promise>(&ctx);
             
             // Execute the executor function with resolve and reject
             Function* executor = args[0].as_function();
@@ -533,6 +603,9 @@ void Context::initialize_built_ins() {
                 promise->reject(Value("Promise executor threw"));
             }
             
+            // Add Promise methods to this instance
+            add_promise_methods(promise.get());
+            
             return Value(promise.release());
         });
     
@@ -545,7 +618,7 @@ void Context::initialize_built_ins() {
             }
             
             Function* fn = args[0].as_function();
-            auto promise = std::make_unique<Promise>();
+            auto promise = std::make_unique<Promise>(&ctx);
             
             try {
                 Value result = fn->call(ctx, {});
@@ -562,7 +635,7 @@ void Context::initialize_built_ins() {
     auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; // Suppress unused parameter warning
-            auto promise = std::make_unique<Promise>();
+            auto promise = std::make_unique<Promise>(&ctx);
             
             // Create resolve function
             auto resolve_fn = ObjectFactory::create_native_function("resolve",
@@ -591,6 +664,121 @@ void Context::initialize_built_ins() {
             return Value(result_obj.release());
         });
     promise_constructor->set_property("withResolvers", Value(promise_withResolvers.release()));
+    
+    // Create Promise.prototype object
+    auto promise_prototype = ObjectFactory::create_object();
+    
+    // Promise.prototype.then
+    auto promise_then = ObjectFactory::create_native_function("then",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("Promise.prototype.then called on non-object"));
+                return Value();
+            }
+            
+            // Cast to Promise - need to verify this is actually a Promise
+            Promise* promise = dynamic_cast<Promise*>(this_obj);
+            if (!promise) {
+                ctx.throw_exception(Value("Promise.prototype.then called on non-Promise"));
+                return Value();
+            }
+            
+            Function* on_fulfilled = nullptr;
+            Function* on_rejected = nullptr;
+            
+            if (args.size() > 0 && args[0].is_function()) {
+                on_fulfilled = args[0].as_function();
+            }
+            if (args.size() > 1 && args[1].is_function()) {
+                on_rejected = args[1].as_function();
+            }
+            
+            Promise* new_promise = promise->then(on_fulfilled, on_rejected);
+            return Value(new_promise);
+        });
+    promise_prototype->set_property("then", Value(promise_then.release()));
+    
+    // Promise.prototype.catch
+    auto promise_catch = ObjectFactory::create_native_function("catch",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("Promise.prototype.catch called on non-object"));
+                return Value();
+            }
+            
+            Promise* promise = dynamic_cast<Promise*>(this_obj);
+            if (!promise) {
+                ctx.throw_exception(Value("Promise.prototype.catch called on non-Promise"));
+                return Value();
+            }
+            
+            Function* on_rejected = nullptr;
+            if (args.size() > 0 && args[0].is_function()) {
+                on_rejected = args[0].as_function();
+            }
+            
+            Promise* new_promise = promise->catch_method(on_rejected);
+            return Value(new_promise);
+        });
+    promise_prototype->set_property("catch", Value(promise_catch.release()));
+    
+    // Promise.prototype.finally
+    auto promise_finally = ObjectFactory::create_native_function("finally",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("Promise.prototype.finally called on non-object"));
+                return Value();
+            }
+            
+            Promise* promise = dynamic_cast<Promise*>(this_obj);
+            if (!promise) {
+                ctx.throw_exception(Value("Promise.prototype.finally called on non-Promise"));
+                return Value();
+            }
+            
+            Function* on_finally = nullptr;
+            if (args.size() > 0 && args[0].is_function()) {
+                on_finally = args[0].as_function();
+            }
+            
+            Promise* new_promise = promise->finally_method(on_finally);
+            return Value(new_promise);
+        });
+    promise_prototype->set_property("finally", Value(promise_finally.release()));
+    
+    // Set Promise.prototype on the constructor
+    promise_constructor->set_property("prototype", Value(promise_prototype.release()));
+    
+    // Add Promise.resolve static method
+    auto promise_resolve_static = ObjectFactory::create_native_function("resolve",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value value = args.empty() ? Value() : args[0];
+            auto promise = std::make_unique<Promise>(&ctx);
+            promise->fulfill(value);
+            
+            // Add instance methods to this promise
+            add_promise_methods(promise.get());
+            
+            return Value(promise.release());
+        });
+    promise_constructor->set_property("resolve", Value(promise_resolve_static.release()));
+    
+    // Add Promise.reject static method
+    auto promise_reject_static = ObjectFactory::create_native_function("reject",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value reason = args.empty() ? Value() : args[0];
+            auto promise = std::make_unique<Promise>(&ctx);
+            promise->reject(reason);
+            
+            // Add instance methods to this promise
+            add_promise_methods(promise.get());
+            
+            return Value(promise.release());
+        });
+    promise_constructor->set_property("reject", Value(promise_reject_static.release()));
     
     register_built_in_object("Promise", promise_constructor.release());
     
@@ -941,7 +1129,7 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("true", Value(true), false);
     lexical_environment_->create_binding("false", Value(false), false);
     
-    // Global values
+    // Global values - create proper NaN value
     lexical_environment_->create_binding("NaN", Value(std::numeric_limits<double>::quiet_NaN()), false);
     lexical_environment_->create_binding("Infinity", Value(std::numeric_limits<double>::infinity()), false);
     
@@ -1004,6 +1192,23 @@ void Context::set_return_value(const Value& value) {
 void Context::clear_return_value() {
     return_value_ = Value();
     has_return_value_ = false;
+}
+
+//=============================================================================
+// Break/Continue Handling
+//=============================================================================
+
+void Context::set_break() {
+    has_break_ = true;
+}
+
+void Context::set_continue() {
+    has_continue_ = true;
+}
+
+void Context::clear_break_continue() {
+    has_break_ = false;
+    has_continue_ = false;
 }
 
 //=============================================================================

@@ -88,6 +88,9 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::WHILE:
             return parse_while_statement();
             
+        case TokenType::DO:
+            return parse_do_while_statement();
+            
         case TokenType::FUNCTION:
             return parse_function_declaration();
             
@@ -99,6 +102,12 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             
         case TokenType::RETURN:
             return parse_return_statement();
+            
+        case TokenType::BREAK:
+            return parse_break_statement();
+            
+        case TokenType::CONTINUE:
+            return parse_continue_statement();
             
         case TokenType::TRY:
             return parse_try_statement();
@@ -218,9 +227,32 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
 
 std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
     return parse_binary_expression(
-        [this]() { return parse_logical_and_expression(); },
+        [this]() { return parse_nullish_coalescing_expression(); },
         {TokenType::LOGICAL_OR}
     );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
+    auto left = parse_logical_and_expression();
+    if (!left) return nullptr;
+    
+    while (match(TokenType::NULLISH_COALESCING)) {
+        Position start = left->get_start();
+        advance(); // consume '??'
+        
+        auto right = parse_logical_and_expression();
+        if (!right) {
+            add_error("Expected expression after '??'");
+            return left;
+        }
+        
+        Position end = right->get_end();
+        left = std::make_unique<NullishCoalescingExpression>(
+            std::move(left), std::move(right), start, end
+        );
+    }
+    
+    return left;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_logical_and_expression() {
@@ -445,7 +477,7 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
     auto expr = parse_primary_expression();
     if (!expr) return nullptr;
     
-    while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET)) {
+    while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET) || match(TokenType::OPTIONAL_CHAINING)) {
         Position start = expr->get_start();
         
         if (match(TokenType::DOT)) {
@@ -463,6 +495,41 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
             expr = std::make_unique<MemberExpression>(
                 std::move(expr), std::move(property), false, start, end
             );
+        } else if (match(TokenType::OPTIONAL_CHAINING)) {
+            advance(); // consume '?.'
+            
+            if (match(TokenType::LEFT_BRACKET)) {
+                // obj?.[computed]
+                advance(); // consume '['
+                
+                auto property = parse_expression();
+                if (!property) {
+                    add_error("Expected expression inside []");
+                    return expr;
+                }
+                
+                if (!consume(TokenType::RIGHT_BRACKET)) {
+                    add_error("Expected ']' after computed property");
+                    return expr;
+                }
+                
+                Position end = get_current_position();
+                expr = std::make_unique<OptionalChainingExpression>(
+                    std::move(expr), std::move(property), true, start, end
+                );
+            } else if (match(TokenType::IDENTIFIER)) {
+                // obj?.property
+                auto property = parse_identifier();
+                if (!property) return expr;
+                
+                Position end = property->get_end();
+                expr = std::make_unique<OptionalChainingExpression>(
+                    std::move(expr), std::move(property), false, start, end
+                );
+            } else {
+                add_error("Expected property name or '[' after '?.'");
+                return expr;
+            }
         } else { // LEFT_BRACKET
             advance(); // consume '['
             
@@ -499,12 +566,16 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_boolean_literal();
         case TokenType::NULL_LITERAL:
             return parse_null_literal();
+        case TokenType::BIGINT_LITERAL:
+            return parse_bigint_literal();
         case TokenType::UNDEFINED:
             return parse_undefined_literal();
         case TokenType::IDENTIFIER:
             return parse_identifier();
         case TokenType::THIS:
             return parse_this_expression();
+        case TokenType::SUPER:
+            return parse_super_expression();
         case TokenType::LEFT_PAREN:
             return parse_parenthesized_expression();
         case TokenType::ASYNC:
@@ -521,6 +592,8 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_template_literal();
         case TokenType::REGEX:
             return parse_regex_literal();
+        case TokenType::LESS_THAN:
+            return parse_jsx_element();
         default:
             add_error("Unexpected token: " + token.get_value());
             advance(); // CRITICAL: Advance to prevent infinite loops
@@ -558,6 +631,16 @@ std::unique_ptr<ASTNode> Parser::parse_this_expression() {
     
     // Create a special identifier for 'this'
     return std::make_unique<Identifier>("this", start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_super_expression() {
+    const Token& token = current_token();
+    Position start = token.get_start();
+    Position end = token.get_end();
+    advance();
+    
+    // Create a special identifier for 'super'
+    return std::make_unique<Identifier>("super", start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_template_literal() {
@@ -673,6 +756,15 @@ std::unique_ptr<ASTNode> Parser::parse_null_literal() {
     advance();
     
     return std::make_unique<NullLiteral>(start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_bigint_literal() {
+    Position start = current_token().get_start();
+    Position end = current_token().get_end();
+    std::string value = current_token().get_value();
+    advance();
+    
+    return std::make_unique<BigIntLiteral>(value, start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_undefined_literal() {
@@ -1184,16 +1276,12 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             return nullptr;
         }
         
-        // Parse the iterable expression - use simple identifier parsing to avoid recursion
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("For...of requires an identifier after 'of'");
+        // Parse the iterable expression - allow any expression
+        auto iterable = parse_expression();
+        if (!iterable) {
+            add_error("Expected expression after 'of' in for...of loop");
             return nullptr;
         }
-        
-        std::string iterable_name = current_token().get_value();
-        Position iterable_pos = current_token().get_start();
-        auto iterable = std::make_unique<Identifier>(iterable_name, iterable_pos, iterable_pos);
-        advance(); // consume iterable identifier
         
         // Expect closing parenthesis
         if (at_end() || current_token().get_type() != TokenType::RIGHT_PAREN) {
@@ -1299,6 +1387,50 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
     
     Position end = get_current_position();
     return std::make_unique<WhileStatement>(std::move(test), std::move(body), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::DO)) {
+        add_error("Expected 'do'");
+        return nullptr;
+    }
+    
+    // Parse body first (this is the key difference from while)
+    auto body = parse_statement();
+    if (!body) {
+        add_error("Expected statement for do-while loop body");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::WHILE)) {
+        add_error("Expected 'while' after do-while body");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'while'");
+        return nullptr;
+    }
+    
+    // Parse test condition
+    auto test = parse_expression();
+    if (!test) {
+        add_error("Expected condition in do-while loop");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after do-while condition");
+        return nullptr;
+    }
+    
+    // Consume optional semicolon
+    consume_if_match(TokenType::SEMICOLON);
+    
+    Position end = get_current_position();
+    return std::make_unique<DoWhileStatement>(std::move(body), std::move(test), start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
@@ -2064,6 +2196,36 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     return std::make_unique<ReturnStatement>(std::move(argument), start, end);
 }
 
+std::unique_ptr<ASTNode> Parser::parse_break_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::BREAK)) {
+        add_error("Expected 'break'");
+        return nullptr;
+    }
+    
+    // Consume optional semicolon
+    consume_if_match(TokenType::SEMICOLON);
+    
+    Position end = get_current_position();
+    return std::make_unique<BreakStatement>(start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_continue_statement() {
+    Position start = get_current_position();
+    
+    if (!consume(TokenType::CONTINUE)) {
+        add_error("Expected 'continue'");
+        return nullptr;
+    }
+    
+    // Consume optional semicolon
+    consume_if_match(TokenType::SEMICOLON);
+    
+    Position end = get_current_position();
+    return std::make_unique<ContinueStatement>(start, end);
+}
+
 //=============================================================================
 // ParserFactory Implementation
 //=============================================================================
@@ -2706,6 +2868,7 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
         advance(); // consume '['
         
         std::vector<std::unique_ptr<Identifier>> targets;
+        std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> default_exprs; // index -> default expr
         
         while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
             if (current_token().get_type() == TokenType::IDENTIFIER) {
@@ -2716,8 +2879,31 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
                 );
                 targets.push_back(std::move(id));
                 advance();
+                
+                // Check for default value: [a = 5, b = 10]
+                if (match(TokenType::ASSIGN)) {
+                    advance(); // consume '='
+                    auto default_expr = parse_assignment_expression();
+                    if (!default_expr) {
+                        add_error("Expected expression after '=' in array destructuring");
+                        return nullptr;
+                    }
+                    // Store default value with the current target index
+                    size_t target_index = targets.size() - 1;
+                    default_exprs.emplace_back(target_index, std::move(default_expr));
+                }
+            } else if (current_token().get_type() == TokenType::COMMA) {
+                // Handle skipping elements: [a, , c]
+                // Create a placeholder identifier for skipped element
+                auto placeholder = std::make_unique<Identifier>(
+                    "", // Empty name indicates skipped element
+                    current_token().get_start(),
+                    current_token().get_end()
+                );
+                targets.push_back(std::move(placeholder));
+                // Don't advance here, let the comma handling below do it
             } else {
-                add_error("Expected identifier in array destructuring");
+                add_error("Expected identifier or ',' in array destructuring");
                 return nullptr;
             }
             
@@ -2735,15 +2921,23 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
         }
         
         Position end = get_current_position();
-        return std::make_unique<DestructuringAssignment>(
+        auto destructuring = std::make_unique<DestructuringAssignment>(
             std::move(targets), nullptr, DestructuringAssignment::Type::ARRAY, start, end
         );
+        
+        // Add default values for array destructuring
+        for (auto& default_pair : default_exprs) {
+            destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
+        }
+        
+        return std::move(destructuring);
         
     } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
         // Object destructuring: {a, b, c}
         advance(); // consume '{'
         
         std::vector<std::unique_ptr<Identifier>> targets;
+        std::vector<std::pair<std::string, std::string>> property_mappings; // original_name -> variable_name
         
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
             if (current_token().get_type() == TokenType::IDENTIFIER) {
@@ -2784,10 +2978,16 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
                         Position new_pos = current_token().get_start();
                         Position new_end = current_token().get_end();
                         
+                        // Get the original property name from the last target
+                        std::string original_name = targets.back()->get_name();
+                        
                         // Replace the last target with the new name
                         targets.pop_back();
                         auto new_id = std::make_unique<Identifier>(new_name, new_pos, new_end);
                         targets.push_back(std::move(new_id));
+                        
+                        // Store the property mapping: original property -> new variable name
+                        property_mappings.emplace_back(original_name, new_name);
                         advance();
                     } else {
                         add_error("Expected identifier or nested pattern after ':'");
@@ -2813,9 +3013,16 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
         }
         
         Position end = get_current_position();
-        return std::make_unique<DestructuringAssignment>(
+        auto destructuring = std::make_unique<DestructuringAssignment>(
             std::move(targets), nullptr, DestructuringAssignment::Type::OBJECT, start, end
         );
+        
+        // Add property mappings for renaming
+        for (const auto& mapping : property_mappings) {
+            destructuring->add_property_mapping(mapping.first, mapping.second);
+        }
+        
+        return std::move(destructuring);
     }
     
     add_error("Expected '[' or '{' for destructuring pattern");
@@ -2841,6 +3048,195 @@ std::unique_ptr<ASTNode> Parser::parse_spread_element() {
     
     Position end = get_current_position();
     return std::make_unique<SpreadElement>(std::move(argument), start, end);
+}
+
+//=============================================================================
+// JSX Parsing Implementation
+//=============================================================================
+
+std::unique_ptr<ASTNode> Parser::parse_jsx_element() {
+    Position start = current_token().get_start();
+    
+    if (!consume(TokenType::LESS_THAN)) {
+        add_error("Expected '<' at start of JSX element");
+        return nullptr;
+    }
+    
+    // Parse tag name
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected JSX tag name");
+        return nullptr;
+    }
+    
+    std::string tag_name = current_token().get_value();
+    advance();
+    
+    // Parse attributes
+    std::vector<std::unique_ptr<ASTNode>> attributes;
+    while (current_token().get_type() == TokenType::IDENTIFIER) {
+        auto attr = parse_jsx_attribute();
+        if (attr) {
+            attributes.push_back(std::move(attr));
+        }
+    }
+    
+    // Check for self-closing tag
+    if (match(TokenType::DIVIDE)) {
+        advance(); // consume '/'
+        if (!consume(TokenType::GREATER_THAN)) {
+            add_error("Expected '>' after '/' in self-closing JSX tag");
+            return nullptr;
+        }
+        Position end = get_current_position();
+        return std::make_unique<JSXElement>(tag_name, std::move(attributes), 
+                                            std::vector<std::unique_ptr<ASTNode>>(), true, start, end);
+    }
+    
+    // Expect closing '>'
+    if (!consume(TokenType::GREATER_THAN)) {
+        add_error("Expected '>' after JSX opening tag");
+        return nullptr;
+    }
+    
+    // Parse children
+    std::vector<std::unique_ptr<ASTNode>> children;
+    while (current_token().get_type() != TokenType::EOF_TOKEN) {
+        // Check for closing tag
+        if (match(TokenType::LESS_THAN)) {
+            // Peek ahead to see if it's a closing tag
+            size_t saved_pos = current_token_index_;
+            advance(); // consume '<'
+            if (match(TokenType::DIVIDE)) {
+                // This is a closing tag, restore position and break
+                current_token_index_ = saved_pos;
+                break;
+            } else {
+                // Not a closing tag, restore position and parse as nested element
+                current_token_index_ = saved_pos;
+            }
+        }
+        
+        
+        if (match(TokenType::LEFT_BRACE)) {
+            // JSX expression
+            auto expr = parse_jsx_expression();
+            if (expr) {
+                children.push_back(std::move(expr));
+            }
+        } else if (match(TokenType::LESS_THAN)) {
+            // Nested JSX element
+            auto nested = parse_jsx_element();
+            if (nested) {
+                children.push_back(std::move(nested));
+            }
+        } else {
+            // JSX text
+            auto text = parse_jsx_text();
+            if (text) {
+                children.push_back(std::move(text));
+            }
+        }
+    }
+    
+    // Parse closing tag
+    if (!consume(TokenType::LESS_THAN) || !consume(TokenType::DIVIDE)) {
+        add_error("Expected '</' for JSX closing tag");
+        return nullptr;
+    }
+    
+    if (current_token().get_type() != TokenType::IDENTIFIER ||
+        current_token().get_value() != tag_name) {
+        add_error("JSX closing tag '" + current_token().get_value() + 
+                  "' does not match opening tag '" + tag_name + "'");
+        return nullptr;
+    }
+    advance();
+    
+    if (!consume(TokenType::GREATER_THAN)) {
+        add_error("Expected '>' after JSX closing tag");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<JSXElement>(tag_name, std::move(attributes), 
+                                        std::move(children), false, start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_jsx_text() {
+    Position start = current_token().get_start();
+    std::string text;
+    
+    // Collect text until we hit JSX syntax
+    while (current_token().get_type() != TokenType::LESS_THAN &&
+           current_token().get_type() != TokenType::LEFT_BRACE &&
+           current_token().get_type() != TokenType::EOF_TOKEN) {
+        text += current_token().get_value();
+        if (current_token().get_type() == TokenType::WHITESPACE ||
+            current_token().get_type() == TokenType::NEWLINE) {
+            text += " ";
+        }
+        advance();
+    }
+    
+    // Trim whitespace
+    text.erase(0, text.find_first_not_of(" \t\n\r"));
+    text.erase(text.find_last_not_of(" \t\n\r") + 1);
+    
+    Position end = get_current_position();
+    return std::make_unique<JSXText>(text, start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_jsx_expression() {
+    Position start = current_token().get_start();
+    
+    if (!consume(TokenType::LEFT_BRACE)) {
+        add_error("Expected '{' at start of JSX expression");
+        return nullptr;
+    }
+    
+    auto expression = parse_expression();
+    if (!expression) {
+        add_error("Expected expression in JSX expression");
+        return nullptr;
+    }
+    
+    if (!consume(TokenType::RIGHT_BRACE)) {
+        add_error("Expected '}' at end of JSX expression");
+        return nullptr;
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<JSXExpression>(std::move(expression), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_jsx_attribute() {
+    Position start = current_token().get_start();
+    
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected attribute name");
+        return nullptr;
+    }
+    
+    std::string attr_name = current_token().get_value();
+    advance();
+    
+    std::unique_ptr<ASTNode> value = nullptr;
+    
+    if (consume(TokenType::ASSIGN)) {
+        if (match(TokenType::STRING)) {
+            // String literal value
+            value = parse_string_literal();
+        } else if (match(TokenType::LEFT_BRACE)) {
+            // JSX expression value
+            value = parse_jsx_expression();
+        } else {
+            add_error("Expected string literal or JSX expression after '='");
+            return nullptr;
+        }
+    }
+    
+    Position end = get_current_position();
+    return std::make_unique<JSXAttribute>(attr_name, std::move(value), start, end);
 }
 
 } // namespace Quanta

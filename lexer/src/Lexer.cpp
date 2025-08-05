@@ -64,7 +64,7 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
     {';', TokenType::SEMICOLON},
     {',', TokenType::COMMA},
     {':', TokenType::COLON},
-    {'?', TokenType::QUESTION},
+    // {'?', TokenType::QUESTION}, // Now handled in read_operator for ?. and ?? support
     {'~', TokenType::BITWISE_NOT}
 };
 
@@ -258,6 +258,7 @@ Token Lexer::read_identifier() {
 
 Token Lexer::read_number() {
     Position start = current_position_;
+    size_t start_pos = position_;
     double value = 0.0;
     
     // Handle different number formats
@@ -280,6 +281,15 @@ Token Lexer::read_number() {
         }
     } else {
         value = parse_decimal_literal();
+    }
+    
+    // Check for BigInt literal (ends with 'n')
+    if (!at_end() && current_char() == 'n') {
+        advance(); // consume 'n'
+        // Extract the string representation for BigInt construction
+        size_t length = position_ - start_pos - 1; // -1 to exclude 'n'
+        std::string bigint_str = source_.substr(start_pos, length);
+        return create_token(TokenType::BIGINT_LITERAL, bigint_str, start);
     }
     
     return create_token(TokenType::NUMBER, value, start);
@@ -305,8 +315,25 @@ Token Lexer::read_template_literal() {
     advance(); // Skip opening `
     
     std::string value;
+    bool has_expressions = false;
+    
     while (!at_end() && current_char() != '`') {
-        if (current_char() == '\\') {
+        if (current_char() == '$' && peek_char() == '{') {
+            // Found expression start - this indicates a template with expressions
+            has_expressions = true;
+            // For now, just include the ${} in the text - the parser will handle it
+            value += advance(); // $
+            value += advance(); // {
+            
+            // Read until matching }
+            int brace_count = 1;
+            while (!at_end() && brace_count > 0) {
+                char ch = advance();
+                value += ch;
+                if (ch == '{') brace_count++;
+                else if (ch == '}') brace_count--;
+            }
+        } else if (current_char() == '\\') {
             value += parse_escape_sequence();
         } else {
             value += advance();
@@ -319,6 +346,8 @@ Token Lexer::read_template_literal() {
     }
     
     advance(); // Skip closing `
+    
+    // For now, return TEMPLATE_LITERAL token - the parser will parse expressions
     return create_token(TokenType::TEMPLATE_LITERAL, value, start);
 }
 
@@ -521,6 +550,21 @@ Token Lexer::read_operator() {
                 return create_token(TokenType::ELLIPSIS, start);
             }
             return create_token(TokenType::DOT, start);
+            
+        case '?':
+            advance();
+            if (current_char() == '.') {
+                advance();
+                return create_token(TokenType::OPTIONAL_CHAINING, start);
+            } else if (current_char() == '?') {
+                advance();
+                if (current_char() == '=') {
+                    advance();
+                    return create_token(TokenType::NULLISH_ASSIGN, start);
+                }
+                return create_token(TokenType::NULLISH_COALESCING, start);
+            }
+            return create_token(TokenType::QUESTION, start);
             
         default:
             advance();

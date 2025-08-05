@@ -18,6 +18,7 @@ enum class TokenType {
     TEMPLATE_LITERAL,
     BOOLEAN,
     NULL_LITERAL,
+    BIGINT_LITERAL,
     UNDEFINED,
     
     // Keywords
@@ -127,6 +128,8 @@ enum class TokenType {
     // ES6+ Operators
     ARROW,              // =>
     ELLIPSIS,           // ...
+    
+    // ES2020+ Operators  
     OPTIONAL_CHAINING,  // ?.
     NULLISH_COALESCING, // ??
     NULLISH_ASSIGN,     // ??=
@@ -143,6 +146,12 @@ enum class TokenType {
     WHITESPACE,
     COMMENT,
     REGEX,
+    
+    // JSX tokens
+    JSX_ELEMENT_START,    // <
+    JSX_ELEMENT_END,      // >
+    JSX_SELF_CLOSE,       // />
+    JSX_TEXT,             // Text content in JSX
     
     // Error
     INVALID

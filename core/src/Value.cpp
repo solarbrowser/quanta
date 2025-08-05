@@ -1,6 +1,7 @@
 #include "../include/Value.h"
 #include "../include/Object.h"
 #include "../include/String.h"
+#include "../include/BigInt.h"
 #include <sstream>
 #include <cmath>
 #include <limits>
@@ -40,6 +41,9 @@ std::string Value::to_string() const {
     }
     if (is_string()) {
         return as_string()->str();
+    }
+    if (is_bigint()) {
+        return as_bigint()->to_string();
     }
     if (is_object()) {
         Object* obj = as_object();
@@ -82,6 +86,9 @@ double Value::to_number() const {
             return std::numeric_limits<double>::quiet_NaN();
         }
     }
+    if (is_bigint()) {
+        return as_bigint()->to_double();
+    }
     return std::numeric_limits<double>::quiet_NaN();
 }
 
@@ -95,6 +102,9 @@ bool Value::to_boolean() const {
     if (is_string()) {
         return !as_string()->str().empty();
     }
+    if (is_bigint()) {
+        return as_bigint()->to_boolean();
+    }
     return true; // objects and functions are truthy
 }
 
@@ -105,8 +115,21 @@ Value Value::typeof_op() const {
     if (is_number()) return Value(std::string("number"));
     if (is_string()) return Value(std::string("string"));
     if (is_symbol()) return Value(std::string("symbol"));
+    if (is_bigint()) return Value(std::string("bigint"));
     if (is_function()) return Value(std::string("function"));
     return Value(std::string("object"));
+}
+
+Value::Type Value::get_type() const {
+    if (is_undefined()) return Type::Undefined;
+    if (is_null()) return Type::Null;
+    if (is_boolean()) return Type::Boolean;
+    if (is_number()) return Type::Number;
+    if (is_string()) return Type::String;
+    if (is_symbol()) return Type::Symbol;
+    if (is_bigint()) return Type::BigInt;
+    if (is_function()) return Type::Function;
+    return Type::Object;
 }
 
 bool Value::strict_equals(const Value& other) const {
@@ -115,6 +138,7 @@ bool Value::strict_equals(const Value& other) const {
     if (is_boolean() && other.is_boolean()) return as_boolean() == other.as_boolean();
     if (is_number() && other.is_number()) return as_number() == other.as_number();
     if (is_string() && other.is_string()) return as_string()->str() == other.as_string()->str();
+    if (is_bigint() && other.is_bigint()) return *as_bigint() == *other.as_bigint();
     if (is_object() && other.is_object()) return as_object() == other.as_object();
     if (is_function() && other.is_function()) return as_function() == other.as_function();
     return false;
@@ -171,15 +195,36 @@ Value Value::add(const Value& other) const {
     if (is_number() && other.is_number()) {
         return Value(as_number() + other.as_number());
     }
+    if (is_bigint() && other.is_bigint()) {
+        BigInt result = *as_bigint() + *other.as_bigint();
+        return Value(new BigInt(result));
+    }
+    if (is_bigint() || other.is_bigint()) {
+        throw std::runtime_error("Cannot mix BigInt and other types in addition");
+    }
     // For simplicity, convert to strings for + operation
     return Value(to_string() + other.to_string());
 }
 
 Value Value::subtract(const Value& other) const {
+    if (is_bigint() && other.is_bigint()) {
+        BigInt result = *as_bigint() - *other.as_bigint();
+        return Value(new BigInt(result));
+    }
+    if (is_bigint() || other.is_bigint()) {
+        throw std::runtime_error("Cannot mix BigInt and other types in subtraction");
+    }
     return Value(to_number() - other.to_number());
 }
 
 Value Value::multiply(const Value& other) const {
+    if (is_bigint() && other.is_bigint()) {
+        BigInt result = *as_bigint() * *other.as_bigint();
+        return Value(new BigInt(result));
+    }
+    if (is_bigint() || other.is_bigint()) {
+        throw std::runtime_error("Cannot mix BigInt and other types in multiplication");
+    }
     return Value(to_number() * other.to_number());
 }
 
@@ -254,6 +299,11 @@ int Value::compare(const Value& other) const {
         double right = other.as_number();
         if (left < right) return -1;
         if (left > right) return 1;
+        return 0;
+    }
+    if (is_bigint() && other.is_bigint()) {
+        if (*as_bigint() < *other.as_bigint()) return -1;
+        if (*as_bigint() > *other.as_bigint()) return 1;
         return 0;
     }
     // For simplicity, convert to strings for comparison

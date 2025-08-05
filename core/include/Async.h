@@ -29,7 +29,7 @@ public:
                   Context* closure_context);
     
     // Override call to return promise
-    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
     
     // Create async execution context
     std::unique_ptr<Promise> execute_async(Context& ctx, const std::vector<Value>& args);

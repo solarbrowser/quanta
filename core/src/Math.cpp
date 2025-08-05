@@ -6,6 +6,7 @@
 #include <random>
 #include <chrono>
 #include <limits>
+#include <iostream>
 
 namespace Quanta {
 
@@ -346,16 +347,39 @@ Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
     double sum = 0.0;
     double compensation = 0.0;
     
-    for (const auto& arg : args) {
-        double value = safe_to_number(arg);
-        if (!is_finite_number(value)) {
-            return Value(value); // Return NaN or infinity
+    try {
+        for (const auto& arg : args) {
+            // Handle undefined, null, or invalid values safely
+            if (arg.is_undefined() || arg.is_null()) {
+                continue; // Skip undefined/null values
+            }
+            
+            double value = safe_to_number(arg);
+            
+            // Check for NaN first
+            if (std::isnan(value)) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+            
+            // Check for infinity
+            if (std::isinf(value)) {
+                return Value(value);
+            }
+            
+            // Perform Kahan summation
+            double y = value - compensation;
+            double t = sum + y;
+            compensation = (t - sum) - y;
+            sum = t;
         }
-        
-        double y = value - compensation;
-        double t = sum + y;
-        compensation = (t - sum) - y;
-        sum = t;
+    } catch (const std::exception& e) {
+        // Prevent segfault by catching any unexpected errors
+        std::cout << "Math.sumPrecise: Error in calculation - " << e.what() << std::endl;
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    } catch (...) {
+        // Catch any other errors
+        std::cout << "Math.sumPrecise: Unknown error in calculation" << std::endl;
+        return Value(std::numeric_limits<double>::quiet_NaN());
     }
     
     return Value(sum);
