@@ -233,6 +233,28 @@ Value Object::get_own_property(const std::string& key) const {
         return get_element(index);
     }
     
+    // Check if this property has a descriptor with getter/setter
+    if (descriptors_) {
+        auto desc_it = descriptors_->find(key);
+        if (desc_it != descriptors_->end()) {
+            const PropertyDescriptor& desc = desc_it->second;
+            if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                // This is an accessor property with a getter
+                // For now, handle cookie specially since we need WebAPI
+                if (key == "cookie") {
+                    std::cout << "DEBUG: Calling getter for accessor property: " << key << std::endl;
+                    // Return empty string for now - the actual getter call happens in MemberExpression
+                    return Value("");
+                }
+                // TODO: Call the getter function properly with Context
+                std::cout << "DEBUG: Accessor property " << key << " getter not implemented yet" << std::endl;
+            }
+            if (desc.is_data_descriptor()) {
+                return desc.get_value();
+            }
+        }
+    }
+    
     // Check shape
     if (header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);

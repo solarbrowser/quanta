@@ -33,16 +33,51 @@ public:
     static Value console_time(Context& ctx, const std::vector<Value>& args);
     static Value console_timeEnd(Context& ctx, const std::vector<Value>& args);
     
-    // Fetch API (basic implementation)
+    // Complete Fetch API Implementation
     static Value fetch(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_append(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_delete(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_get(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_has(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_set(Context& ctx, const std::vector<Value>& args);
+    static Value Headers_forEach(Context& ctx, const std::vector<Value>& args);
+    static Value Request_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Response_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Response_json(Context& ctx, const std::vector<Value>& args);
+    static Value Response_text(Context& ctx, const std::vector<Value>& args);
+    static Value Response_blob(Context& ctx, const std::vector<Value>& args);
+    static Value Response_arrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value Response_ok(Context& ctx, const std::vector<Value>& args);
+    static Value Response_status(Context& ctx, const std::vector<Value>& args);
+    static Value Response_statusText(Context& ctx, const std::vector<Value>& args);
+    static Value Response_headers(Context& ctx, const std::vector<Value>& args);
     
-    // URL API
+    // Complete URL API
     static Value URL_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value URL_toString(Context& ctx, const std::vector<Value>& args);
+    static Value URL_toJSON(Context& ctx, const std::vector<Value>& args);
+    
+    // URLSearchParams API  
+    static Value URLSearchParams_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_append(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_delete(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_get(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_getAll(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_has(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_set(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_sort(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_toString(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_forEach(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_keys(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_values(Context& ctx, const std::vector<Value>& args);
+    static Value URLSearchParams_entries(Context& ctx, const std::vector<Value>& args);
     
     // Basic DOM API
     static Value document_getElementById(Context& ctx, const std::vector<Value>& args);
     static Value document_createElement(Context& ctx, const std::vector<Value>& args);
     static Value document_querySelector(Context& ctx, const std::vector<Value>& args);
+    static Value document_querySelectorAll(Context& ctx, const std::vector<Value>& args);
     static Value create_dom_element(const std::string& tagName, const std::string& id);
     
     // Window API
@@ -50,11 +85,179 @@ public:
     static Value window_confirm(Context& ctx, const std::vector<Value>& args);
     static Value window_prompt(Context& ctx, const std::vector<Value>& args);
     
-    // Storage API
+    // Storage API - Basic operations
     static Value localStorage_getItem(Context& ctx, const std::vector<Value>& args);
     static Value localStorage_setItem(Context& ctx, const std::vector<Value>& args);
     static Value localStorage_removeItem(Context& ctx, const std::vector<Value>& args);
     static Value localStorage_clear(Context& ctx, const std::vector<Value>& args);
+    static Value localStorage_key(Context& ctx, const std::vector<Value>& args);
+    static Value localStorage_length(Context& ctx, const std::vector<Value>& args);
+    
+    // SessionStorage API - Same interface as localStorage
+    static Value sessionStorage_getItem(Context& ctx, const std::vector<Value>& args);
+    static Value sessionStorage_setItem(Context& ctx, const std::vector<Value>& args);
+    static Value sessionStorage_removeItem(Context& ctx, const std::vector<Value>& args);
+    static Value sessionStorage_clear(Context& ctx, const std::vector<Value>& args);
+    static Value sessionStorage_key(Context& ctx, const std::vector<Value>& args);
+    static Value sessionStorage_length(Context& ctx, const std::vector<Value>& args);
+    
+    // Navigator Storage API - Modern storage management
+    static Value navigator_storage_estimate(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_storage_persist(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_storage_persisted(Context& ctx, const std::vector<Value>& args);
+    
+    // Storage Events
+    static Value storage_addEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value storage_dispatchEvent(Context& ctx, const std::vector<Value>& args);
+    
+    // Cookie API
+    static Value document_getCookie(Context& ctx, const std::vector<Value>& args);
+    static Value document_setCookie(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete Crypto API
+    static Value crypto_randomUUID(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_getRandomValues(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_digest(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_encrypt(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_decrypt(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_generateKey(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_importKey(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_exportKey(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_sign(Context& ctx, const std::vector<Value>& args);
+    static Value crypto_subtle_verify(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete File and Blob APIs
+    static Value File_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_slice(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_stream(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_text(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_arrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsText(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsDataURL(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsArrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsBinaryString(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_append(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_delete(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_get(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_getAll(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_has(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_set(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_keys(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_values(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_entries(Context& ctx, const std::vector<Value>& args);
+    static Value FormData_forEach(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete Media APIs
+    static Value MediaStream_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value MediaStream_getTracks(Context& ctx, const std::vector<Value>& args);
+    static Value MediaStream_getAudioTracks(Context& ctx, const std::vector<Value>& args);
+    static Value MediaStream_getVideoTracks(Context& ctx, const std::vector<Value>& args);
+    static Value MediaStream_addTrack(Context& ctx, const std::vector<Value>& args);
+    static Value MediaStream_removeTrack(Context& ctx, const std::vector<Value>& args);
+    static Value MediaTrack_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_createOffer(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_createAnswer(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_setLocalDescription(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_setRemoteDescription(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_addIceCandidate(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_mediaDevices_getUserMedia(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_mediaDevices_enumerateDevices(Context& ctx, const std::vector<Value>& args);
+    static Value media_element_play(Context& ctx, const std::vector<Value>& args);
+    static Value media_element_pause(Context& ctx, const std::vector<Value>& args);
+    static Value media_element_load(Context& ctx, const std::vector<Value>& args);
+    
+    // Geolocation API
+    static Value navigator_geolocation_getCurrentPosition(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_geolocation_watchPosition(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_geolocation_clearWatch(Context& ctx, const std::vector<Value>& args);
+    
+    // Notification API
+    static Value Notification_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Notification_requestPermission(Context& ctx, const std::vector<Value>& args);
+    static Value Notification_close(Context& ctx, const std::vector<Value>& args);
+    static Value notification_click(Context& ctx, const std::vector<Value>& args);
+    static Value notification_show(Context& ctx, const std::vector<Value>& args);
+    static Value notification_error(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete History API
+    static Value history_pushState(Context& ctx, const std::vector<Value>& args);
+    static Value history_replaceState(Context& ctx, const std::vector<Value>& args);
+    static Value history_back(Context& ctx, const std::vector<Value>& args);
+    static Value history_forward(Context& ctx, const std::vector<Value>& args);
+    static Value history_go(Context& ctx, const std::vector<Value>& args);
+    static Value history_length(Context& ctx, const std::vector<Value>& args);
+    static Value history_state(Context& ctx, const std::vector<Value>& args);
+    static Value history_scrollRestoration(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete Location API
+    static Value location_href(Context& ctx, const std::vector<Value>& args);
+    static Value location_protocol(Context& ctx, const std::vector<Value>& args);
+    static Value location_host(Context& ctx, const std::vector<Value>& args);
+    static Value location_hostname(Context& ctx, const std::vector<Value>& args);
+    static Value location_port(Context& ctx, const std::vector<Value>& args);
+    static Value location_pathname(Context& ctx, const std::vector<Value>& args);
+    static Value location_search(Context& ctx, const std::vector<Value>& args);
+    static Value location_hash(Context& ctx, const std::vector<Value>& args);
+    static Value location_origin(Context& ctx, const std::vector<Value>& args);
+    static Value location_assign(Context& ctx, const std::vector<Value>& args);
+    static Value location_replace(Context& ctx, const std::vector<Value>& args);
+    static Value location_reload(Context& ctx, const std::vector<Value>& args);
+    static Value location_toString(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete Performance API
+    static Value performance_now(Context& ctx, const std::vector<Value>& args);
+    static Value performance_mark(Context& ctx, const std::vector<Value>& args);
+    static Value performance_measure(Context& ctx, const std::vector<Value>& args);
+    static Value performance_clearMarks(Context& ctx, const std::vector<Value>& args);
+    static Value performance_clearMeasures(Context& ctx, const std::vector<Value>& args);
+    static Value performance_getEntries(Context& ctx, const std::vector<Value>& args);
+    static Value performance_getEntriesByName(Context& ctx, const std::vector<Value>& args);
+    static Value performance_getEntriesByType(Context& ctx, const std::vector<Value>& args);
+    
+    // Complete Clipboard API
+    static Value navigator_clipboard_read(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_clipboard_readText(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_clipboard_write(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_clipboard_writeText(Context& ctx, const std::vector<Value>& args);
+    
+    // Battery API
+    static Value navigator_getBattery(Context& ctx, const std::vector<Value>& args);
+    static Value battery_charging(Context& ctx, const std::vector<Value>& args);
+    static Value battery_chargingTime(Context& ctx, const std::vector<Value>& args);
+    static Value battery_dischargingTime(Context& ctx, const std::vector<Value>& args);
+    static Value battery_level(Context& ctx, const std::vector<Value>& args);
+    
+    // Vibration API
+    static Value navigator_vibrate(Context& ctx, const std::vector<Value>& args);
+    
+    // Screen API
+    static Value screen_width(Context& ctx, const std::vector<Value>& args);
+    static Value screen_height(Context& ctx, const std::vector<Value>& args);
+    static Value screen_availWidth(Context& ctx, const std::vector<Value>& args);
+    static Value screen_availHeight(Context& ctx, const std::vector<Value>& args);
+    static Value screen_colorDepth(Context& ctx, const std::vector<Value>& args);
+    static Value screen_pixelDepth(Context& ctx, const std::vector<Value>& args);
+    static Value screen_orientation_angle(Context& ctx, const std::vector<Value>& args);
+    static Value screen_orientation_type(Context& ctx, const std::vector<Value>& args);
+    
+    // Intersection Observer API
+    static Value IntersectionObserver_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value IntersectionObserver_observe(Context& ctx, const std::vector<Value>& args);
+    static Value IntersectionObserver_unobserve(Context& ctx, const std::vector<Value>& args);
+    static Value IntersectionObserver_disconnect(Context& ctx, const std::vector<Value>& args);
+    
+    // Resize Observer API
+    static Value ResizeObserver_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value ResizeObserver_observe(Context& ctx, const std::vector<Value>& args);
+    static Value ResizeObserver_unobserve(Context& ctx, const std::vector<Value>& args);
+    static Value ResizeObserver_disconnect(Context& ctx, const std::vector<Value>& args);
+    
+    // Audio API
+    static Value Audio_constructor(Context& ctx, const std::vector<Value>& args);
     
     // Event system (basic)
     static Value addEventListener(Context& ctx, const std::vector<Value>& args);

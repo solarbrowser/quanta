@@ -931,15 +931,37 @@ void Context::setup_web_apis() {
         }
     }
     
-    // Fetch API
+    // Complete Fetch API
     auto fetch_fn = ObjectFactory::create_native_function("fetch", WebAPI::fetch);
     lexical_environment_->create_binding("fetch", Value(fetch_fn.release()), false);
+    
+    // Headers constructor
+    auto Headers_fn = ObjectFactory::create_native_function("Headers", WebAPI::Headers_constructor);
+    lexical_environment_->create_binding("Headers", Value(Headers_fn.release()), false);
+    
+    // Request constructor  
+    auto Request_fn = ObjectFactory::create_native_function("Request", WebAPI::Request_constructor);
+    lexical_environment_->create_binding("Request", Value(Request_fn.release()), false);
+    
+    // Response constructor
+    auto Response_fn = ObjectFactory::create_native_function("Response", WebAPI::Response_constructor);
+    lexical_environment_->create_binding("Response", Value(Response_fn.release()), false);
     
     // DOM API - Document object
     auto document_obj = ObjectFactory::create_object();
     document_obj->set_property("getElementById", Value(ObjectFactory::create_native_function("getElementById", WebAPI::document_getElementById).release()));
     document_obj->set_property("createElement", Value(ObjectFactory::create_native_function("createElement", WebAPI::document_createElement).release()));
     document_obj->set_property("querySelector", Value(ObjectFactory::create_native_function("querySelector", WebAPI::document_querySelector).release()));
+    document_obj->set_property("querySelectorAll", Value(ObjectFactory::create_native_function("querySelectorAll", WebAPI::document_querySelectorAll).release()));
+    
+    // Cookie API - Set up getter/setter property
+    auto cookie_getter_fn = ObjectFactory::create_native_function("get cookie", WebAPI::document_getCookie);
+    auto cookie_setter_fn = ObjectFactory::create_native_function("set cookie", WebAPI::document_setCookie);
+    PropertyDescriptor cookie_desc(cookie_getter_fn.get(), cookie_setter_fn.get());
+    std::cout << "DEBUG: Creating cookie property descriptor, is_accessor: " << cookie_desc.is_accessor_descriptor() << std::endl;
+    document_obj->set_property_descriptor("cookie", cookie_desc);
+    cookie_getter_fn.release(); // Transfer ownership to descriptor
+    cookie_setter_fn.release(); // Transfer ownership to descriptor
     lexical_environment_->create_binding("document", Value(document_obj.release()), false);
     
     // Window API
@@ -952,25 +974,104 @@ void Context::setup_web_apis() {
     auto prompt_fn = ObjectFactory::create_native_function("prompt", WebAPI::window_prompt);
     lexical_environment_->create_binding("prompt", Value(prompt_fn.release()), false);
     
-    // Storage API - localStorage
+    // Enhanced Storage API - localStorage with full interface
     auto localStorage_obj = ObjectFactory::create_object();
     localStorage_obj->set_property("getItem", Value(ObjectFactory::create_native_function("getItem", WebAPI::localStorage_getItem).release()));
     localStorage_obj->set_property("setItem", Value(ObjectFactory::create_native_function("setItem", WebAPI::localStorage_setItem).release()));
     localStorage_obj->set_property("removeItem", Value(ObjectFactory::create_native_function("removeItem", WebAPI::localStorage_removeItem).release()));
     localStorage_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", WebAPI::localStorage_clear).release()));
+    localStorage_obj->set_property("key", Value(ObjectFactory::create_native_function("key", WebAPI::localStorage_key).release()));
+    localStorage_obj->set_property("length", Value(ObjectFactory::create_native_function("length", WebAPI::localStorage_length).release()));
+    localStorage_obj->set_property("addEventListener", Value(ObjectFactory::create_native_function("addEventListener", WebAPI::storage_addEventListener).release()));
     lexical_environment_->create_binding("localStorage", Value(localStorage_obj.release()), false);
     
-    // Storage API - sessionStorage (same as localStorage for now)
+    // Enhanced Storage API - sessionStorage with separate implementation
     auto sessionStorage_obj = ObjectFactory::create_object();
-    sessionStorage_obj->set_property("getItem", Value(ObjectFactory::create_native_function("getItem", WebAPI::localStorage_getItem).release()));
-    sessionStorage_obj->set_property("setItem", Value(ObjectFactory::create_native_function("setItem", WebAPI::localStorage_setItem).release()));
-    sessionStorage_obj->set_property("removeItem", Value(ObjectFactory::create_native_function("removeItem", WebAPI::localStorage_removeItem).release()));
-    sessionStorage_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", WebAPI::localStorage_clear).release()));
+    sessionStorage_obj->set_property("getItem", Value(ObjectFactory::create_native_function("getItem", WebAPI::sessionStorage_getItem).release()));
+    sessionStorage_obj->set_property("setItem", Value(ObjectFactory::create_native_function("setItem", WebAPI::sessionStorage_setItem).release()));
+    sessionStorage_obj->set_property("removeItem", Value(ObjectFactory::create_native_function("removeItem", WebAPI::sessionStorage_removeItem).release()));
+    sessionStorage_obj->set_property("clear", Value(ObjectFactory::create_native_function("clear", WebAPI::sessionStorage_clear).release()));
+    sessionStorage_obj->set_property("key", Value(ObjectFactory::create_native_function("key", WebAPI::sessionStorage_key).release()));
+    sessionStorage_obj->set_property("length", Value(ObjectFactory::create_native_function("length", WebAPI::sessionStorage_length).release()));
+    sessionStorage_obj->set_property("addEventListener", Value(ObjectFactory::create_native_function("addEventListener", WebAPI::storage_addEventListener).release()));
     lexical_environment_->create_binding("sessionStorage", Value(sessionStorage_obj.release()), false);
+    
+    // Navigator Storage API - Modern storage management
+    auto navigator_obj = ObjectFactory::create_object();
+    
+    // Basic navigator properties
+    navigator_obj->set_property("userAgent", Value("Quanta/1.0 (JavaScript Engine)"));
+    navigator_obj->set_property("platform", Value("Quanta"));
+    navigator_obj->set_property("appName", Value("Quanta"));
+    navigator_obj->set_property("appVersion", Value("1.0"));
+    navigator_obj->set_property("language", Value("en-US"));
+    navigator_obj->set_property("languages", Value("en-US,en"));
+    navigator_obj->set_property("onLine", Value(true));
+    navigator_obj->set_property("cookieEnabled", Value(true));
+    
+    // Navigator Storage API - Modern storage management
+    auto storage_obj = ObjectFactory::create_object();
+    storage_obj->set_property("estimate", Value(ObjectFactory::create_native_function("estimate", WebAPI::navigator_storage_estimate).release()));
+    storage_obj->set_property("persist", Value(ObjectFactory::create_native_function("persist", WebAPI::navigator_storage_persist).release()));
+    storage_obj->set_property("persisted", Value(ObjectFactory::create_native_function("persisted", WebAPI::navigator_storage_persisted).release()));
+    navigator_obj->set_property("storage", Value(storage_obj.release()));
+    
+    // Navigator MediaDevices API - Modern media access
+    auto mediaDevices_obj = ObjectFactory::create_object();
+    auto getUserMedia_fn = ObjectFactory::create_native_function("getUserMedia", WebAPI::navigator_mediaDevices_getUserMedia);
+    mediaDevices_obj->set_property("getUserMedia", Value(getUserMedia_fn.release()));
+    
+    auto enumerateDevices_fn = ObjectFactory::create_native_function("enumerateDevices", WebAPI::navigator_mediaDevices_enumerateDevices);
+    mediaDevices_obj->set_property("enumerateDevices", Value(enumerateDevices_fn.release()));
+    
+    navigator_obj->set_property("mediaDevices", Value(mediaDevices_obj.release()));
+    
+    // Navigator Geolocation API - Location services
+    auto geolocation_obj = ObjectFactory::create_object();
+    auto getCurrentPosition_fn = ObjectFactory::create_native_function("getCurrentPosition", WebAPI::navigator_geolocation_getCurrentPosition);
+    geolocation_obj->set_property("getCurrentPosition", Value(getCurrentPosition_fn.release()));
+    
+    auto watchPosition_fn = ObjectFactory::create_native_function("watchPosition", WebAPI::navigator_geolocation_watchPosition);
+    geolocation_obj->set_property("watchPosition", Value(watchPosition_fn.release()));
+    
+    auto clearWatch_fn = ObjectFactory::create_native_function("clearWatch", WebAPI::navigator_geolocation_clearWatch);
+    geolocation_obj->set_property("clearWatch", Value(clearWatch_fn.release()));
+    
+    navigator_obj->set_property("geolocation", Value(geolocation_obj.release()));
+    
+    // Navigator Clipboard API - Modern clipboard access
+    auto clipboard_obj = ObjectFactory::create_object();
+    auto readText_fn = ObjectFactory::create_native_function("readText", WebAPI::navigator_clipboard_readText);
+    clipboard_obj->set_property("readText", Value(readText_fn.release()));
+    
+    auto writeText_fn = ObjectFactory::create_native_function("writeText", WebAPI::navigator_clipboard_writeText);
+    clipboard_obj->set_property("writeText", Value(writeText_fn.release()));
+    
+    auto clipboardRead_fn = ObjectFactory::create_native_function("read", WebAPI::navigator_clipboard_read);
+    clipboard_obj->set_property("read", Value(clipboardRead_fn.release()));
+    
+    auto clipboardWrite_fn = ObjectFactory::create_native_function("write", WebAPI::navigator_clipboard_write);
+    clipboard_obj->set_property("write", Value(clipboardWrite_fn.release()));
+    
+    navigator_obj->set_property("clipboard", Value(clipboard_obj.release()));
+    
+    // Navigator Battery API - Device battery status
+    auto getBattery_fn = ObjectFactory::create_native_function("getBattery", WebAPI::navigator_getBattery);
+    navigator_obj->set_property("getBattery", Value(getBattery_fn.release()));
+    
+    // Navigator Vibration API - Haptic feedback
+    auto vibrate_fn = ObjectFactory::create_native_function("vibrate", WebAPI::navigator_vibrate);
+    navigator_obj->set_property("vibrate", Value(vibrate_fn.release()));
+    
+    lexical_environment_->create_binding("navigator", Value(navigator_obj.release()), false);
     
     // URL API
     auto URL_constructor_fn = ObjectFactory::create_native_function("URL", WebAPI::URL_constructor);
     lexical_environment_->create_binding("URL", Value(URL_constructor_fn.release()), false);
+    
+    // URLSearchParams API
+    auto URLSearchParams_constructor_fn = ObjectFactory::create_native_function("URLSearchParams", WebAPI::URLSearchParams_constructor);
+    lexical_environment_->create_binding("URLSearchParams", Value(URLSearchParams_constructor_fn.release()), false);
     
     // Event system - Global event functions
     auto addEventListener_fn = ObjectFactory::create_native_function("addEventListener", WebAPI::addEventListener);
@@ -982,133 +1083,222 @@ void Context::setup_web_apis() {
     auto dispatchEvent_fn = ObjectFactory::create_native_function("dispatchEvent", WebAPI::dispatchEvent);
     lexical_environment_->create_binding("dispatchEvent", Value(dispatchEvent_fn.release()), false);
     
-    // Crypto API
+    // Audio API - HTML5 Audio element
+    auto Audio_constructor_fn = ObjectFactory::create_native_function("Audio", WebAPI::Audio_constructor);
+    lexical_environment_->create_binding("Audio", Value(Audio_constructor_fn.release()), false);
+    
+    // Complete Crypto API - Modern web security
     auto crypto_obj = ObjectFactory::create_object();
-    auto crypto_randomUUID_fn = ObjectFactory::create_native_function("randomUUID",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            // Generate a simple UUID v4
-            std::string uuid = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx";
-            const char* chars = "0123456789abcdef";
-            for (char& c : uuid) {
-                if (c == 'x') {
-                    c = chars[rand() % 16];
-                } else if (c == 'y') {
-                    c = chars[8 + (rand() % 4)];
-                }
-            }
-            return Value(uuid);
-        });
+    
+    // Basic crypto functions
+    auto crypto_randomUUID_fn = ObjectFactory::create_native_function("randomUUID", WebAPI::crypto_randomUUID);
     crypto_obj->set_property("randomUUID", Value(crypto_randomUUID_fn.release()));
     
-    auto crypto_getRandomValues_fn = ObjectFactory::create_native_function("getRandomValues",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            std::cout << "crypto.getRandomValues: Generating random values (simulated)" << std::endl;
-            return Value("random-values-array");
-        });
+    auto crypto_getRandomValues_fn = ObjectFactory::create_native_function("getRandomValues", WebAPI::crypto_getRandomValues);
     crypto_obj->set_property("getRandomValues", Value(crypto_getRandomValues_fn.release()));
     
+    // SubtleCrypto API - Advanced cryptographic operations
+    auto subtle_obj = ObjectFactory::create_object();
+    
+    auto digest_fn = ObjectFactory::create_native_function("digest", WebAPI::crypto_subtle_digest);
+    subtle_obj->set_property("digest", Value(digest_fn.release()));
+    
+    auto encrypt_fn = ObjectFactory::create_native_function("encrypt", WebAPI::crypto_subtle_encrypt);
+    subtle_obj->set_property("encrypt", Value(encrypt_fn.release()));
+    
+    auto decrypt_fn = ObjectFactory::create_native_function("decrypt", WebAPI::crypto_subtle_decrypt);
+    subtle_obj->set_property("decrypt", Value(decrypt_fn.release()));
+    
+    auto generateKey_fn = ObjectFactory::create_native_function("generateKey", WebAPI::crypto_subtle_generateKey);
+    subtle_obj->set_property("generateKey", Value(generateKey_fn.release()));
+    
+    auto importKey_fn = ObjectFactory::create_native_function("importKey", WebAPI::crypto_subtle_importKey);
+    subtle_obj->set_property("importKey", Value(importKey_fn.release()));
+    
+    auto exportKey_fn = ObjectFactory::create_native_function("exportKey", WebAPI::crypto_subtle_exportKey);
+    subtle_obj->set_property("exportKey", Value(exportKey_fn.release()));
+    
+    auto sign_fn = ObjectFactory::create_native_function("sign", WebAPI::crypto_subtle_sign);
+    subtle_obj->set_property("sign", Value(sign_fn.release()));
+    
+    auto verify_fn = ObjectFactory::create_native_function("verify", WebAPI::crypto_subtle_verify);
+    subtle_obj->set_property("verify", Value(verify_fn.release()));
+    
+    crypto_obj->set_property("subtle", Value(subtle_obj.release()));
     lexical_environment_->create_binding("crypto", Value(crypto_obj.release()), false);
     
-    // FormData API
-    auto FormData_constructor_fn = ObjectFactory::create_native_function("FormData",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            auto formData = ObjectFactory::create_object();
-            
-            // FormData.append method
-            auto append_fn = ObjectFactory::create_native_function("append",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    if (args.size() >= 2) {
-                        std::string key = args[0].to_string();
-                        std::string value = args[1].to_string();
-                        std::cout << "FormData.append: '" << key << "' = '" << value << "'" << std::endl;
-                    }
-                    return Value();
-                });
-            formData->set_property("append", Value(append_fn.release()));
-            
-            // FormData.get method
-            auto get_fn = ObjectFactory::create_native_function("get",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    if (args.size() >= 1) {
-                        std::string key = args[0].to_string();
-                        std::cout << "FormData.get: Getting '" << key << "'" << std::endl;
-                        return Value("form-data-value-" + key);
-                    }
-                    return Value();
-                });
-            formData->set_property("get", Value(get_fn.release()));
-            
-            return Value(formData.release());
-        });
-    lexical_environment_->create_binding("FormData", Value(FormData_constructor_fn.release()), false);
+    // Complete File and Blob APIs - Modern file handling
+    auto File_constructor_fn = ObjectFactory::create_native_function("File", WebAPI::File_constructor);
+    lexical_environment_->create_binding("File", Value(File_constructor_fn.release()), false);
     
-    // Blob API
-    auto Blob_constructor_fn = ObjectFactory::create_native_function("Blob",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            auto blob = ObjectFactory::create_object();
-            
-            // Blob.size property
-            blob->set_property("size", Value(1024.0));
-            
-            // Blob.type property
-            blob->set_property("type", Value("application/octet-stream"));
-            
-            // Blob.text method
-            auto text_fn = ObjectFactory::create_native_function("text",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    std::cout << "Blob.text: Reading blob as text (simulated)" << std::endl;
-                    return Value("blob-text-content");
-                });
-            blob->set_property("text", Value(text_fn.release()));
-            
-            std::cout << "Blob: Created new blob object" << std::endl;
-            return Value(blob.release());
-        });
+    auto Blob_constructor_fn = ObjectFactory::create_native_function("Blob", WebAPI::Blob_constructor);
     lexical_environment_->create_binding("Blob", Value(Blob_constructor_fn.release()), false);
     
-    // URLSearchParams API
-    auto URLSearchParams_constructor_fn = ObjectFactory::create_native_function("URLSearchParams",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            auto urlParams = ObjectFactory::create_object();
-            
-            // URLSearchParams.append method
-            auto append_fn = ObjectFactory::create_native_function("append",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    if (args.size() >= 2) {
-                        std::string key = args[0].to_string();
-                        std::string value = args[1].to_string();
-                        std::cout << "URLSearchParams.append: '" << key << "' = '" << value << "'" << std::endl;
-                    }
-                    return Value();
-                });
-            urlParams->set_property("append", Value(append_fn.release()));
-            
-            // URLSearchParams.get method
-            auto get_fn = ObjectFactory::create_native_function("get",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    if (args.size() >= 1) {
-                        std::string key = args[0].to_string();
-                        std::cout << "URLSearchParams.get: Getting '" << key << "'" << std::endl;
-                        return Value("param-value-" + key);
-                    }
-                    return Value();
-                });
-            urlParams->set_property("get", Value(get_fn.release()));
-            
-            std::cout << "URLSearchParams: Created new URLSearchParams object" << std::endl;
-            return Value(urlParams.release());
-        });
-    lexical_environment_->create_binding("URLSearchParams", Value(URLSearchParams_constructor_fn.release()), false);
+    auto FileReader_constructor_fn = ObjectFactory::create_native_function("FileReader", WebAPI::FileReader_constructor);
+    lexical_environment_->create_binding("FileReader", Value(FileReader_constructor_fn.release()), false);
+    
+    auto FormData_constructor_fn = ObjectFactory::create_native_function("FormData", WebAPI::FormData_constructor);
+    lexical_environment_->create_binding("FormData", Value(FormData_constructor_fn.release()), false);
+    
+    // Complete Notification API - Desktop notifications
+    auto Notification_constructor_fn = ObjectFactory::create_native_function("Notification", WebAPI::Notification_constructor);
+    
+    // Add Notification.requestPermission as static method
+    auto requestPermission_fn = ObjectFactory::create_native_function("requestPermission", WebAPI::Notification_requestPermission);
+    Notification_constructor_fn->set_property("requestPermission", Value(requestPermission_fn.release()));
+    
+    lexical_environment_->create_binding("Notification", Value(Notification_constructor_fn.release()), false);
+    
+    // Complete Media APIs - Modern multimedia
+    auto MediaStream_constructor_fn = ObjectFactory::create_native_function("MediaStream", WebAPI::MediaStream_constructor);
+    lexical_environment_->create_binding("MediaStream", Value(MediaStream_constructor_fn.release()), false);
+    
+    auto RTCPeerConnection_constructor_fn = ObjectFactory::create_native_function("RTCPeerConnection", WebAPI::RTCPeerConnection_constructor);
+    lexical_environment_->create_binding("RTCPeerConnection", Value(RTCPeerConnection_constructor_fn.release()), false);
+    
+    // Complete History API - SPA navigation power
+    auto history_obj = ObjectFactory::create_object();
+    
+    // History methods
+    auto pushState_fn = ObjectFactory::create_native_function("pushState", WebAPI::history_pushState);
+    history_obj->set_property("pushState", Value(pushState_fn.release()));
+    
+    auto replaceState_fn = ObjectFactory::create_native_function("replaceState", WebAPI::history_replaceState);
+    history_obj->set_property("replaceState", Value(replaceState_fn.release()));
+    
+    auto back_fn = ObjectFactory::create_native_function("back", WebAPI::history_back);
+    history_obj->set_property("back", Value(back_fn.release()));
+    
+    auto forward_fn = ObjectFactory::create_native_function("forward", WebAPI::history_forward);
+    history_obj->set_property("forward", Value(forward_fn.release()));
+    
+    auto go_fn = ObjectFactory::create_native_function("go", WebAPI::history_go);
+    history_obj->set_property("go", Value(go_fn.release()));
+    
+    // History properties (using accessor properties)
+    auto length_fn = ObjectFactory::create_native_function("length", WebAPI::history_length);
+    history_obj->set_property("length", Value(length_fn.release()));
+    
+    auto state_fn = ObjectFactory::create_native_function("state", WebAPI::history_state);
+    history_obj->set_property("state", Value(state_fn.release()));
+    
+    auto scrollRestoration_fn = ObjectFactory::create_native_function("scrollRestoration", WebAPI::history_scrollRestoration);
+    history_obj->set_property("scrollRestoration", Value(scrollRestoration_fn.release()));
+    
+    lexical_environment_->create_binding("history", Value(history_obj.release()), false);
+    
+    // Complete Location API - URL navigation
+    auto location_obj = ObjectFactory::create_object();
+    
+    auto href_fn = ObjectFactory::create_native_function("href", WebAPI::location_href);
+    location_obj->set_property("href", Value(href_fn.release()));
+    
+    auto protocol_fn = ObjectFactory::create_native_function("protocol", WebAPI::location_protocol);
+    location_obj->set_property("protocol", Value(protocol_fn.release()));
+    
+    auto host_fn = ObjectFactory::create_native_function("host", WebAPI::location_host);
+    location_obj->set_property("host", Value(host_fn.release()));
+    
+    auto hostname_fn = ObjectFactory::create_native_function("hostname", WebAPI::location_hostname);
+    location_obj->set_property("hostname", Value(hostname_fn.release()));
+    
+    auto port_fn = ObjectFactory::create_native_function("port", WebAPI::location_port);
+    location_obj->set_property("port", Value(port_fn.release()));
+    
+    auto pathname_fn = ObjectFactory::create_native_function("pathname", WebAPI::location_pathname);
+    location_obj->set_property("pathname", Value(pathname_fn.release()));
+    
+    auto search_fn = ObjectFactory::create_native_function("search", WebAPI::location_search);
+    location_obj->set_property("search", Value(search_fn.release()));
+    
+    auto hash_fn = ObjectFactory::create_native_function("hash", WebAPI::location_hash);
+    location_obj->set_property("hash", Value(hash_fn.release()));
+    
+    auto origin_fn = ObjectFactory::create_native_function("origin", WebAPI::location_origin);
+    location_obj->set_property("origin", Value(origin_fn.release()));
+    
+    auto assign_fn = ObjectFactory::create_native_function("assign", WebAPI::location_assign);
+    location_obj->set_property("assign", Value(assign_fn.release()));
+    
+    auto replace_fn = ObjectFactory::create_native_function("replace", WebAPI::location_replace);
+    location_obj->set_property("replace", Value(replace_fn.release()));
+    
+    auto reload_fn = ObjectFactory::create_native_function("reload", WebAPI::location_reload);
+    location_obj->set_property("reload", Value(reload_fn.release()));
+    
+    auto locationToString_fn = ObjectFactory::create_native_function("toString", WebAPI::location_toString);
+    location_obj->set_property("toString", Value(locationToString_fn.release()));
+    
+    lexical_environment_->create_binding("location", Value(location_obj.release()), false);
+    
+    // Complete Performance API - Web performance monitoring
+    auto performance_obj = ObjectFactory::create_object();
+    
+    auto now_fn = ObjectFactory::create_native_function("now", WebAPI::performance_now);
+    performance_obj->set_property("now", Value(now_fn.release()));
+    
+    auto mark_fn = ObjectFactory::create_native_function("mark", WebAPI::performance_mark);
+    performance_obj->set_property("mark", Value(mark_fn.release()));
+    
+    auto measure_fn = ObjectFactory::create_native_function("measure", WebAPI::performance_measure);
+    performance_obj->set_property("measure", Value(measure_fn.release()));
+    
+    auto clearMarks_fn = ObjectFactory::create_native_function("clearMarks", WebAPI::performance_clearMarks);
+    performance_obj->set_property("clearMarks", Value(clearMarks_fn.release()));
+    
+    auto clearMeasures_fn = ObjectFactory::create_native_function("clearMeasures", WebAPI::performance_clearMeasures);
+    performance_obj->set_property("clearMeasures", Value(clearMeasures_fn.release()));
+    
+    auto getEntries_fn = ObjectFactory::create_native_function("getEntries", WebAPI::performance_getEntries);
+    performance_obj->set_property("getEntries", Value(getEntries_fn.release()));
+    
+    auto getEntriesByName_fn = ObjectFactory::create_native_function("getEntriesByName", WebAPI::performance_getEntriesByName);
+    performance_obj->set_property("getEntriesByName", Value(getEntriesByName_fn.release()));
+    
+    auto getEntriesByType_fn = ObjectFactory::create_native_function("getEntriesByType", WebAPI::performance_getEntriesByType);
+    performance_obj->set_property("getEntriesByType", Value(getEntriesByType_fn.release()));
+    
+    lexical_environment_->create_binding("performance", Value(performance_obj.release()), false);
+    
+    // Complete Screen API - Display information
+    auto screen_obj = ObjectFactory::create_object();
+    
+    auto screenWidth_fn = ObjectFactory::create_native_function("width", WebAPI::screen_width);
+    screen_obj->set_property("width", Value(screenWidth_fn.release()));
+    
+    auto screenHeight_fn = ObjectFactory::create_native_function("height", WebAPI::screen_height);
+    screen_obj->set_property("height", Value(screenHeight_fn.release()));
+    
+    auto availWidth_fn = ObjectFactory::create_native_function("availWidth", WebAPI::screen_availWidth);
+    screen_obj->set_property("availWidth", Value(availWidth_fn.release()));
+    
+    auto availHeight_fn = ObjectFactory::create_native_function("availHeight", WebAPI::screen_availHeight);
+    screen_obj->set_property("availHeight", Value(availHeight_fn.release()));
+    
+    auto colorDepth_fn = ObjectFactory::create_native_function("colorDepth", WebAPI::screen_colorDepth);
+    screen_obj->set_property("colorDepth", Value(colorDepth_fn.release()));
+    
+    auto pixelDepth_fn = ObjectFactory::create_native_function("pixelDepth", WebAPI::screen_pixelDepth);
+    screen_obj->set_property("pixelDepth", Value(pixelDepth_fn.release()));
+    
+    // Screen orientation
+    auto orientation_obj = ObjectFactory::create_object();
+    auto angle_fn = ObjectFactory::create_native_function("angle", WebAPI::screen_orientation_angle);
+    orientation_obj->set_property("angle", Value(angle_fn.release()));
+    
+    auto type_fn = ObjectFactory::create_native_function("type", WebAPI::screen_orientation_type);
+    orientation_obj->set_property("type", Value(type_fn.release()));
+    
+    screen_obj->set_property("orientation", Value(orientation_obj.release()));
+    
+    lexical_environment_->create_binding("screen", Value(screen_obj.release()), false);
+    
+    // Observer APIs - IntersectionObserver and ResizeObserver
+    auto IntersectionObserver_constructor_fn = ObjectFactory::create_native_function("IntersectionObserver", WebAPI::IntersectionObserver_constructor);
+    lexical_environment_->create_binding("IntersectionObserver", Value(IntersectionObserver_constructor_fn.release()), false);
+    
+    auto ResizeObserver_constructor_fn = ObjectFactory::create_native_function("ResizeObserver", WebAPI::ResizeObserver_constructor);
+    lexical_environment_->create_binding("ResizeObserver", Value(ResizeObserver_constructor_fn.release()), false);
     
     // RequestAnimationFrame API
     auto requestAnimationFrame_fn = ObjectFactory::create_native_function("requestAnimationFrame",

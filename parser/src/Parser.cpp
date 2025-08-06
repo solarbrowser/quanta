@@ -441,33 +441,112 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_call_expression() {
-    auto expr = parse_member_expression();
+    auto expr = parse_primary_expression();
     if (!expr) return nullptr;
     
-    while (match(TokenType::LEFT_PAREN)) {
+    // Parse member access and function calls in any order (supports chaining like .then().then())
+    while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET) || 
+           match(TokenType::OPTIONAL_CHAINING) || match(TokenType::LEFT_PAREN)) {
         Position start = expr->get_start();
-        advance(); // consume '('
         
-        std::vector<std::unique_ptr<ASTNode>> arguments;
-        
-        if (!match(TokenType::RIGHT_PAREN)) {
-            do {
-                auto arg = parse_assignment_expression();
-                if (!arg) {
-                    add_error("Expected argument in function call");
-                    break;
+        if (match(TokenType::DOT)) {
+            // Member access: obj.property
+            advance(); // consume '.'
+            
+            if (!match(TokenType::IDENTIFIER)) {
+                add_error("Expected property name after '.'");
+                return expr;
+            }
+            
+            auto property = parse_identifier();
+            if (!property) return expr;
+            
+            Position end = property->get_end();
+            expr = std::make_unique<MemberExpression>(
+                std::move(expr), std::move(property), false, start, end
+            );
+        } else if (match(TokenType::LEFT_BRACKET)) {
+            // Computed member access: obj[property]
+            advance(); // consume '['
+            
+            auto property = parse_expression();
+            if (!property) {
+                add_error("Expected expression inside []");
+                return expr;
+            }
+            
+            if (!consume(TokenType::RIGHT_BRACKET)) {
+                add_error("Expected ']' after computed property");
+                return expr;
+            }
+            
+            Position end = get_current_position();
+            expr = std::make_unique<MemberExpression>(
+                std::move(expr), std::move(property), true, start, end
+            );
+        } else if (match(TokenType::OPTIONAL_CHAINING)) {
+            // Optional chaining: obj?.property
+            advance(); // consume '?.'
+            
+            if (match(TokenType::LEFT_BRACKET)) {
+                // obj?.[computed]
+                advance(); // consume '['
+                
+                auto property = parse_expression();
+                if (!property) {
+                    add_error("Expected expression inside []");
+                    return expr;
                 }
-                arguments.push_back(std::move(arg));
-            } while (consume_if_match(TokenType::COMMA));
+                
+                if (!consume(TokenType::RIGHT_BRACKET)) {
+                    add_error("Expected ']' after computed property");
+                    return expr;
+                }
+                
+                Position end = get_current_position();
+                expr = std::make_unique<OptionalChainingExpression>(
+                    std::move(expr), std::move(property), true, start, end
+                );
+            } else {
+                // obj?.property
+                if (!match(TokenType::IDENTIFIER)) {
+                    add_error("Expected property name after '?.'");
+                    return expr;
+                }
+                
+                auto property = parse_identifier();
+                if (!property) return expr;
+                
+                Position end = property->get_end();
+                expr = std::make_unique<OptionalChainingExpression>(
+                    std::move(expr), std::move(property), false, start, end
+                );
+            }
+        } else if (match(TokenType::LEFT_PAREN)) {
+            // Function call: func(args)
+            advance(); // consume '('
+            
+            std::vector<std::unique_ptr<ASTNode>> arguments;
+            
+            if (!match(TokenType::RIGHT_PAREN)) {
+                do {
+                    auto arg = parse_assignment_expression();
+                    if (!arg) {
+                        add_error("Expected argument in function call");
+                        break;
+                    }
+                    arguments.push_back(std::move(arg));
+                } while (consume_if_match(TokenType::COMMA));
+            }
+            
+            if (!consume(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ')' after function arguments");
+                return expr;
+            }
+            
+            Position end = get_current_position();
+            expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
         }
-        
-        if (!consume(TokenType::RIGHT_PAREN)) {
-            add_error("Expected ')' after function arguments");
-            return expr;
-        }
-        
-        Position end = get_current_position();
-        expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
     }
     
     return expr;

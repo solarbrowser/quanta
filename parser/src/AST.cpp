@@ -6,6 +6,7 @@
 #include "../../core/include/Async.h"
 #include "../../core/include/BigInt.h"
 #include "../../core/include/Promise.h"
+#include "../../core/include/WebAPI.h"
 #include <sstream>
 #include <iostream>
 #include <algorithm>
@@ -304,7 +305,21 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     }
                 }
                 
-                // Set the property
+                // Check if this is an accessor property (has getter/setter)
+                PropertyDescriptor desc = obj->get_property_descriptor(key);
+                std::cout << "DEBUG: BinaryExpression assignment to property " << key << " descriptor type: " << desc.get_type() << ", is_accessor: " << desc.is_accessor_descriptor() << ", has_setter: " << desc.has_setter() << std::endl;
+                if (desc.is_accessor_descriptor() && desc.has_setter()) {
+                    std::cout << "DEBUG: BinaryExpression detected accessor property assignment: " << key << std::endl;
+                    
+                    // Special handling for cookie since we need to call WebAPI directly
+                    if (key == "cookie") {
+                        std::cout << "DEBUG: BinaryExpression calling cookie setter with value: " << result_value.to_string() << std::endl;
+                        WebAPI::document_setCookie(ctx, {result_value});
+                        return result_value;
+                    }
+                }
+                
+                // Set the property normally
                 obj->set_property(key, result_value);
                 return result_value;
             } else {
@@ -661,6 +676,7 @@ std::string UnaryExpression::operator_to_string(Operator op) {
 //=============================================================================
 
 Value AssignmentExpression::evaluate(Context& ctx) {
+    std::cout << "DEBUG: AssignmentExpression::evaluate called" << std::endl;
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
@@ -668,6 +684,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
+        std::cout << "DEBUG: Identifier assignment to: " << name << std::endl;
         
         switch (operator_) {
             case Operator::ASSIGN:
@@ -695,6 +712,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     
     // Handle member expression assignment (e.g., obj.prop = value, this.prop = value)
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        std::cout << "DEBUG: Member expression assignment detected" << std::endl;
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
         
         // Evaluate the object
@@ -724,6 +742,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 ctx.throw_exception(Value("Invalid property access"));
                 return Value();
             }
+        }
+        
+        // Check if this is an accessor property (has getter/setter)
+        PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+        std::cout << "DEBUG: Property " << prop_name << " descriptor type: " << desc.get_type() << ", is_accessor: " << desc.is_accessor_descriptor() << ", has_setter: " << desc.has_setter() << std::endl;
+        if (desc.is_accessor_descriptor() && desc.has_setter()) {
+            std::cout << "DEBUG: Detected accessor property assignment: " << prop_name << std::endl;
+            
+            // Special handling for cookie since we need to call WebAPI directly
+            if (prop_name == "cookie") {
+                std::cout << "DEBUG: Calling cookie setter with value: " << right_value.to_string() << std::endl;
+                WebAPI::document_setCookie(ctx, {right_value});
+                return right_value;
+            }
+            
+            // TODO: For other accessor properties, we would call the setter function here
+            // For now, just handle cookie specially
+            std::cout << "DEBUG: Accessor property " << prop_name << " not handled yet" << std::endl;
         }
         
         // Set the property
@@ -1928,6 +1964,16 @@ Value MemberExpression::evaluate(Context& ctx) {
             if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(property_.get());
                 std::string prop_name = prop->get_name();
+                
+                // Special handling for document.cookie
+                if (prop_name == "cookie") {
+                    // Check if this is the document object by seeing if it has createElement
+                    Value create_element = obj->get_property("createElement");
+                    if (create_element.is_function()) {
+                        // This is the document object, handle cookie specially
+                        return WebAPI::document_getCookie(ctx, {});
+                    }
+                }
                 
                 // std::cout << "DEBUG: MemberExpression accessing '" << prop_name << "' on object type " << (int)obj->get_type() << std::endl;
                 Value result = obj->get_property(prop_name);
