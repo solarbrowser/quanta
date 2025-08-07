@@ -259,6 +259,78 @@ public:
     // Audio API
     static Value Audio_constructor(Context& ctx, const std::vector<Value>& args);
     
+    // Typed Arrays API
+    static Value Uint8Array_constructor(Context& ctx, const std::vector<Value>& args);
+    
+    // Service Workers API - Background processing and offline capabilities
+    static Value navigator_serviceWorker_register(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_serviceWorker_getRegistration(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_serviceWorker_getRegistrations(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorkerRegistration_update(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorkerRegistration_unregister(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorkerRegistration_showNotification(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorkerRegistration_getNotifications(Context& ctx, const std::vector<Value>& args);
+    
+    // Cache API - Offline storage for Service Workers
+    static Value caches_open(Context& ctx, const std::vector<Value>& args);
+    static Value caches_delete(Context& ctx, const std::vector<Value>& args);
+    static Value caches_has(Context& ctx, const std::vector<Value>& args);
+    static Value caches_keys(Context& ctx, const std::vector<Value>& args);
+    static Value caches_match(Context& ctx, const std::vector<Value>& args);
+    static Value cache_add(Context& ctx, const std::vector<Value>& args);
+    static Value cache_addAll(Context& ctx, const std::vector<Value>& args);
+    static Value cache_match(Context& ctx, const std::vector<Value>& args);
+    static Value cache_matchAll(Context& ctx, const std::vector<Value>& args);
+    static Value cache_put(Context& ctx, const std::vector<Value>& args);
+    static Value cache_delete(Context& ctx, const std::vector<Value>& args);
+    static Value cache_keys(Context& ctx, const std::vector<Value>& args);
+    
+    // Service Worker Events
+    static Value serviceWorker_install(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_activate(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_fetch(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_push(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_notificationclick(Context& ctx, const std::vector<Value>& args);
+    
+    // WebSocket API - Real-time bidirectional communication
+    static Value WebSocket_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_send(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_close(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_addEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_removeEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_dispatchEvent(Context& ctx, const std::vector<Value>& args);
+    
+    // WebSocket Event Handlers
+    static Value webSocket_onopen(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_onmessage(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_onerror(Context& ctx, const std::vector<Value>& args);
+    static Value webSocket_onclose(Context& ctx, const std::vector<Value>& args);
+    
+    // WebSocket Utility Functions
+    static Value create_websocket_event(const std::string& type, const Value& data = Value());
+    static Value create_message_event(const Value& data, const std::string& origin = "");
+    static Value create_close_event(int code, const std::string& reason, bool wasClean);
+    
+    // WebRTC API - Peer-to-peer video/audio streaming
+    static Value rtcPeerConnection_createDataChannel(Context& ctx, const std::vector<Value>& args);
+    static Value rtcDataChannel_send(Context& ctx, const std::vector<Value>& args);
+    static Value rtcDataChannel_close(Context& ctx, const std::vector<Value>& args);
+    static Value rtcDataChannel_addEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_addTrack(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_removeTrack(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_getSenders(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_getReceivers(Context& ctx, const std::vector<Value>& args);
+    static Value rtcSender_replaceTrack(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_addEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_removeEventListener(Context& ctx, const std::vector<Value>& args);
+    static Value rtcPeerConnection_close(Context& ctx, const std::vector<Value>& args);
+    
+    // Media Stream and Track APIs
+    static Value create_media_track(const std::string& kind);
+    static Value mediaTrack_stop(Context& ctx, const std::vector<Value>& args);
+    static Value mediaTrack_clone(Context& ctx, const std::vector<Value>& args);
+    static Value mediaTrack_getSettings(Context& ctx, const std::vector<Value>& args);
+    
     // Event system (basic)
     static Value addEventListener(Context& ctx, const std::vector<Value>& args);
     static Value removeEventListener(Context& ctx, const std::vector<Value>& args);

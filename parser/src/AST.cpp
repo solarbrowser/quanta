@@ -1572,6 +1572,43 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         }
         return Value(""); // No arguments means repeat 0 times
         
+    } else if (method_name == "includes") {
+        // Check if string contains substring
+        if (arguments_.size() > 0) {
+            Value search_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            std::string search_str = search_val.to_string();
+            bool found = str.find(search_str) != std::string::npos;
+            return Value(found);
+        }
+        return Value(false); // No search string provided
+        
+    } else if (method_name == "indexOf") {
+        // Find index of substring
+        if (arguments_.size() > 0) {
+            Value search_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            std::string search_str = search_val.to_string();
+            size_t pos = str.find(search_str);
+            return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
+        }
+        return Value(-1.0); // No search string provided
+        
+    } else if (method_name == "charAt") {
+        // Get character at index
+        if (arguments_.size() > 0) {
+            Value index_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            int index = static_cast<int>(index_val.to_number());
+            if (index >= 0 && index < static_cast<int>(str.length())) {
+                return Value(std::string(1, str[index]));
+            }
+        }
+        return Value(""); // Out of bounds or no index
+        
     } else {
         std::cout << "Calling string method: " << method_name << "() -> [Method not fully implemented yet]" << std::endl;
         return Value(42.0); // Placeholder for other methods
@@ -3378,8 +3415,22 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         }
         
         // Evaluate the value
-        Value value = prop->value->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
+        Value value;
+        if (prop->value) {
+            value = prop->value->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+        } else {
+            // Handle shorthand properties: {x} should be equivalent to {x: x}
+            // The key should be used as the variable name to look up
+            if (prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(prop->key.get());
+                value = id->evaluate(ctx);  // Look up the variable
+                if (ctx.has_exception()) return Value();
+            } else {
+                ctx.throw_exception(Value("Invalid shorthand property in object literal"));
+                return Value();
+            }
+        }
         
         // Set the property on the object
         object->set_property(key, value);

@@ -1063,6 +1063,27 @@ void Context::setup_web_apis() {
     auto vibrate_fn = ObjectFactory::create_native_function("vibrate", WebAPI::navigator_vibrate);
     navigator_obj->set_property("vibrate", Value(vibrate_fn.release()));
     
+    // Service Workers API - Background processing and offline capabilities
+    auto serviceWorker = ObjectFactory::create_object();
+    
+    // navigator.serviceWorker.register()
+    auto sw_register_fn = ObjectFactory::create_native_function("register", WebAPI::navigator_serviceWorker_register);
+    serviceWorker->set_property("register", Value(sw_register_fn.release()));
+    
+    // navigator.serviceWorker.getRegistration()
+    auto sw_getRegistration_fn = ObjectFactory::create_native_function("getRegistration", WebAPI::navigator_serviceWorker_getRegistration);
+    serviceWorker->set_property("getRegistration", Value(sw_getRegistration_fn.release()));
+    
+    // navigator.serviceWorker.getRegistrations()
+    auto sw_getRegistrations_fn = ObjectFactory::create_native_function("getRegistrations", WebAPI::navigator_serviceWorker_getRegistrations);
+    serviceWorker->set_property("getRegistrations", Value(sw_getRegistrations_fn.release()));
+    
+    // Service worker properties
+    serviceWorker->set_property("controller", Value()); // null initially
+    serviceWorker->set_property("ready", Value()); // Promise-like object
+    
+    navigator_obj->set_property("serviceWorker", Value(serviceWorker.release()));
+    
     lexical_environment_->create_binding("navigator", Value(navigator_obj.release()), false);
     
     // URL API
@@ -1072,6 +1093,39 @@ void Context::setup_web_apis() {
     // URLSearchParams API
     auto URLSearchParams_constructor_fn = ObjectFactory::create_native_function("URLSearchParams", WebAPI::URLSearchParams_constructor);
     lexical_environment_->create_binding("URLSearchParams", Value(URLSearchParams_constructor_fn.release()), false);
+    
+    // Cache API - Global caches object for Service Workers
+    auto caches = ObjectFactory::create_object();
+    
+    // caches.open()
+    auto caches_open_fn = ObjectFactory::create_native_function("open", WebAPI::caches_open);
+    caches->set_property("open", Value(caches_open_fn.release()));
+    
+    // caches.delete()
+    auto caches_delete_fn = ObjectFactory::create_native_function("delete", WebAPI::caches_delete);
+    caches->set_property("delete", Value(caches_delete_fn.release()));
+    
+    // caches.has()
+    auto caches_has_fn = ObjectFactory::create_native_function("has", WebAPI::caches_has);
+    caches->set_property("has", Value(caches_has_fn.release()));
+    
+    // caches.keys()
+    auto caches_keys_fn = ObjectFactory::create_native_function("keys", WebAPI::caches_keys);
+    caches->set_property("keys", Value(caches_keys_fn.release()));
+    
+    // caches.match()
+    auto caches_match_fn = ObjectFactory::create_native_function("match", WebAPI::caches_match);
+    caches->set_property("match", Value(caches_match_fn.release()));
+    
+    lexical_environment_->create_binding("caches", Value(caches.release()), false);
+    
+    // WebSocket API - Real-time bidirectional communication
+    auto WebSocket_constructor_fn = ObjectFactory::create_native_function("WebSocket", WebAPI::WebSocket_constructor);
+    lexical_environment_->create_binding("WebSocket", Value(WebSocket_constructor_fn.release()), false);
+    
+    // WebRTC API - Peer-to-peer video/audio streaming
+    auto RTCPeerConnection_constructor_fn = ObjectFactory::create_native_function("RTCPeerConnection", WebAPI::RTCPeerConnection_constructor);
+    lexical_environment_->create_binding("RTCPeerConnection", Value(RTCPeerConnection_constructor_fn.release()), false);
     
     // Event system - Global event functions
     auto addEventListener_fn = ObjectFactory::create_native_function("addEventListener", WebAPI::addEventListener);
@@ -1086,6 +1140,10 @@ void Context::setup_web_apis() {
     // Audio API - HTML5 Audio element
     auto Audio_constructor_fn = ObjectFactory::create_native_function("Audio", WebAPI::Audio_constructor);
     lexical_environment_->create_binding("Audio", Value(Audio_constructor_fn.release()), false);
+    
+    // Typed Arrays API - Binary data manipulation
+    auto Uint8Array_constructor_fn = ObjectFactory::create_native_function("Uint8Array", WebAPI::Uint8Array_constructor);
+    lexical_environment_->create_binding("Uint8Array", Value(Uint8Array_constructor_fn.release()), false);
     
     // Complete Crypto API - Modern web security
     auto crypto_obj = ObjectFactory::create_object();
@@ -1152,9 +1210,6 @@ void Context::setup_web_apis() {
     // Complete Media APIs - Modern multimedia
     auto MediaStream_constructor_fn = ObjectFactory::create_native_function("MediaStream", WebAPI::MediaStream_constructor);
     lexical_environment_->create_binding("MediaStream", Value(MediaStream_constructor_fn.release()), false);
-    
-    auto RTCPeerConnection_constructor_fn = ObjectFactory::create_native_function("RTCPeerConnection", WebAPI::RTCPeerConnection_constructor);
-    lexical_environment_->create_binding("RTCPeerConnection", Value(RTCPeerConnection_constructor_fn.release()), false);
     
     // Complete History API - SPA navigation power
     auto history_obj = ObjectFactory::create_object();

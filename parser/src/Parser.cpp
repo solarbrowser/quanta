@@ -2469,24 +2469,53 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             );
             properties.push_back(std::move(property));
         } else {
-            // Regular property with colon syntax: key: value
-            if (!consume(TokenType::COLON)) {
-                add_error("Expected ':' after property key");
-                return nullptr;
+            // Check for ES6 shorthand property syntax: {x} is equivalent to {x: x}
+            if (match(TokenType::COMMA) || match(TokenType::RIGHT_BRACE)) {
+                // This is shorthand property syntax - key without value means key: key
+                // The key should be an identifier for shorthand to work
+                if (!key) {
+                    add_error("Invalid shorthand property");
+                    return nullptr;
+                }
+                
+                // Create identifier for the value (same as key)
+                if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
+                    // Create a new identifier with the same name as the key for the value
+                    auto value = std::make_unique<Identifier>(
+                        identifier_key->get_name(),
+                        identifier_key->get_start(),
+                        identifier_key->get_end()
+                    );
+                    
+                    // Create property with shorthand (key and value have same identifier)
+                    auto property = std::make_unique<ObjectLiteral::Property>(
+                        std::move(key), std::move(value), computed, false
+                    );
+                    properties.push_back(std::move(property));
+                } else {
+                    add_error("Shorthand properties can only be used with identifier keys");
+                    return nullptr;
+                }
+            } else {
+                // Regular property with colon syntax: key: value
+                if (!consume(TokenType::COLON)) {
+                    add_error("Expected ':' after property key");
+                    return nullptr;
+                }
+                
+                // Parse property value
+                auto value = parse_assignment_expression();
+                if (!value) {
+                    add_error("Expected property value");
+                    return nullptr;
+                }
+                
+                // Create property
+                auto property = std::make_unique<ObjectLiteral::Property>(
+                    std::move(key), std::move(value), computed, false
+                );
+                properties.push_back(std::move(property));
             }
-            
-            // Parse property value
-            auto value = parse_assignment_expression();
-            if (!value) {
-                add_error("Expected property value");
-                return nullptr;
-            }
-            
-            // Create property
-            auto property = std::make_unique<ObjectLiteral::Property>(
-                std::move(key), std::move(value), computed, false
-            );
-            properties.push_back(std::move(property));
         }
         
         // Continue if there's a comma
