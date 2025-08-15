@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/Value.h"
 #include "../include/Object.h"
 #include "../include/String.h"
@@ -121,8 +127,10 @@ Value Value::typeof_op() const {
     if (is_symbol()) return Value(std::string("symbol"));
     if (is_bigint()) return Value(std::string("bigint"));
     if (is_function()) return Value(std::string("function"));
+    
     return Value(std::string("object"));
 }
+
 
 Value::Type Value::get_type() const {
     if (is_undefined()) return Type::Undefined;
@@ -140,7 +148,13 @@ bool Value::strict_equals(const Value& other) const {
     if (is_undefined() && other.is_undefined()) return true;
     if (is_null() && other.is_null()) return true;
     if (is_boolean() && other.is_boolean()) return as_boolean() == other.as_boolean();
-    if (is_number() && other.is_number()) return as_number() == other.as_number();
+    if (is_number() && other.is_number()) {
+        double a = as_number();
+        double b = other.as_number();
+        // Handle NaN properly: NaN is never equal to anything, including itself
+        if (std::isnan(a) || std::isnan(b)) return false;
+        return a == b;
+    }
     if (is_string() && other.is_string()) return as_string()->str() == other.as_string()->str();
     if (is_bigint() && other.is_bigint()) return *as_bigint() == *other.as_bigint();
     if (is_symbol() && other.is_symbol()) return as_symbol()->equals(other.as_symbol());
@@ -197,9 +211,7 @@ bool Value::loose_equals(const Value& other) const {
 }
 
 Value Value::add(const Value& other) const {
-    if (is_number() && other.is_number()) {
-        return Value(as_number() + other.as_number());
-    }
+    // Handle BigInt cases first
     if (is_bigint() && other.is_bigint()) {
         BigInt result = *as_bigint() + *other.as_bigint();
         return Value(new BigInt(result));
@@ -207,8 +219,14 @@ Value Value::add(const Value& other) const {
     if (is_bigint() || other.is_bigint()) {
         throw std::runtime_error("Cannot mix BigInt and other types in addition");
     }
-    // For simplicity, convert to strings for + operation
-    return Value(to_string() + other.to_string());
+    
+    // JavaScript + operator: if either operand is string, concatenate; otherwise, add as numbers
+    if (is_string() || other.is_string()) {
+        return Value(to_string() + other.to_string());
+    }
+    
+    // Both are non-string, non-BigInt - convert to numbers and add
+    return Value(to_number() + other.to_number());
 }
 
 Value Value::subtract(const Value& other) const {
@@ -317,6 +335,86 @@ int Value::compare(const Value& other) const {
     if (left_str < right_str) return -1;
     if (left_str > right_str) return 1;
     return 0;
+}
+
+bool Value::instanceof_check(const Value& constructor) const {
+    // instanceof requires an object/function on the left and function on the right
+    if ((!is_object() && !is_function()) || !constructor.is_function()) {
+        return false;
+    }
+    
+    Function* ctor = constructor.as_function();
+    std::string ctor_name = ctor->get_name();
+    
+    // Handle function instanceof checks first
+    if (is_function()) {
+        if (ctor_name == "Function") {
+            return true;
+        }
+        if (ctor_name == "Object") {
+            return true; // functions are objects
+        }
+        return false;
+    }
+    
+    Object* obj = as_object();
+    
+    // Get the constructor's prototype
+    Value prototype_prop = ctor->get_property("prototype");
+    if (!prototype_prop.is_object()) {
+        return false;
+    }
+    Object* ctor_prototype = prototype_prop.as_object();
+    
+    // Walk the prototype chain
+    Object* current = obj;
+    while (current != nullptr) {
+        // Get the prototype of the current object
+        Value proto = current->get_property("__proto__");
+        if (!proto.is_object()) {
+            break;
+        }
+        
+        Object* current_proto = proto.as_object();
+        if (current_proto == ctor_prototype) {
+            return true;
+        }
+        
+        current = current_proto;
+    }
+    
+    // Special cases for built-in constructors (objects only, not functions)
+    // Array instanceof
+    if (ctor_name == "Array") {
+        return obj->is_array();
+    }
+    
+    // RegExp instanceof
+    if (ctor_name == "RegExp") {
+        return obj->has_property("_isRegExp");
+    }
+    
+    // Date instanceof
+    if (ctor_name == "Date") {
+        return obj->has_property("_isDate");
+    }
+    
+    // Error instanceof
+    if (ctor_name == "Error" || ctor_name == "TypeError" || ctor_name == "ReferenceError") {
+        return obj->has_property("_isError");
+    }
+    
+    // Promise instanceof
+    if (ctor_name == "Promise") {
+        return obj->has_property("_isPromise");
+    }
+    
+    // Object instanceof (everything is an object)
+    if (ctor_name == "Object") {
+        return true;
+    }
+    
+    return false;
 }
 
 //=============================================================================

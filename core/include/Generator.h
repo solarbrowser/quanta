@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #pragma once
 
 #include "Value.h"
@@ -11,6 +17,18 @@ namespace Quanta {
 class Context;
 class ASTNode;
 class Function;
+
+// Exception used for generator yield control flow
+class YieldException : public std::exception {
+public:
+    Value yielded_value;
+    
+    YieldException(const Value& value) : yielded_value(value) {}
+    
+    const char* what() const noexcept override {
+        return "Generator yield";
+    }
+};
 
 /**
  * JavaScript Generator implementation
@@ -36,11 +54,17 @@ private:
     Context* generator_context_;
     std::unique_ptr<ASTNode> body_;
     State state_;
-    Value last_value_;
     
     // Generator execution state
     size_t pc_;  // Program counter for yield points
     std::vector<Value> yield_stack_;
+    
+    // Yield tracking for proper generator resumption
+    size_t current_yield_count_;
+    
+    // Static generator tracking for yield expressions
+    static thread_local Generator* current_generator_;
+    static thread_local size_t current_yield_counter_;
     
 public:
     Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body);
@@ -55,6 +79,10 @@ public:
     State get_state() const { return state_; }
     bool is_done() const { return state_ == State::Completed; }
     
+    // Yield tracking access for YieldExpression
+    size_t target_yield_index_;
+    Value last_value_;
+    
     // Iterator protocol
     Value get_iterator();
     
@@ -68,6 +96,12 @@ public:
     
     // Generator prototype setup
     static void setup_generator_prototype(Context& ctx);
+    
+    // Static tracking methods for yield expressions
+    static void set_current_generator(Generator* gen);
+    static Generator* get_current_generator();
+    static size_t increment_yield_counter();
+    static void reset_yield_counter();
     
 private:
     GeneratorResult execute_until_yield(const Value& sent_value);

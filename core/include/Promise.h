@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_PROMISE_H
 #define QUANTA_PROMISE_H
 
@@ -62,6 +68,9 @@ public:
     
 private:
     void execute_handlers();
+    
+    // Setup JavaScript methods (.then, .catch, .finally) on a promise instance
+    static void setup_promise_methods(Promise* promise);
 };
 
 } // namespace Quanta

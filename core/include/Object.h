@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_OBJECT_H
 #define QUANTA_OBJECT_H
 
@@ -412,6 +418,10 @@ namespace ObjectFactory {
     std::unique_ptr<Object> create_object(Object* prototype = nullptr);
     std::unique_ptr<Object> create_array(uint32_t length = 0);
     std::unique_ptr<Object> create_function();
+    
+    // Array prototype management
+    void set_array_prototype(Object* prototype);
+    Object* get_array_prototype();
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
                                                  std::unique_ptr<class ASTNode> body,

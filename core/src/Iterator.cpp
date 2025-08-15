@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "Iterator.h"
 #include "Context.h"
 #include "Symbol.h"
@@ -13,6 +19,31 @@ namespace Quanta {
 
 Iterator::Iterator(NextFunction next_fn) 
     : Object(ObjectType::Custom), next_fn_(next_fn), done_(false) {
+    // Set up the next method on this iterator instance
+    auto next_method = ObjectFactory::create_native_function("next", 
+        [this](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args; // Unused parameter
+            auto result = this->next();
+            return Iterator::create_iterator_result(result.value, result.done);
+        });
+    this->set_property("next", Value(next_method.release()));
+}
+
+Iterator::Iterator() 
+    : Object(ObjectType::Custom), done_(false) {
+    // Default constructor - next_fn_ will be set later
+}
+
+void Iterator::set_next_function(NextFunction next_fn) {
+    next_fn_ = next_fn;
+    // Set up the next method on this iterator instance
+    auto next_method = ObjectFactory::create_native_function("next", 
+        [this](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args; // Unused parameter
+            auto result = this->next();
+            return Iterator::create_iterator_result(result.value, result.done);
+        });
+    this->set_property("next", Value(next_method.release()));
 }
 
 Iterator::IteratorResult Iterator::next() {
@@ -181,7 +212,14 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
 //=============================================================================
 
 StringIterator::StringIterator(const std::string& str) 
-    : Iterator([this]() { return this->next_impl(); }), string_(str), position_(0) {
+    : Iterator(), string_(str), position_(0) {
+    // Use a static method to avoid lambda capture issues
+    auto next_method = ObjectFactory::create_native_function("next", StringIterator::string_iterator_next_method);
+    this->set_property("next", Value(next_method.release()));
+}
+
+Iterator::IteratorResult StringIterator::next() {
+    return next_impl(); // Call the implementation directly
 }
 
 Iterator::IteratorResult StringIterator::next_impl() {
@@ -194,12 +232,61 @@ Iterator::IteratorResult StringIterator::next_impl() {
     return IteratorResult(Value(character), false);
 }
 
+Value StringIterator::string_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
+    (void)args; // Suppress unused warning
+    
+    // Get the 'this' binding from the context
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("StringIterator next() called without proper this binding"));
+        return Value();
+    }
+    
+    // Ensure it's actually a StringIterator
+    if (this_obj->get_type() != Object::ObjectType::Custom) {
+        ctx.throw_exception(Value("StringIterator next() called on non-iterator object"));
+        return Value();
+    }
+    
+    StringIterator* string_iter = static_cast<StringIterator*>(this_obj);
+    auto result = string_iter->next();  // Call next() not next_impl()
+    return Iterator::create_iterator_result(result.value, result.done);
+}
+
 //=============================================================================
 // MapIterator Implementation
 //=============================================================================
 
 MapIterator::MapIterator(Map* map, Kind kind) 
-    : Iterator([this]() { return this->next_impl(); }), map_(map), kind_(kind), index_(0) {
+    : Iterator(), map_(map), kind_(kind), index_(0) {
+    // Use a static method to avoid lambda capture issues
+    auto next_method = ObjectFactory::create_native_function("next", MapIterator::map_iterator_next_method);
+    this->set_property("next", Value(next_method.release()));
+}
+
+Iterator::IteratorResult MapIterator::next() {
+    return next_impl(); // Call the implementation directly
+}
+
+Value MapIterator::map_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
+    (void)args; // Unused parameter
+    
+    // Get the 'this' binding from the context
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("MapIterator next() called without proper this binding"));
+        return Value();
+    }
+    
+    // Ensure it's actually a MapIterator
+    if (this_obj->get_type() != Object::ObjectType::Custom) {
+        ctx.throw_exception(Value("MapIterator next() called on non-iterator object"));
+        return Value();
+    }
+    
+    MapIterator* map_iter = static_cast<MapIterator*>(this_obj);
+    auto result = map_iter->next();
+    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Iterator::IteratorResult MapIterator::next_impl() {
@@ -212,7 +299,8 @@ Iterator::IteratorResult MapIterator::next_impl() {
         return IteratorResult(Value(), true);
     }
     
-    auto& entry = entries[index_++];
+    auto& entry = entries[index_];
+    index_++; // Increment after getting the entry
     
     switch (kind_) {
         case Kind::Keys:
@@ -237,7 +325,35 @@ Iterator::IteratorResult MapIterator::next_impl() {
 //=============================================================================
 
 SetIterator::SetIterator(Set* set, Kind kind) 
-    : Iterator([this]() { return this->next_impl(); }), set_(set), kind_(kind), index_(0) {
+    : Iterator(), set_(set), kind_(kind), index_(0) {
+    // Use a static method to avoid lambda capture issues
+    auto next_method = ObjectFactory::create_native_function("next", SetIterator::set_iterator_next_method);
+    this->set_property("next", Value(next_method.release()));
+}
+
+Iterator::IteratorResult SetIterator::next() {
+    return next_impl(); // Call the implementation directly
+}
+
+Value SetIterator::set_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
+    (void)args; // Unused parameter
+    
+    // Get the 'this' binding from the context
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("SetIterator next() called without proper this binding"));
+        return Value();
+    }
+    
+    // Ensure it's actually a SetIterator
+    if (this_obj->get_type() != Object::ObjectType::Custom) {
+        ctx.throw_exception(Value("SetIterator next() called on non-iterator object"));
+        return Value();
+    }
+    
+    SetIterator* set_iter = static_cast<SetIterator*>(this_obj);
+    auto result = set_iter->next();
+    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Iterator::IteratorResult SetIterator::next_impl() {
@@ -250,7 +366,15 @@ Iterator::IteratorResult SetIterator::next_impl() {
         return IteratorResult(Value(), true);
     }
     
-    Value value = values[index_++];
+    Value value = values[index_];
+    
+    size_t old_index = index_;
+    index_++;
+    
+    // Add some basic bounds checking
+    if (old_index >= values.size()) {
+        return IteratorResult(Value(), true);
+    }
     
     switch (kind_) {
         case Kind::Values:

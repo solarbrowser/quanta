@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_VALUE_H
 #define QUANTA_VALUE_H
 
@@ -7,6 +13,7 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <iostream>
 
 namespace Quanta {
 
@@ -45,7 +52,7 @@ private:
     static constexpr uint64_t TAG_MASK      = 0x000F000000000000ULL;
     static constexpr uint64_t PAYLOAD_MASK  = 0x0000FFFFFFFFFFFFULL;
     
-    // Type tags for NaN-boxed values
+    // Type tags for NaN-boxed values - avoiding collision with IEEE 754 quiet NaN pattern
     static constexpr uint64_t TAG_UNDEFINED = 0x0001000000000000ULL;
     static constexpr uint64_t TAG_NULL      = 0x0002000000000000ULL;
     static constexpr uint64_t TAG_FALSE     = 0x0003000000000000ULL;
@@ -53,8 +60,9 @@ private:
     static constexpr uint64_t TAG_STRING    = 0x0005000000000000ULL;
     static constexpr uint64_t TAG_SYMBOL    = 0x0006000000000000ULL;
     static constexpr uint64_t TAG_BIGINT    = 0x0007000000000000ULL;
-    static constexpr uint64_t TAG_OBJECT    = 0x0008000000000000ULL;
-    static constexpr uint64_t TAG_FUNCTION  = 0x0009000000000000ULL;
+    // Skip 0x0008 to avoid collision with IEEE 754 quiet NaN (0x7FF8...)
+    static constexpr uint64_t TAG_OBJECT    = 0x0009000000000000ULL;
+    static constexpr uint64_t TAG_FUNCTION  = 0x000A000000000000ULL;
 
     union {
         uint64_t bits_;
@@ -111,7 +119,25 @@ public:
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
     inline bool is_number() const { 
-        return (bits_ & EXPONENT_MASK) != EXPONENT_MASK || (bits_ & TAG_MASK) == 0;
+        // Check if it's a normal number (not all exponent bits set)
+        if ((bits_ & EXPONENT_MASK) != EXPONENT_MASK) {
+            return true;
+        }
+        
+        // For values with all exponent bits set, check if it's a real NaN/Infinity vs tagged value
+        // Real IEEE 754 NaN/Infinity won't match our specific tagged value patterns
+        uint64_t pattern = bits_ & (QUIET_NAN | TAG_MASK);
+        
+        // If it doesn't match any of our tagged patterns, it's probably a real number
+        return pattern != (QUIET_NAN | TAG_UNDEFINED) &&
+               pattern != (QUIET_NAN | TAG_NULL) &&
+               pattern != (QUIET_NAN | TAG_FALSE) &&
+               pattern != (QUIET_NAN | TAG_TRUE) &&
+               pattern != (QUIET_NAN | TAG_STRING) &&
+               pattern != (QUIET_NAN | TAG_SYMBOL) &&
+               pattern != (QUIET_NAN | TAG_BIGINT) &&
+               pattern != (QUIET_NAN | TAG_OBJECT) &&
+               pattern != (QUIET_NAN | TAG_FUNCTION);
     }
     inline bool is_string() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }
     inline bool is_symbol() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_SYMBOL); }
@@ -125,6 +151,7 @@ public:
     }
     inline bool is_nullish() const { return is_undefined() || is_null(); }
     inline bool is_numeric() const { return is_number() || is_bigint(); }
+    
     inline bool is_object_like() const { return is_object() || is_function(); }
 
     // Type getter
@@ -169,6 +196,7 @@ public:
     bool strict_equals(const Value& other) const;
     bool loose_equals(const Value& other) const;
     int compare(const Value& other) const;
+    bool instanceof_check(const Value& constructor) const;
     
     // Arithmetic operations
     Value add(const Value& other) const;

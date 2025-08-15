@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/NodeJS.h"
 #include <iostream>
 #include <sstream>
@@ -406,18 +412,21 @@ Value NodeJS::path_isAbsolute(Context& ctx, const std::vector<Value>& args) {
 
 // HTTP API (placeholders)
 Value NodeJS::http_createServer(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    return Value("HTTP server placeholder");
+    (void)args;
+    ctx.throw_error("NotImplementedError: HTTP server not implemented in this engine");
+    return Value();
 }
 
 Value NodeJS::http_request(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    return Value("HTTP request placeholder");
+    (void)args;
+    ctx.throw_error("NotImplementedError: HTTP requests not implemented in this engine");
+    return Value();
 }
 
 Value NodeJS::http_get(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    return Value("HTTP GET placeholder");
+    (void)args;
+    ctx.throw_error("NotImplementedError: HTTP GET not implemented in this engine");
+    return Value();
 }
 
 // OS API
@@ -586,8 +595,9 @@ Value NodeJS::crypto_randomBytes(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value NodeJS::crypto_createHash(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    return Value("Hash placeholder");
+    (void)args;
+    ctx.throw_error("NotImplementedError: Crypto hashing not implemented in this engine");
+    return Value();
 }
 
 // Util API

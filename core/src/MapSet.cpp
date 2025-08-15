@@ -1,6 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "MapSet.h"
 #include "Context.h"
 #include "Symbol.h"
+#include "Iterator.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
 #include <iostream>
@@ -232,6 +239,24 @@ Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(map->size()));
 }
 
+Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
+    (void)args; // Unused parameter
+    
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
+        ctx.throw_exception(Value("Map.prototype[Symbol.iterator] called on non-object"));
+        return Value();
+    }
+    if (obj->get_type() != Object::ObjectType::Map) {
+        ctx.throw_exception(Value("Map.prototype[Symbol.iterator] called on non-Map"));
+        return Value();
+    }
+    
+    Map* map = static_cast<Map*>(obj);
+    auto iterator = std::make_unique<MapIterator>(map, MapIterator::Kind::Entries);
+    return Value(iterator.release());
+}
+
 void Map::setup_map_prototype(Context& ctx) {
     // Create Map constructor
     auto map_constructor_fn = ObjectFactory::create_native_function("Map", map_constructor);
@@ -253,6 +278,13 @@ void Map::setup_map_prototype(Context& ctx) {
     map_prototype->set_property("delete", Value(delete_fn.release()));
     map_prototype->set_property("clear", Value(clear_fn.release()));
     map_prototype->set_property("size", Value(size_fn.release()));
+    
+    // Add Symbol.iterator method for Map iteration
+    Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iterator_symbol) {
+        auto map_iterator_fn = ObjectFactory::create_native_function("@@iterator", map_iterator_method);
+        map_prototype->set_property(iterator_symbol->to_string(), Value(map_iterator_fn.release()));
+    }
     
     // Store reference for constructor use
     Map::prototype_object = map_prototype.get();
@@ -339,8 +371,16 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
     
     // If iterable argument provided, populate set
     if (!args.empty() && args[0].is_object()) {
-        // TODO: Implement iteration protocol for proper initialization
-        // For now, just create empty set
+        Object* iterable = args[0].as_object();
+        if (iterable->is_array()) {
+            // Array case: add all elements
+            uint32_t length = iterable->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+                set->add(element);
+            }
+        }
+        // TODO: Implement iteration protocol for other iterables
     }
     
     return Value(set.release());
@@ -433,6 +473,24 @@ Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(set->size()));
 }
 
+Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
+    (void)args; // Unused parameter
+    
+    Object* obj = ctx.get_this_binding();
+    if (!obj) {
+        ctx.throw_exception(Value("Set.prototype[Symbol.iterator] called on non-object"));
+        return Value();
+    }
+    if (obj->get_type() != Object::ObjectType::Set) {
+        ctx.throw_exception(Value("Set.prototype[Symbol.iterator] called on non-Set"));
+        return Value();
+    }
+    
+    Set* set = static_cast<Set*>(obj);
+    auto iterator = std::make_unique<SetIterator>(set, SetIterator::Kind::Values);
+    return Value(iterator.release());
+}
+
 void Set::setup_set_prototype(Context& ctx) {
     // Create Set constructor
     auto set_constructor_fn = ObjectFactory::create_native_function("Set", set_constructor);
@@ -452,6 +510,13 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("delete", Value(delete_fn.release()));
     set_prototype->set_property("clear", Value(clear_fn.release()));
     set_prototype->set_property("size", Value(size_fn.release()));
+    
+    // Add Symbol.iterator method for Set iteration
+    Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iterator_symbol) {
+        auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
+        set_prototype->set_property(iterator_symbol->to_string(), Value(set_iterator_fn.release()));
+    }
     
     // Store reference for constructor use
     Set::prototype_object = set_prototype.get();

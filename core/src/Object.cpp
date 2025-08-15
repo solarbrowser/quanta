@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "Object.h"
 #include "Context.h"
 #include "Value.h"
@@ -199,7 +205,8 @@ Value Object::get_property(const std::string& key) const {
         if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" || 
             key == "indexOf" || key == "slice" || key == "splice" || key == "push" || 
             key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "groupBy" ||
-            key == "reverse" || key == "sort") {
+            key == "reverse" || key == "sort" || key == "find" || key == "includes" || 
+            key == "some" || key == "every" || key == "findIndex") {
             // Return a native function that will call the appropriate array method
             return Value(ObjectFactory::create_array_method(key).release());
         }
@@ -242,12 +249,10 @@ Value Object::get_own_property(const std::string& key) const {
                 // This is an accessor property with a getter
                 // For now, handle cookie specially since we need WebAPI
                 if (key == "cookie") {
-                    std::cout << "DEBUG: Calling getter for accessor property: " << key << std::endl;
                     // Return empty string for now - the actual getter call happens in MemberExpression
                     return Value("");
                 }
                 // TODO: Call the getter function properly with Context
-                std::cout << "DEBUG: Accessor property " << key << " getter not implemented yet" << std::endl;
             }
             if (desc.is_data_descriptor()) {
                 return desc.get_value();
@@ -396,9 +401,6 @@ bool Object::delete_element(uint32_t index) {
 std::vector<std::string> Object::get_own_property_keys() const {
     std::vector<std::string> keys;
     
-    // Debug: Print what we're checking
-    // std::cout << "DEBUG: Object type = " << (int)header_.type << std::endl;
-    // std::cout << "DEBUG: Property count = " << header_.property_count << std::endl;
     
     // Add properties from shape first
     if (header_.shape) {
@@ -410,7 +412,6 @@ std::vector<std::string> Object::get_own_property_keys() const {
     
     // Add overflow properties
     if (overflow_properties_) {
-        // std::cout << "DEBUG: Found overflow properties, size = " << overflow_properties_->size() << std::endl;
         for (const auto& pair : *overflow_properties_) {
             keys.push_back(pair.first);
         }
@@ -514,6 +515,10 @@ void Object::set_length(uint32_t length) {
 
 void Object::push(const Value& value) {
     uint32_t length = get_length();
+    // Safety check for array size
+    if (length >= 1000000) { // 1M element limit
+        return; // Silently ignore to prevent crashes
+    }
     set_element(length, value);
     set_length(length + 1);
 }
@@ -533,10 +538,17 @@ Value Object::pop() {
 void Object::unshift(const Value& value) {
     uint32_t length = get_length();
     
-    // Shift all elements to the right
+    // Safety check for array size
+    if (length >= 1000000) { // 1M element limit
+        return; // Silently ignore to prevent crashes
+    }
+    
+    // Shift all elements to the right - with bounds checking
     for (uint32_t i = length; i > 0; --i) {
-        Value element = get_element(i - 1);
-        set_element(i, element);
+        if (i < elements_.size()) { // Bounds check
+            Value element = get_element(i - 1);
+            set_element(i, element);
+        }
     }
     
     // Set the new element at index 0
@@ -951,6 +963,17 @@ std::vector<std::string> Object::internal_own_keys() const {
 
 namespace ObjectFactory {
 
+// Static array prototype reference
+static Object* array_prototype_object = nullptr;
+
+void set_array_prototype(Object* prototype) {
+    array_prototype_object = prototype;
+}
+
+Object* get_array_prototype() {
+    return array_prototype_object;
+}
+
 std::unique_ptr<Object> create_object(Object* prototype) {
     return std::make_unique<Object>(prototype, Object::ObjectType::Ordinary);
 }
@@ -959,9 +982,10 @@ std::unique_ptr<Object> create_array(uint32_t length) {
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     array->set_length(length);
     
-    // TODO: Set Array.prototype as prototype
-    // This is a temporary workaround - arrays won't have proper prototype chain
-    // The proper fix requires access to the global Array.prototype
+    // Set Array.prototype as prototype if available
+    if (array_prototype_object) {
+        array->set_prototype(array_prototype_object);
+    }
     
     return array;
 }
@@ -1168,6 +1192,97 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             array->set_length(length - deleteCount + insertCount);
             
             return Value(deleted.release());
+        } else if (method_name == "find") {
+            if (args.size() > 0 && args[0].is_function()) {
+                uint32_t length = array->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = array->get_element(i);
+                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
+                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    if (result.to_boolean()) {
+                        return element;
+                    }
+                }
+                return Value(); // undefined
+            }
+        } else if (method_name == "includes") {
+            if (args.size() > 0) {
+                Value search_element = args[0];
+                uint32_t length = array->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = array->get_element(i);
+                    if (element.strict_equals(search_element)) {
+                        return Value(true);
+                    }
+                }
+                return Value(false);
+            }
+        } else if (method_name == "some") {
+            if (args.size() > 0 && args[0].is_function()) {
+                uint32_t length = array->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = array->get_element(i);
+                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
+                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    if (result.to_boolean()) {
+                        return Value(true);
+                    }
+                }
+                return Value(false);
+            }
+        } else if (method_name == "every") {
+            if (args.size() > 0 && args[0].is_function()) {
+                uint32_t length = array->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = array->get_element(i);
+                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
+                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    if (!result.to_boolean()) {
+                        return Value(false);
+                    }
+                }
+                return Value(true);
+            }
+        } else if (method_name == "findIndex") {
+            if (args.size() > 0 && args[0].is_function()) {
+                uint32_t length = array->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = array->get_element(i);
+                    std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
+                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    if (result.to_boolean()) {
+                        return Value(static_cast<double>(i));
+                    }
+                }
+                return Value(-1.0); // not found
+            }
+        } else if (method_name == "flat") {
+            // Array.flat() - flatten array one level
+            uint32_t length = array->get_length();
+            auto result = ObjectFactory::create_array(0);
+            uint32_t result_index = 0;
+            
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = array->get_element(i);
+                
+                // Check if element is an array
+                if (element.is_object() && element.as_object() && element.as_object()->is_array()) {
+                    Object* nested_array = element.as_object();
+                    uint32_t nested_length = nested_array->get_length();
+                    
+                    // Add all elements from nested array
+                    for (uint32_t j = 0; j < nested_length; j++) {
+                        Value nested_element = nested_array->get_element(j);
+                        result->set_element(result_index++, nested_element);
+                    }
+                } else {
+                    // Add element directly
+                    result->set_element(result_index++, element);
+                }
+            }
+            
+            result->set_length(result_index);
+            return Value(result.release());
         }
         
         ctx.throw_exception(Value("Invalid array method call"));
@@ -1181,6 +1296,7 @@ std::unique_ptr<Object> create_error(const std::string& message) {
     auto error_obj = std::make_unique<Object>(Object::ObjectType::Error);
     error_obj->set_property("message", Value(message));
     error_obj->set_property("name", Value("Error"));
+    error_obj->set_property("_isError", Value(true));
     return error_obj;
 }
 

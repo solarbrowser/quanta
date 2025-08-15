@@ -35,9 +35,68 @@ private:
     std::unique_ptr<Engine> engine_;
     
 public:
+    // Helper function to detect if content uses ES6 module syntax
+    bool has_es6_module_syntax(const std::string& content) {
+        // Simple detection: look for import/export statements at the beginning of lines
+        std::istringstream stream(content);
+        std::string line;
+        
+        while (std::getline(stream, line)) {
+            // Trim leading whitespace
+            size_t start = line.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos) continue;
+            
+            std::string trimmed = line.substr(start);
+            
+            // Check for import/export statements
+            if (trimmed.substr(0, 6) == "import" || trimmed.substr(0, 6) == "export") {
+                // Make sure it's actually a keyword, not part of a string/comment
+                if (trimmed.length() == 6 || std::isspace(trimmed[6]) || trimmed[6] == '{' || trimmed[6] == '*') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    
+private:
+    
+public:
     QuantaConsole() {
+        // ULTRA FAST ENGINE CREATION - V8 Style!
         engine_ = std::make_unique<Engine>();
-        engine_->initialize();
+        bool init_result = engine_->initialize();  // Minimal lazy init!
+        
+        if (init_result) {
+            // Engine initialized
+        } else {
+            std::cout << "❌ Engine initialization failed!" << std::endl;
+        }
+    }
+    
+    // Execute file as ES6 module
+    void execute_as_module(const std::string& filename) {
+        try {
+            std::cout << CYAN << "🔧 Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
+            
+            // Use the module loader to load and execute the file
+            ModuleLoader* module_loader = engine_->get_module_loader();
+            if (!module_loader) {
+                std::cout << RED << "Error: ModuleLoader not available" << RESET << std::endl;
+                return;
+            }
+            
+            // Load the module (this will execute it)
+            Module* module = module_loader->load_module(filename, "");
+            if (module) {
+                std::cout << GREEN << "✅ Module loaded successfully!" << RESET << std::endl;
+            } else {
+                std::cout << RED << "❌ Module loading failed!" << RESET << std::endl;
+            }
+            
+        } catch (const std::exception& e) {
+            std::cout << RED << "Module execution error: " << e.what() << RESET << std::endl;
+        }
     }
     
     void print_banner() {
@@ -107,7 +166,7 @@ public:
             TokenSequence tokens = lexer.tokenize();
             
             if (tokens.size() == 0) {
-                if (show_prompt) std::cout << MAGENTA << "undefined\n" << RESET;
+                // Fast mode - no undefined output
                 return;
             }
             
@@ -162,7 +221,7 @@ public:
     
     void clear_screen() {
         std::cout << "\033[2J\033[H";
-        print_banner();
+        // Fast mode - no banner
     }
     
     std::string get_input() {
@@ -188,7 +247,7 @@ public:
     }
     
     void run() {
-        print_banner();
+        // Fast mode - no banner
         
         std::string input;
         while (true) {
@@ -248,7 +307,7 @@ int main(int argc, char* argv[]) {
         // If file argument provided, execute it instead of interactive mode
         if (argc > 1) {
             // Show banner for file execution too
-            console.print_banner();
+            // Fast mode - no banner
             
             std::ifstream file(argv[1]);
             if (!file.is_open()) {
@@ -260,8 +319,14 @@ int main(int argc, char* argv[]) {
             buffer << file.rdbuf();
             std::string content = buffer.str();
             
-            // Execute the file content
-            console.evaluate_expression(content, true);
+            // Auto-detect ES6 module syntax and choose execution method
+            if (console.has_es6_module_syntax(content)) {
+                // Execute as ES6 module
+                console.execute_as_module(argv[1]);
+            } else {
+                // Execute as regular script
+                console.evaluate_expression(content, true);
+            }
             
             // Process any pending async tasks
             EventLoop::instance().process_microtasks();

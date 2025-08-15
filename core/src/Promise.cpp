@@ -1,6 +1,13 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/Promise.h"
 #include "../include/Context.h"
 #include "../include/Async.h"
+#include "../include/Object.h"  // For ObjectFactory
 #include "../../parser/include/AST.h"
 #include <iostream>
 
@@ -23,46 +30,57 @@ void Promise::reject(const Value& reason) {
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
-    auto* new_promise = new Promise(context_);
+    // Always create with a valid context - use current context or nullptr safely
+    auto* new_promise = new Promise();
+    new_promise->context_ = context_;  // Copy context safely
+    
+    // CRITICAL: Set up .then(), .catch(), .finally() methods on the new promise
+    // This is what was missing and causing the segfault!
+    setup_promise_methods(new_promise);
     
     if (state_ == PromiseState::FULFILLED) {
         if (on_fulfilled) {
-            // Schedule callback execution as microtask
-            EventLoop::instance().schedule_microtask([this, on_fulfilled, new_promise]() {
-                try {
-                    if (context_) {
-                        std::vector<Value> args = {value_};
-                        Value result = on_fulfilled->call(*context_, args);
-                        
-                        // Handle result - for now just fulfill with the result
-                        // TODO: Handle promise chaining properly
-                        new_promise->fulfill(result);
-                    } else {
-                        new_promise->reject(Value("No execution context for callback"));
-                    }
-                } catch (...) {
-                    new_promise->reject(Value("Handler execution failed"));
+            // Execute callback immediately if already fulfilled - avoid async issues
+            try {
+                if (context_) {
+                    std::vector<Value> args = {value_};
+                    Value result = on_fulfilled->call(*context_, args);
+                    
+                    // Properly initialize the new promise before fulfilling
+                    new_promise->state_ = PromiseState::PENDING;
+                    new_promise->value_ = Value();  // Reset value
+                    new_promise->fulfill(result);
+                } else {
+                    new_promise->state_ = PromiseState::PENDING;
+                    new_promise->reject(Value("No execution context for callback"));
                 }
-            });
+            } catch (...) {
+                new_promise->state_ = PromiseState::PENDING;
+                new_promise->reject(Value("Handler execution failed"));
+            }
         } else {
             new_promise->fulfill(value_);
         }
     } else if (state_ == PromiseState::REJECTED) {
         if (on_rejected) {
-            // Schedule rejection handler as microtask
-            EventLoop::instance().schedule_microtask([this, on_rejected, new_promise]() {
-                try {
-                    if (context_) {
-                        std::vector<Value> args = {value_};
-                        Value result = on_rejected->call(*context_, args);
-                        new_promise->fulfill(result);  // Rejection handler fulfills the new promise
-                    } else {
-                        new_promise->reject(Value("No execution context for callback"));
-                    }
-                } catch (...) {
-                    new_promise->reject(value_);  // Re-reject with original reason
+            // Execute rejection handler immediately if already rejected
+            try {
+                if (context_) {
+                    std::vector<Value> args = {value_};
+                    Value result = on_rejected->call(*context_, args);
+                    
+                    // Properly initialize the new promise before fulfilling
+                    new_promise->state_ = PromiseState::PENDING;
+                    new_promise->value_ = Value();  // Reset value
+                    new_promise->fulfill(result);  // Rejection handler fulfills the new promise
+                } else {
+                    new_promise->state_ = PromiseState::PENDING;
+                    new_promise->reject(Value("No execution context for callback"));
                 }
-            });
+            } catch (...) {
+                new_promise->state_ = PromiseState::PENDING;
+                new_promise->reject(value_);  // Re-reject with original reason
+            }
         } else {
             new_promise->reject(value_);
         }
@@ -89,13 +107,15 @@ Promise* Promise::finally_method(Function* on_finally) {
 }
 
 Promise* Promise::resolve(const Value& value) {
-    auto* promise = new Promise(nullptr);  // Will be updated when bound to Context
+    // Don't pass nullptr context - causes segfaults
+    auto* promise = new Promise();  // Use default constructor
     promise->fulfill(value);
     return promise;
 }
 
 Promise* Promise::reject_static(const Value& reason) {
-    auto* promise = new Promise(nullptr);  // Will be updated when bound to Context
+    // Don't pass nullptr context - causes segfaults
+    auto* promise = new Promise();  // Use default constructor
     promise->reject(reason);
     return promise;
 }
@@ -128,35 +148,31 @@ Promise* Promise::race(const std::vector<Promise*>& promises) {
 
 void Promise::execute_handlers() {
     if (state_ == PromiseState::FULFILLED) {
-        // Execute fulfillment handlers using EventLoop
+        // Execute fulfillment handlers immediately - avoid async segfault issues
         auto handlers = std::move(fulfillment_handlers_);
         for (Function* handler : handlers) {
-            EventLoop::instance().schedule_microtask([this, handler]() {
-                try {
-                    if (context_) {
-                        std::vector<Value> args = {value_};
-                        handler->call(*context_, args);
-                    }
-                } catch (...) {
-                    // Handler failed, but don't affect this promise
+            try {
+                if (context_ && handler) {
+                    std::vector<Value> args = {value_};
+                    handler->call(*context_, args);
                 }
-            });
+            } catch (...) {
+                // Handler failed, but don't affect this promise
+            }
         }
         rejection_handlers_.clear();
     } else if (state_ == PromiseState::REJECTED) {
-        // Execute rejection handlers using EventLoop  
+        // Execute rejection handlers immediately
         auto handlers = std::move(rejection_handlers_);
         for (Function* handler : handlers) {
-            EventLoop::instance().schedule_microtask([this, handler]() {
-                try {
-                    if (context_) {
-                        std::vector<Value> args = {value_};
-                        handler->call(*context_, args);
-                    }
-                } catch (...) {
-                    // Handler failed, but don't affect this promise
+            try {
+                if (context_ && handler) {
+                    std::vector<Value> args = {value_};
+                    handler->call(*context_, args);
                 }
-            });
+            } catch (...) {
+                // Handler failed, but don't affect this promise
+            }
         }
         fulfillment_handlers_.clear();
     }
@@ -227,6 +243,57 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     }
     
     return Value(promise);
+}
+
+// Setup JavaScript methods (.then, .catch, .finally) on a promise instance
+void Promise::setup_promise_methods(Promise* promise) {
+    if (!promise) return;
+    
+    // Add .then method
+    auto then_method = ObjectFactory::create_native_function("then",
+        [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+            Function* on_fulfilled = nullptr;
+            Function* on_rejected = nullptr;
+            
+            if (args.size() > 0 && args[0].is_function()) {
+                on_fulfilled = args[0].as_function();
+            }
+            if (args.size() > 1 && args[1].is_function()) {
+                on_rejected = args[1].as_function();
+            }
+            
+            Promise* new_promise = promise->then(on_fulfilled, on_rejected);
+            return Value(new_promise);
+        });
+    promise->set_property("then", Value(then_method.release()));
+    
+    // Add .catch method
+    auto catch_method = ObjectFactory::create_native_function("catch",
+        [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+            Function* on_rejected = nullptr;
+            
+            if (args.size() > 0 && args[0].is_function()) {
+                on_rejected = args[0].as_function();
+            }
+            
+            Promise* new_promise = promise->then(nullptr, on_rejected);
+            return Value(new_promise);
+        });
+    promise->set_property("catch", Value(catch_method.release()));
+    
+    // Add .finally method
+    auto finally_method = ObjectFactory::create_native_function("finally",
+        [promise](Context& ctx, const std::vector<Value>& args) -> Value {
+            Function* on_finally = nullptr;
+            
+            if (args.size() > 0 && args[0].is_function()) {
+                on_finally = args[0].as_function();
+            }
+            
+            Promise* new_promise = promise->finally_method(on_finally);
+            return Value(new_promise);
+        });
+    promise->set_property("finally", Value(finally_method.release()));
 }
 
 } // namespace Quanta

@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "ModuleLoader.h"
 #include "Engine.h"
 #include "Context.h"
@@ -156,12 +162,17 @@ void ModuleLoader::add_search_path(const std::string& path) {
 }
 
 Value ModuleLoader::import_from_module(const std::string& module_id, const std::string& import_name, const std::string& from_path) {
+    std::cout << "import_from_module called: module='" << module_id << "', import='" << import_name << "', from='" << from_path << "'" << std::endl;
+    
     Module* module = load_module(module_id, from_path);
     if (!module) {
+        std::cout << "import_from_module: load_module failed" << std::endl;
         return Value(); // undefined
     }
     
-    return module->get_export(import_name);
+    Value result = module->get_export(import_name);
+    std::cout << "import_from_module: get_export('" << import_name << "') returned " << (result.is_function() ? "function" : (result.is_undefined() ? "undefined" : "other")) << std::endl;
+    return result;
 }
 
 Value ModuleLoader::import_default_from_module(const std::string& module_id, const std::string& from_path) {
@@ -177,7 +188,12 @@ Value ModuleLoader::import_namespace_from_module(const std::string& module_id, c
     // Create an object with all exports
     auto exports_obj = std::make_shared<Object>();
     for (const auto& name : module->get_export_names()) {
-        exports_obj->set_property(name, module->get_export(name));
+        Value export_value = module->get_export(name);
+        std::cout << "Namespace import: Adding '" << name << "' (type: " << (export_value.is_function() ? "function" : "other") << ")" << std::endl;
+        exports_obj->set_property(name, export_value);
+        
+        Value retrieved_value = exports_obj->get_property(name);
+        std::cout << "Namespace import: Retrieved '" << name << "' (type: " << (retrieved_value.is_function() ? "function" : "other") << ")" << std::endl;
     }
     
     return Value(exports_obj.get());
@@ -232,8 +248,17 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         Value exports_value = module->get_context()->get_binding("exports");
         if (exports_value.is_object()) {
             auto exports_obj = exports_value.as_object();
-            for (const auto& key : exports_obj->get_own_property_keys()) {
+            
+            auto keys = exports_obj->get_own_property_keys();
+            std::cout << "ModuleLoader: Extracting " << keys.size() << " exports: ";
+            for (const auto& key : keys) {
+                std::cout << "'" << key << "' ";
+            }
+            std::cout << std::endl;
+            
+            for (const auto& key : keys) {
                 Value prop_value = exports_obj->get_property(key);
+                std::cout << "ModuleLoader: Adding export '" << key << "' (type: " << (prop_value.is_function() ? "function" : "other") << ")" << std::endl;
                 module->add_export(key, prop_value);
             }
         }

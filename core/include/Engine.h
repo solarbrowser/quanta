@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_ENGINE_H
 #define QUANTA_ENGINE_H
 
@@ -17,6 +23,7 @@
 namespace Quanta {
 
 // Forward declarations
+class WebAPIInterface;
 
 /**
  * Main JavaScript engine interface
@@ -63,6 +70,9 @@ private:
     bool initialized_;
     uint64_t execution_count_;
     
+    // ES6 default export registry for direct file execution
+    std::unordered_map<std::string, Value> default_exports_registry_;
+    
     // Performance tracking
     std::chrono::high_resolution_clock::time_point start_time_;
     size_t total_allocations_;
@@ -104,6 +114,10 @@ public:
     Context* get_global_context() const { return global_context_.get(); }
     Context* get_current_context() const;
     
+    // Web API interface management
+    void set_web_api_interface(WebAPIInterface* interface);
+    WebAPIInterface* get_web_api_interface() const;
+    
     // Memory management
     void collect_garbage();
     size_t get_heap_usage() const;
@@ -140,6 +154,11 @@ public:
 
     // Module system
     ModuleLoader* get_module_loader() { return module_loader_.get(); }
+    
+    // ES6 default export registry
+    void register_default_export(const std::string& filename, const Value& value);
+    Value get_default_export(const std::string& filename);
+    bool has_default_export(const std::string& filename);
 
     // Browser integration helpers
     void inject_dom(Object* document);
@@ -153,6 +172,8 @@ private:
     void setup_built_in_objects();
     void setup_built_in_functions();
     void setup_error_types();
+    void setup_minimal_globals();  // ULTRA FAST minimal setup
+    void setup_stellar_globals();  // 🌟 STELLAR VELOCITY setup
     // void setup_es6_features(); // Removed due to segfault
     
     // Execution helpers

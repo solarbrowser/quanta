@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "Symbol.h"
 #include "Context.h"
 #include <sstream>
@@ -108,6 +114,7 @@ Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
     
     std::string key = args[0].to_string();
     Symbol* symbol = for_key(key);
+    // Create a new reference to avoid ownership issues
     return Value(symbol);
 }
 

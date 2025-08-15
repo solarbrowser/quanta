@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "Async.h"
 #include "Context.h"
 #include "Symbol.h"
@@ -531,17 +537,35 @@ void EventLoop::stop() {
 
 void EventLoop::process_microtasks() {
     while (!microtasks_.empty()) {
-        auto task = microtasks_.front();
+        // Move the task to avoid dangling references
+        auto task = std::move(microtasks_.front());
         microtasks_.erase(microtasks_.begin());
-        task();
+        
+        // Execute the task with proper exception handling
+        try {
+            if (task) {
+                task();
+            }
+        } catch (...) {
+            // Continue processing other tasks even if one fails
+        }
     }
 }
 
 void EventLoop::process_macrotasks() {
     if (!macrotasks_.empty()) {
-        auto task = macrotasks_.front();
+        // Move the task to avoid dangling references
+        auto task = std::move(macrotasks_.front());
         macrotasks_.erase(macrotasks_.begin());
-        task();
+        
+        // Execute the task with proper exception handling
+        try {
+            if (task) {
+                task();
+            }
+        } catch (...) {
+            // Continue processing even if task fails
+        }
     }
 }
 

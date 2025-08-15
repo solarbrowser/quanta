@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_AST_H
 #define QUANTA_AST_H
 
@@ -63,6 +69,7 @@ public:
         BLOCK_STATEMENT,
         IF_STATEMENT,
         FOR_STATEMENT,
+        FOR_IN_STATEMENT,
         FOR_OF_STATEMENT,
         WHILE_STATEMENT,
         DO_WHILE_STATEMENT,
@@ -289,6 +296,7 @@ public:
         GREATER_THAN,   // >
         LESS_EQUAL,     // <=
         GREATER_EQUAL,  // >=
+        INSTANCEOF,     // instanceof
         
         // Logical
         LOGICAL_AND,    // &&
@@ -523,6 +531,7 @@ public:
 private:
     Value handle_array_method_call(Object* array, const std::string& method_name, Context& ctx);
     Value handle_string_method_call(const std::string& str, const std::string& method_name, Context& ctx);
+    Value handle_bigint_method_call(BigInt* bigint, const std::string& method_name, Context& ctx);
     Value handle_member_expression_call(Context& ctx);
 };
 
@@ -740,6 +749,29 @@ public:
     ASTNode* get_init() const { return init_.get(); }
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_update() const { return update_.get(); }
+    ASTNode* get_body() const { return body_.get(); }
+    
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * For...in loop statement (e.g., "for (const key in obj) { ... }")
+ */
+class ForInStatement : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> left_;     // variable declaration or identifier
+    std::unique_ptr<ASTNode> right_;    // object expression
+    std::unique_ptr<ASTNode> body_;     // loop body
+public:
+    ForInStatement(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
+                   std::unique_ptr<ASTNode> body, const Position& start, const Position& end)
+        : ASTNode(Type::FOR_IN_STATEMENT, start, end), 
+          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)) {}
+    
+    ASTNode* get_left() const { return left_.get(); }
+    ASTNode* get_right() const { return right_.get(); }
     ASTNode* get_body() const { return body_.get(); }
     
     Value evaluate(Context& ctx) override;

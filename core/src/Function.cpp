@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/Object.h"
 #include "../include/Context.h"
 #include "../../parser/include/AST.h"
@@ -338,6 +344,13 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Set up prototype chain
     if (prototype_) {
         new_object->set_prototype(prototype_);
+    }
+    
+    // Set up super constructor binding for inheritance
+    Value super_constructor_prop = get_property("__super_constructor__");
+    if (!super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        // Temporarily bind super constructor as __super__ in the context for constructor execution
+        ctx.create_binding("__super__", super_constructor_prop);
     }
     
     // Call function with 'this' bound to new object

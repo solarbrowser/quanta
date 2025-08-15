@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #pragma once
 
 #include "Value.h"
@@ -32,10 +38,14 @@ private:
     
 public:
     Iterator(NextFunction next_fn);
+    Iterator(); // Default constructor
     virtual ~Iterator() = default;
     
+    // Set the next function after construction
+    void set_next_function(NextFunction next_fn);
+    
     // Iterator protocol methods
-    IteratorResult next();
+    virtual IteratorResult next();
     
     // Iterator built-in methods
     static Value iterator_next(Context& ctx, const std::vector<Value>& args);
@@ -90,6 +100,12 @@ private:
 public:
     StringIterator(const std::string& str);
     
+    // Override the virtual next method
+    IteratorResult next() override;
+    
+    // Static method for JavaScript next function
+    static Value string_iterator_next_method(Context& ctx, const std::vector<Value>& args);
+    
 private:
     IteratorResult next_impl();
 };
@@ -114,6 +130,12 @@ private:
 public:
     MapIterator(class Map* map, Kind kind);
     
+    // Override the virtual next method
+    IteratorResult next() override;
+    
+    // Static method for JavaScript next function
+    static Value map_iterator_next_method(Context& ctx, const std::vector<Value>& args);
+    
 private:
     IteratorResult next_impl();
 };
@@ -136,6 +158,12 @@ private:
     
 public:
     SetIterator(class Set* set, Kind kind);
+    
+    // Override the virtual next method
+    IteratorResult next() override;
+    
+    // Static method for JavaScript next function
+    static Value set_iterator_next_method(Context& ctx, const std::vector<Value>& args);
     
 private:
     IteratorResult next_impl();

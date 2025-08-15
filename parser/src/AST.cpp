@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/AST.h"
 #include "../../core/include/Context.h"
 #include "../../core/include/Engine.h"
@@ -7,11 +13,16 @@
 #include "../../core/include/BigInt.h"
 #include "../../core/include/Promise.h"
 #include "../../core/include/WebAPI.h"
+#include "../../core/include/Iterator.h"
+#include "../../core/include/Symbol.h"
+#include "../../core/include/Generator.h"
+#include "../../core/include/ModuleLoader.h"
 #include <sstream>
 #include <iostream>
 #include <algorithm>
 #include <cctype>
 #include <iomanip>
+#include <set>
 
 namespace Quanta {
 
@@ -307,13 +318,10 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 
                 // Check if this is an accessor property (has getter/setter)
                 PropertyDescriptor desc = obj->get_property_descriptor(key);
-                std::cout << "DEBUG: BinaryExpression assignment to property " << key << " descriptor type: " << desc.get_type() << ", is_accessor: " << desc.is_accessor_descriptor() << ", has_setter: " << desc.has_setter() << std::endl;
                 if (desc.is_accessor_descriptor() && desc.has_setter()) {
-                    std::cout << "DEBUG: BinaryExpression detected accessor property assignment: " << key << std::endl;
                     
                     // Special handling for cookie since we need to call WebAPI directly
                     if (key == "cookie") {
-                        std::cout << "DEBUG: BinaryExpression calling cookie setter with value: " << result_value.to_string() << std::endl;
                         WebAPI::document_setCookie(ctx, {result_value});
                         return result_value;
                     }
@@ -386,6 +394,9 @@ Value BinaryExpression::evaluate(Context& ctx) {
         case Operator::GREATER_EQUAL:
             return Value(left_value.compare(right_value) >= 0);
             
+        case Operator::INSTANCEOF:
+            return Value(left_value.instanceof_check(right_value));
+            
         case Operator::BITWISE_AND:
             return left_value.bitwise_and(right_value);
         case Operator::BITWISE_OR:
@@ -437,6 +448,7 @@ std::string BinaryExpression::operator_to_string(Operator op) {
         case Operator::GREATER_THAN: return ">";
         case Operator::LESS_EQUAL: return "<=";
         case Operator::GREATER_EQUAL: return ">=";
+        case Operator::INSTANCEOF: return "instanceof";
         case Operator::LOGICAL_AND: return "&&";
         case Operator::LOGICAL_OR: return "||";
         case Operator::BITWISE_AND: return "&";
@@ -471,6 +483,7 @@ BinaryExpression::Operator BinaryExpression::token_type_to_operator(TokenType ty
         case TokenType::GREATER_THAN: return Operator::GREATER_THAN;
         case TokenType::LESS_EQUAL: return Operator::LESS_EQUAL;
         case TokenType::GREATER_EQUAL: return Operator::GREATER_EQUAL;
+        case TokenType::INSTANCEOF: return Operator::INSTANCEOF;
         case TokenType::LOGICAL_AND: return Operator::LOGICAL_AND;
         case TokenType::LOGICAL_OR: return Operator::LOGICAL_OR;
         case TokenType::BITWISE_AND: return Operator::BITWISE_AND;
@@ -498,7 +511,8 @@ int BinaryExpression::get_precedence(Operator op) {
         case Operator::LESS_THAN:
         case Operator::GREATER_THAN:
         case Operator::LESS_EQUAL:
-        case Operator::GREATER_EQUAL: return 8;
+        case Operator::GREATER_EQUAL:
+        case Operator::INSTANCEOF: return 8;
         case Operator::LEFT_SHIFT:
         case Operator::RIGHT_SHIFT:
         case Operator::UNSIGNED_RIGHT_SHIFT: return 9;
@@ -676,7 +690,6 @@ std::string UnaryExpression::operator_to_string(Operator op) {
 //=============================================================================
 
 Value AssignmentExpression::evaluate(Context& ctx) {
-    std::cout << "DEBUG: AssignmentExpression::evaluate called" << std::endl;
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
@@ -684,7 +697,6 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
-        std::cout << "DEBUG: Identifier assignment to: " << name << std::endl;
         
         switch (operator_) {
             case Operator::ASSIGN:
@@ -712,7 +724,6 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     
     // Handle member expression assignment (e.g., obj.prop = value, this.prop = value)
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-        std::cout << "DEBUG: Member expression assignment detected" << std::endl;
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
         
         // Evaluate the object
@@ -746,20 +757,16 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         
         // Check if this is an accessor property (has getter/setter)
         PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-        std::cout << "DEBUG: Property " << prop_name << " descriptor type: " << desc.get_type() << ", is_accessor: " << desc.is_accessor_descriptor() << ", has_setter: " << desc.has_setter() << std::endl;
         if (desc.is_accessor_descriptor() && desc.has_setter()) {
-            std::cout << "DEBUG: Detected accessor property assignment: " << prop_name << std::endl;
             
             // Special handling for cookie since we need to call WebAPI directly
             if (prop_name == "cookie") {
-                std::cout << "DEBUG: Calling cookie setter with value: " << right_value.to_string() << std::endl;
                 WebAPI::document_setCookie(ctx, {right_value});
                 return right_value;
             }
             
             // TODO: For other accessor properties, we would call the setter function here
             // For now, just handle cookie specially
-            std::cout << "DEBUG: Accessor property " << prop_name << " not handled yet" << std::endl;
         }
         
         // Set the property
@@ -827,8 +834,6 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
             Object* array_obj = source_value.as_object();
             
             for (size_t i = 0; i < targets_.size(); i++) {
-                // Use element access for arrays instead of string property access
-                Value element = array_obj->get_element(static_cast<uint32_t>(i));
                 const std::string& var_name = targets_[i]->get_name();
                 
                 // Skip elements with empty names (e.g., [a, , c])
@@ -836,23 +841,52 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
                     continue; // Skip this element
                 }
                 
-                // Check if element is undefined and we have a default value
-                if (element.is_undefined()) {
-                    // Look for a default value for this index
-                    for (const auto& default_val : default_values_) {
-                        if (default_val.index == i) {
-                            element = default_val.expr->evaluate(ctx);
-                            if (ctx.has_exception()) return Value();
-                            break;
+                // Handle rest pattern: ...rest
+                if (var_name.length() >= 3 && var_name.substr(0, 3) == "...") {
+                    std::string rest_name = var_name.substr(3); // Remove "..." prefix
+                    
+                    // Create new array for rest elements
+                    auto rest_array = std::make_unique<Object>(Object::ObjectType::Array);
+                    uint32_t rest_index = 0;
+                    
+                    // Collect remaining elements from current position
+                    for (size_t j = i; j < array_obj->get_length(); j++) {
+                        Value rest_element = array_obj->get_element(static_cast<uint32_t>(j));
+                        rest_array->set_element(rest_index++, rest_element);
+                    }
+                    
+                    rest_array->set_length(rest_index);
+                    
+                    // Create binding for rest array
+                    if (!ctx.has_binding(rest_name)) {
+                        ctx.create_binding(rest_name, Value(rest_array.release()), true);
+                    } else {
+                        ctx.set_binding(rest_name, Value(rest_array.release()));
+                    }
+                    
+                    break; // Rest element consumes all remaining elements
+                } else {
+                    // Regular element destructuring
+                    Value element = array_obj->get_element(static_cast<uint32_t>(i));
+                    
+                    // Check if element is undefined and we have a default value
+                    if (element.is_undefined()) {
+                        // Look for a default value for this index
+                        for (const auto& default_val : default_values_) {
+                            if (default_val.index == i) {
+                                element = default_val.expr->evaluate(ctx);
+                                if (ctx.has_exception()) return Value();
+                                break;
+                            }
                         }
                     }
-                }
-                
-                // Create binding if it doesn't exist, otherwise set it
-                if (!ctx.has_binding(var_name)) {
-                    ctx.create_binding(var_name, element, true);
-                } else {
-                    ctx.set_binding(var_name, element);
+                    
+                    // Create binding if it doesn't exist, otherwise set it
+                    if (!ctx.has_binding(var_name)) {
+                        ctx.create_binding(var_name, element, true);
+                    } else {
+                        ctx.set_binding(var_name, element);
+                    }
                 }
             }
         } else {
@@ -893,8 +927,42 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
     }
     
     // Then handle targets that don't have property mappings (simple cases)
+    std::set<std::string> extracted_props; // Track extracted properties for rest pattern
+    
+    // First, collect all extracted properties from mappings
+    for (const auto& mapping : property_mappings_) {
+        extracted_props.insert(mapping.property_name);
+    }
+    
     for (const auto& target : targets_) {
         std::string prop_name = target->get_name();
+        
+        // Handle object rest pattern: {...rest}
+        if (prop_name.length() >= 3 && prop_name.substr(0, 3) == "...") {
+            std::string rest_name = prop_name.substr(3); // Remove "..." prefix
+            
+            // Create new object for rest properties
+            auto rest_obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
+            
+            // Get all properties from source object
+            auto keys = obj->get_own_property_keys();
+            for (const auto& key : keys) {
+                // Skip properties that have been extracted
+                if (extracted_props.find(key) == extracted_props.end()) {
+                    Value prop_value = obj->get_property(key);
+                    rest_obj->set_property(key, prop_value);
+                }
+            }
+            
+            // Create binding for rest object
+            if (!ctx.has_binding(rest_name)) {
+                ctx.create_binding(rest_name, Value(rest_obj.release()), true);
+            } else {
+                ctx.set_binding(rest_name, Value(rest_obj.release()));
+            }
+            
+            continue; // Skip normal property handling for rest pattern
+        }
         
         // Skip if this target has a property mapping (already handled above)
         bool has_mapping = false;
@@ -907,6 +975,9 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         
         if (!has_mapping) {
             Value prop_value = obj->get_property(prop_name);
+            
+            // Track this property as extracted for rest patterns
+            extracted_props.insert(prop_name);
             
             // Create binding if it doesn't exist, otherwise set it
             if (!ctx.has_binding(prop_name)) {
@@ -970,10 +1041,13 @@ Value CallExpression::evaluate(Context& ctx) {
             // Handle super() constructor call directly with corruption protection
             Value parent_constructor = ctx.get_binding("__super__");
             
-            // Check for NaN-boxing corruption in parent constructor
-            if (parent_constructor.is_undefined() && parent_constructor.is_function()) {
-                // Silently handle NaN-boxing corruption - known issue in Value class
-                return Value(); // Return undefined safely
+            // Check if we have a valid super constructor binding
+            
+            // Handle NaN-boxing corruption cases safely
+            if ((parent_constructor.is_undefined() && parent_constructor.is_function()) || 
+                (parent_constructor.is_function() && parent_constructor.as_function() == nullptr)) {
+                // Return undefined safely for corrupted values to avoid crashes
+                return Value();
             }
             
             if (parent_constructor.is_function()) {
@@ -985,10 +1059,24 @@ Value CallExpression::evaluate(Context& ctx) {
                     arg_values.push_back(arg_value);
                 }
                 
-                // Call parent constructor with crash protection
+                // Call parent constructor with crash protection and proper 'this' binding
                 try {
                     Function* parent_func = parent_constructor.as_function();
-                    return parent_func->call(ctx, arg_values);
+                    if (!parent_func) {
+                        return Value();
+                    }
+                    
+                    // Get current 'this' binding from context
+                    Object* this_obj = ctx.get_this_binding();
+                    
+                    if (this_obj) {
+                        // Call parent constructor with current 'this' bound
+                        Value this_value(this_obj);
+                        return parent_func->call(ctx, arg_values, this_value);
+                    } else {
+                        // If no 'this' binding, call normally
+                        return parent_func->call(ctx, arg_values);
+                    }
                 } catch (...) {
                     // Silently handle any exceptions during super() call
                     return Value();
@@ -1031,7 +1119,6 @@ Value CallExpression::evaluate(Context& ctx) {
         Identifier* func_id = static_cast<Identifier*>(callee_.get());
         std::string func_name = func_id->get_name();
         
-        // TEMPORARILY DISABLE DIRECT SUPER() CALLS TO DEBUG
         if (false && func_name == "super") {
             // Find parent constructor by looking for __super__ binding in current context
             Value super_constructor = ctx.get_binding("__super__");
@@ -1392,6 +1479,8 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         
         return Value(result_array.release());
         
+    // Array.flat() is now properly implemented in Object.cpp
+        
     } else {
         std::cout << "Calling array method: " << method_name << "() -> [Method not fully implemented yet]" << std::endl;
         return Value(42.0); // Placeholder for other methods
@@ -1609,14 +1698,128 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         }
         return Value(""); // Out of bounds or no index
         
+    } else if (method_name == "charCodeAt") {
+        // Get character code at index
+        if (arguments_.size() > 0) {
+            Value index_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            int index = static_cast<int>(index_val.to_number());
+            if (index >= 0 && index < static_cast<int>(str.length())) {
+                return Value(static_cast<double>(static_cast<unsigned char>(str[index])));
+            }
+        }
+        return Value(std::numeric_limits<double>::quiet_NaN()); // Out of bounds returns NaN
+        
+    } else if (method_name == "padStart") {
+        // Pad string at start
+        if (arguments_.size() > 0) {
+            Value length_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            uint32_t target_length = static_cast<uint32_t>(length_val.to_number());
+            std::string pad_string = " ";
+            
+            if (arguments_.size() > 1) {
+                Value pad_val = arguments_[1]->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                pad_string = pad_val.to_string();
+            }
+            
+            if (target_length <= str.length()) {
+                return Value(str);
+            }
+            
+            uint32_t pad_length = target_length - str.length();
+            std::string padding = "";
+            
+            if (!pad_string.empty()) {
+                while (padding.length() < pad_length) {
+                    padding += pad_string;
+                }
+                padding = padding.substr(0, pad_length);
+            }
+            
+            return Value(padding + str);
+        }
+        return Value(str);
+        
+    } else if (method_name == "padEnd") {
+        // Pad string at end
+        if (arguments_.size() > 0) {
+            Value length_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            uint32_t target_length = static_cast<uint32_t>(length_val.to_number());
+            std::string pad_string = " ";
+            
+            if (arguments_.size() > 1) {
+                Value pad_val = arguments_[1]->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                pad_string = pad_val.to_string();
+            }
+            
+            if (target_length <= str.length()) {
+                return Value(str);
+            }
+            
+            uint32_t pad_length = target_length - str.length();
+            std::string padding = "";
+            
+            if (!pad_string.empty()) {
+                while (padding.length() < pad_length) {
+                    padding += pad_string;
+                }
+                padding = padding.substr(0, pad_length);
+            }
+            
+            return Value(str + padding);
+        }
+        return Value(str);
+        
+    } else if (method_name == "replaceAll") {
+        // Replace all occurrences
+        if (arguments_.size() > 1) {
+            Value search_val = arguments_[0]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            Value replace_val = arguments_[1]->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            std::string search_str = search_val.to_string();
+            std::string replace_str = replace_val.to_string();
+            
+            if (search_str.empty()) return Value(str);
+            
+            std::string result = str;
+            size_t pos = 0;
+            while ((pos = result.find(search_str, pos)) != std::string::npos) {
+                result.replace(pos, search_str.length(), replace_str);
+                pos += replace_str.length();
+            }
+            
+            return Value(result);
+        }
+        return Value(str);
+        
     } else {
         std::cout << "Calling string method: " << method_name << "() -> [Method not fully implemented yet]" << std::endl;
         return Value(42.0); // Placeholder for other methods
     }
 }
 
+Value CallExpression::handle_bigint_method_call(BigInt* bigint, const std::string& method_name, Context& ctx) {
+    if (method_name == "toString") {
+        // Return string representation of the BigInt
+        return Value(bigint->to_string());
+        
+    } else {
+        std::cout << "Calling BigInt method: " << method_name << "() -> [Method not fully implemented yet]" << std::endl;
+        return Value(); // Return undefined for unsupported methods
+    }
+}
+
 Value CallExpression::handle_member_expression_call(Context& ctx) {
-    // std::cout << "DEBUG: handle_member_expression_call - START" << std::endl;
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
     
     // Check if it's console.log
@@ -1651,18 +1854,14 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
     }
     
-    // std::cout << "DEBUG: handle_member_expression_call - after console.log check" << std::endl;
     
     // Handle general object method calls (obj.method())
     Value object_value = member->get_object()->evaluate(ctx);
-    // std::cout << "DEBUG: handle_member_expression_call - object_value is_function: " << object_value.is_function() << std::endl;
     if (ctx.has_exception()) {
-        // std::cout << "DEBUG: handle_member_expression_call - exception after object evaluation" << std::endl;
         return Value();
     }
     
     if (object_value.is_string()) {
-        // std::cout << "DEBUG: handle_member_expression_call - is_string branch" << std::endl;
         // Handle string method calls
         std::string str_value = object_value.to_string();
         
@@ -1684,8 +1883,29 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         return handle_string_method_call(str_value, method_name, ctx);
         
+    } else if (object_value.is_bigint()) {
+        // Handle BigInt method calls
+        BigInt* bigint_value = object_value.as_bigint();
+        
+        // Get the method name
+        std::string method_name;
+        if (member->is_computed()) {
+            Value key_value = member->get_property()->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            method_name = key_value.to_string();
+        } else {
+            if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* prop = static_cast<Identifier*>(member->get_property());
+                method_name = prop->get_name();
+            } else {
+                ctx.throw_exception(Value("Invalid method name"));
+                return Value();
+            }
+        }
+        
+        return handle_bigint_method_call(bigint_value, method_name, ctx);
+        
     } else if (object_value.is_number()) {
-        // std::cout << "DEBUG: handle_member_expression_call - is_number branch" << std::endl;
         // Handle number method calls using MemberExpression to get the function
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
@@ -1708,7 +1928,6 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
         
     } else if (object_value.is_boolean()) {
-        // std::cout << "DEBUG: handle_member_expression_call - is_boolean branch" << std::endl;
         // Handle boolean method calls using MemberExpression to get the function
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
@@ -1753,8 +1972,6 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         // Get the method function
         Value method_value = obj->get_property(method_name);
-        // std::cout << "DEBUG: handle_member_expression_call - method_name = " << method_name << std::endl;
-        // std::cout << "DEBUG: handle_member_expression_call - method_value.is_function() = " << method_value.is_function() << std::endl;
         if (method_value.is_function()) {
             // Evaluate arguments
             std::vector<Value> arg_values;
@@ -1764,7 +1981,6 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 arg_values.push_back(val);
             }
             
-            // std::cout << "DEBUG: handle_member_expression_call - calling method with " << arg_values.size() << " args" << std::endl;
             // Call the method with 'this' bound to the object
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -1775,7 +1991,6 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     }
     
     // If we reach here, it's an unsupported method call
-    // std::cout << "DEBUG: handle_member_expression_call - unsupported method call" << std::endl;
     ctx.throw_exception(Value("Unsupported method call"));
     return Value();
 }
@@ -1787,6 +2002,13 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
 Value MemberExpression::evaluate(Context& ctx) {
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
+    
+    // Check for null/undefined access - should throw TypeError
+    if (object_value.is_undefined() || object_value.is_null()) {
+        std::string type_name = object_value.is_undefined() ? "undefined" : "null";
+        ctx.throw_type_error("Cannot read property of " + type_name);
+        return Value();
+    }
     
     // Get property name first
     std::string prop_name;
@@ -1905,6 +2127,218 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value(slice_fn.release());
         }
         
+        if (prop_name == "split") {
+            auto split_fn = ObjectFactory::create_native_function("split",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    std::string separator = args.empty() ? "" : args[0].to_string();
+                    
+                    auto array = ObjectFactory::create_array();
+                    
+                    if (separator.empty()) {
+                        // Split into individual characters
+                        for (size_t i = 0; i < str_value.length(); ++i) {
+                            array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str_value[i])));
+                        }
+                        array->set_length(static_cast<uint32_t>(str_value.length()));
+                    } else {
+                        // Split by separator
+                        std::vector<std::string> parts;
+                        size_t start = 0;
+                        size_t pos = 0;
+                        
+                        while ((pos = str_value.find(separator, start)) != std::string::npos) {
+                            parts.push_back(str_value.substr(start, pos - start));
+                            start = pos + separator.length();
+                        }
+                        parts.push_back(str_value.substr(start)); // Last part
+                        
+                        for (size_t i = 0; i < parts.size(); ++i) {
+                            array->set_element(static_cast<uint32_t>(i), Value(parts[i]));
+                        }
+                        array->set_length(static_cast<uint32_t>(parts.size()));
+                    }
+                    
+                    return Value(array.release());
+                });
+            return Value(split_fn.release());
+        }
+        
+        if (prop_name == "replace") {
+            auto replace_fn = ObjectFactory::create_native_function("replace",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.size() < 2) return Value(str_value);
+                    
+                    std::string search = args[0].to_string();
+                    std::string replacement = args[1].to_string();
+                    
+                    std::string result = str_value;
+                    size_t pos = result.find(search);
+                    if (pos != std::string::npos) {
+                        result.replace(pos, search.length(), replacement);
+                    }
+                    
+                    return Value(result);
+                });
+            return Value(replace_fn.release());
+        }
+        
+        if (prop_name == "startsWith") {
+            auto starts_with_fn = ObjectFactory::create_native_function("startsWith",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value(false);
+                    std::string search = args[0].to_string();
+                    return Value(str_value.substr(0, search.length()) == search);
+                });
+            return Value(starts_with_fn.release());
+        }
+        
+        if (prop_name == "endsWith") {
+            auto ends_with_fn = ObjectFactory::create_native_function("endsWith",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value(false);
+                    std::string search = args[0].to_string();
+                    if (search.length() > str_value.length()) return Value(false);
+                    return Value(str_value.substr(str_value.length() - search.length()) == search);
+                });
+            return Value(ends_with_fn.release());
+        }
+        
+        if (prop_name == "includes") {
+            auto includes_fn = ObjectFactory::create_native_function("includes",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value(false);
+                    std::string search = args[0].to_string();
+                    return Value(str_value.find(search) != std::string::npos);
+                });
+            return Value(includes_fn.release());
+        }
+        
+        if (prop_name == "repeat") {
+            auto repeat_fn = ObjectFactory::create_native_function("repeat",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value("");
+                    int count = static_cast<int>(args[0].to_number());
+                    if (count <= 0) return Value("");
+                    
+                    std::string result;
+                    for (int i = 0; i < count; ++i) {
+                        result += str_value;
+                    }
+                    return Value(result);
+                });
+            return Value(repeat_fn.release());
+        }
+        
+        if (prop_name == "trim") {
+            auto trim_fn = ObjectFactory::create_native_function("trim",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    (void)args; // Suppress unused warning
+                    std::string result = str_value;
+                    // Trim leading whitespace
+                    result.erase(0, result.find_first_not_of(" \t\n\r"));
+                    // Trim trailing whitespace
+                    result.erase(result.find_last_not_of(" \t\n\r") + 1);
+                    return Value(result);
+                });
+            return Value(trim_fn.release());
+        }
+        
+        if (prop_name == "padStart") {
+            auto pad_start_fn = ObjectFactory::create_native_function("padStart",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value(str_value);
+                    
+                    int target_length = static_cast<int>(args[0].to_number());
+                    if (target_length <= static_cast<int>(str_value.length())) {
+                        return Value(str_value);
+                    }
+                    
+                    std::string pad_string = " ";
+                    if (args.size() > 1 && !args[1].is_undefined()) {
+                        pad_string = args[1].to_string();
+                    }
+                    if (pad_string.empty()) pad_string = " ";
+                    
+                    int pad_length = target_length - static_cast<int>(str_value.length());
+                    std::string result;
+                    
+                    while (static_cast<int>(result.length()) < pad_length) {
+                        if (static_cast<int>(result.length()) + static_cast<int>(pad_string.length()) <= pad_length) {
+                            result += pad_string;
+                        } else {
+                            result += pad_string.substr(0, pad_length - static_cast<int>(result.length()));
+                        }
+                    }
+                    
+                    return Value(result + str_value);
+                });
+            return Value(pad_start_fn.release());
+        }
+        
+        if (prop_name == "padEnd") {
+            auto pad_end_fn = ObjectFactory::create_native_function("padEnd",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    if (args.empty()) return Value(str_value);
+                    
+                    int target_length = static_cast<int>(args[0].to_number());
+                    if (target_length <= static_cast<int>(str_value.length())) {
+                        return Value(str_value);
+                    }
+                    
+                    std::string pad_string = " ";
+                    if (args.size() > 1 && !args[1].is_undefined()) {
+                        pad_string = args[1].to_string();
+                    }
+                    if (pad_string.empty()) pad_string = " ";
+                    
+                    int pad_length = target_length - static_cast<int>(str_value.length());
+                    std::string result;
+                    
+                    while (static_cast<int>(result.length()) < pad_length) {
+                        if (static_cast<int>(result.length()) + static_cast<int>(pad_string.length()) <= pad_length) {
+                            result += pad_string;
+                        } else {
+                            result += pad_string.substr(0, pad_length - static_cast<int>(result.length()));
+                        }
+                    }
+                    
+                    return Value(str_value + result);
+                });
+            return Value(pad_end_fn.release());
+        }
+        
+        // Handle Symbol.iterator property access for strings
+        if (computed_) {
+            Value prop_value = property_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            if (prop_value.is_symbol()) {
+                Symbol* prop_symbol = prop_value.as_symbol();
+                Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+                
+                if (iterator_symbol && prop_symbol->equals(iterator_symbol)) {
+                    // Return string iterator function
+                    auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
+                        [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                            (void)ctx; // Suppress unused warning
+                            (void)args; // Suppress unused warning
+                            auto iterator = std::make_unique<StringIterator>(str_value);
+                            return Value(iterator.release());
+                        });
+                    return Value(string_iterator_fn.release());
+                }
+            }
+        }
+        
         // Handle numeric indices
         if (computed_) {
             Value prop_value = property_->evaluate(ctx);
@@ -1966,13 +2400,11 @@ Value MemberExpression::evaluate(Context& ctx) {
     // 🚀 BOOLEAN PRIMITIVE BOXING
     else if (object_value.is_boolean()) {
         bool bool_value = object_value.as_boolean();  // Use as_boolean() instead of to_boolean()
-        // std::cout << "DEBUG: MemberExpression boolean boxing for " << prop_name << " - bool_value=" << bool_value << std::endl;
         
         if (prop_name == "toString") {
             auto to_string_fn = ObjectFactory::create_native_function("toString",
                 [bool_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; // Suppress unused warning
-                    // std::cout << "DEBUG: LAMBDA toString called with bool_value=" << bool_value << std::endl;
                     return Value(bool_value ? "true" : "false");
                 });
             return Value(to_string_fn.release());
@@ -2012,9 +2444,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     }
                 }
                 
-                // std::cout << "DEBUG: MemberExpression accessing '" << prop_name << "' on object type " << (int)obj->get_type() << std::endl;
                 Value result = obj->get_property(prop_name);
-                // std::cout << "DEBUG: MemberExpression got result: " << result.to_string() << std::endl;
                 return result;
             }
         }
@@ -2107,12 +2537,10 @@ std::unique_ptr<ASTNode> ExpressionStatement::clone() const {
 Value Program::evaluate(Context& ctx) {
     Value last_value;
     
-    // std::cout << "DEBUG: Program::evaluate called with " << statements_.size() << " statements" << std::endl;
     
     // HOISTING FIX: First pass - process function declarations
     for (const auto& statement : statements_) {
         if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-            // std::cout << "DEBUG: Processing function declaration in hoisting" << std::endl;
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
                 return Value();
@@ -2123,7 +2551,6 @@ Value Program::evaluate(Context& ctx) {
     // Second pass - process all other statements
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-            // std::cout << "DEBUG: Processing statement type: " << static_cast<int>(statement->get_type()) << std::endl;
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
                 return Value();
@@ -2364,13 +2791,20 @@ Value ForStatement::evaluate(Context& ctx) {
     
     // Safety counter to prevent infinite loops and memory exhaustion
     int safety_counter = 0;
-    const int max_iterations = 100000;  // Reduced limit to prevent memory issues
+    const int max_iterations = 1000000;  // Increased to 1M for LUDICROUS SPEED
     
     while (true) {
-        // Safety check
+        // Safety check - continue with warning instead of stopping
         if (++safety_counter > max_iterations) {
-            ctx.throw_exception(Value(std::string("For-loop exceeded maximum iterations (100000)")));
-            return Value();
+            // Just warn and continue for LUDICROUS SPEED performance testing
+            static bool warned = false;
+            if (!warned) {
+                std::cout << "⚠️ LUDICROUS SPEED: For-loop exceeded " << max_iterations 
+                         << " iterations, continuing..." << std::endl;
+                warned = true;
+            }
+            // Reset counter to continue processing
+            safety_counter = 0;
         }
         
         // Test condition
@@ -2441,16 +2875,237 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 // ForOfStatement Implementation
 //=============================================================================
 
-Value ForOfStatement::evaluate(Context& ctx) {
-    // std::cout << "DEBUG: ForOfStatement::evaluate called!" << std::endl;
-    // Evaluate the iterable expression safely
-    Value iterable = right_->evaluate(ctx);
-    // std::cout << "DEBUG: ForOfStatement iterable type: " << iterable.to_string() << std::endl;
+Value ForInStatement::evaluate(Context& ctx) {
+    // Evaluate the object expression
+    Value object = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
-    // Handle array iteration only (safe implementation)
-    if (iterable.is_object()) {
-        Object* obj = iterable.as_object();
+    // Handle object property iteration
+    if (object.is_object()) {
+        Object* obj = object.as_object();
+        
+        // Get variable name for loop iteration
+        std::string var_name;
+        
+        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
+            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
+            if (var_decl->declaration_count() > 0) {
+                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
+                var_name = declarator->get_id()->get_name();
+            }
+        } else if (left_->get_type() == Type::IDENTIFIER) {
+            Identifier* id = static_cast<Identifier*>(left_.get());
+            var_name = id->get_name();
+        }
+        
+        if (var_name.empty()) {
+            ctx.throw_exception(Value("For...in: Invalid loop variable"));
+            return Value();
+        }
+        
+        // Get object's own property keys
+        auto keys = obj->get_own_property_keys();
+        
+        // Safety limit for properties
+        if (keys.size() > 50) {
+            ctx.throw_exception(Value("For...in: Object has too many properties (>50)"));
+            return Value();
+        }
+        
+        // Iterate over property keys
+        uint32_t iteration_count = 0;
+        const uint32_t MAX_ITERATIONS = 50;
+        
+        for (const auto& key : keys) {
+            if (iteration_count >= MAX_ITERATIONS) break;
+            iteration_count++;
+            
+            // Set loop variable to current property key
+            if (ctx.has_binding(var_name)) {
+                // Update existing binding
+                ctx.set_binding(var_name, Value(key));
+            } else {
+                // Create the binding once at first iteration
+                ctx.create_binding(var_name, Value(key), true); // Always mutable for loop variables
+            }
+            
+            // Execute loop body
+            Value result = body_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            
+            // Handle break/continue using Context methods
+            if (ctx.has_break()) {
+                ctx.clear_break_continue();
+                break;
+            }
+            if (ctx.has_continue()) {
+                ctx.clear_break_continue();
+                continue;
+            }
+            
+            // Handle return statements
+            if (ctx.has_return_value()) {
+                return ctx.get_return_value();
+            }
+        }
+        
+        return Value();
+    } else {
+        ctx.throw_exception(Value("For...in: Cannot iterate over non-object"));
+        return Value();
+    }
+}
+
+std::string ForInStatement::to_string() const {
+    return "for (" + left_->to_string() + " in " + right_->to_string() + ") " + body_->to_string();
+}
+
+std::unique_ptr<ASTNode> ForInStatement::clone() const {
+    return std::make_unique<ForInStatement>(left_->clone(), right_->clone(), body_->clone(), start_, end_);
+}
+
+Value ForOfStatement::evaluate(Context& ctx) {
+    // Evaluate the iterable expression safely
+    Value iterable = right_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
+    
+    // Handle object iteration (arrays, Maps, Sets, Strings with Symbol.iterator) first
+    if (iterable.is_object() || iterable.is_string()) {
+        Object* obj = nullptr;
+        
+        // For strings, we need to box them temporarily to access Symbol.iterator
+        std::unique_ptr<Object> boxed_string = nullptr;
+        if (iterable.is_string()) {
+            // Create a temporary string object wrapper for Symbol.iterator access
+            boxed_string = std::make_unique<Object>();
+            boxed_string->set_property("length", Value(static_cast<double>(iterable.to_string().length())));
+            
+            // Add Symbol.iterator method for this string
+            Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iterator_symbol) {
+                std::string str_value = iterable.to_string();
+                auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
+                    [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                        (void)ctx; (void)args;
+                        auto iterator = std::make_unique<StringIterator>(str_value);
+                        return Value(iterator.release());
+                    });
+                boxed_string->set_property(iterator_symbol->to_string(), Value(string_iterator_fn.release()));
+            }
+            obj = boxed_string.get();
+        } else {
+            obj = iterable.as_object();
+        }
+        
+        // Check for Symbol.iterator
+        Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+        if (iterator_symbol && obj && obj->has_property(iterator_symbol->to_string())) {
+            // Get the iterator method
+            Value iterator_method = obj->get_property(iterator_symbol->to_string());
+            if (iterator_method.is_function()) {
+                Function* iter_fn = iterator_method.as_function();
+                Value iterator_obj = iter_fn->call(ctx, {}, iterable);
+                
+                if (iterator_obj.is_object()) {
+                    Object* iterator = iterator_obj.as_object();
+                    Value next_method = iterator->get_property("next");
+                    
+                    if (next_method.is_function()) {
+                        Function* next_fn = next_method.as_function();
+                        
+                        // Get variable name for loop iteration
+                        std::string var_name;
+                        VariableDeclarator::Kind var_kind = VariableDeclarator::Kind::LET;
+                        
+                        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
+                            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
+                            if (var_decl->declaration_count() > 0) {
+                                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
+                                var_name = declarator->get_id()->get_name();
+                                var_kind = declarator->get_kind();
+                            }
+                        } else if (left_->get_type() == Type::IDENTIFIER) {
+                            Identifier* id = static_cast<Identifier*>(left_.get());
+                            var_name = id->get_name();
+                        }
+                        
+                        if (var_name.empty()) {
+                            ctx.throw_exception(Value("For...of: Invalid loop variable"));
+                            return Value();
+                        }
+                        
+                        Context* loop_ctx = &ctx;
+                        uint32_t iteration_count = 0;
+                        const uint32_t MAX_ITERATIONS = 50;
+                        
+                        // Iterate using iterator protocol
+                        while (iteration_count < MAX_ITERATIONS) {
+                            iteration_count++;
+                            
+                            // Call next method via function call - the iterator implementation is now fixed
+                            Value result;
+                            if (iterator_obj.is_object()) {
+                                Object* iter_obj = iterator_obj.as_object();
+                                Value next_method = iter_obj->get_property("next");
+                                if (next_method.is_function()) {
+                                    Function* next_fn_obj = next_method.as_function();
+                                    result = next_fn_obj->call(ctx, {}, iterator_obj);
+                                } else {
+                                    ctx.throw_exception(Value("Iterator object has no next method"));
+                                    return Value();
+                                }
+                            } else {
+                                ctx.throw_exception(Value("Iterator is not an object"));
+                                return Value();
+                            }
+                            
+                            if (ctx.has_exception()) return Value();
+                            
+                            if (result.is_object()) {
+                                Object* result_obj = result.as_object();
+                                Value done = result_obj->get_property("done");
+                                
+                                if (done.is_boolean() && done.to_boolean()) {
+                                    break; // Iterator is done
+                                }
+                                
+                                Value value = result_obj->get_property("value");
+                                
+                                // Set loop variable
+                                if (loop_ctx->has_binding(var_name)) {
+                                    loop_ctx->set_binding(var_name, value);
+                                } else {
+                                    bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
+                                    loop_ctx->create_binding(var_name, value, is_mutable);
+                                }
+                                
+                                // Execute body
+                                body_->evaluate(*loop_ctx);
+                                if (loop_ctx->has_exception()) {
+                                    return Value();
+                                }
+                                
+                                // Handle control flow
+                                if (loop_ctx->has_break()) break;
+                                if (loop_ctx->has_continue()) continue;
+                                if (loop_ctx->has_return_value()) {
+                                    return Value();
+                                }
+                            }
+                        }
+                        
+                        if (iteration_count >= MAX_ITERATIONS) {
+                            ctx.throw_exception(Value("For...of loop exceeded maximum iterations (50)"));
+                            return Value();
+                        }
+                        
+                        return Value();
+                    }
+                }
+            }
+        }
+        
+        // Fallback to array iteration for backwards compatibility
         if (obj->get_type() == Object::ObjectType::Array) {
             uint32_t length = obj->get_length();
             
@@ -2492,7 +3147,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 iteration_count++;
                 
                 Value element = obj->get_element(i);
-                // std::cout << "DEBUG: ForOfStatement loop iteration " << i << ", element = " << element.to_string() << std::endl;
                 
                 // Set loop variable in the current context - simplified approach to avoid memory leaks
                 // For for-of loops, just update the variable value each iteration instead of creating new bindings
@@ -2555,14 +3209,19 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 Value WhileStatement::evaluate(Context& ctx) {
     // Safety counter to prevent infinite loops and memory issues
     int safety_counter = 0;
-    const int max_iterations = 100; // Reduced to be more conservative
+    const int max_iterations = 1000000; // LUDICROUS SPEED: 1M iterations
     
     try {
         while (true) {
-            // Safety check to prevent infinite loops and memory blowup
+            // Safety check with warning instead of stopping
             if (++safety_counter > max_iterations) {
-                ctx.throw_exception(Value("While-loop exceeded maximum iterations (100) - preventing memory overflow"));
-                return Value();
+                static bool warned = false;
+                if (!warned) {
+                    std::cout << "⚠️ LUDICROUS SPEED: Loop exceeded " << max_iterations 
+                             << " iterations, continuing..." << std::endl;
+                    warned = true;
+                }
+                safety_counter = 0; // Reset and continue
             }
             
             // Evaluate test condition in current context
@@ -2620,14 +3279,19 @@ std::unique_ptr<ASTNode> WhileStatement::clone() const {
 Value DoWhileStatement::evaluate(Context& ctx) {
     // Safety counter to prevent infinite loops and memory issues
     int safety_counter = 0;
-    const int max_iterations = 100; // Same limit as while loop
+    const int max_iterations = 1000000; // LUDICROUS SPEED: 1M iterations
     
     try {
         do {
-            // Safety check to prevent infinite loops and memory blowup
+            // Safety check with warning instead of stopping
             if (++safety_counter > max_iterations) {
-                ctx.throw_exception(Value("Do-while-loop exceeded maximum iterations (100) - preventing memory overflow"));
-                return Value();
+                static bool warned = false;
+                if (!warned) {
+                    std::cout << "⚠️ LUDICROUS SPEED: Loop exceeded " << max_iterations 
+                             << " iterations, continuing..." << std::endl;
+                    warned = true;
+                }
+                safety_counter = 0; // Reset and continue
             }
             
             // Execute body first (this is the key difference from while loop)
@@ -2699,9 +3363,16 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
     }
     
-    // Create Function object - check if async
+    // Create Function object - check if generator, async, or regular
     std::unique_ptr<Function> function_obj;
-    if (is_async_) {
+    if (is_generator_) {
+        // Convert Parameter objects to parameter names for GeneratorFunction
+        std::vector<std::string> param_names;
+        for (const auto& param : param_clones) {
+            param_names.push_back(param->get_name()->get_name());
+        }
+        function_obj = std::make_unique<GeneratorFunction>(function_name, param_names, body_->clone(), &ctx);
+    } else if (is_async_) {
         // Convert Parameter objects to parameter names for AsyncFunction
         std::vector<std::string> param_names;
         for (const auto& param : param_clones) {
@@ -2717,13 +3388,6 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         );
     }
     
-    // Mark function as generator if needed  
-    if (is_generator_ && function_obj) {
-        function_obj->set_property("__generator", Value(true));
-    }
-    
-    // DEBUG: Print function creation info
-    // std::cout << "DEBUG: FunctionDeclaration::evaluate called for '" << function_name << "'" << std::endl;
     
     // CLOSURE FIX: Capture current context bindings in function
     if (function_obj) {
@@ -2741,11 +3405,9 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     
     // Wrap in Value - ensure Function type is preserved
     Function* func_ptr = function_obj.release();
-    // std::cout << "DEBUG: Function object type before Value creation: " << (int)func_ptr->get_type() << std::endl;
     Value function_value(func_ptr);
     
     // Store function in context (removed problematic debug)
-    // std::cout << "DEBUG: About to store function in context" << std::endl;
     
     // Create binding in current context
     if (!ctx.create_binding(function_name, function_value, true)) {
@@ -2753,8 +3415,6 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         return Value();
     }
     
-    // DEBUG: Check function value after storing
-    // std::cout << "DEBUG: Function stored in context" << std::endl;
     
     // Skip debug retrieval for now to avoid hanging
     
@@ -2871,15 +3531,21 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         &ctx
     );
     
-    // Set up prototype chain
+    // Set up prototype chain - FIXED MEMORY MANAGEMENT
     Object* proto_ptr = prototype.get();
-    constructor_fn->set_prototype(proto_ptr);
-    constructor_fn->set_property("prototype", Value(proto_ptr));
-    constructor_fn->set_property("name", Value(class_name));
-    proto_ptr->set_property("constructor", Value(constructor_fn.get()));
-    
-    // Transfer ownership of prototype to constructor
-    prototype.release();
+    if (constructor_fn.get() && proto_ptr) {
+        constructor_fn->set_prototype(proto_ptr);
+        constructor_fn->set_property("prototype", Value(proto_ptr));
+        constructor_fn->set_property("name", Value(class_name));
+        proto_ptr->set_property("constructor", Value(constructor_fn.get()));
+        
+        // Transfer ownership of prototype to constructor
+        prototype.release();
+    } else {
+        // If setup failed, don't release ownership
+        ctx.throw_exception(Value("Class setup failed: null constructor or prototype"));
+        return Value();
+    }
     
     // Handle static methods
     if (body_) {
@@ -2909,21 +3575,30 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
     
-    // Handle inheritance
+    // Handle inheritance - FIXED MEMORY SAFETY
     if (has_superclass()) {
         std::string super_name = superclass_->get_name();
-        Value super_constructor = ctx.get_binding(super_name);
-        if (super_constructor.is_object()) {
-            Function* super_fn = static_cast<Function*>(super_constructor.as_object());
-            constructor_fn->set_property("__proto__", Value(super_fn));
+        
+        if (ctx.has_binding(super_name)) {
+            Value super_constructor = ctx.get_binding(super_name);
             
-            // Store super constructor reference for super() calls
-            constructor_fn->set_property("__super_constructor__", Value(super_fn));
-            
-            // Set up prototype chain for inheritance
-            Object* super_prototype = super_fn->get_prototype();
-            if (super_prototype) {
-                proto_ptr->set_property("__proto__", Value(super_prototype));
+            if (super_constructor.is_object_like() && super_constructor.as_object()) {
+                Object* super_obj = super_constructor.as_object();
+                if (super_obj->is_function()) {
+                    Function* super_fn = static_cast<Function*>(super_obj);
+                    
+                    // Safe prototype chain setup
+                    if (super_fn && constructor_fn.get()) {
+                        constructor_fn->set_property("__proto__", Value(super_fn));
+                        constructor_fn->set_property("__super_constructor__", Value(super_fn));
+                        
+                        // Set up prototype chain for inheritance
+                        Object* super_prototype = super_fn->get_prototype();
+                        if (super_prototype && proto_ptr) {
+                            proto_ptr->set_property("__proto__", Value(super_prototype));
+                        }
+                    }
+                }
             }
         }
     }
@@ -2934,9 +3609,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     // Get the constructor function before releasing ownership
     Function* constructor_ptr = constructor_fn.get();
     
-    // Release ownership to prevent deletion
+    // Release ownership to prevent deletion - FIXED
     constructor_fn.release();
-    prototype.release();
+    // prototype already released above if successful
     
     return Value(constructor_ptr);
 }
@@ -3232,9 +3907,23 @@ Value YieldExpression::evaluate(Context& ctx) {
         if (ctx.has_exception()) return Value();
     }
     
-    // For now, just return the yielded value
-    // In a full implementation, this would suspend the generator
-    return yield_value;
+    // Get the current generator to check if we should yield
+    Generator* current_gen = Generator::get_current_generator();
+    if (!current_gen) {
+        // Not in a generator context, return the value
+        return yield_value;
+    }
+    
+    // Increment the yield counter and check if this is our target yield
+    size_t yield_index = Generator::increment_yield_counter();
+    
+    // Only yield if this is the target yield point
+    if (yield_index == current_gen->target_yield_index_) {
+        throw YieldException(yield_value);
+    }
+    
+    // Skip this yield and return the last sent value
+    return current_gen->last_value_;
 }
 
 std::string YieldExpression::to_string() const {
@@ -3526,7 +4215,6 @@ Value ArrayLiteral::evaluate(Context& ctx) {
                 return Value();
             }
             
-            // Debug: Check initial length
             uint32_t initial_length = this_obj->get_length();
             
             // Push all arguments to the array
@@ -3534,7 +4222,6 @@ Value ArrayLiteral::evaluate(Context& ctx) {
                 this_obj->push(arg);
             }
             
-            // Debug: Check final length
             uint32_t final_length = this_obj->get_length();
             
             // Return new length
@@ -4158,33 +4845,81 @@ std::unique_ptr<ASTNode> ImportSpecifier::clone() const {
 
 // ImportStatement evaluation
 Value ImportStatement::evaluate(Context& ctx) {
-    // For now, just create a simple mock import that doesn't fail
-    // In a full implementation, this would load the actual module
+    // Get the module loader from the engine
+    Engine* engine = ctx.get_engine();
+    if (!engine) {
+        ctx.throw_exception(Value("No engine available for module loading"));
+        return Value();
+    }
     
-    // Create a simple object to represent the imported module
-    auto module_obj = new Object();
-    module_obj->set_property("loaded", Value(true));
+    ModuleLoader* module_loader = engine->get_module_loader();
+    if (!module_loader) {
+        ctx.throw_exception(Value("ModuleLoader not available"));
+        return Value();
+    }
     
-    // For named imports, create bindings for imported names
-    if (!is_namespace_import_ && !is_default_import_) {
-        for (const auto& specifier : specifiers_) {
-            // Create a mock binding for each imported name
-            std::string local_name = specifier->get_local_name();
-            ctx.create_binding(local_name, Value("imported_" + local_name));
+    try {
+        std::cout << "ImportStatement::evaluate() - is_namespace_import_: " << is_namespace_import_ << ", is_default_import_: " << is_default_import_ << ", specifiers count: " << specifiers_.size() << std::endl;
+        
+        // For named imports: import { name1, name2 } from "module"
+        if (!is_namespace_import_ && !is_default_import_) {
+            for (const auto& specifier : specifiers_) {
+                std::string imported_name = specifier->get_imported_name();
+                std::string local_name = specifier->get_local_name();
+                
+                // Import the specific named export
+                Value imported_value = module_loader->import_from_module(
+                    module_source_, imported_name, ""
+                );
+                
+                std::cout << "ImportStatement: Binding '" << local_name << "' = " << (imported_value.is_function() ? "function" : (imported_value.is_undefined() ? "undefined" : "other")) << std::endl;
+                
+                // Create binding in current context
+                bool binding_success = ctx.create_binding(local_name, imported_value);
+                std::cout << "ImportStatement: create_binding('" << local_name << "') " << (binding_success ? "succeeded" : "failed") << std::endl;
+            }
         }
+        
+        // For namespace imports: import * as name from "module"
+        if (is_namespace_import_) {
+            Value namespace_obj = module_loader->import_namespace_from_module(
+                module_source_, ""
+            );
+            ctx.create_binding(namespace_alias_, namespace_obj);
+        }
+        
+        // For default imports: import name from "module"
+        if (is_default_import_) {
+            Value default_value;
+            
+            try {
+                default_value = module_loader->import_default_from_module(
+                    module_source_, ""
+                );
+            } catch (...) {
+                // Module loading failed, default_value remains undefined
+                default_value = Value(); // undefined
+            }
+            
+            // Fallback: Always check engine registry if module loader didn't work
+            if (default_value.is_undefined()) {
+                if (engine->has_default_export(module_source_)) {
+                    default_value = engine->get_default_export(module_source_);
+                } else if (engine->has_default_export("")) {
+                    // For direct execution, use empty string key
+                    default_value = engine->get_default_export("");
+                }
+            }
+            
+            ctx.create_binding(default_alias_, default_value);
+        }
+        
+        return Value();
+        
+    } catch (const std::exception& e) {
+        ctx.throw_exception(Value("Module import failed: " + std::string(e.what())));
+        return Value();
     }
-    
-    // For namespace imports
-    if (is_namespace_import_) {
-        ctx.create_binding(namespace_alias_, Value(module_obj));
-    }
-    
-    // For default imports
-    if (is_default_import_) {
-        ctx.create_binding(default_alias_, Value("default_import"));
-    }
-    
-    return Value();
 }
 
 std::string ImportStatement::to_string() const {
@@ -4254,6 +4989,13 @@ Value ExportStatement::evaluate(Context& ctx) {
     if (!exports_value.is_object()) {
         exports_obj = new Object();
         ctx.create_binding("exports", Value(exports_obj), true);
+        
+        // Also create in lexical environment to make accessible via exports identifier
+        // This is needed for direct execution (non-module context)
+        Environment* lexical_env = ctx.get_lexical_environment();
+        if (lexical_env) {
+            lexical_env->create_binding("exports", Value(exports_obj), true);
+        }
     } else {
         exports_obj = exports_value.as_object();
     }
@@ -4263,6 +5005,13 @@ Value ExportStatement::evaluate(Context& ctx) {
         Value default_value = default_export_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
         exports_obj->set_property("default", default_value);
+        
+        // Also register in engine's default export registry for direct file execution
+        Engine* engine = ctx.get_engine();
+        if (engine) {
+            // Use current filename or a placeholder - for now use empty string
+            engine->register_default_export("", default_value);
+        }
     }
     
     // Handle declaration export (export function name() {})
@@ -4380,6 +5129,9 @@ Value RegexLiteral::evaluate(Context& ctx) {
     try {
         // Create an Object to represent the RegExp
         auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
+        
+        // Add the instanceof marker property
+        obj->set_property("_isRegExp", Value(true));
         
         // Store the pattern and flags as regular properties
         obj->set_property("__pattern__", Value(pattern_));

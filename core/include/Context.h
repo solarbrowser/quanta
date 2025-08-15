@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_CONTEXT_H
 #define QUANTA_CONTEXT_H
 
@@ -16,6 +22,7 @@ class Function;
 class StackFrame;
 class Environment;
 class Error;
+class WebAPIInterface;
 
 /**
  * JavaScript execution context
@@ -77,6 +84,9 @@ private:
     
     // Engine reference
     Engine* engine_;
+    
+    // Web API interface for external implementations
+    WebAPIInterface* web_api_interface_;
     
     static uint32_t next_context_id_;
 
@@ -169,12 +179,17 @@ public:
 
     // Memory management
     void mark_references() const;
+    
+    // Web API interface management
+    void set_web_api_interface(WebAPIInterface* interface) { web_api_interface_ = interface; }
+    WebAPIInterface* get_web_api_interface() const { return web_api_interface_; }
+    bool has_web_api(const std::string& name) const;
+    Value call_web_api(const std::string& name, const std::vector<Value>& args);
 
 private:
     void initialize_global_context();
     void initialize_built_ins();
     void setup_global_bindings();
-    void setup_web_apis();
 };
 
 /**

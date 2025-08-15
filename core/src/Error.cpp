@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/Error.h"
 #include <sstream>
 #include <iostream>
@@ -34,6 +40,7 @@ void Error::initialize_properties() {
     if (!stack_trace_.empty()) {
         set_property("stack", Value(stack_trace_));
     }
+    
     
     if (line_number_ > 0) {
         set_property("lineNumber", Value(static_cast<double>(line_number_)));

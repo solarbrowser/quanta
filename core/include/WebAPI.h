@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_WEBAPI_H
 #define QUANTA_WEBAPI_H
 
@@ -10,6 +16,11 @@
 #include <memory>
 
 namespace Quanta {
+
+// Forward declarations
+struct CanvasState;
+struct CairoCanvasState;
+struct OpenGLWebGLState;
 
 /**
  * Web API implementations
@@ -75,9 +86,12 @@ public:
     
     // Basic DOM API
     static Value document_getElementById(Context& ctx, const std::vector<Value>& args);
+    static Value document_getBody(Context& ctx, const std::vector<Value>& args);
     static Value document_createElement(Context& ctx, const std::vector<Value>& args);
     static Value document_querySelector(Context& ctx, const std::vector<Value>& args);
     static Value document_querySelectorAll(Context& ctx, const std::vector<Value>& args);
+    static Value document_getElementsByTagName(Context& ctx, const std::vector<Value>& args);
+    static Value document_getElementsByClassName(Context& ctx, const std::vector<Value>& args);
     static Value create_dom_element(const std::string& tagName, const std::string& id);
     
     // Window API
@@ -126,18 +140,6 @@ public:
     static Value crypto_subtle_sign(Context& ctx, const std::vector<Value>& args);
     static Value crypto_subtle_verify(Context& ctx, const std::vector<Value>& args);
     
-    // Complete File and Blob APIs
-    static Value File_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value Blob_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value Blob_slice(Context& ctx, const std::vector<Value>& args);
-    static Value Blob_stream(Context& ctx, const std::vector<Value>& args);
-    static Value Blob_text(Context& ctx, const std::vector<Value>& args);
-    static Value Blob_arrayBuffer(Context& ctx, const std::vector<Value>& args);
-    static Value FileReader_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value FileReader_readAsText(Context& ctx, const std::vector<Value>& args);
-    static Value FileReader_readAsDataURL(Context& ctx, const std::vector<Value>& args);
-    static Value FileReader_readAsArrayBuffer(Context& ctx, const std::vector<Value>& args);
-    static Value FileReader_readAsBinaryString(Context& ctx, const std::vector<Value>& args);
     static Value FormData_constructor(Context& ctx, const std::vector<Value>& args);
     static Value FormData_append(Context& ctx, const std::vector<Value>& args);
     static Value FormData_delete(Context& ctx, const std::vector<Value>& args);
@@ -154,18 +156,6 @@ public:
     static Value MediaStream_constructor(Context& ctx, const std::vector<Value>& args);
     static Value MediaStream_getTracks(Context& ctx, const std::vector<Value>& args);
     static Value MediaStream_getAudioTracks(Context& ctx, const std::vector<Value>& args);
-    static Value MediaStream_getVideoTracks(Context& ctx, const std::vector<Value>& args);
-    static Value MediaStream_addTrack(Context& ctx, const std::vector<Value>& args);
-    static Value MediaStream_removeTrack(Context& ctx, const std::vector<Value>& args);
-    static Value MediaTrack_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_constructor(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_createOffer(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_createAnswer(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_setLocalDescription(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_setRemoteDescription(Context& ctx, const std::vector<Value>& args);
-    static Value RTCPeerConnection_addIceCandidate(Context& ctx, const std::vector<Value>& args);
-    static Value navigator_mediaDevices_getUserMedia(Context& ctx, const std::vector<Value>& args);
-    static Value navigator_mediaDevices_enumerateDevices(Context& ctx, const std::vector<Value>& args);
     static Value media_element_play(Context& ctx, const std::vector<Value>& args);
     static Value media_element_pause(Context& ctx, const std::vector<Value>& args);
     static Value media_element_load(Context& ctx, const std::vector<Value>& args);
@@ -231,8 +221,29 @@ public:
     static Value battery_dischargingTime(Context& ctx, const std::vector<Value>& args);
     static Value battery_level(Context& ctx, const std::vector<Value>& args);
     
+    // Network Information API
+    static Value navigator_connection_type(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_connection_effectiveType(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_connection_downlink(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_connection_uplink(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_connection_rtt(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_connection_saveData(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_onLine(Context& ctx, const std::vector<Value>& args);
+    
     // Vibration API
     static Value navigator_vibrate(Context& ctx, const std::vector<Value>& args);
+    
+    // Device Orientation API
+    static Value window_addEventListener_deviceorientation(Context& ctx, const std::vector<Value>& args);
+    static Value window_addEventListener_devicemotion(Context& ctx, const std::vector<Value>& args);
+    static Value deviceOrientationEvent_alpha(Context& ctx, const std::vector<Value>& args);
+    static Value deviceOrientationEvent_beta(Context& ctx, const std::vector<Value>& args);
+    static Value deviceOrientationEvent_gamma(Context& ctx, const std::vector<Value>& args);
+    static Value deviceOrientationEvent_absolute(Context& ctx, const std::vector<Value>& args);
+    static Value deviceMotionEvent_acceleration(Context& ctx, const std::vector<Value>& args);
+    static Value deviceMotionEvent_accelerationIncludingGravity(Context& ctx, const std::vector<Value>& args);
+    static Value deviceMotionEvent_rotationRate(Context& ctx, const std::vector<Value>& args);
+    static Value deviceMotionEvent_interval(Context& ctx, const std::vector<Value>& args);
     
     // Screen API
     static Value screen_width(Context& ctx, const std::vector<Value>& args);
@@ -353,6 +364,8 @@ public:
     static Value canvas2d_drawImage(Context& ctx, const std::vector<Value>& args);
     static Value create_canvas_element(int width, int height);
     static Value create_canvas_2d_context();
+    static Value create_canvas_2d_context_with_state(CanvasState* canvas_state);
+    static Value create_cairo_2d_context(CairoCanvasState* cairo_canvas);
     
     // React Component Lifecycle API
     static Value React_Component_constructor(Context& ctx, const std::vector<Value>& args);
@@ -417,6 +430,220 @@ public:
     static Value audioParam_linearRampToValueAtTime(Context& ctx, const std::vector<Value>& args);
     static Value analyserNode_getByteFrequencyData(Context& ctx, const std::vector<Value>& args);
     static Value bufferSource_start(Context& ctx, const std::vector<Value>& args);
+    
+    // REAL File System API - Node.js-style fs module
+    static Value fs_readFile(Context& ctx, const std::vector<Value>& args);
+    static Value fs_readFileSync(Context& ctx, const std::vector<Value>& args);
+    static Value fs_writeFile(Context& ctx, const std::vector<Value>& args);
+    static Value fs_writeFileSync(Context& ctx, const std::vector<Value>& args);
+    static Value fs_appendFile(Context& ctx, const std::vector<Value>& args);
+    static Value fs_readdir(Context& ctx, const std::vector<Value>& args);
+    static Value fs_readdirSync(Context& ctx, const std::vector<Value>& args);
+    static Value fs_mkdir(Context& ctx, const std::vector<Value>& args);
+    static Value fs_mkdirSync(Context& ctx, const std::vector<Value>& args);
+    static Value fs_unlink(Context& ctx, const std::vector<Value>& args);
+    static Value fs_unlinkSync(Context& ctx, const std::vector<Value>& args);
+    static Value fs_stat(Context& ctx, const std::vector<Value>& args);
+    static Value fs_statSync(Context& ctx, const std::vector<Value>& args);
+    
+    // IndexedDB API - Client-side database with transactions
+    static Value indexedDB_open(Context& ctx, const std::vector<Value>& args);
+    static Value indexedDB_deleteDatabase(Context& ctx, const std::vector<Value>& args);
+    static Value indexedDB_cmp(Context& ctx, const std::vector<Value>& args);
+    static Value idbRequest_onsuccess(Context& ctx, const std::vector<Value>& args);
+    static Value idbRequest_onerror(Context& ctx, const std::vector<Value>& args);
+    static Value idbRequest_onupgradeneeded(Context& ctx, const std::vector<Value>& args);
+    static Value idbDatabase_createObjectStore(Context& ctx, const std::vector<Value>& args);
+    static Value idbDatabase_deleteObjectStore(Context& ctx, const std::vector<Value>& args);
+    static Value idbDatabase_transaction(Context& ctx, const std::vector<Value>& args);
+    static Value idbDatabase_close(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_add(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_put(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_get(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_delete(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_clear(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_count(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_createIndex(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_deleteIndex(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_index(Context& ctx, const std::vector<Value>& args);
+    static Value idbObjectStore_openCursor(Context& ctx, const std::vector<Value>& args);
+    static Value idbTransaction_commit(Context& ctx, const std::vector<Value>& args);
+    static Value idbTransaction_abort(Context& ctx, const std::vector<Value>& args);
+    static Value idbTransaction_objectStore(Context& ctx, const std::vector<Value>& args);
+    static Value idbCursor_continue(Context& ctx, const std::vector<Value>& args);
+    static Value idbCursor_update(Context& ctx, const std::vector<Value>& args);
+    static Value idbCursor_delete(Context& ctx, const std::vector<Value>& args);
+    static Value idbIndex_get(Context& ctx, const std::vector<Value>& args);
+    static Value idbIndex_getKey(Context& ctx, const std::vector<Value>& args);
+    static Value idbIndex_openCursor(Context& ctx, const std::vector<Value>& args);
+    
+    // WebRTC API - Real-time peer-to-peer communication
+    static Value RTCPeerConnection_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_createOffer(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_createAnswer(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_setLocalDescription(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_setRemoteDescription(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_addIceCandidate(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_addStream(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_addTrack(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_removeTrack(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_getSenders(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_getReceivers(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_getTransceivers(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_getStats(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_close(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_connectionState(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_iceConnectionState(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_iceGatheringState(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_signalingState(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_localDescription(Context& ctx, const std::vector<Value>& args);
+    static Value RTCPeerConnection_remoteDescription(Context& ctx, const std::vector<Value>& args);
+    
+    // Navigator MediaDevices API - Camera/microphone access
+    static Value navigator_mediaDevices_getUserMedia(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_mediaDevices_enumerateDevices(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_mediaDevices_getDisplayMedia(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStream_getTracks(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStream_getAudioTracks(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStream_getVideoTracks(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStream_addTrack(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStream_removeTrack(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStreamTrack_stop(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStreamTrack_enabled(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStreamTrack_kind(Context& ctx, const std::vector<Value>& args);
+    static Value mediaStreamTrack_label(Context& ctx, const std::vector<Value>& args);
+    
+    // File API - File system and blob management
+    static Value File_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value File_name(Context& ctx, const std::vector<Value>& args);
+    static Value File_lastModified(Context& ctx, const std::vector<Value>& args);
+    static Value File_size(Context& ctx, const std::vector<Value>& args);
+    static Value File_type(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_size(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_type(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_slice(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_stream(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_text(Context& ctx, const std::vector<Value>& args);
+    static Value Blob_arrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsText(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsDataURL(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsArrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readAsBinaryString(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_abort(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_result(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_error(Context& ctx, const std::vector<Value>& args);
+    static Value FileReader_readyState(Context& ctx, const std::vector<Value>& args);
+    
+    // Speech Synthesis API - Text-to-speech with real system integration
+    static Value speechSynthesis_speak(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_cancel(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_pause(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_resume(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_getVoices(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_speaking(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_pending(Context& ctx, const std::vector<Value>& args);
+    static Value speechSynthesis_paused(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_text(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_lang(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_voice(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_volume(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_rate(Context& ctx, const std::vector<Value>& args);
+    static Value utterance_pitch(Context& ctx, const std::vector<Value>& args);
+    
+    // SpeechSynthesisUtterance property methods (matching Engine.cpp names)
+    static Value SpeechSynthesisUtterance_text(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_lang(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_voice(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_volume(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_rate(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisUtterance_pitch(Context& ctx, const std::vector<Value>& args);
+    
+    // SpeechSynthesisVoice property methods
+    static Value SpeechSynthesisVoice_name(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisVoice_lang(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisVoice_default(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisVoice_localService(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechSynthesisVoice_voiceURI(Context& ctx, const std::vector<Value>& args);
+    
+    // Speech Recognition API - Voice-to-text with real system integration
+    static Value SpeechRecognition_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_start(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_stop(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_abort(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_lang(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_continuous(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_interimResults(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_maxAlternatives(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_serviceURI(Context& ctx, const std::vector<Value>& args);
+    static Value speechRecognition_grammars(Context& ctx, const std::vector<Value>& args);
+    
+    // SpeechRecognitionResult methods
+    static Value SpeechRecognitionResult_length(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechRecognitionResult_item(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechRecognitionResult_isFinal(Context& ctx, const std::vector<Value>& args);
+    
+    // SpeechRecognitionAlternative methods
+    static Value SpeechRecognitionAlternative_transcript(Context& ctx, const std::vector<Value>& args);
+    static Value SpeechRecognitionAlternative_confidence(Context& ctx, const std::vector<Value>& args);
+    
+    // Gamepad API - Real controller/joystick support with system integration
+    static Value navigator_getGamepads(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_id(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_index(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_connected(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_timestamp(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_mapping(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_axes(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_buttons(Context& ctx, const std::vector<Value>& args);
+    static Value gamepad_vibrationActuator(Context& ctx, const std::vector<Value>& args);
+    
+    // GamepadButton methods
+    static Value gamepadButton_pressed(Context& ctx, const std::vector<Value>& args);
+    static Value gamepadButton_touched(Context& ctx, const std::vector<Value>& args);
+    static Value gamepadButton_value(Context& ctx, const std::vector<Value>& args);
+    
+    // GamepadHapticActuator methods (vibration)
+    static Value gamepadHapticActuator_pulse(Context& ctx, const std::vector<Value>& args);
+    static Value gamepadHapticActuator_playEffect(Context& ctx, const std::vector<Value>& args);
+    
+    // Push Notifications API - Service Worker-style push notifications with real system integration
+    static Value PushManager_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value pushManager_subscribe(Context& ctx, const std::vector<Value>& args);
+    static Value pushManager_getSubscription(Context& ctx, const std::vector<Value>& args);
+    static Value pushManager_permissionState(Context& ctx, const std::vector<Value>& args);
+    static Value pushManager_supportedContentEncodings(Context& ctx, const std::vector<Value>& args);
+    static Value PushSubscription_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value pushSubscription_endpoint(Context& ctx, const std::vector<Value>& args);
+    static Value pushSubscription_keys(Context& ctx, const std::vector<Value>& args);
+    static Value pushSubscription_options(Context& ctx, const std::vector<Value>& args);
+    static Value pushSubscription_unsubscribe(Context& ctx, const std::vector<Value>& args);
+    static Value pushSubscription_toJSON(Context& ctx, const std::vector<Value>& args);
+    static Value ServiceWorkerRegistration_pushManager(Context& ctx, const std::vector<Value>& args);
+    static Value navigator_serviceWorker(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_register(Context& ctx, const std::vector<Value>& args);
+    static Value serviceWorker_ready(Context& ctx, const std::vector<Value>& args);
+    static Value PushEvent_constructor(Context& ctx, const std::vector<Value>& args);
+    static Value pushEvent_data(Context& ctx, const std::vector<Value>& args);
+    
+    // PushMessageData methods
+    static Value PushMessageData_arrayBuffer(Context& ctx, const std::vector<Value>& args);
+    static Value PushMessageData_blob(Context& ctx, const std::vector<Value>& args);
+    static Value PushMessageData_json(Context& ctx, const std::vector<Value>& args);
+    static Value PushMessageData_text(Context& ctx, const std::vector<Value>& args);
+    
+    // NotificationOptions for push notifications
+    static Value NotificationOptions_actions(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_badge(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_data(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_image(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_renotify(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_requireInteraction(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_tag(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_timestamp(Context& ctx, const std::vector<Value>& args);
+    static Value NotificationOptions_vibrate(Context& ctx, const std::vector<Value>& args);
     
 private:
     static int timer_id_counter_;

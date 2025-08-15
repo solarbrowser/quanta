@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "Generator.h"
 #include "Context.h"
 #include "Symbol.h"
@@ -10,9 +16,24 @@ namespace Quanta {
 // Generator Implementation
 //=============================================================================
 
+// Thread-local variables for generator execution tracking
+thread_local Generator* Generator::current_generator_ = nullptr;
+thread_local size_t Generator::current_yield_counter_ = 0;
+
 Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
-      body_(std::move(body)), state_(State::SuspendedStart), pc_(0) {
+      body_(std::move(body)), state_(State::SuspendedStart), pc_(0),
+      current_yield_count_(0), target_yield_index_(0) {
+    
+    // Add JavaScript methods to this generator instance
+    auto next_method = ObjectFactory::create_native_function("next", generator_next);
+    this->set_property("next", Value(next_method.release()));
+    
+    auto return_method = ObjectFactory::create_native_function("return", generator_return);
+    this->set_property("return", Value(return_method.release()));
+    
+    auto throw_method = ObjectFactory::create_native_function("throw", generator_throw);
+    this->set_property("throw", Value(throw_method.release()));
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -64,15 +85,28 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
         // Store sent value for yield expressions
         last_value_ = sent_value;
         
+        // Set up generator tracking for yield expressions
+        set_current_generator(this);
+        reset_yield_counter();
+        target_yield_index_++;  // Target the next yield point
+        
         // Execute the generator body
         Value result = body_->evaluate(*generator_context_);
         
         // If we reach here without yielding, the generator is done
+        set_current_generator(nullptr);
         complete_generator(result);
         return GeneratorResult(result, true);
         
+    } catch (const YieldException& yield_ex) {
+        // Handle yield: suspend the generator and return the yielded value
+        set_current_generator(nullptr);
+        state_ = State::SuspendedYield;
+        return GeneratorResult(yield_ex.yielded_value, false);
+        
     } catch (const std::exception& e) {
-        // Handle generator exceptions
+        // Handle other generator exceptions
+        set_current_generator(nullptr);
         complete_generator(Value());
         generator_context_->throw_exception(Value(e.what()));
         return GeneratorResult(Value(), true);
@@ -86,19 +120,18 @@ void Generator::complete_generator(const Value& value) {
 
 // Generator built-in methods
 Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
-    Value this_value = ctx.get_binding("this");
-    if (!this_value.is_object()) {
-        ctx.throw_exception(Value("Generator.prototype.next called on non-object"));
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj) {
+        ctx.throw_exception(Value("Generator.prototype.next called without proper this binding"));
         return Value();
     }
     
-    Object* obj = this_value.as_object();
-    if (obj->get_type() != Object::ObjectType::Custom) {
+    if (this_obj->get_type() != Object::ObjectType::Custom) {
         ctx.throw_exception(Value("Generator.prototype.next called on non-generator"));
         return Value();
     }
     
-    Generator* generator = static_cast<Generator*>(obj);
+    Generator* generator = static_cast<Generator*>(this_obj);
     Value sent_value = args.empty() ? Value() : args[0];
     
     auto result = generator->next(sent_value);
@@ -191,6 +224,23 @@ void Generator::setup_generator_prototype(Context& ctx) {
     }
     
     ctx.create_binding("GeneratorPrototype", Value(gen_prototype.release()));
+}
+
+// Static tracking methods for yield expressions
+void Generator::set_current_generator(Generator* gen) {
+    current_generator_ = gen;
+}
+
+Generator* Generator::get_current_generator() {
+    return current_generator_;
+}
+
+size_t Generator::increment_yield_counter() {
+    return ++current_yield_counter_;
+}
+
+void Generator::reset_yield_counter() {
+    current_yield_counter_ = 0;
 }
 
 //=============================================================================

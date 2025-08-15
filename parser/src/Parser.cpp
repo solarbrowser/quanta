@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "../include/Parser.h"
 #include <algorithm>
 #include <iostream>
@@ -293,7 +299,7 @@ std::unique_ptr<ASTNode> Parser::parse_equality_expression() {
 std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
     return parse_binary_expression(
         [this]() { return parse_shift_expression(); },
-        {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL}
+        {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF}
     );
 }
 
@@ -453,17 +459,21 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             // Member access: obj.property
             advance(); // consume '.'
             
-            if (!match(TokenType::IDENTIFIER)) {
+            // Allow both identifiers and keywords as property names
+            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR) {
                 add_error("Expected property name after '.'");
                 return expr;
             }
             
-            auto property = parse_identifier();
-            if (!property) return expr;
-            
-            Position end = property->get_end();
+            // Create property identifier from current token (identifier or keyword)
+            const Token& token = current_token();
+            std::string name = token.get_value();
+            Position prop_start = token.get_start();
+            Position prop_end = token.get_end();
+            advance();
+            auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
             expr = std::make_unique<MemberExpression>(
-                std::move(expr), std::move(property), false, start, end
+                std::move(expr), std::move(property), false, start, prop_end
             );
         } else if (match(TokenType::LEFT_BRACKET)) {
             // Computed member access: obj[property]
@@ -1259,7 +1269,6 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
 std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     Position start = get_current_position();
     
-    // std::cout << "DEBUG: parse_for_statement called" << std::endl;
     
     if (!consume(TokenType::FOR)) {
         add_error("Expected 'for'");
@@ -1275,7 +1284,6 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
         if (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST)) {
-            // std::cout << "DEBUG: Found variable declaration in for loop" << std::endl;
             
             // For for...of loops, we need to parse the variable part manually
             // since parse_variable_declaration expects a full declaration
@@ -1333,7 +1341,6 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             Position decl_end = get_current_position();
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
-            // std::cout << "DEBUG: After parsing variable declaration, init = " << (init ? "SUCCESS" : "NULL") << std::endl;
         } else {
             init = parse_expression();
         }
@@ -1343,10 +1350,48 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         }
     }
     
-    // Check for for...of syntax (FIXED - now works properly)
-    // std::cout << "DEBUG: Checking for 'of' keyword, current token type: " << static_cast<int>(current_token().get_type()) << " value: '" << current_token().get_value() << "'" << std::endl;
+    // Check for for...in syntax
+    if (current_token().get_type() == TokenType::IN) {
+        advance(); // consume 'in'
+        
+        // Safety check for end of input
+        if (at_end()) {
+            add_error("Unexpected end of input after 'in'");
+            return nullptr;
+        }
+        
+        // Parse the object expression
+        auto object = parse_expression();
+        if (!object) {
+            add_error("Expected expression after 'in' in for...in loop");
+            return nullptr;
+        }
+        
+        // Expect closing parenthesis
+        if (at_end() || current_token().get_type() != TokenType::RIGHT_PAREN) {
+            add_error("Expected ')' after for...in object");
+            return nullptr;
+        }
+        advance(); // consume ')'
+        
+        // Parse body
+        if (at_end()) {
+            add_error("Expected statement after for...in");
+            return nullptr;
+        }
+        
+        auto body = parse_statement();
+        if (!body) {
+            add_error("Failed to parse for...in body");
+            return nullptr;
+        }
+        
+        Position end = get_current_position();
+        return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end);
+    }
+    
+    // Check for for...of syntax
     if (current_token().get_type() == TokenType::OF) {
-        // std::cout << "DEBUG: Found 'of' keyword, creating ForOfStatement" << std::endl;
         advance(); // consume 'of'
         
         // Safety check for end of input
@@ -2851,7 +2896,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             return nullptr;
         }
         std::string module_source = current_token().get_value();
-        advance();
+        // advance(); // REMOVED: This was causing token position corruption after namespace imports
         
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
@@ -2894,7 +2939,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             return nullptr;
         }
         std::string module_source = current_token().get_value();
-        advance();
+        // advance(); // REMOVED: This was causing token position corruption after named imports
         
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
@@ -2916,7 +2961,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
             return nullptr;
         }
         std::string module_source = current_token().get_value();
-        advance();
+        // advance(); // REMOVED: This was causing token position corruption after default imports
         
         Position end = get_current_position();
         return std::make_unique<ImportStatement>(default_alias, module_source, true, start, end);
@@ -3003,8 +3048,9 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
 std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
     Position start = current_token().get_start();
     
-    if (!match(TokenType::IDENTIFIER)) {
-        add_error("Expected identifier in import specifier");
+    // Allow both IDENTIFIER and DEFAULT tokens for import specifiers
+    if (!match(TokenType::IDENTIFIER) && !match(TokenType::DEFAULT)) {
+        add_error("Expected identifier or 'default' in import specifier");
         return nullptr;
     }
     
@@ -3067,7 +3113,31 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
         std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> default_exprs; // index -> default expr
         
         while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
-            if (current_token().get_type() == TokenType::IDENTIFIER) {
+            if (current_token().get_type() == TokenType::ELLIPSIS) {
+                // Handle rest element: [...rest]
+                advance(); // consume '...'
+                
+                if (current_token().get_type() != TokenType::IDENTIFIER) {
+                    add_error("Expected identifier after '...' in array destructuring");
+                    return nullptr;
+                }
+                
+                auto rest_id = std::make_unique<Identifier>(
+                    "..." + current_token().get_value(), // Mark as rest with prefix
+                    current_token().get_start(),
+                    current_token().get_end()
+                );
+                targets.push_back(std::move(rest_id));
+                advance();
+                
+                // Rest element must be last
+                if (match(TokenType::COMMA)) {
+                    add_error("Rest element must be last element in array destructuring");
+                    return nullptr;
+                }
+                break; // End parsing after rest element
+                
+            } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                 auto id = std::make_unique<Identifier>(
                     current_token().get_value(),
                     current_token().get_start(),
@@ -3136,7 +3206,31 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
         std::vector<std::pair<std::string, std::string>> property_mappings; // original_name -> variable_name
         
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
-            if (current_token().get_type() == TokenType::IDENTIFIER) {
+            if (current_token().get_type() == TokenType::ELLIPSIS) {
+                // Handle object rest element: {...rest}
+                advance(); // consume '...'
+                
+                if (current_token().get_type() != TokenType::IDENTIFIER) {
+                    add_error("Expected identifier after '...' in object destructuring");
+                    return nullptr;
+                }
+                
+                auto rest_id = std::make_unique<Identifier>(
+                    "..." + current_token().get_value(), // Mark as rest with prefix
+                    current_token().get_start(),
+                    current_token().get_end()
+                );
+                targets.push_back(std::move(rest_id));
+                advance();
+                
+                // Rest element must be last
+                if (match(TokenType::COMMA)) {
+                    add_error("Rest element must be last element in object destructuring");
+                    return nullptr;
+                }
+                break; // End parsing after rest element
+                
+            } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                 auto id = std::make_unique<Identifier>(
                     current_token().get_value(),
                     current_token().get_start(),

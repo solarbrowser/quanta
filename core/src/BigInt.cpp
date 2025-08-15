@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "BigInt.h"
 #include <algorithm>
 #include <sstream>
@@ -65,7 +71,7 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         }
         
         while (carry > 0) {
-            digits_.push_back(carry & 0xFFFFFFFF);
+            digits_.push_back(static_cast<uint32_t>(carry & 0xFFFFFFFFULL));
             carry >>= 32;
         }
     }

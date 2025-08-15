@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #pragma once
 
 #include "Value.h"
@@ -75,6 +81,7 @@ public:
     static Value map_values(Context& ctx, const std::vector<Value>& args);
     static Value map_entries(Context& ctx, const std::vector<Value>& args);
     static Value map_forEach(Context& ctx, const std::vector<Value>& args);
+    static Value map_iterator_method(Context& ctx, const std::vector<Value>& args);
     
     // Setup Map prototype
     static void setup_map_prototype(Context& ctx);
@@ -128,6 +135,7 @@ public:
     static Value set_keys(Context& ctx, const std::vector<Value>& args); // Alias for values
     static Value set_entries(Context& ctx, const std::vector<Value>& args);
     static Value set_forEach(Context& ctx, const std::vector<Value>& args);
+    static Value set_iterator_method(Context& ctx, const std::vector<Value>& args);
     
     // Setup Set prototype
     static void setup_set_prototype(Context& ctx);

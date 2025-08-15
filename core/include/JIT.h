@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_JIT_H
 #define QUANTA_JIT_H
 
@@ -66,6 +72,34 @@ private:
     uint32_t total_compilations_;
     uint32_t cache_hits_;
     uint32_t cache_misses_;
+    uint32_t inline_cache_hits_;
+    bool type_feedback_enabled_;
+    
+    // LUDICROUS SPEED optimization flags
+    bool ultra_fast_mode_;
+    bool cpu_cache_optimized_;
+    
+    // Type feedback and profiling
+    struct TypeProfile {
+        uint32_t number_count;
+        uint32_t string_count;
+        uint32_t object_count;
+        uint32_t boolean_count;
+        uint32_t total_samples;
+        
+        TypeProfile() : number_count(0), string_count(0), object_count(0), 
+                       boolean_count(0), total_samples(0) {}
+    };
+    
+    struct FunctionProfile {
+        uint32_t call_count;
+        std::chrono::high_resolution_clock::time_point last_call;
+        
+        FunctionProfile() : call_count(0) {}
+    };
+    
+    std::unordered_map<ASTNode*, TypeProfile> type_profiles_;
+    std::unordered_map<ASTNode*, FunctionProfile> function_profiles_;
     
 public:
     JITCompiler();
@@ -99,6 +133,11 @@ public:
     uint32_t get_cache_hits() const { return cache_hits_; }
     uint32_t get_cache_misses() const { return cache_misses_; }
     double get_cache_hit_ratio() const;
+    
+    // Type feedback and profiling
+    void record_type_feedback(ASTNode* node, const Value& result);
+    void record_function_profile(ASTNode* node);
+    void enable_type_feedback(bool enabled) { type_feedback_enabled_ = enabled; }
     
     // Debugging
     void print_hotspots() const;

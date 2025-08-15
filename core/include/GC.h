@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #ifndef QUANTA_GC_H
 #define QUANTA_GC_H
 
@@ -90,6 +96,12 @@ private:
     std::thread gc_thread_;
     bool gc_running_;
     bool stop_gc_thread_;
+    uint32_t collection_cycles_;
+    
+    // LUDICROUS SPEED GC optimization flags
+    bool ultra_fast_gc_;
+    bool parallel_collection_;
+    bool zero_copy_optimization_;
     
     // Statistics
     Statistics stats_;
@@ -171,6 +183,28 @@ private:
     
     // Background GC thread
     void gc_thread_main();
+    
+    // LUDICROUS SPEED ultra-fast collection methods
+    void collect_young_generation_ultra_fast();
+    void collect_old_generation_ultra_fast();
+    void force_ultra_fast_collection();
+    void collect_young_generation_parallel();
+    void collect_old_generation_parallel();
+    
+    // Ultra-fast helper methods
+    void mark_objects_ultra_fast();
+    void mark_object_ultra_fast(Object* obj);
+    void sweep_generation_ultra_fast(std::vector<ManagedObject*>& generation);
+    void sweep_objects_ultra_fast();
+    void promote_objects_ultra_fast();
+    void detect_cycles_ultra_fast();
+    void break_cycles_ultra_fast();
+    ManagedObject* find_managed_object_ultra_fast(Object* obj);
+    
+    // Parallel worker methods
+    void mark_objects_parallel_worker();
+    void sweep_generation_parallel_worker(std::vector<ManagedObject*>& generation, 
+                                         size_t thread_id, size_t thread_count);
 };
 
 /**
