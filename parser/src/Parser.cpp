@@ -53,6 +53,9 @@ std::unique_ptr<Program> Parser::parse_program() {
     std::vector<std::unique_ptr<ASTNode>> statements;
     Position start = get_current_position();
     
+    // Check for "use strict" directive at the beginning
+    check_for_use_strict_directive();
+    
     while (!at_end()) {
         try {
             auto statement = parse_statement();
@@ -674,6 +677,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::YIELD:
             return parse_yield_expression();
         case TokenType::LEFT_BRACE:
+            add_error("DEBUG: LEFT_BRACE case reached, calling parse_object_literal");
             return parse_object_literal();
         case TokenType::LEFT_BRACKET:
             return parse_array_literal();
@@ -2397,6 +2401,26 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
     
     // Parse properties
     do {
+        // Check for spread element: {...obj}
+        if (match(TokenType::ELLIPSIS)) {
+            auto spread = parse_spread_element();
+            if (!spread) {
+                add_error("Invalid spread element in object literal");
+                return nullptr;
+            }
+            properties.push_back(std::make_unique<ObjectLiteral::Property>(
+                nullptr, std::move(spread), false, false
+            ));
+            
+            // Continue with next property
+            if (match(TokenType::COMMA)) {
+                advance();
+                continue;
+            } else {
+                break;
+            }
+        }
+        
         // Check for async method
         bool is_async = false;
         if (match(TokenType::ASYNC)) {
@@ -3527,6 +3551,38 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_attribute() {
     
     Position end = get_current_position();
     return std::make_unique<JSXAttribute>(attr_name, std::move(value), start, end);
+}
+
+void Parser::check_for_use_strict_directive() {
+    // Save current position
+    size_t saved_position = current_token_index_;
+    
+    // Look for "use strict" directive at the beginning
+    // Skip any leading directives - they must all be string literals
+    while (!at_end() && current_token().get_type() == TokenType::STRING) {
+        std::string str_value = current_token().get_value();
+        
+        // Check if this is "use strict"
+        if (str_value == "\"use strict\"" || str_value == "'use strict'") {
+            options_.strict_mode = true;
+            advance(); // consume the string
+            
+            // Expect semicolon after directive
+            if (match(TokenType::SEMICOLON)) {
+                advance();
+            }
+            return;
+        }
+        
+        // This is some other directive, skip it
+        advance();
+        if (match(TokenType::SEMICOLON)) {
+            advance();
+        }
+    }
+    
+    // If we didn't find "use strict", restore position
+    current_token_index_ = saved_position;
 }
 
 } // namespace Quanta

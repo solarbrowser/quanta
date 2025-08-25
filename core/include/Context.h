@@ -82,6 +82,9 @@ private:
     bool has_break_;
     bool has_continue_;
     
+    // Strict mode
+    bool strict_mode_;
+    
     // Engine reference
     Engine* engine_;
     
@@ -101,6 +104,10 @@ public:
     State get_state() const { return state_; }
     uint32_t get_id() const { return context_id_; }
     Engine* get_engine() const { return engine_; }
+    
+    // Strict mode
+    bool is_strict_mode() const { return strict_mode_; }
+    void set_strict_mode(bool strict) { strict_mode_ = strict; }
 
     // Global object access
     Object* get_global_object() const { return global_object_; }
@@ -115,12 +122,18 @@ public:
     Environment* get_variable_environment() const { return variable_environment_; }
     void set_lexical_environment(Environment* env) { lexical_environment_ = env; }
     void set_variable_environment(Environment* env) { variable_environment_ = env; }
+    
+    // Block scope management
+    void push_block_scope();
+    void pop_block_scope();
 
     // Variable operations
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
+    bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
+    bool create_lexical_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool delete_binding(const std::string& name);
 
     // Call stack management

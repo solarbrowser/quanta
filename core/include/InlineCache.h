@@ -162,7 +162,7 @@ private:
 };
 
 /**
- * Comprehensive Performance Cache Manager
+ *  Performance Cache Manager
  */
 class PerformanceCache {
 private:
@@ -192,8 +192,8 @@ public:
     void print_performance_stats() const;
     double get_overall_performance_gain() const;
     
-    // LUDICROUS SPEED mode
-    void enable_ludicrous_speed_mode();
+    // optimized mode
+    void enable_maximum_performance_mode();
     void cleanup_ultra_fast_caches();
 };
 

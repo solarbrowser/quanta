@@ -50,7 +50,8 @@ public:
     static Value path_normalize(Context& ctx, const std::vector<Value>& args);
     static Value path_isAbsolute(Context& ctx, const std::vector<Value>& args);
     
-    // HTTP API (basic)
+    // HTTP API (basic implementation)
+    // TODO: Implement advanced HTTP features (HTTPS, request/response streams, middleware support)
     static Value http_createServer(Context& ctx, const std::vector<Value>& args);
     static Value http_request(Context& ctx, const std::vector<Value>& args);
     static Value http_get(Context& ctx, const std::vector<Value>& args);
@@ -69,7 +70,8 @@ public:
     static Value process_chdir(Context& ctx, const std::vector<Value>& args);
     static Value process_env_get(Context& ctx, const std::vector<Value>& args);
     
-    // Crypto API (basic)
+    // Crypto API (basic implementation) 
+    // TODO: Implement advanced crypto features (HMAC, RSA, AES encryption, digital signatures)
     static Value crypto_randomBytes(Context& ctx, const std::vector<Value>& args);
     static Value crypto_createHash(Context& ctx, const std::vector<Value>& args);
     

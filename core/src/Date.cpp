@@ -256,19 +256,19 @@ std::tm Date::getUTCTime() const {
 Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; // Suppress unused warning
     
-    std::unique_ptr<Date> date_obj;
+    std::unique_ptr<Date> date_impl;
     
     if (args.empty()) {
         // new Date() - current time
-        date_obj = std::make_unique<Date>();
+        date_impl = std::make_unique<Date>();
     } else if (args.size() == 1) {
         // new Date(timestamp) or new Date(string)
         if (args[0].is_number()) {
             int64_t timestamp = static_cast<int64_t>(args[0].to_number());
-            date_obj = std::make_unique<Date>(timestamp);
+            date_impl = std::make_unique<Date>(timestamp);
         } else {
             // Parse string - for now, just return current time
-            date_obj = std::make_unique<Date>();
+            date_impl = std::make_unique<Date>();
         }
     } else {
         // new Date(year, month, day, ...)
@@ -280,10 +280,20 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
         int second = args.size() > 5 ? static_cast<int>(args[5].to_number()) : 0;
         int millisecond = args.size() > 6 ? static_cast<int>(args[6].to_number()) : 0;
         
-        date_obj = std::make_unique<Date>(year, month, day, hour, minute, second, millisecond);
+        date_impl = std::make_unique<Date>(year, month, day, hour, minute, second, millisecond);
     }
     
-    return Value(date_obj.release());
+    // Create a simple Date object wrapper without complex nested functions
+    // The date methods will be added by Context.cpp when setting up Date constructor
+    auto js_date_obj = ObjectFactory::create_object();
+    
+    // Add standard properties
+    js_date_obj->set_property("_isDate", Value(true));
+    
+    // Store the timestamp as a property that can be accessed by global Date methods
+    js_date_obj->set_property("_timestamp", Value(static_cast<double>(date_impl->getTimestamp())));
+    
+    return Value(js_date_obj.release());
 }
 
 } // namespace Quanta

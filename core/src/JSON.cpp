@@ -37,17 +37,36 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
     
     std::string json_string = args[0].to_string();
     
+    // Safety check: prevent empty or malformed strings
+    if (json_string.empty()) {
+        ctx.throw_syntax_error("JSON.parse: unexpected end of input");
+        return Value();
+    }
+    
     try {
         return parse(json_string);
     } catch (const std::exception& e) {
         ctx.throw_syntax_error("JSON.parse error: " + std::string(e.what()));
+        return Value();
+    } catch (...) {
+        ctx.throw_syntax_error("JSON.parse: unknown parsing error");
         return Value();
     }
 }
 
 Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        return Value("undefined");
+        return Value();
+    }
+    
+    // Check for undefined at top level - should return undefined
+    if (args[0].is_undefined()) {
+        return Value();
+    }
+    
+    // Safety check: prevent complex objects from causing issues
+    if (args[0].is_object() && !args[0].as_object()) {
+        return Value("null");
     }
     
     StringifyOptions options;
@@ -65,10 +84,11 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
     }
     
     try {
-        return Value(stringify(args[0], options));
+        std::string result = stringify(args[0], options);
+        return Value(result);
     } catch (const std::exception& e) {
         ctx.throw_error("JSON.stringify error: " + std::string(e.what()));
-        return Value();
+        return Value("null"); // Return valid JSON instead of undefined
     }
 }
 
@@ -492,7 +512,8 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     if (value.is_null()) {
         return "null";
     } else if (value.is_undefined()) {
-        return "undefined";
+        // undefined values in objects should be omitted
+        return "null";
     } else if (value.is_boolean()) {
         return stringify_boolean(value.to_boolean());
     } else if (value.is_number()) {

@@ -21,17 +21,20 @@ namespace Quanta {
 //=============================================================================
 
 Value::Value(Object* obj) {
-    if (obj && obj->get_type() == Object::ObjectType::Function) {
-        bits_ = QUIET_NAN | TAG_FUNCTION | reinterpret_cast<uint64_t>(obj);
-    } else {
-        bits_ = QUIET_NAN | TAG_OBJECT | reinterpret_cast<uint64_t>(obj);
+    // FIX: If obj is null, create undefined instead of object with null pointer
+    if (!obj) {
+        bits_ = QUIET_NAN | TAG_UNDEFINED;
+        return;
     }
+    
+    // Store object pointer directly - same as other constructors
+    bits_ = QUIET_NAN | TAG_OBJECT | (reinterpret_cast<uint64_t>(obj) & PAYLOAD_MASK);
 }
 
 Value::Value(const std::string& str) {
     // Create a String object directly without going through ObjectFactory
     auto string_obj = std::make_unique<String>(str);
-    bits_ = QUIET_NAN | TAG_STRING | reinterpret_cast<uint64_t>(string_obj.release());
+    bits_ = QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(string_obj.release()) & PAYLOAD_MASK);
 }
 
 std::string Value::to_string() const {
@@ -211,7 +214,12 @@ bool Value::loose_equals(const Value& other) const {
 }
 
 Value Value::add(const Value& other) const {
-    // Handle BigInt cases first
+    // optimized: Fast path for number + number (most common case)
+    if (is_number() && other.is_number()) {
+        return Value(as_number() + other.as_number());
+    }
+    
+    // Handle BigInt cases
     if (is_bigint() && other.is_bigint()) {
         BigInt result = *as_bigint() + *other.as_bigint();
         return Value(new BigInt(result));
@@ -230,6 +238,11 @@ Value Value::add(const Value& other) const {
 }
 
 Value Value::subtract(const Value& other) const {
+    // optimized: Fast path for number - number
+    if (is_number() && other.is_number()) {
+        return Value(as_number() - other.as_number());
+    }
+    
     if (is_bigint() && other.is_bigint()) {
         BigInt result = *as_bigint() - *other.as_bigint();
         return Value(new BigInt(result));
@@ -241,6 +254,11 @@ Value Value::subtract(const Value& other) const {
 }
 
 Value Value::multiply(const Value& other) const {
+    // optimized: Fast path for number * number (very common)
+    if (is_number() && other.is_number()) {
+        return Value(as_number() * other.as_number());
+    }
+    
     if (is_bigint() && other.is_bigint()) {
         BigInt result = *as_bigint() * *other.as_bigint();
         return Value(new BigInt(result));
@@ -252,22 +270,54 @@ Value Value::multiply(const Value& other) const {
 }
 
 Value Value::divide(const Value& other) const {
+    // optimized: Fast path for number / number with proper division by zero handling
+    if (is_number() && other.is_number()) {
+        double a = as_number();
+        double b = other.as_number();
+        
+        // JavaScript division by zero behavior
+        if (b == 0.0) {
+            if (a == 0.0) return Value(std::numeric_limits<double>::quiet_NaN()); // 0/0 = NaN
+            return Value(a > 0 ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity());
+        }
+        return Value(a / b);
+    }
+    
     return Value(to_number() / other.to_number());
 }
 
 Value Value::modulo(const Value& other) const {
+    // optimized: Fast path for number % number
+    if (is_number() && other.is_number()) {
+        double a = as_number();
+        double b = other.as_number();
+        if (b == 0.0) return Value(std::numeric_limits<double>::quiet_NaN());
+        return Value(std::fmod(a, b));
+    }
     return Value(std::fmod(to_number(), other.to_number()));
 }
 
 Value Value::power(const Value& other) const {
+    // optimized: Fast path for number ** number
+    if (is_number() && other.is_number()) {
+        return Value(std::pow(as_number(), other.as_number()));
+    }
     return Value(std::pow(to_number(), other.to_number()));
 }
 
 Value Value::unary_plus() const {
+    // optimized: Fast path for +number
+    if (is_number()) {
+        return *this; // Already a number, return as-is
+    }
     return Value(to_number());
 }
 
 Value Value::unary_minus() const {
+    // optimized: Fast path for -number
+    if (is_number()) {
+        return Value(-as_number());
+    }
     return Value(-to_number());
 }
 

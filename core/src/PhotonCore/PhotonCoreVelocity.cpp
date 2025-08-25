@@ -8,7 +8,7 @@
 
 namespace Quanta {
 
-// 💫 PHOTON CORE VELOCITY static member definitions
+//  PHOTON CORE VELOCITY static member definitions
 uint32_t PhotonCoreVelocity::warp_factor_ = 1;
 uint32_t PhotonCoreVelocity::stellar_boost_count_ = 0;
 bool PhotonCoreVelocity::stellar_initialized_ = false;

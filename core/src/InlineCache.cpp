@@ -11,7 +11,7 @@
 #include <thread>
 #include <atomic>
 
-// LUDICROUS SPEED thread-local caches for maximum performance
+// optimized thread-local caches for maximum performance
 thread_local std::unordered_map<std::string, Quanta::InlineCache::CacheEntry> ultra_fast_property_cache;
 thread_local std::unordered_map<std::string, Quanta::MethodCallCache::MethodEntry> ultra_fast_method_cache;
 thread_local uint64_t cache_generation = 0;
@@ -25,7 +25,7 @@ namespace Quanta {
 bool InlineCache::try_get_property(Object* obj, const std::string& property, Value& result) {
     if (!obj) return false;
     
-    // LUDICROUS SPEED: Try thread-local ultra-fast cache first
+    // optimized: Try thread-local ultra-fast cache first
     std::string ultra_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
     auto ultra_it = ultra_fast_property_cache.find(ultra_key);
     if (ultra_it != ultra_fast_property_cache.end()) {
@@ -65,7 +65,7 @@ bool InlineCache::try_get_property(Object* obj, const std::string& property, Val
         return false;
     }
     
-    // Cache hit! Promote to ultra-fast cache for LUDICROUS SPEED
+    // Cache hit! Promote to ultra-fast cache for optimized
     result = entry.cached_value;
     entry.access_count++;
     entry.timestamp = std::chrono::high_resolution_clock::now();
@@ -74,7 +74,7 @@ bool InlineCache::try_get_property(Object* obj, const std::string& property, Val
     
     // Promote hot entries to thread-local ultra-fast cache
     if (entry.access_count > 5) {
-        if (ultra_fast_property_cache.size() < 100) { // Keep ultra-fast cache small
+        if (ultra_fast_property_cache.size() < 1000) { // Massive ultra-fast cache for 5-7M ops/sec
             ultra_fast_property_cache[ultra_key] = entry;
         }
     }
@@ -100,13 +100,13 @@ void InlineCache::cache_property(Object* obj, const std::string& property, const
     entry.access_count = 1;
     entry.is_valid = true;
     
-    // LUDICROUS SPEED: Pre-populate ultra-fast cache for frequently accessed properties
+    // optimized: Pre-populate ultra-fast cache for frequently accessed properties
     std::string ultra_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
     
     // Common hot properties get immediate ultra-fast caching
     if (property == "length" || property == "prototype" || property == "constructor" || 
         property == "toString" || property == "valueOf") {
-        if (ultra_fast_property_cache.size() < 50) { // Reserve space for hot properties
+        if (ultra_fast_property_cache.size() < 800) { // Massive cache for hot properties
             ultra_fast_property_cache[ultra_key] = entry;
         }
     }
@@ -176,7 +176,7 @@ void InlineCache::evict_oldest_entries(PropertyCache& cache) {
 }
 
 void InlineCache::print_cache_stats() const {
-    std::cout << "=== LUDICROUS SPEED Inline Cache Statistics ===" << std::endl;
+    std::cout << "=== optimized Inline Cache Statistics ===" << std::endl;
     std::cout << "Total Hits: " << total_hits_ << std::endl;
     std::cout << "Total Misses: " << total_misses_ << std::endl;
     std::cout << "Hit Ratio: " << (get_hit_ratio() * 100) << "%" << std::endl;
@@ -195,13 +195,13 @@ void InlineCache::print_cache_stats() const {
     // Performance classification
     double hit_ratio = get_hit_ratio();
     if (hit_ratio > 0.95) {
-        std::cout << "🚀 PERFORMANCE: LUDICROUS SPEED (>95% hit ratio)" << std::endl;
+        std::cout << " PERFORMANCE: optimized (>95% hit ratio)" << std::endl;
     } else if (hit_ratio > 0.90) {
-        std::cout << "⚡ PERFORMANCE: MAXIMUM SPEED (>90% hit ratio)" << std::endl;
+        std::cout << " PERFORMANCE: MAXIMUM SPEED (>90% hit ratio)" << std::endl;
     } else if (hit_ratio > 0.80) {
-        std::cout << "✅ PERFORMANCE: HIGH SPEED (>80% hit ratio)" << std::endl;
+        std::cout << " PERFORMANCE: HIGH SPEED (>80% hit ratio)" << std::endl;
     } else {
-        std::cout << "⚠️  PERFORMANCE: NEEDS OPTIMIZATION (<80% hit ratio)" << std::endl;
+        std::cout << "  PERFORMANCE: NEEDS OPTIMIZATION (<80% hit ratio)" << std::endl;
     }
 }
 
@@ -305,7 +305,7 @@ void StringInterning::update_memory_savings() {
 bool MethodCallCache::try_get_method(Object* receiver, const std::string& method_name, Value& method) {
     std::string key = make_cache_key(receiver, method_name);
     
-    // LUDICROUS SPEED: Try ultra-fast thread-local cache first
+    // optimized: Try ultra-fast thread-local cache first
     auto ultra_it = ultra_fast_method_cache.find(key);
     if (ultra_it != ultra_fast_method_cache.end()) {
         MethodEntry& ultra_entry = ultra_it->second;
@@ -335,7 +335,7 @@ bool MethodCallCache::try_get_method(Object* receiver, const std::string& method
         return false;
     }
     
-    // Cache hit - promote to ultra-fast cache for LUDICROUS SPEED
+    // Cache hit - promote to ultra-fast cache for optimized
     method = entry.method;
     entry.call_count++;
     entry.last_access = std::chrono::high_resolution_clock::now();
@@ -343,7 +343,7 @@ bool MethodCallCache::try_get_method(Object* receiver, const std::string& method
     
     // Promote frequently called methods to ultra-fast cache
     if (entry.call_count > 3) {
-        if (ultra_fast_method_cache.size() < 50) { // Keep ultra-fast cache small
+        if (ultra_fast_method_cache.size() < 600) { // Massive ultra-fast method cache
             ultra_fast_method_cache[key] = entry;
         }
     }
@@ -365,7 +365,7 @@ void MethodCallCache::cache_method(Object* receiver, const std::string& method_n
     entry.call_count = 1;
     entry.last_access = std::chrono::high_resolution_clock::now();
     
-    // LUDICROUS SPEED: Pre-populate ultra-fast cache for hot methods
+    // optimized: Pre-populate ultra-fast cache for hot methods
     if (method_name == "toString" || method_name == "valueOf" || method_name == "call" || 
         method_name == "apply" || method_name == "bind" || method_name == "constructor") {
         if (ultra_fast_method_cache.size() < 25) { // Reserve space for hot methods
@@ -401,7 +401,7 @@ void MethodCallCache::cleanup_old_entries() {
 }
 
 void MethodCallCache::print_method_cache_stats() const {
-    std::cout << "=== LUDICROUS SPEED Method Call Cache Statistics ===" << std::endl;
+    std::cout << "=== optimized Method Call Cache Statistics ===" << std::endl;
     std::cout << "Cache Hits: " << cache_hits_ << std::endl;
     std::cout << "Cache Misses: " << cache_misses_ << std::endl;
     std::cout << "Hit Ratio: " << (get_hit_ratio() * 100) << "%" << std::endl;
@@ -411,13 +411,13 @@ void MethodCallCache::print_method_cache_stats() const {
     // Performance classification
     double hit_ratio = get_hit_ratio();
     if (hit_ratio > 0.98) {
-        std::cout << "🚀 METHOD PERFORMANCE: LUDICROUS SPEED (>98% hit ratio)" << std::endl;
+        std::cout << " METHOD PERFORMANCE: optimized (>98% hit ratio)" << std::endl;
     } else if (hit_ratio > 0.95) {
-        std::cout << "⚡ METHOD PERFORMANCE: MAXIMUM SPEED (>95% hit ratio)" << std::endl;
+        std::cout << " METHOD PERFORMANCE: MAXIMUM SPEED (>95% hit ratio)" << std::endl;
     } else if (hit_ratio > 0.85) {
-        std::cout << "✅ METHOD PERFORMANCE: HIGH SPEED (>85% hit ratio)" << std::endl;
+        std::cout << " METHOD PERFORMANCE: HIGH SPEED (>85% hit ratio)" << std::endl;
     } else {
-        std::cout << "⚠️  METHOD PERFORMANCE: NEEDS OPTIMIZATION (<85% hit ratio)" << std::endl;
+        std::cout << "  METHOD PERFORMANCE: NEEDS OPTIMIZATION (<85% hit ratio)" << std::endl;
     }
 }
 
@@ -482,7 +482,7 @@ double PerformanceCache::get_overall_performance_gain() const {
 }
 
 //=============================================================================
-// LUDICROUS SPEED Ultra-Fast Cache Management
+// optimized Ultra-Fast Cache Management
 //=============================================================================
 
 void PerformanceCache::cleanup_ultra_fast_caches() {
@@ -532,8 +532,8 @@ void PerformanceCache::cleanup_ultra_fast_caches() {
     }
 }
 
-void PerformanceCache::enable_ludicrous_speed_mode() {
-    std::cout << "🚀 ENABLING LUDICROUS SPEED MODE!" << std::endl;
+void PerformanceCache::enable_maximum_performance_mode() {
+    std::cout << " ENABLING optimized MODE!" << std::endl;
     
     // Increase cache sizes for maximum performance
     inline_cache_->set_max_entries(5000);
@@ -543,7 +543,7 @@ void PerformanceCache::enable_ludicrous_speed_mode() {
     ultra_fast_method_cache.clear();
     cache_generation++;
     
-    std::cout << "✅ LUDICROUS SPEED mode activated!" << std::endl;
+    std::cout << " optimized mode activated!" << std::endl;
     std::cout << "   - Ultra-fast property caching enabled" << std::endl;
     std::cout << "   - Ultra-fast method caching enabled" << std::endl;
     std::cout << "   - Thread-local optimizations active" << std::endl;

@@ -7,6 +7,7 @@
 #include "Object.h"
 #include "Context.h"
 #include "Value.h"
+#include "InlineCache.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
 #include <sstream>
@@ -19,6 +20,9 @@ std::unordered_map<std::pair<Shape*, std::string>, Shape*, Object::ShapeTransiti
 std::unordered_map<std::string, std::string> Object::interned_keys_;
 uint32_t Shape::next_shape_id_ = 1;
 
+// Global performance cache for optimized property access
+static PerformanceCache* g_performance_cache = nullptr;
+
 // Global root shape
 static Shape* g_root_shape = nullptr;
 
@@ -28,6 +32,12 @@ static Shape* g_root_shape = nullptr;
 
 Object::Object(ObjectType type) {
     header_.shape = Shape::get_root_shape();
+    
+    // DEBUG: Check if shape creation failed
+    if (!header_.shape) {
+        throw std::runtime_error("Failed to get root shape");
+    }
+    
     header_.prototype = nullptr;
     header_.type = type;
     header_.flags = 0;
@@ -97,7 +107,25 @@ bool Object::has_own_property(const std::string& key) const {
     return false;
 }
 
+// Performance cache management
+void Object::set_global_performance_cache(PerformanceCache* cache) {
+    g_performance_cache = cache;
+}
+
+PerformanceCache* Object::get_global_performance_cache() {
+    return g_performance_cache;
+}
+
 Value Object::get_property(const std::string& key) const {
+    // optimized: Try inline cache first for maximum performance
+    if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+        Value cached_result;
+        if (g_performance_cache->get_inline_cache()->try_get_property(
+                const_cast<Object*>(this), key, cached_result)) {
+            // Cache hit! Return immediately for optimized
+            return cached_result;
+        }
+    }
     // Handle Function objects explicitly here since virtual dispatch seems problematic
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
@@ -217,6 +245,11 @@ Value Object::get_property(const std::string& key) const {
     
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
+        // optimized: Cache the successful property access
+        if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+            g_performance_cache->get_inline_cache()->cache_property(
+                const_cast<Object*>(this), key, result);
+        }
         return result;
     }
     
@@ -225,6 +258,11 @@ Value Object::get_property(const std::string& key) const {
     while (current) {
         result = current->get_own_property(key);
         if (!result.is_undefined()) {
+            // optimized: Cache prototype chain property access
+            if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+                g_performance_cache->get_inline_cache()->cache_property(
+                    const_cast<Object*>(this), key, result);
+            }
             return result;
         }
         current = current->get_prototype();
@@ -240,25 +278,8 @@ Value Object::get_own_property(const std::string& key) const {
         return get_element(index);
     }
     
-    // Check if this property has a descriptor with getter/setter
-    if (descriptors_) {
-        auto desc_it = descriptors_->find(key);
-        if (desc_it != descriptors_->end()) {
-            const PropertyDescriptor& desc = desc_it->second;
-            if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                // This is an accessor property with a getter
-                // For now, handle cookie specially since we need WebAPI
-                if (key == "cookie") {
-                    // Return empty string for now - the actual getter call happens in MemberExpression
-                    return Value("");
-                }
-                // TODO: Call the getter function properly with Context
-            }
-            if (desc.is_data_descriptor()) {
-                return desc.get_value();
-            }
-        }
-    }
+    // FIRST: Check normal property storage (shape and overflow)
+    // This handles regular properties set via obj.prop = value
     
     // Check shape
     if (header_.shape->has_property(key)) {
@@ -275,6 +296,42 @@ Value Object::get_own_property(const std::string& key) const {
             return it->second;
         }
     }
+    
+    // SECOND: Only check descriptors for explicitly defined accessor properties
+    if (descriptors_) {
+        auto desc_it = descriptors_->find(key);
+        if (desc_it != descriptors_->end()) {
+            const PropertyDescriptor& desc = desc_it->second;
+            if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                // This is an accessor property with a getter
+                // For now, handle cookie specially since we need WebAPI
+                if (key == "cookie") {
+                    // Return empty string for now - the actual getter call happens in MemberExpression
+                    return Value("");
+                }
+                // Call the getter function with proper context
+                Object* getter = desc.get_getter();
+                if (getter) {
+                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    if (getter_fn) {
+                        // DESIGN NOTE: This getter function cannot be called here because 
+                        // Object::get_property() doesn't have access to a Context.
+                        // Proper getter execution happens in AST evaluation (MemberExpression)
+                        // or Context::get_property() where a Context is available.
+                        // 
+                        // For now, return undefined to indicate the property exists but 
+                        // cannot be evaluated without proper context.
+                        return Value(); // Return undefined - getter needs context to execute
+                    }
+                }
+            }
+            if (desc.is_data_descriptor()) {
+                return desc.get_value();
+            }
+        }
+    }
+    
+    // Property not found in any storage location
     
     return Value(); // undefined
 }
@@ -589,11 +646,32 @@ std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
-            // Simplified callback execution for now - will improve later
-            // TODO: Implement proper callback execution without infinite loops
-            Value mapped_value = Value(element.to_number() * 2.0);  // Basic transformation
-            
-            result->set_element(i, mapped_value);
+            // Proper callback execution with safeguards against infinite loops
+            if (callback) {
+                try {
+                    // Prevent array modification during iteration by capturing length
+                    // Call callback with (element, index, array) as per ECMAScript spec
+                    std::vector<Value> args = {
+                        element,
+                        Value(static_cast<double>(i)),
+                        Value(this)
+                    };
+                    
+                    Value mapped_value = callback->call(ctx, args);
+                    if (!ctx.has_exception()) {
+                        result->set_element(i, mapped_value);
+                    } else {
+                        // Exception in callback - stop iteration
+                        break;
+                    }
+                } catch (const std::exception& e) {
+                    // Callback execution failed - set undefined for this element
+                    result->set_element(i, Value());
+                }
+            } else {
+                // No callback provided - return original element
+                result->set_element(i, element);
+            }
         }
     }
     
@@ -788,6 +866,34 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     return true;
 }
 
+void Object::clear_properties() {
+    // Clear all property storage for object pool reuse
+    properties_.clear();
+    elements_.clear();
+    
+    // Reset overflow properties and descriptors
+    if (overflow_properties_) {
+        overflow_properties_->clear();
+    }
+    if (descriptors_) {
+        descriptors_->clear();
+    }
+    
+    // Reset insertion order tracking
+    property_insertion_order_.clear();
+    
+    // Reset to root shape
+    header_.shape = Shape::get_root_shape();
+    header_.property_count = 0;
+    
+    // Reset object to ordinary type
+    header_.type = ObjectType::Ordinary;
+    header_.flags = 0;
+    
+    // Update hash code
+    update_hash_code();
+}
+
 void Object::transition_shape(const std::string& key, PropertyAttributes attrs) {
     Shape* new_shape = header_.shape->add_property(key, attrs);
     header_.shape = new_shape;
@@ -963,6 +1069,81 @@ std::vector<std::string> Object::internal_own_keys() const {
 
 namespace ObjectFactory {
 
+// optimized Memory Pool Optimization
+// Pre-allocated object pools for common types to reduce allocation overhead
+static std::vector<std::unique_ptr<Object>> object_pool_;
+static std::vector<std::unique_ptr<Object>> array_pool_;
+static size_t pool_size_ = 5000; // Ludicrous pool size for 5-7M ops/sec
+static bool pools_initialized_ = false;
+
+// Initialize memory pools for optimized
+void initialize_memory_pools() {
+    if (pools_initialized_) return;
+    
+    // Pre-allocate objects for the pool
+    object_pool_.reserve(pool_size_);
+    array_pool_.reserve(pool_size_);
+    
+    // Fill object pool
+    for (size_t i = 0; i < pool_size_; ++i) {
+        object_pool_.push_back(std::make_unique<Object>(Object::ObjectType::Ordinary));
+    }
+    
+    // Fill array pool  
+    for (size_t i = 0; i < pool_size_; ++i) {
+        array_pool_.push_back(std::make_unique<Object>(Object::ObjectType::Array));
+    }
+    
+    pools_initialized_ = true;
+    // Memory pools initialized
+}
+
+// Get object from pool or create new one
+std::unique_ptr<Object> get_pooled_object() {
+    if (!pools_initialized_) initialize_memory_pools();
+    
+    if (!object_pool_.empty()) {
+        auto obj = std::move(object_pool_.back());
+        object_pool_.pop_back();
+        
+        // Reset object state safely without destructor call
+        obj->clear_properties();
+        
+        return obj;
+    }
+    
+    // Pool empty, create new object
+    return std::make_unique<Object>(Object::ObjectType::Ordinary);
+}
+
+// Get array from pool or create new one
+std::unique_ptr<Object> get_pooled_array() {
+    if (!pools_initialized_) initialize_memory_pools();
+    
+    if (!array_pool_.empty()) {
+        auto array = std::move(array_pool_.back());
+        array_pool_.pop_back();
+        
+        // Simply return the existing array - no dangerous reset needed
+        return array;
+    }
+    
+    // Pool empty, create new array
+    return std::make_unique<Object>(Object::ObjectType::Array);
+}
+
+// Return object to pool (for future use)
+void return_to_pool(std::unique_ptr<Object> obj) {
+    if (!obj || !pools_initialized_) return;
+    
+    if (obj->get_type() == Object::ObjectType::Ordinary && object_pool_.size() < pool_size_) {
+        object_pool_.push_back(std::move(obj));
+    } else if (obj->get_type() == Object::ObjectType::Array && array_pool_.size() < pool_size_) {
+        array_pool_.push_back(std::move(obj));
+    }
+    // Otherwise, let unique_ptr destructor handle cleanup
+}
+
 // Static array prototype reference
 static Object* array_prototype_object = nullptr;
 
@@ -975,11 +1156,23 @@ Object* get_array_prototype() {
 }
 
 std::unique_ptr<Object> create_object(Object* prototype) {
-    return std::make_unique<Object>(prototype, Object::ObjectType::Ordinary);
+    try {
+        // optimized: Use memory pool for common case (no prototype)
+        if (!prototype) {
+            return get_pooled_object();
+        }
+        
+        // Create with prototype (less common, no pooling)
+        return std::make_unique<Object>(prototype, Object::ObjectType::Ordinary);
+    } catch (...) {
+        // Object construction failed
+        return nullptr;
+    }
 }
 
 std::unique_ptr<Object> create_array(uint32_t length) {
-    auto array = std::make_unique<Object>(Object::ObjectType::Array);
+    // optimized: Use memory pool for array creation
+    auto array = get_pooled_array();
     array->set_length(length);
     
     // Set Array.prototype as prototype if available

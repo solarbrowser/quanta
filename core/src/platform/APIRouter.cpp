@@ -27,7 +27,7 @@ void APIRouter::initialize(RoutePreference default_preference) {
     
     initialized_ = true;
     
-    std::cout << "✅ APIRouter initialized with preference: " << static_cast<int>(default_preference) << std::endl;
+    std::cout << " APIRouter initialized with preference: " << static_cast<int>(default_preference) << std::endl;
 }
 
 void APIRouter::set_preference(APICategory category, RoutePreference preference) {

@@ -1,5 +1,8 @@
 #include "core/include/Engine.h"
 #include "core/include/Async.h"
+#include "core/include/Generator.h"
+#include "core/include/Iterator.h"
+#include "core/include/ProxyReflect.h"
 #include "lexer/include/Lexer.h"
 #include "parser/include/Parser.h"
 #include <iostream>
@@ -7,6 +10,7 @@
 #include <sstream>
 #include <fstream>
 #include <cstdio>
+#include <chrono>
 
 #ifdef _WIN32
 #include <conio.h>
@@ -63,14 +67,12 @@ private:
     
 public:
     QuantaConsole() {
-        // ULTRA FAST ENGINE CREATION - V8 Style!
+        // Initialize engine with optimized configuration
         engine_ = std::make_unique<Engine>();
         bool init_result = engine_->initialize();  // Minimal lazy init!
         
-        if (init_result) {
-            // Engine initialized
-        } else {
-            std::cout << "❌ Engine initialization failed!" << std::endl;
+        if (!init_result) {
+            std::cout << "Engine initialization failed!" << std::endl;
         }
     }
     
@@ -162,60 +164,28 @@ public:
     
     void evaluate_expression(const std::string& input, bool show_prompt = true) {
         try {
-            Lexer lexer(input);
-            TokenSequence tokens = lexer.tokenize();
+            auto start = std::chrono::high_resolution_clock::now();
             
-            if (tokens.size() == 0) {
-                // Fast mode - no undefined output
+            auto result = engine_->execute(input, "<console>");
+            
+            auto end = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+            
+            if (!result.success) {
+                std::cout << RED << "Error: " << result.error_message << RESET << std::endl;
                 return;
             }
             
-            Parser parser(tokens);
-            std::unique_ptr<ASTNode> ast;
-            
-            // Try parsing as complete program first, fallback to expression
-            auto program = parser.parse_program();
-            if (program && program->get_statements().size() > 0) {
-                // Execute all statements in the program
-                Context* ctx = engine_->get_global_context();
-                Value result;
-                for (const auto& statement : program->get_statements()) {
-                    result = statement->evaluate(*ctx);
-                    if (ctx->has_exception()) {
-                        break;
-                    }
-                }
-                
-                if (ctx->has_exception()) {
-                    Value exception = ctx->get_exception();
-                    std::cout << RED << "Error: " << exception.to_string() << RESET << "\n";
-                    ctx->clear_exception();
-                } else {
-                    if (show_prompt) {
-                        std::cout << MAGENTA << result.to_string() << RESET << "\n";
-                    }
-                }
-                return;
-            } else {
-                ast = parser.parse_expression();
+            // Only show result if it's not undefined
+            if (!result.value.is_undefined()) {
+                std::cout << GREEN << result.value.to_string() << RESET << std::endl;
             }
             
-            // Evaluate the AST
-            Context* ctx = engine_->get_global_context();
-            Value result = ast->evaluate(*ctx);
+            std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
             
-            if (ctx->has_exception()) {
-                Value exception = ctx->get_exception();
-                std::cout << RED << "Error: " << exception.to_string() << RESET << "\n";
-                ctx->clear_exception();
-            } else {
-                if (show_prompt) {
-                    std::cout << MAGENTA << result.to_string() << RESET << "\n";
-                }
-            }
-            
+            return;
         } catch (const std::exception& e) {
-            std::cout << RED << "Error: " << e.what() << RESET << "\n";
+            std::cout << RED << "Error: " << e.what() << RESET << std::endl;
         }
     }
     

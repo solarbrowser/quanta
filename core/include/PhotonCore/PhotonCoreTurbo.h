@@ -11,61 +11,77 @@
 
 namespace Quanta {
 
-// 💥 PHOTON CORE TURBO - Ultra-performance engine!
+// CPU optimization and performance acceleration
 class PhotonCoreTurbo {
 public:
-    // 🚀 TURBO BOOST - instant speed increase
-    static inline void turbo_boost() {
-        turbo_level_++;
-        if (turbo_level_ > MAX_TURBO_LEVEL) {
-            turbo_level_ = MAX_TURBO_LEVEL;
+    static inline void optimization_boost() {
+        optimization_level_++;
+        if (optimization_level_ > MAX_OPTIMIZATION_LEVEL) {
+            optimization_level_ = MAX_OPTIMIZATION_LEVEL;
         }
     }
     
-    // ⚡ NITRO INJECTION - extreme acceleration
-    static inline void nitro_injection() {
-        turbo_level_ += 10; // MASSIVE BOOST!
-        nitro_injections_++;
+    static inline void acceleration_injection() {
+        optimization_level_ += 10;
+        acceleration_cycles_++;
     }
     
-    // 💫 SPEED MULTIPLIER - current acceleration
-    static inline uint32_t speed_multiplier() {
-        return turbo_level_ * 100; // 100x multiplier per level
+    static inline uint32_t get_performance_multiplier() {
+        return optimization_level_ * 100;
     }
     
-    // 🌟 TURBO CHARGED - check if at maximum
-    static inline bool is_turbo_charged() {
-        return turbo_level_ >= MAX_TURBO_LEVEL;
+    static inline bool is_fully_optimized() {
+        return optimization_level_ >= MAX_OPTIMIZATION_LEVEL;
     }
     
-    // 💥 OVERDRIVE - beyond maximum limits
-    static inline void engage_overdrive() {
-        overdrive_active_ = true;
-        turbo_level_ = MAX_TURBO_LEVEL + 50; // Beyond limits!
+    static inline void enable_advanced_optimization() {
+        advanced_optimization_active_ = true;
+        optimization_level_ = MAX_OPTIMIZATION_LEVEL + 50;
     }
     
-    // 🔥 TURBO RESET - clean performance slate
-    static inline void turbo_reset() {
-        turbo_level_ = 0;
-        nitro_injections_ = 0;
-        overdrive_active_ = false;
+    static inline void reset_optimization() {
+        optimization_level_ = 0;
+        acceleration_cycles_ = 0;
+        advanced_optimization_active_ = false;
     }
     
-    // ⚡ PERFORMANCE RATING
-    static inline const char* performance_rating() {
-        if (overdrive_active_) return "🔥 OVERDRIVE";
-        if (turbo_level_ >= 50) return "💥 MAXIMUM TURBO";
-        if (turbo_level_ >= 25) return "🚀 HIGH TURBO";
-        if (turbo_level_ >= 10) return "⚡ TURBO ACTIVE";
-        return "💫 NORMAL";
+    static inline const char* get_performance_rating() {
+        if (maximum_performance_active_) return "HIGH";
+        if (advanced_optimization_active_) return "ADVANCED";
+        if (optimization_level_ >= 50) return "HIGH";
+        if (optimization_level_ >= 25) return "MEDIUM";
+        if (optimization_level_ >= 10) return "ACTIVE";
+        return "NORMAL";
+    }
+    
+    static void enable_maximum_optimization();
+    static void cascade_optimization();
+    static double calculate_performance_factor();
+    static void enable_peak_performance();
+    static void initialize_cpu_optimization();
+    
+    static inline uint64_t get_cpu_cycles() { return cpu_cycles_; }
+    static inline uint32_t get_performance_boosts() { return performance_boosts_; }
+    static inline bool is_maximum_performance_active() { return maximum_performance_active_; }
+    
+    static inline void apply_performance_boost() {
+        optimization_level_ += 100;
+        performance_boosts_++;
+        cpu_cycles_ += 1000000;
     }
 
 private:
-    static constexpr uint32_t MAX_TURBO_LEVEL = 100;
+    static constexpr uint32_t MAX_OPTIMIZATION_LEVEL = 100;
+    static constexpr uint32_t PERFORMANCE_MULTIPLIER = 1000;
+    static constexpr double MAXIMUM_PERFORMANCE_MULTIPLIER = 1000.0;
+    static constexpr double ADVANCED_OPTIMIZATION_MULTIPLIER = 10.0;
     
-    static uint32_t turbo_level_;
-    static uint32_t nitro_injections_;
-    static bool overdrive_active_;
+    static uint32_t optimization_level_;
+    static uint32_t acceleration_cycles_;
+    static bool advanced_optimization_active_;
+    static uint64_t cpu_cycles_;
+    static uint32_t performance_boosts_;
+    static bool maximum_performance_active_;
 };
 
 } // namespace Quanta

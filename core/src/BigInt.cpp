@@ -63,7 +63,7 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         }
         
         // Multiply current value by 10 and add digit
-        uint32_t carry = c - '0';
+        uint64_t carry = c - '0';
         for (auto& digit : digits_) {
             uint64_t temp = static_cast<uint64_t>(digit) * 10 + carry;
             digit = temp & 0xFFFFFFFF;
@@ -72,7 +72,7 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         
         while (carry > 0) {
             digits_.push_back(static_cast<uint32_t>(carry & 0xFFFFFFFFULL));
-            carry >>= 32;
+            carry = carry >> 32;
         }
     }
     

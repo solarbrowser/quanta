@@ -13,6 +13,7 @@
 #include <string>
 #include <memory>
 #include <functional>
+#include <chrono>
 
 namespace Quanta {
 
@@ -22,6 +23,7 @@ class Shape;
 class Context;
 class ASTNode;
 class Parameter;
+class PerformanceCache;
 
 /**
  * High-performance JavaScript object implementation
@@ -135,6 +137,10 @@ public:
     PropertyDescriptor get_property_descriptor(const std::string& key) const;
     bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     
+    // Performance optimization
+    static void set_global_performance_cache(PerformanceCache* cache);
+    static PerformanceCache* get_global_performance_cache();
+    
     // Object operations
     bool is_extensible() const;
     void prevent_extensions();
@@ -205,6 +211,8 @@ protected:
     bool store_in_overflow(const std::string& key, const Value& value);
 
 public:
+    // Clear all properties for object pool reuse
+    void clear_properties();
     // Hash function for shape transitions
     struct ShapeTransitionHash {
         std::size_t operator()(const std::pair<Shape*, std::string>& p) const {
@@ -373,6 +381,11 @@ private:
     Object* prototype_;                                  // Function prototype
     bool is_native_;                                     // Is native C++ function
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_; // Native function
+    
+    // Performance optimization tracking
+    mutable uint32_t execution_count_;                   // Number of times function was called
+    mutable bool is_hot_;                               // Is this a hot function (frequently called)
+    mutable std::chrono::high_resolution_clock::time_point last_call_time_; // Last call timestamp
 
 public:
     // Constructors
@@ -397,6 +410,12 @@ public:
     size_t get_arity() const { return parameters_.size(); }
     bool is_native() const { return is_native_; }
     
+    // Performance tracking
+    uint32_t get_execution_count() const { return execution_count_; }
+    bool is_hot_function() const { return is_hot_; }
+    void mark_as_hot() const { is_hot_ = true; }
+    void reset_performance_stats() const { execution_count_ = 0; is_hot_ = false; }
+    
     // Function execution
     virtual Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
     Value construct(Context& ctx, const std::vector<Value>& args);
@@ -415,6 +434,12 @@ public:
 
 // Object factory functions
 namespace ObjectFactory {
+    // Memory pool management for optimized
+    void initialize_memory_pools();
+    std::unique_ptr<Object> get_pooled_object();
+    std::unique_ptr<Object> get_pooled_array();
+    void return_to_pool(std::unique_ptr<Object> obj);
+    
     std::unique_ptr<Object> create_object(Object* prototype = nullptr);
     std::unique_ptr<Object> create_array(uint32_t length = 0);
     std::unique_ptr<Object> create_function();

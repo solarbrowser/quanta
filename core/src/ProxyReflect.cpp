@@ -263,7 +263,7 @@ void Proxy::throw_if_revoked(Context& ctx) const {
     }
 }
 
-// 🚀 PROXY OBJECT METHOD OVERRIDES - TRAP INTEGRATION 🚀
+//  PROXY OBJECT METHOD OVERRIDES - TRAP INTEGRATION 
 
 Value Proxy::get_property(const std::string& key) const {
     if (is_revoked()) {

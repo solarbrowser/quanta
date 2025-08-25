@@ -68,6 +68,10 @@ private:
     uint32_t recompile_threshold_;
     bool jit_enabled_;
     
+    // PHASE 2: Integration with Phase 1 hot function detection
+    std::unordered_map<class Function*, CompiledCode> function_cache_;
+    uint32_t function_compile_threshold_;
+    
     // Performance metrics
     uint32_t total_compilations_;
     uint32_t cache_hits_;
@@ -75,7 +79,7 @@ private:
     uint32_t inline_cache_hits_;
     bool type_feedback_enabled_;
     
-    // LUDICROUS SPEED optimization flags
+    // optimization flags
     bool ultra_fast_mode_;
     bool cpu_cache_optimized_;
     
@@ -124,9 +128,16 @@ public:
     std::function<Value(Context&)> compile_advanced_optimization(ASTNode* node);
     std::function<Value(Context&)> compile_maximum_optimization(ASTNode* node);
     
+    // PHASE 2: Hot Function JIT Compilation
+    bool should_compile_function(class Function* func);
+    bool try_execute_compiled_function(class Function* func, Context& ctx, const std::vector<Value>& args, Value& result);
+    bool compile_hot_function(class Function* func);
+    void record_function_execution(class Function* func);
+    
     // Cache management
     void clear_cache();
     void invalidate_cache(ASTNode* node);
+    void invalidate_function_cache(class Function* func);
     
     // Performance metrics
     uint32_t get_total_compilations() const { return total_compilations_; }

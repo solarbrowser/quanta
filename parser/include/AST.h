@@ -297,6 +297,7 @@ public:
         LESS_EQUAL,     // <=
         GREATER_EQUAL,  // >=
         INSTANCEOF,     // instanceof
+        IN,             // in
         
         // Logical
         LOGICAL_AND,    // &&
@@ -750,6 +751,10 @@ public:
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_update() const { return update_.get(); }
     ASTNode* get_body() const { return body_.get(); }
+    
+    // V8-style loop optimization methods
+    bool can_optimize_as_simple_loop() const;
+    Value execute_optimized_loop(Context& ctx) const;
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1357,6 +1362,8 @@ public:
 class Program : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
+    
+    void check_use_strict_directive(Context& ctx);
 
 public:
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)

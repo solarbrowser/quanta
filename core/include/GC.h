@@ -98,10 +98,14 @@ private:
     bool stop_gc_thread_;
     uint32_t collection_cycles_;
     
-    // LUDICROUS SPEED GC optimization flags
+    // PhotonCore GC optimization flags
     bool ultra_fast_gc_;
     bool parallel_collection_;
     bool zero_copy_optimization_;
+    
+    // Heavy operation optimization
+    bool heavy_operation_mode_;
+    size_t emergency_cleanup_threshold_;
     
     // Statistics
     Statistics stats_;
@@ -135,6 +139,11 @@ public:
     void collect_old_generation();
     void force_full_collection();
     
+    // Ultra-fast collection methods
+    void collect_young_generation_ultra_fast();
+    void collect_old_generation_ultra_fast();
+    void force_ultra_fast_collection();
+    
     // Memory management
     bool should_trigger_gc() const;
     size_t get_heap_size() const;
@@ -152,6 +161,13 @@ public:
     // Thread management
     void start_gc_thread();
     void stop_gc_thread();
+    
+    // Heavy operation optimization methods
+    void enable_heavy_operation_mode();
+    void disable_heavy_operation_mode();
+    void emergency_cleanup();
+    void prepare_for_heavy_load(size_t expected_objects);
+    bool is_heavy_operation_mode() const { return heavy_operation_mode_; }
     
     // Debugging
     void print_heap_info() const;
@@ -183,15 +199,15 @@ private:
     
     // Background GC thread
     void gc_thread_main();
-    
-    // LUDICROUS SPEED ultra-fast collection methods
-    void collect_young_generation_ultra_fast();
-    void collect_old_generation_ultra_fast();
-    void force_ultra_fast_collection();
+
+    // PhotonCore collection methods
+    void collect_young_generation_photon_core();
+    void collect_old_generation_photon_core();
+    void force_photon_core_collection();
     void collect_young_generation_parallel();
     void collect_old_generation_parallel();
     
-    // Ultra-fast helper methods
+    // helper methods
     void mark_objects_ultra_fast();
     void mark_object_ultra_fast(Object* obj);
     void sweep_generation_ultra_fast(std::vector<ManagedObject*>& generation);

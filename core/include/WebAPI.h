@@ -4,6 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+// burada cunku ayristiramadim buildde sorun cikarmasin diye burada henuz bir onemi yok ama bu dosyanın <--
+
+
 #ifndef QUANTA_WEBAPI_H
 #define QUANTA_WEBAPI_H
 

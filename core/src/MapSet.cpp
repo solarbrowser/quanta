@@ -123,8 +123,30 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
     
     // If iterable argument provided, populate map
     if (!args.empty() && args[0].is_object()) {
-        // TODO: Implement iteration protocol for proper initialization
-        // For now, just create empty map
+        // Use iteration protocol to initialize map from iterable
+        auto iterator = IterableUtils::get_iterator(args[0], ctx);
+        if (iterator) {
+            while (true) {
+                auto result = iterator->next();
+                if (result.done) {
+                    break;
+                }
+                
+                // Each iteration value should be a [key, value] pair
+                if (result.value.is_object() && result.value.as_object()->is_array()) {
+                    Object* pair = result.value.as_object();
+                    if (pair->get_length() >= 2) {
+                        Value key = pair->get_element(0);
+                        Value value = pair->get_element(1);
+                        map->set(key, value);
+                    }
+                } else {
+                    // Invalid entry format - ignore or throw error
+                    ctx.throw_exception(Value("Iterator value is not a [key, value] pair"));
+                    break;
+                }
+            }
+        }
     }
     
     return Value(map.release());
@@ -380,7 +402,21 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
                 set->add(element);
             }
         }
-        // TODO: Implement iteration protocol for other iterables
+        // Use iteration protocol for other iterables
+        else {
+            auto iterator = IterableUtils::get_iterator(args[0], ctx);
+            if (iterator) {
+                while (true) {
+                    auto result = iterator->next();
+                    if (result.done) {
+                        break;
+                    }
+                    
+                    // Add each iteration value to the set
+                    set->add(result.value);
+                }
+            }
+        }
     }
     
     return Value(set.release());

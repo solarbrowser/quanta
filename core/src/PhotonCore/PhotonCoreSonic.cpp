@@ -8,7 +8,7 @@
 
 namespace Quanta {
 
-// 💫 PHOTON CORE SONIC static member definitions
+//  PHOTON CORE SONIC static member definitions
 alignas(64) char PhotonCoreSonic::sonic_memory_pool_[PhotonCoreSonic::SONIC_POOL_SIZE];
 size_t PhotonCoreSonic::sonic_pool_offset_ = 0;
 

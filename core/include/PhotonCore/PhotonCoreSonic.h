@@ -16,10 +16,10 @@
 
 namespace Quanta {
 
-// 💫 PHOTON CORE SONIC - Light-speed sonic computing!
+//  PHOTON CORE SONIC - Light-speed sonic computing!
 class PhotonCoreSonic {
 public:
-    // 🚀 SONIC BOOM memory allocation - faster than malloc!
+    //  SONIC BOOM memory allocation - faster than malloc!
     static inline void* sonic_alloc(size_t size) {
         // Align to sonic speed boundaries (64-byte cache lines)
         size = (size + 63) & ~63ULL;
@@ -38,7 +38,7 @@ public:
 #endif
     }
     
-    // 💫 SONIC WAVE memory copy - transcends physics!
+    //  SONIC WAVE memory copy - transcends physics!
     static inline void sonic_memcpy(void* dest, const void* src, size_t size) {
         // Hyper-optimized memory copy using sonic algorithms
         char* d = static_cast<char*>(dest);
@@ -59,12 +59,12 @@ public:
         }
     }
     
-    // ⚡ SONIC RESET - instant pool cleanup
+    //  SONIC RESET - instant pool cleanup
     static inline void sonic_reset() {
         sonic_pool_offset_ = 0;
     }
     
-    // 🌟 SONIC SPEED measurement
+    //  SONIC SPEED measurement
     static inline bool is_sonic_speed_achieved() {
         return sonic_pool_offset_ > 0; // If we're using sonic pool, we're at sonic speed!
     }

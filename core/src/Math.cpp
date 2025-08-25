@@ -14,6 +14,14 @@
 #include <limits>
 #include <iostream>
 
+// Enable SIMD optimizations for math operations
+#ifdef __AVX2__
+#include <immintrin.h>
+#endif
+#ifdef __SSE2__
+#include <emmintrin.h>
+#endif
+
 namespace Quanta {
 
 // Static member initialization

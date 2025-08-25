@@ -21,14 +21,16 @@ GarbageCollector::GarbageCollector()
     : collection_mode_(CollectionMode::Automatic),
       young_generation_threshold_(4 * 1024),         // 4KB - PHOTON CORE SPEED!
       old_generation_threshold_(4 * 1024 * 1024),    // 4MB - Reduced for SPEED
-      heap_size_limit_(100 * 1024 * 1024),           // 100MB - More memory for LUDICROUS SPEED
-      gc_trigger_ratio_(0.5),                        // AGGRESSIVE threshold - 50%
+      heap_size_limit_(512 * 1024 * 1024),           // 512MB - More memory for heavy operations
+      gc_trigger_ratio_(0.3),                        // ULTRA-AGGRESSIVE threshold - 30%
       gc_running_(false),
       stop_gc_thread_(false),
       collection_cycles_(0),
-      ultra_fast_gc_(true),                          // LUDICROUS SPEED GC mode
+      ultra_fast_gc_(true),                          // High-performance GC mode
       parallel_collection_(true),                    // Multi-threaded collection
-      zero_copy_optimization_(true) {                // Zero-copy memory optimization
+      zero_copy_optimization_(true),                 // Zero-copy memory optimization
+      heavy_operation_mode_(false),                  // Heavy operation optimization mode
+      emergency_cleanup_threshold_(400 * 1024 * 1024) {  // 400MB emergency threshold
 }
 
 GarbageCollector::~GarbageCollector() {
@@ -64,16 +66,16 @@ void GarbageCollector::register_object(Object* obj, size_t size) {
         stats_.peak_memory_usage = current_heap_size;
     }
     
-    // LUDICROUS SPEED GC triggering with ultra-aggressive thresholds
+    // High-performance GC triggering with aggressive thresholds
     if (collection_mode_ == CollectionMode::Automatic && should_trigger_gc()) {
         static auto last_gc_time = std::chrono::high_resolution_clock::now();
         auto now = std::chrono::high_resolution_clock::now();
         auto time_since_last = std::chrono::duration_cast<std::chrono::microseconds>(now - last_gc_time);
         
         if (ultra_fast_gc_) {
-            // ULTRA-FAST GC with microsecond precision
-            if (time_since_last.count() > 500) { // 0.5ms minimum between GCs for MAXIMUM SPEED
-                if (young_generation_.size() > 50) { // ULTRA-AGGRESSIVE threshold
+            // High-performance GC with microsecond precision
+            if (time_since_last.count() > 500) { // 0.5ms minimum between GCs for high performance
+                if (young_generation_.size() > 50) { // Aggressive threshold
                     if (parallel_collection_) {
                         // Launch parallel young generation collection
                         std::thread([this]() { collect_young_generation_parallel(); }).detach();
@@ -242,15 +244,15 @@ bool GarbageCollector::should_trigger_gc() const {
     size_t current_heap_size = get_heap_size();
     
     if (ultra_fast_gc_) {
-        // LUDICROUS SPEED GC triggering - MAXIMUM PERFORMANCE
+        // High-performance GC triggering
         
         // Ultra-aggressive heap size trigger
         if (current_heap_size > heap_size_limit_ * gc_trigger_ratio_) {
             return true;
         }
         
-        // ULTRA-FAST young generation trigger - MAXIMUM RESPONSIVENESS
-        if (young_generation_.size() > 50) { // Ultra-low threshold for SPEED
+        // High-performance young generation trigger
+        if (young_generation_.size() > 50) { // Low threshold for performance
             return true;
         }
         
@@ -550,12 +552,12 @@ void GarbageCollector::cleanup_weak_references() {
 void GarbageCollector::gc_thread_main() {
     while (!stop_gc_thread_) {
         if (ultra_fast_gc_) {
-            // LUDICROUS SPEED - microsecond-level checking
+            // High-performance - microsecond-level checking
             std::this_thread::sleep_for(std::chrono::microseconds(100)); // 0.1ms ultra-fast checking
             
             if (should_trigger_gc()) {
                 if (parallel_collection_) {
-                    // PARALLEL COLLECTION for MAXIMUM SPEED
+                    // Parallel collection for high performance
                     if (collection_cycles_ % 5 == 0) {
                         // Launch parallel full collection every 5th cycle
                         std::thread([this]() { collect_old_generation_parallel(); }).detach();
@@ -709,7 +711,7 @@ void MemoryPool::merge_free_blocks() {
 }
 
 //=============================================================================
-// LUDICROUS SPEED GC Methods - Ultra-Fast Collection
+// High-Performance GC Methods
 //=============================================================================
 
 void GarbageCollector::collect_young_generation_ultra_fast() {
@@ -720,7 +722,7 @@ void GarbageCollector::collect_young_generation_ultra_fast() {
     
     std::lock_guard<std::mutex> lock(gc_mutex_);
     
-    // ULTRA-FAST marking - simplified algorithm
+    // High-performance marking - simplified algorithm
     mark_objects_ultra_fast();
     
     // Lightning-fast sweep of young generation only
@@ -759,7 +761,7 @@ void GarbageCollector::force_ultra_fast_collection() {
     
     std::lock_guard<std::mutex> lock(gc_mutex_);
     
-    // MAXIMUM SPEED full collection
+    // High-performance full collection
     mark_objects_ultra_fast();
     sweep_objects_ultra_fast();
     
@@ -779,7 +781,7 @@ void GarbageCollector::collect_young_generation_parallel() {
     
     std::unique_lock<std::mutex> lock(gc_mutex_);
     
-    // PARALLEL young generation collection for MAXIMUM SPEED
+    // Parallel young generation collection for high performance
     std::vector<std::thread> threads;
     const size_t thread_count = std::min(4u, std::thread::hardware_concurrency());
     
@@ -857,7 +859,7 @@ void GarbageCollector::collect_old_generation_parallel() {
 
 // Ultra-fast helper methods
 void GarbageCollector::mark_objects_ultra_fast() {
-    // LUDICROUS SPEED marking - minimal overhead
+    // optimized marking - minimal overhead
     for (auto* managed : managed_objects_) {
         managed->is_marked = false; // Clear marks ultra-fast
     }
@@ -883,7 +885,7 @@ void GarbageCollector::mark_object_ultra_fast(Object* obj) {
         managed->is_marked = true;
         managed->access_count += 2; // Bonus for ultra-fast marking
         
-        // Simplified recursive marking - MAXIMUM SPEED
+        // Simplified recursive marking for performance
         std::vector<std::string> keys = obj->get_enumerable_keys();
         for (const std::string& key : keys) {
             Value prop = obj->get_property(key);
@@ -895,7 +897,7 @@ void GarbageCollector::mark_object_ultra_fast(Object* obj) {
 }
 
 void GarbageCollector::sweep_generation_ultra_fast(std::vector<ManagedObject*>& generation) {
-    // ULTRA-FAST sweep with minimal overhead
+    // High-performance sweep with minimal overhead
     auto it = generation.begin();
     while (it != generation.end()) {
         auto* managed = *it;
@@ -915,14 +917,14 @@ void GarbageCollector::sweep_generation_ultra_fast(std::vector<ManagedObject*>& 
 }
 
 void GarbageCollector::sweep_objects_ultra_fast() {
-    // MAXIMUM SPEED sweep of all generations
+    // High-performance sweep of all generations
     sweep_generation_ultra_fast(young_generation_);
     sweep_generation_ultra_fast(old_generation_);
     // Skip permanent generation for SPEED
 }
 
 void GarbageCollector::promote_objects_ultra_fast() {
-    // LUDICROUS SPEED object promotion
+    // optimized object promotion
     auto it = young_generation_.begin();
     while (it != young_generation_.end()) {
         auto* managed = *it;
@@ -937,8 +939,8 @@ void GarbageCollector::promote_objects_ultra_fast() {
 }
 
 void GarbageCollector::detect_cycles_ultra_fast() {
-    // Simplified ultra-fast cycle detection
-    // Skip complex algorithms for MAXIMUM SPEED
+    // Simplified cycle detection
+    // Skip complex algorithms for performance
 }
 
 void GarbageCollector::break_cycles_ultra_fast() {
@@ -947,7 +949,7 @@ void GarbageCollector::break_cycles_ultra_fast() {
 }
 
 GarbageCollector::ManagedObject* GarbageCollector::find_managed_object_ultra_fast(Object* obj) {
-    // ULTRA-FAST object lookup with minimal overhead
+    // High-performance object lookup with minimal overhead
     for (auto* managed : managed_objects_) {
         if (managed->object == obj) {
             return managed;
@@ -976,6 +978,92 @@ void GarbageCollector::sweep_generation_parallel_worker(std::vector<ManagedObjec
             managed->is_marked = false; // Use as deletion flag
         }
     }
+}
+
+//=============================================================================
+// Heavy Operation Optimization Methods
+//=============================================================================
+
+void GarbageCollector::enable_heavy_operation_mode() {
+    std::lock_guard<std::mutex> lock(gc_mutex_);
+    heavy_operation_mode_ = true;
+    
+    // Adjust thresholds for heavy operations
+    heap_size_limit_ = 1024 * 1024 * 1024;  // 1GB for heavy ops
+    gc_trigger_ratio_ = 0.8;  // Less aggressive during heavy ops
+    
+    // Reserve larger pools
+    young_generation_.reserve(100000);  // 100K objects
+    old_generation_.reserve(500000);    // 500K objects
+    
+    std::cout << "🔥 HEAVY OPERATION MODE ENABLED - GC optimized for massive workloads" << std::endl;
+}
+
+void GarbageCollector::disable_heavy_operation_mode() {
+    std::lock_guard<std::mutex> lock(gc_mutex_);
+    
+    // Force cleanup before disabling
+    force_ultra_fast_collection();
+    
+    heavy_operation_mode_ = false;
+    
+    // Reset to normal thresholds
+    heap_size_limit_ = 512 * 1024 * 1024;  // 512MB normal
+    gc_trigger_ratio_ = 0.3;  // Aggressive again
+    
+    std::cout << "✅ HEAVY OPERATION MODE DISABLED - GC back to normal mode" << std::endl;
+}
+
+void GarbageCollector::emergency_cleanup() {
+    std::cout << "🚨 EMERGENCY CLEANUP TRIGGERED" << std::endl;
+    
+    // Immediate, aggressive cleanup
+    std::lock_guard<std::mutex> lock(gc_mutex_);
+    
+    // Force ultra-fast collection
+    force_ultra_fast_collection();
+    
+    // Additional emergency measures
+    size_t objects_freed = 0;
+    
+    // Aggressively clean young generation
+    auto it = young_generation_.begin();
+    while (it != young_generation_.end()) {
+        auto* managed = *it;
+        if (managed->access_count < 2) {  // Very aggressive threshold
+            managed_objects_.erase(managed);
+            delete managed->object;
+            delete managed;
+            it = young_generation_.erase(it);
+            objects_freed++;
+        } else {
+            ++it;
+        }
+    }
+    
+    stats_.total_deallocations += objects_freed;
+    std::cout << "🧹 EMERGENCY CLEANUP COMPLETE - Freed " << objects_freed << " objects" << std::endl;
+}
+
+void GarbageCollector::prepare_for_heavy_load(size_t expected_objects) {
+    std::lock_guard<std::mutex> lock(gc_mutex_);
+    
+    // Enable heavy operation mode
+    enable_heavy_operation_mode();
+    
+    // Pre-reserve capacity for expected load
+    young_generation_.reserve(expected_objects);
+    if (expected_objects > 100000) {
+        old_generation_.reserve(expected_objects / 2);
+    }
+    
+    // Set higher memory thresholds
+    if (expected_objects > 1000000) {  // 1M+ objects
+        heap_size_limit_ = 2048 * 1024 * 1024;  // 2GB
+        emergency_cleanup_threshold_ = 1800 * 1024 * 1024;  // 1.8GB
+    }
+    
+    std::cout << "🎯 GC PREPARED FOR HEAVY LOAD: " << expected_objects << " expected objects" << std::endl;
 }
 
 } // namespace Quanta

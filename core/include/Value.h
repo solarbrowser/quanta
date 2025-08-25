@@ -13,6 +13,11 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+
+// Forward declaration for UltraFastArray
+namespace Quanta {
+    class UltraFastArray;
+}
 #include <iostream>
 
 namespace Quanta {
@@ -39,7 +44,8 @@ public:
         Symbol,
         BigInt,
         Object,
-        Function
+        Function,
+        UltraFastArray
     };
 
 private:
@@ -53,6 +59,7 @@ private:
     static constexpr uint64_t PAYLOAD_MASK  = 0x0000FFFFFFFFFFFFULL;
     
     // Type tags for NaN-boxed values - avoiding collision with IEEE 754 quiet NaN pattern
+    // Using distinct bit patterns to avoid overlap
     static constexpr uint64_t TAG_UNDEFINED = 0x0001000000000000ULL;
     static constexpr uint64_t TAG_NULL      = 0x0002000000000000ULL;
     static constexpr uint64_t TAG_FALSE     = 0x0003000000000000ULL;
@@ -61,8 +68,8 @@ private:
     static constexpr uint64_t TAG_SYMBOL    = 0x0006000000000000ULL;
     static constexpr uint64_t TAG_BIGINT    = 0x0007000000000000ULL;
     // Skip 0x0008 to avoid collision with IEEE 754 quiet NaN (0x7FF8...)
-    static constexpr uint64_t TAG_OBJECT    = 0x0009000000000000ULL;
-    static constexpr uint64_t TAG_FUNCTION  = 0x000A000000000000ULL;
+    static constexpr uint64_t TAG_OBJECT    = 0x000A000000000000ULL;  // Changed from 0x0009 to 0x000A
+    static constexpr uint64_t TAG_FUNCTION  = 0x000B000000000000ULL;  // Changed from 0x000A to 0x000B
 
     union {
         uint64_t bits_;
@@ -90,20 +97,20 @@ public:
     explicit Value(int64_t i) : number_(static_cast<double>(i)) {}
     
     // String constructor
-    explicit Value(String* str) : bits_(QUIET_NAN | TAG_STRING | reinterpret_cast<uint64_t>(str)) {}
+    explicit Value(String* str) : bits_(QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(str) & PAYLOAD_MASK)) {}
     explicit Value(const std::string& str);
     
     // Symbol constructor
-    explicit Value(class Symbol* sym) : bits_(QUIET_NAN | TAG_SYMBOL | reinterpret_cast<uint64_t>(sym)) {}
+    explicit Value(class Symbol* sym) : bits_(QUIET_NAN | TAG_SYMBOL | (reinterpret_cast<uint64_t>(sym) & PAYLOAD_MASK)) {}
     
     // BigInt constructor
-    explicit Value(class BigInt* bigint) : bits_(QUIET_NAN | TAG_BIGINT | reinterpret_cast<uint64_t>(bigint)) {}
+    explicit Value(class BigInt* bigint) : bits_(QUIET_NAN | TAG_BIGINT | (reinterpret_cast<uint64_t>(bigint) & PAYLOAD_MASK)) {}
     
     // Object constructor
     explicit Value(Object* obj);
     
     // Function constructor
-    explicit Value(Function* func) : bits_(QUIET_NAN | TAG_FUNCTION | reinterpret_cast<uint64_t>(func)) {}
+    explicit Value(Function* func) : bits_(QUIET_NAN | TAG_FUNCTION | (reinterpret_cast<uint64_t>(func) & PAYLOAD_MASK)) {}
 
     // Copy and move semantics
     Value(const Value& other) = default;
@@ -111,9 +118,9 @@ public:
     Value& operator=(const Value& other) = default;
     Value& operator=(Value&& other) noexcept = default;
 
-    // Type checking (highly optimized)
-    inline bool is_undefined() const { return bits_ == (QUIET_NAN | TAG_UNDEFINED); }
-    inline bool is_null() const { return bits_ == (QUIET_NAN | TAG_NULL); }
+    // Type checking (highly optimized) - use consistent masking to prevent NaN-boxing corruption
+    inline bool is_undefined() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_UNDEFINED); }
+    inline bool is_null() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NULL); }
     inline bool is_boolean() const { 
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_FALSE) ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);

@@ -1,16 +1,42 @@
-.vscode
-.history
-.cache
+# IDE and Editor files
+.vscode/
+.history/
+.cache/
+*.code-workspace
 
+# Temporary files
 *.bak
 *.tmp
+*.swp
+*.swo
 
+# Compiled binaries and libraries
 *.o
+*.obj
 *.exe
 *.a
 *.lib
 *.so
 *.dll
 
-build
-tests
+# Build directories and artifacts
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+build.ninja
+Makefile.minimal
+
+# Test files
+test_*.js
+debug_*.js
+*.test.js
+demo.js
+example*.js
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log

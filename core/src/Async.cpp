@@ -127,11 +127,20 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         return awaited_value;
     }
     
-    // In a real implementation, this would suspend the async function
-    // For now, we'll simulate synchronous waiting
-    while (promise->get_state() == PromiseState::PENDING) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        EventLoop::instance().process_microtasks();
+    // Implement proper async waiting using EventLoop
+    if (promise->get_state() == PromiseState::PENDING) {
+        // Schedule a continuation to be executed when the promise resolves
+        // For now, we need to process the event loop until the promise is resolved
+        EventLoop& event_loop = EventLoop::instance();
+        
+        // Process microtasks and macrotasks until promise resolves
+        while (promise->get_state() == PromiseState::PENDING && event_loop.is_running()) {
+            event_loop.process_microtasks();
+            event_loop.process_macrotasks();
+            
+            // Yield control briefly to prevent busy waiting
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        }
     }
     
     if (promise->get_state() == PromiseState::FULFILLED) {
@@ -264,21 +273,69 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 }
 
 Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async generator next
-    return Value();
+    // Get the AsyncGenerator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.next called on non-object"));
+        return Value();
+    }
+    
+    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    if (!async_gen) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.next called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async generator's next method with optional value
+    Value value = args.empty() ? Value() : args[0];
+    auto result = async_gen->next(value);
+    
+    // Return the promise from the async generator result
+    return Value(result.promise.release());
 }
 
 Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async generator return
-    return Value();
+    // Get the AsyncGenerator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.return called on non-object"));
+        return Value();
+    }
+    
+    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    if (!async_gen) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.return called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async generator's return method with optional value
+    Value value = args.empty() ? Value() : args[0];
+    auto result = async_gen->return_value(value);
+    
+    // Return the promise from the async generator result
+    return Value(result.promise.release());
 }
 
 Value AsyncGenerator::async_generator_throw(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async generator throw
-    return Value();
+    // Get the AsyncGenerator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.throw called on non-object"));
+        return Value();
+    }
+    
+    AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
+    if (!async_gen) {
+        ctx.throw_exception(Value("TypeError: AsyncGenerator.throw called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async generator's throw method with exception
+    Value exception = args.empty() ? Value() : args[0];
+    auto result = async_gen->throw_exception(exception);
+    
+    // Return the promise from the async generator result
+    return Value(result.promise.release());
 }
 
 //=============================================================================
@@ -356,22 +413,69 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
 }
 
 // AsyncIterator static methods
-Value AsyncIterator::async_iterator_next(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async iterator next
-    return Value();
+Value AsyncIterator::async_iterator_next(Context& ctx, const std::vector<Value>& /* args */) {
+    // Get the AsyncIterator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.next called on non-object"));
+        return Value();
+    }
+    
+    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    if (!async_iter) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.next called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async iterator's next method
+    auto promise = async_iter->next();
+    
+    // Return the promise
+    return Value(promise.release());
 }
 
 Value AsyncIterator::async_iterator_return(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async iterator return
-    return Value();
+    // Get the AsyncIterator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.return called on non-object"));
+        return Value();
+    }
+    
+    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    if (!async_iter) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.return called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async iterator's return method with optional value
+    Value value = args.empty() ? Value() : args[0];
+    auto promise = async_iter->return_value(value);
+    
+    // Return the promise
+    return Value(promise.release());
 }
 
 Value AsyncIterator::async_iterator_throw(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Unused parameters
-    // TODO: Implement async iterator throw
-    return Value();
+    // Get the AsyncIterator instance from 'this' binding
+    Value this_value = ctx.get_binding("this");
+    if (!this_value.is_object()) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.throw called on non-object"));
+        return Value();
+    }
+    
+    AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
+    if (!async_iter) {
+        ctx.throw_exception(Value("TypeError: AsyncIterator.throw called on wrong type"));
+        return Value();
+    }
+    
+    // Call the async iterator's throw method with exception
+    Value exception = args.empty() ? Value() : args[0];
+    auto promise = async_iter->throw_exception(exception);
+    
+    // Return the promise
+    return Value(promise.release());
 }
 
 //=============================================================================
