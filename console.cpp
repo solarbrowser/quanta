@@ -79,7 +79,7 @@ public:
     // Execute file as ES6 module
     void execute_as_module(const std::string& filename) {
         try {
-            std::cout << CYAN << "🔧 Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
+            std::cout << CYAN << "Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
             
             // Use the module loader to load and execute the file
             ModuleLoader* module_loader = engine_->get_module_loader();
@@ -91,9 +91,9 @@ public:
             // Load the module (this will execute it)
             Module* module = module_loader->load_module(filename, "");
             if (module) {
-                std::cout << GREEN << "✅ Module loaded successfully!" << RESET << std::endl;
+                std::cout << GREEN << "Module loaded successfully!" << RESET << std::endl;
             } else {
-                std::cout << RED << "❌ Module loading failed!" << RESET << std::endl;
+                std::cout << RED << "Module loading failed!" << RESET << std::endl;
             }
             
         } catch (const std::exception& e) {
@@ -101,6 +101,7 @@ public:
         }
     }
     
+    // for faster responses we are not not using this
     void print_banner() {
         std::cout << CYAN << BOLD;
         std::cout << "╔═══════════════════════════════════════════════════════════════╗\n";
@@ -181,7 +182,8 @@ public:
                 std::cout << GREEN << result.value.to_string() << RESET << std::endl;
             }
             
-            std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
+            // debug only, for seeing execution time
+            //std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
             
             return;
         } catch (const std::exception& e) {

@@ -1,9 +1,9 @@
 /*
- * ULTRA-PERFORMANCE MODULE IMPLEMENTATION
- * Advanced optimization methods for extreme speed
+ * HIGH PERFORMANCE MODULE IMPLEMENTATION
+ * Advanced optimization methods for high speed
  */
 
-#include "../include/UltraPerformance.h"
+#include "../include/HighPerformance.h"
 #include <iostream>
 #include <chrono>
 #include <algorithm>
@@ -18,19 +18,19 @@ bool HardwareOptimizer::has_sse42_ = false;
 size_t HardwareOptimizer::cache_line_size_ = 64;
 
 //=============================================================================
-// ULTRA-PERFORMANCE IMPLEMENTATIONS
+// HIGH PERFORMANCE IMPLEMENTATIONS
 //=============================================================================
 
-int64_t UltraPerformance::simd_sum_range(int64_t start, int64_t end) {
-    std::cout << "🚀 SIMD ACCELERATION: Processing " << (end - start) << " operations" << std::endl;
+int64_t HighPerformance::simd_sum_range(int64_t start, int64_t end) {
+    std::cout << "SIMD ACCELERATION: Processing " << (end - start) << " operations" << std::endl;
     
     // Use Gauss formula for instant computation
     int64_t n = end - start;
     return (n * (n + 1)) / 2;
 }
 
-int64_t UltraPerformance::parallel_sum_range(int64_t start, int64_t end) {
-    std::cout << "⚡ PARALLEL PROCESSING: Using " << THREAD_COUNT << " threads" << std::endl;
+int64_t HighPerformance::parallel_sum_range(int64_t start, int64_t end) {
+    std::cout << "PARALLEL PROCESSING: Using " << THREAD_COUNT << " threads" << std::endl;
     
     int64_t total_range = end - start;
     int64_t chunk_size = total_range / THREAD_COUNT;
@@ -57,8 +57,8 @@ int64_t UltraPerformance::parallel_sum_range(int64_t start, int64_t end) {
     return total;
 }
 
-int64_t UltraPerformance::asm_optimized_sum(int64_t n) {
-    std::cout << "🔥 ASSEMBLY OPTIMIZATION: Direct CPU instructions" << std::endl;
+int64_t HighPerformance::asm_optimized_sum(int64_t n) {
+    std::cout << "ASSEMBLY OPTIMIZATION: Direct CPU instructions" << std::endl;
     
     // For now, use highly optimized C++ with inline assembly hints
     int64_t result = 0;
@@ -72,15 +72,15 @@ int64_t UltraPerformance::asm_optimized_sum(int64_t n) {
     return result;
 }
 
-int64_t UltraPerformance::cache_optimized_sum(int64_t n) {
-    std::cout << "💾 CACHE OPTIMIZATION: Memory-friendly access patterns" << std::endl;
+int64_t HighPerformance::cache_optimized_sum(int64_t n) {
+    std::cout << "CACHE OPTIMIZATION: Memory-friendly access patterns" << std::endl;
     
     // Use mathematical formula to avoid cache misses entirely
     return (n * (n + 1)) / 2;
 }
 
-int64_t UltraPerformance::cpu_optimized_sum(int64_t n) {
-    std::cout << "🖥️ CPU OPTIMIZATION: Hardware-specific instructions" << std::endl;
+int64_t HighPerformance::cpu_optimized_sum(int64_t n) {
+    std::cout << "CPU OPTIMIZATION: Hardware-specific instructions" << std::endl;
     
     // Detect best method based on size
     if (n < 1000) {
@@ -95,8 +95,8 @@ int64_t UltraPerformance::cpu_optimized_sum(int64_t n) {
     }
 }
 
-int64_t UltraPerformance::ultimate_sum_optimization(int64_t n) {
-    std::cout << "🌟 ULTIMATE OPTIMIZATION: All methods combined" << std::endl;
+int64_t HighPerformance::ultimate_sum_optimization(int64_t n) {
+    std::cout << "ULTIMATE OPTIMIZATION: All methods combined" << std::endl;
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
@@ -106,18 +106,18 @@ int64_t UltraPerformance::ultimate_sum_optimization(int64_t n) {
     if (n <= 100000000) {
         // For 100M and below: Mathematical formula (instant)
         result = (n * (n + 1)) / 2;
-        std::cout << "📊 METHOD: Gauss mathematical formula (O(1) complexity)" << std::endl;
+        std::cout << "METHOD: Gauss mathematical formula (O(1) complexity)" << std::endl;
     } else {
         // For larger: Parallel processing
         result = parallel_sum_range(1, n + 1);
-        std::cout << "📊 METHOD: Parallel processing with " << THREAD_COUNT << " threads" << std::endl;
+        std::cout << "METHOD: Parallel processing with " << THREAD_COUNT << " threads" << std::endl;
     }
     
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     
-    std::cout << "⚡ EXECUTION TIME: " << duration.count() << " microseconds" << std::endl;
-    std::cout << "🏆 EFFECTIVE SPEED: " << (n / (duration.count() + 1) * 1000000) << " operations/second" << std::endl;
+    std::cout << "EXECUTION TIME: " << duration.count() << " microseconds" << std::endl;
+    std::cout << "EFFECTIVE SPEED: " << (n / (duration.count() + 1) * 1000000) << " operations/second" << std::endl;
     
     return result;
 }
@@ -149,26 +149,26 @@ double AdvancedMath::fast_sqrt(double x) {
 //=============================================================================
 
 void HardwareOptimizer::detect_cpu_features() {
-    std::cout << "🔍 DETECTING CPU FEATURES..." << std::endl;
+    std::cout << "DETECTING CPU FEATURES..." << std::endl;
     
     // For now, assume modern CPU with AVX2 support
     has_avx2_ = true;
     has_sse42_ = true;
     cache_line_size_ = 64;
     
-    std::cout << "✅ AVX2: " << (has_avx2_ ? "Supported" : "Not supported") << std::endl;
-    std::cout << "✅ SSE4.2: " << (has_sse42_ ? "Supported" : "Not supported") << std::endl;
-    std::cout << "✅ Cache line size: " << cache_line_size_ << " bytes" << std::endl;
+    std::cout << "AVX2: " << (has_avx2_ ? "Supported" : "Not supported") << std::endl;
+    std::cout << "SSE4.2: " << (has_sse42_ ? "Supported" : "Not supported") << std::endl;
+    std::cout << "Cache line size: " << cache_line_size_ << " bytes" << std::endl;
 }
 
 int64_t HardwareOptimizer::hardware_accelerated_sum(int64_t n) {
     detect_cpu_features();
     
     if (has_avx2_) {
-        std::cout << "🚀 USING AVX2 ACCELERATION" << std::endl;
+        std::cout << "USING AVX2 ACCELERATION" << std::endl;
         return AdvancedMath::gauss_formula(n);
     } else {
-        std::cout << "⚡ USING SSE ACCELERATION" << std::endl;
+        std::cout << "USING SSE ACCELERATION" << std::endl;
         return AdvancedMath::gauss_formula(n);
     }
 }

@@ -14,9 +14,9 @@
 #include <cmath>
 #include <limits>
 
-// Forward declaration for UltraFastArray
+// Forward declaration for OptimizedArray
 namespace Quanta {
-    class UltraFastArray;
+    class OptimizedArray;
 }
 #include <iostream>
 
@@ -45,7 +45,7 @@ public:
         BigInt,
         Object,
         Function,
-        UltraFastArray
+        OptimizedArray
     };
 
 private:

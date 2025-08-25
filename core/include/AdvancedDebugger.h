@@ -23,7 +23,7 @@ class Value;
 class Context;
 
 //=============================================================================
-// PHASE 3: Advanced Debugging and Profiling Tools
+// Advanced Debugging and Profiling Tools
 //
 // Comprehensive debugging and profiling system for ultra-high performance:
 // - Real-time execution profiling

@@ -1,5 +1,5 @@
-#ifndef QUANTA_ULTRA_FAST_ARRAY_H
-#define QUANTA_ULTRA_FAST_ARRAY_H
+#ifndef QUANTA_OPTIMIZED_ARRAY_H
+#define QUANTA_OPTIMIZED_ARRAY_H
 
 #include <vector>
 #include <memory>
@@ -14,7 +14,7 @@ namespace Quanta {
  * Designed for 100+ million operations per second
  * Direct memory operations, no string encoding overhead
  */
-class UltraFastArray {
+class OptimizedArray {
 private:
     // Pre-allocated memory pools for different sizes
     static std::vector<double*> small_pools_;    // 0-1K elements
@@ -43,12 +43,12 @@ private:
 
 public:
     // Constructor
-    UltraFastArray() : data_(nullptr), length_(0), capacity_(0), owns_memory_(false) {
+    OptimizedArray() : data_(nullptr), length_(0), capacity_(0), owns_memory_(false) {
         allocate_from_pool();
     }
     
     // Destructor
-    ~UltraFastArray() {
+    ~OptimizedArray() {
         if (owns_memory_ && data_) {
             return_to_pool();
         }
@@ -80,7 +80,7 @@ public:
     
     // Bulk operations for maximum performance
     void bulk_push(const double* values, size_t count);
-    void bulk_copy_from(const UltraFastArray& other);
+    void bulk_copy_from(const OptimizedArray& other);
     
     // Memory pool management
     static void initialize_pools();

@@ -17,7 +17,7 @@ namespace Quanta {
 // EXTREME PERFORMANCE OPTIMIZATIONS
 //=============================================================================
 
-class UltraPerformance {
+class HighPerformance {
 public:
     // SIMD-accelerated mathematical operations
     static int64_t simd_sum_range(int64_t start, int64_t end);

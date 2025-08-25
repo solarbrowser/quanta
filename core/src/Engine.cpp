@@ -24,8 +24,8 @@
 #include "../../parser/include/Parser.h"
 #include "../../lexer/include/Lexer.h"
 #include "FastBytecode.h"
-#include "UltraAggressiveOptimizer.h"
-#include "UniversalUltraOptimizer.h"
+#include "AdvancedOptimizer.h"
+#include "UniversalOptimizer.h"
 #include "UltimatePatternDetector.h"
 #include "OptimizedAST.h"
 #include <fstream>
@@ -50,10 +50,10 @@ Engine::Engine() : initialized_(false), execution_count_(0),
     // Initialize performance cache for optimized
     performance_cache_ = std::make_unique<PerformanceCache>(true);
     
-    // Initialize zero-leak optimizer for nuclear performance
-    zero_leak_optimizer_ = std::make_unique<ZeroLeakOptimizer>(ZeroLeakOptimizer::MemoryMode::NUCLEAR_SPEED);
+    // Initialize zero-leak optimizer for optimized performance
+    zero_leak_optimizer_ = std::make_unique<ZeroLeakOptimizer>(ZeroLeakOptimizer::MemoryMode::HIGH_PERFORMANCE);
     
-    // Initialize ultra-fast array optimizer
+    // Initialize optimized array optimizer
     array_optimizer_ = std::make_unique<ArrayOptimizer>();
     
     // Initialize optimized AST system
@@ -115,11 +115,11 @@ bool Engine::initialize() {
         // optimized: Initialize memory pools for optimized allocation
         ObjectFactory::initialize_memory_pools();
         
-        // Initialize ultra-fast array system
+        // Initialize optimized array system
         ArrayOptimizer::initialize_optimizer();
         
-        // Initialize UNIVERSAL ULTRA-AGGRESSIVE OPTIMIZER for 150M+ ops/sec
-        UniversalUltraOptimizer::initialize();
+        // Initialize UNIVERSAL ADVANCED OPTIMIZER for high performance
+        UniversalOptimizer::initialize();
         
         initialized_ = true;
         // Engine initialization complete
@@ -1785,9 +1785,9 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         // Bytecode compilation attempted
         
         if (compiled) {
-            // std::cout << "⚡ DIRECT BYTECODE COMPILATION SUCCESSFUL" << std::endl;
+            // std::cout << "DIRECT BYTECODE COMPILATION SUCCESSFUL" << std::endl;
             Value result = vm.execute_fast();
-            // std::cout << "🎯 ULTRA-FAST EXECUTION COMPLETED" << std::endl;
+            // std::cout << "OPTIMIZED EXECUTION COMPLETED" << std::endl;
             return Result(result);
         }
         
@@ -1810,12 +1810,12 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
                     return Result(Value());
                 }
             } else if (pattern_info.type == UltimatePatternDetector::FUNCTION_INTENSIVE) {
-                bool success = UniversalUltraOptimizer::execute_revolutionary_function_operations(source, *global_context_);
+                bool success = UniversalOptimizer::execute_revolutionary_function_operations(source, *global_context_);
                 if (success) {
                     return Result(Value());
                 }
             } else if (pattern_info.type == UltimatePatternDetector::STRING_INTENSIVE) {
-                bool success = UniversalUltraOptimizer::execute_revolutionary_string_operations(source, *global_context_);
+                bool success = UniversalOptimizer::execute_revolutionary_string_operations(source, *global_context_);
                 if (success) {
                     return Result(Value());
                 }
@@ -1825,50 +1825,50 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
                     return Result(Value());
                 }
             } else if (pattern_info.type == UltimatePatternDetector::VARIABLE_INTENSIVE) {
-                bool success = UniversalUltraOptimizer::execute_revolutionary_variable_operations(source, *global_context_);
+                bool success = UniversalOptimizer::execute_revolutionary_variable_operations(source, *global_context_);
                 if (success) {
                     return Result(Value());
                 }
             } else if (pattern_info.type == UltimatePatternDetector::CONTROL_FLOW_INTENSIVE) {
-                bool success = UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(source, *global_context_);
+                bool success = UniversalOptimizer::execute_revolutionary_control_flow_operations(source, *global_context_);
                 if (success) {
                     return Result(Value());
                 }
             }
         }
         
-        // ULTRA-AGGRESSIVE OPTIMIZATION: Detect simple array loops and execute at native C++ speed
-        // Checking for ultra-aggressive patterns
-        auto loop_pattern = UltraAggressiveOptimizer::detect_simple_push_loop(source);
+        // ADVANCED OPTIMIZATION: Detect simple array loops and execute at native C++ speed
+        // Checking for advanced patterns
+        auto loop_pattern = AdvancedOptimizer::detect_simple_push_loop(source);
         
         if (loop_pattern.detected && source.find("console.log") == std::string::npos) {
-            // std::cout << "🚀 ULTRA-AGGRESSIVE PATTERN DETECTED - BYPASSING ALL JAVASCRIPT OVERHEAD" << std::endl;
-            bool success = UltraAggressiveOptimizer::execute_native_speed_loop(loop_pattern, *global_context_);
+            // std::cout << "ADVANCED PATTERN DETECTED - BYPASSING ALL JAVASCRIPT OVERHEAD" << std::endl;
+            bool success = AdvancedOptimizer::execute_native_speed_loop(loop_pattern, *global_context_);
             
             if (success) {
-                // UltraAggressiveOptimizer::print_native_performance_report();
+                // AdvancedOptimizer::print_native_performance_report();
                 return Result(Value()); // Return undefined after successful execution
             }
         }
         
-        // UNIVERSAL ULTRA-AGGRESSIVE OPTIMIZATION: Check for ALL JavaScript patterns
-        // Checking for universal ultra-aggressive patterns
+        // UNIVERSAL ADVANCED OPTIMIZATION: Check for ALL JavaScript patterns
+        // Checking for universal advanced patterns
         
         // TEMPORARY FIX: Skip object optimization for console.log scripts
-        if (UniversalUltraOptimizer::detect_object_creation_pattern(source) && source.find("console.log") == std::string::npos) {
-            // std::cout << "🎯 OBJECT-INTENSIVE PATTERN DETECTED - EXECUTING AT 150M+ OPS/SEC" << std::endl;
-            bool success = UniversalUltraOptimizer::execute_ultra_fast_object_operations(source, *global_context_);
+        if (UniversalOptimizer::detect_object_creation_pattern(source) && source.find("console.log") == std::string::npos) {
+            // std::cout << "OBJECT-INTENSIVE PATTERN DETECTED - EXECUTING AT HIGH PERFORMANCE" << std::endl;
+            bool success = UniversalOptimizer::execute_ultra_fast_object_operations(source, *global_context_);
             if (success) {
-                // UniversalUltraOptimizer::print_universal_performance_report();
+                // UniversalOptimizer::print_universal_performance_report();
                 return Result(Value());
             }
         }
         
-        if (UniversalUltraOptimizer::detect_math_intensive_pattern(source) && source.find("console.log") == std::string::npos) {
-            // std::cout << "🎯 MATH-INTENSIVE PATTERN DETECTED - EXECUTING AT 150M+ OPS/SEC" << std::endl;
-            bool success = UniversalUltraOptimizer::execute_ultra_fast_math_operations(source, *global_context_);
+        if (UniversalOptimizer::detect_math_intensive_pattern(source) && source.find("console.log") == std::string::npos) {
+            // std::cout << "MATH-INTENSIVE PATTERN DETECTED - EXECUTING AT HIGH PERFORMANCE" << std::endl;
+            bool success = UniversalOptimizer::execute_ultra_fast_math_operations(source, *global_context_);
             if (success) {
-                // UniversalUltraOptimizer::print_universal_performance_report();
+                // UniversalOptimizer::print_universal_performance_report();
                 return Result(Value());
             }
         }
@@ -1912,7 +1912,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
 }
 
 //=============================================================================
-// ULTRA-PERFORMANCE Mathematical Loop Optimization
+// HIGH PERFORMANCE Mathematical Loop Optimization
 //=============================================================================
 
 bool Engine::is_simple_mathematical_loop(ASTNode* ast) {
@@ -1938,7 +1938,7 @@ Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
     // DIRECT C++ EXECUTION - Bypass all JavaScript interpretation
     // This gives us 1000x performance boost for simple mathematical loops
     
-    std::cout << "🚀 ULTRA-FAST C++ OPTIMIZATION: Executing mathematical loop directly" << std::endl;
+    std::cout << "OPTIMIZED C++ CALCULATION: Executing mathematical loop directly" << std::endl;
     
     // For now, implement a hardcoded optimization for the most common pattern:
     // for (var i = 0; i < N; i++) { result += i + 1; }
@@ -1950,7 +1950,7 @@ Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
     int64_t n = 100000000; // 100 million
     int64_t result = 0;
     
-    // ULTRA-FAST C++ loop - no JavaScript overhead
+    // OPTIMIZED C++ loop - no JavaScript overhead
     auto start = std::chrono::high_resolution_clock::now();
     
     // Optimized mathematical computation using Gauss formula
@@ -1961,9 +1961,9 @@ Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     
-    std::cout << "⚡ MATHEMATICAL OPTIMIZATION: Completed " << n << " operations in " 
+    std::cout << "MATHEMATICAL OPTIMIZATION: Completed " << n << " operations in " 
               << duration.count() << "ms" << std::endl;
-    std::cout << "🔥 PERFORMANCE: " << (n / (duration.count() + 1) * 1000) << " ops/sec" << std::endl;
+    std::cout << "PERFORMANCE: " << (n / (duration.count() + 1) * 1000) << " ops/sec" << std::endl;
     
     // Update global variables to match JavaScript behavior
     if (global_context_) {
@@ -1986,7 +1986,7 @@ void Engine::setup_minimal_globals() {
     
     // SKIP ALL HEAVY INITIALIZATION!
     // Built-ins, errors, functions are loaded on-demand
-    // This gives us V8-like microsecond startup times!
+    // This gives us high-performance microsecond startup times!
 }
 
 // High-performance global setup
@@ -2033,7 +2033,7 @@ bool Engine::has_default_export(const std::string& filename) {
 void Engine::enable_performance_optimization(bool enable) {
     if (performance_cache_) {
         performance_cache_->enable_optimization(enable);
-        std::cout << "🚀 Performance optimization " << (enable ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "Performance optimization " << (enable ? "ENABLED" : "DISABLED") << std::endl;
     }
 }
 
@@ -2042,7 +2042,7 @@ void Engine::enable_maximum_performance_mode() {
         performance_cache_->enable_maximum_performance_mode();
         std::cout << " optimized MODE ACTIVATED!" << std::endl;
         std::cout << "   - Inline property caching enabled" << std::endl;
-        std::cout << "   - Ultra-fast method caching enabled" << std::endl;
+        std::cout << "   - Optimized method caching enabled" << std::endl;
         std::cout << "   - String interning optimized" << std::endl;
         std::cout << "   - Thread-local speed boosters active" << std::endl;
     }
@@ -2059,7 +2059,7 @@ void Engine::prepare_for_heavy_operations(ZeroLeakOptimizer::OperationType type,
             garbage_collector_->prepare_for_heavy_load(scale);
         }
         
-        std::cout << "🎯 ENGINE PREPARED FOR HEAVY OPERATIONS" << std::endl;
+        std::cout << "ENGINE PREPARED FOR HEAVY OPERATIONS" << std::endl;
         std::cout << "   - Type: " << static_cast<int>(type) << std::endl;
         std::cout << "   - Expected Scale: " << scale << std::endl;
         std::cout << "   - Memory pools expanded" << std::endl;
@@ -2067,8 +2067,8 @@ void Engine::prepare_for_heavy_operations(ZeroLeakOptimizer::OperationType type,
     }
 }
 
-void Engine::enable_nuclear_performance_mode() {
-    std::cout << "🚀 ACTIVATING NUCLEAR PERFORMANCE MODE" << std::endl;
+void Engine::enable_optimized_performance_mode() {
+    std::cout << "ACTIVATING OPTIMIZED PERFORMANCE MODE" << std::endl;
     std::cout << "═══════════════════════════════════════" << std::endl;
     
     // Enable maximum performance in all subsystems
@@ -2079,37 +2079,37 @@ void Engine::enable_nuclear_performance_mode() {
         garbage_collector_->enable_heavy_operation_mode();
     }
     
-    // Optimize zero-leak system for nuclear speed
+    // Optimize zero-leak system for high speed
     if (zero_leak_optimizer_) {
         zero_leak_optimizer_->expand_pools_for_heavy_load();
     }
     
-    // Update engine config for nuclear performance
-    config_.max_heap_size = 2048 * 1024 * 1024;  // 2GB heap
+    // Update engine config for optimized performance
+    config_.max_heap_size = 2048UL * 1024 * 1024;  // 2GB heap
     config_.enable_optimizations = true;
     config_.enable_jit = true;
     
-    std::cout << "✅ NUCLEAR PERFORMANCE MODE ACTIVE!" << std::endl;
-    std::cout << "   - 15+ billion ops/sec mathematical patterns" << std::endl;
+    std::cout << "OPTIMIZED PERFORMANCE MODE ACTIVE!" << std::endl;
+    std::cout << "   - High performance mathematical patterns" << std::endl;
     std::cout << "   - Zero memory leaks guaranteed" << std::endl;
-    std::cout << "   - Ultra-fast object pooling" << std::endl;
+    std::cout << "   - Optimized object pooling" << std::endl;
     std::cout << "   - Aggressive GC optimization" << std::endl;
     std::cout << "   - 2GB heap limit for heavy operations" << std::endl;
     std::cout << "═══════════════════════════════════════" << std::endl;
 }
 
-// Ultra-Fast Array System Implementation
-void Engine::enable_ultra_fast_arrays() {
-    std::cout << "🚀 ENABLING ULTRA-FAST ARRAY SYSTEM" << std::endl;
+// Optimized Array System Implementation
+void Engine::enable_optimized_arrays() {
+    std::cout << "ENABLING OPTIMIZED ARRAY SYSTEM" << std::endl;
     std::cout << "═══════════════════════════════════════" << std::endl;
     
     if (array_optimizer_) {
         ArrayOptimizer::initialize_optimizer();
     }
     
-    std::cout << "✅ ULTRA-FAST ARRAYS ENABLED!" << std::endl;
+    std::cout << "OPTIMIZED ARRAYS ENABLED!" << std::endl;
     std::cout << "   - Direct memory array operations" << std::endl;
-    std::cout << "   - 100+ million ops/sec target" << std::endl;
+    std::cout << "   - High performance target" << std::endl;
     std::cout << "   - Zero string encoding overhead" << std::endl;
     std::cout << "   - Pre-allocated memory pools" << std::endl;
     std::cout << "═══════════════════════════════════════" << std::endl;

@@ -181,7 +181,7 @@ std::function<Value(Context&)> JITCompiler::compile_basic_optimization(ASTNode* 
                     // Direct CPU register optimization simulation
                     Value result = node->evaluate(ctx);
                     if (result.is_number()) {
-                        inline_cache_hits_ += 3; // Ultra-fast path bonus
+                        inline_cache_hits_ += 3; // Optimized path bonus
                     }
                     return result;
                 } else {
@@ -388,7 +388,7 @@ std::function<Value(Context&)> JITCompiler::compile_maximum_optimization(ASTNode
                             uint64_t monster_timestamp;
                         } monster_cache[512]; // 512GB simulation!
                         
-                        // Ultra-fast monster cache lookup
+                        // Optimized monster cache lookup
                         for (int i = 0; i < 512; i++) {
                             if (monster_cache[i].node == node) {
                                 inline_cache_hits_ += 200; // MONSTER CACHE HIT!
@@ -566,7 +566,7 @@ void JITCompiler::record_function_profile(ASTNode* node) {
 }
 
 //=============================================================================
-// PHASE 2: Hot Function JIT Compilation
+// Hot Function JIT Compilation
 //=============================================================================
 
 bool JITCompiler::should_compile_function(Function* func) {
@@ -608,7 +608,7 @@ bool JITCompiler::try_execute_compiled_function(Function* func, Context& ctx,
         return true;
     } catch (const std::exception& e) {
         // JIT execution failed, fallback to interpreter
-        std::cerr << "🔥 JIT function execution failed: " << e.what() << std::endl;
+        std::cerr << "� JIT function execution failed: " << e.what() << std::endl;
         invalidate_function_cache(func);
         return false;
     }
@@ -620,7 +620,7 @@ bool JITCompiler::compile_hot_function(Function* func) {
     total_compilations_++;
     
     try {
-        // PHASE 2: Advanced JIT compilation for hot functions
+        // Advanced JIT compilation for hot functions
         CompiledCode compiled_code;
         compiled_code.level = OptimizationLevel::Advanced;
         compiled_code.compile_time = std::chrono::high_resolution_clock::now();
@@ -644,7 +644,7 @@ bool JITCompiler::compile_hot_function(Function* func) {
             // 2. Generate optimized bytecode or machine code
             // 3. Execute with inline caching and type specialization
             
-            // PHASE 2 OPTIMIZATION: Simulated JIT-compiled execution
+            // Simulated JIT-compiled execution
             // In a full implementation, this would be compiled machine code
             try {
                 // Simulate optimized execution path
@@ -660,7 +660,7 @@ bool JITCompiler::compile_hot_function(Function* func) {
         
         // Debug output disabled for clean timing
         // if (ultra_fast_mode_) {
-        //     std::cout << "🔥 JIT COMPILED: " << func->get_name() 
+        //     std::cout << "� JIT COMPILED: " << func->get_name() 
         //              << " (execution count: " << func->get_execution_count() 
         //              << ", optimization level: Advanced)" << std::endl;
         // }
@@ -690,7 +690,7 @@ void JITCompiler::invalidate_function_cache(Function* func) {
     if (it != function_cache_.end()) {
         function_cache_.erase(it);
         if (ultra_fast_mode_) {
-            std::cout << "🔄 JIT cache invalidated for function: " << func->get_name() << std::endl;
+            std::cout << "� JIT cache invalidated for function: " << func->get_name() << std::endl;
         }
     }
 }

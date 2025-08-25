@@ -46,7 +46,7 @@ void PhotonCoreQuantum::quantum_entanglement_burst() {
     // Memory prefetch for quantum operations
     _mm_prefetch((const char*)quantum_cache_, _MM_HINT_T0);
     
-    std::cout << "ðŸŒŒ QUANTUM ENTANGLEMENT BURST! Entanglements: " << quantum_entanglements_.load() 
+    std::cout << "Œ QUANTUM ENTANGLEMENT BURST! Entanglements: " << quantum_entanglements_.load() 
               << ", Superpositions: " << quantum_superpositions_.load() << std::endl;
 }
 
@@ -91,7 +91,7 @@ void PhotonCoreQuantum::quantum_tunneling_effect() {
     
     quantum_entanglements_ += thread_count * 1000;
     
-    std::cout << "ðŸŒŠ QUANTUM TUNNELING EFFECT COMPLETED!" << std::endl;
+    std::cout << "Š QUANTUM TUNNELING EFFECT COMPLETED!" << std::endl;
     std::cout << "   Threads Used: " << thread_count << std::endl;
 }
 
@@ -112,14 +112,14 @@ void PhotonCoreQuantum::quantum_coherence_amplification() {
     quantum_superpositions_ = amplified_coherence[1];
 #endif
     
-    std::cout << "ðŸ”Ž QUANTUM COHERENCE AMPLIFICATION ENGAGED!" << std::endl;
+    std::cout << "Ž QUANTUM COHERENCE AMPLIFICATION ENGAGED!" << std::endl;
     std::cout << "   Coherence Factor: " << coherence_factor << std::endl;
 }
 
 void PhotonCoreQuantum::achieve_quantum_supremacy() {
     quantum_supremacy_active_ = true;
     
-    std::cout << "ðŸŽ† ACHIEVING QUANTUM SUPREMACY..." << std::endl;
+    std::cout << "† ACHIEVING QUANTUM SUPREMACY..." << std::endl;
     
     quantum_entanglement_burst();
     quantum_superposition_matrix();
@@ -129,7 +129,7 @@ void PhotonCoreQuantum::achieve_quantum_supremacy() {
     // Final quantum state verification
     uint64_t total_quantum_power = quantum_entanglements_.load() + quantum_superpositions_.load();
     
-    std::cout << "ðŸ† QUANTUM SUPREMACY ACHIEVED!" << std::endl;
+    std::cout << "† QUANTUM SUPREMACY ACHIEVED!" << std::endl;
     std::cout << "   Total Quantum Power: " << total_quantum_power << std::endl;
     std::cout << "   Quantum Generation: " << quantum_generation_.load() << std::endl;
     std::cout << "   âœ¨ QUANTUM COMPUTING TRANSCENDENCE UNLOCKED! âœ¨" << std::endl;

@@ -19,7 +19,7 @@
 namespace Quanta {
 
 //=============================================================================
-// PHASE 3: SIMD (Single Instruction Multiple Data) Engine
+// SIMD (Single Instruction Multiple Data) Engine
 // 
 // Ultra-high performance vectorized operations for microsecond-level speed.
 // This implementation provides:

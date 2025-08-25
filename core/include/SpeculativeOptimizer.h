@@ -15,7 +15,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Hot Loop Detection & Speculative Optimization - V8 Level
+// Hot Loop Detection & Speculative Optimization - High-performance
 //=============================================================================
 
 enum class OptimizationLevel : uint8_t {
@@ -57,30 +57,30 @@ public:
     SpeculativeOptimizer();
     ~SpeculativeOptimizer();
     
-    // ðŸš€ HOT LOOP DETECTION
+    // € HOT LOOP DETECTION
     void record_execution(const std::string& code, uint64_t iterations, double time_us);
     bool is_hot_loop(const std::string& code) const;
     OptimizationLevel get_optimization_level(const std::string& code) const;
     
-    // ðŸ”¥ SPECULATIVE OPTIMIZATION
+    // ¥ SPECULATIVE OPTIMIZATION
     Value execute_with_speculation(const std::string& code, const std::vector<Value>& context);
     void record_type_assumption(const std::string& code, const std::string& variable, const std::string& type);
     bool verify_type_assumptions(const std::string& code, const std::vector<Value>& context);
     
-    // ðŸ’¥ DEOPTIMIZATION
+    // DEOPTIMIZATION
     void deoptimize_hotspot(const std::string& code, const std::string& reason);
     bool should_deoptimize(const std::string& code) const;
     
-    // ðŸŽ¯ NATIVE SPECIALIZATION
+    // NATIVE SPECIALIZATION
     Value execute_native_specialized(const std::string& code, const std::vector<Value>& context);
     std::string generate_native_code(const std::string& js_code, const HotSpot& hotspot);
     
-    // ðŸ“Š STATISTICS
+    // STATISTICS
     void print_hotspot_stats() const;
     double get_optimization_success_rate() const;
     size_t get_active_hotspots() const;
     
-    // ðŸš€ ULTRA-FAST MATHEMATICAL SPECIALIZATION
+    // € ULTRA-FAST MATHEMATICAL SPECIALIZATION
     inline Value ultra_fast_math_loop(int64_t start, int64_t end, const std::string& operation) {
         int64_t iterations = end - start;
         
@@ -141,11 +141,11 @@ private:
     std::unordered_map<std::string, uint64_t> deopt_frequency_;
     
 public:
-    // ðŸ’” DEOPTIMIZATION HANDLING
+    // ” DEOPTIMIZATION HANDLING
     void trigger_deoptimization(DeoptReason reason, const std::string& location, const std::string& description);
     bool should_prevent_reoptimization(const std::string& code) const;
     
-    // ðŸ“Š DEOPT ANALYSIS
+    // Š DEOPT ANALYSIS
     std::vector<DeoptInfo> get_frequent_deopts() const;
     void print_deopt_summary() const;
     double get_stability_score(const std::string& code) const;

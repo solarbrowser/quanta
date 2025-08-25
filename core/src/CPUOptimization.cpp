@@ -24,17 +24,17 @@ namespace Quanta {
 //=============================================================================
 
 CPUDetector::CPUDetector() : detection_complete_(false) {
-    std::cout << "🔍 CPU DETECTOR INITIALIZED" << std::endl;
+    std::cout << "CPU DETECTOR INITIALIZED" << std::endl;
 }
 
 CPUDetector::~CPUDetector() {
-    std::cout << "🔍 CPU DETECTOR SHUTDOWN" << std::endl;
+    std::cout << "CPU DETECTOR SHUTDOWN" << std::endl;
 }
 
 bool CPUDetector::detect_cpu_info() {
     if (detection_complete_) return true;
     
-    std::cout << "🔍 Detecting CPU information..." << std::endl;
+    std::cout << "Detecting CPU information..." << std::endl;
     
     // Reset CPU info
     cpu_info_.reset();
@@ -55,7 +55,7 @@ bool CPUDetector::detect_cpu_info() {
     
     detection_complete_ = true;
     
-    std::cout << "✅ CPU detection complete" << std::endl;
+    std::cout << "CPU detection complete" << std::endl;
     print_cpu_info();
     
     return true;
@@ -110,12 +110,12 @@ void CPUDetector::detect_vendor_and_brand() {
         cpu_info_.model |= ((info_result.eax >> 16) & 0xF) << 4;
     }
     
-    std::cout << "🔍 CPU Vendor: " << cpu_info_.brand_string << std::endl;
-    std::cout << "🔍 CPU Model: " << cpu_info_.model_name << std::endl;
+    std::cout << "CPU Vendor: " << cpu_info_.brand_string << std::endl;
+    std::cout << "CPU Model: " << cpu_info_.model_name << std::endl;
 }
 
 void CPUDetector::detect_features_intel() {
-    std::cout << "🔍 Detecting Intel CPU features..." << std::endl;
+    std::cout << "Detecting Intel CPU features..." << std::endl;
     
     auto features = cpuid(1);
     auto extended_features = cpuid(7);
@@ -157,11 +157,11 @@ void CPUDetector::detect_features_intel() {
     cpu_info_.features.sgx = (extended_features.ebx >> 2) & 1;
     cpu_info_.features.intel_pt = (extended_features.ebx >> 25) & 1;
     
-    std::cout << "✅ Intel features detected" << std::endl;
+    std::cout << "Intel features detected" << std::endl;
 }
 
 void CPUDetector::detect_features_amd() {
-    std::cout << "🔍 Detecting AMD CPU features..." << std::endl;
+    std::cout << "Detecting AMD CPU features..." << std::endl;
     
     auto features = cpuid(1);
     auto extended_features = cpuid(7);
@@ -201,11 +201,11 @@ void CPUDetector::detect_features_amd() {
     cpu_info_.features.sha = (extended_features.ebx >> 29) & 1;
     cpu_info_.features.sha512 = (amd_features.ecx >> 31) & 1;
     
-    std::cout << "✅ AMD features detected" << std::endl;
+    std::cout << "AMD features detected" << std::endl;
 }
 
 void CPUDetector::detect_cache_info() {
-    std::cout << "🔍 Detecting cache information..." << std::endl;
+    std::cout << "Detecting cache information..." << std::endl;
     
     // Default cache line size
     cpu_info_.cache_line_size = 64;
@@ -257,11 +257,11 @@ void CPUDetector::detect_cache_info() {
     if (cpu_info_.l2_cache_size == 0) cpu_info_.l2_cache_size = 256;
     if (cpu_info_.l3_cache_size == 0) cpu_info_.l3_cache_size = 8192;
     
-    std::cout << "✅ Cache info detected" << std::endl;
+    std::cout << "Cache info detected" << std::endl;
 }
 
 void CPUDetector::detect_performance_info() {
-    std::cout << "🔍 Detecting performance characteristics..." << std::endl;
+    std::cout << "Detecting performance characteristics..." << std::endl;
     
     // Detect logical and physical cores
     if (cpu_info_.features.htt) {
@@ -288,7 +288,7 @@ void CPUDetector::detect_performance_info() {
     cpu_info_.max_frequency_mhz = 3600;
     cpu_info_.bus_frequency_mhz = 100;
     
-    std::cout << "✅ Performance info detected" << std::endl;
+    std::cout << "Performance info detected" << std::endl;
 }
 
 CPUDetector::CPUIDResult CPUDetector::cpuid(uint32_t leaf, uint32_t subleaf) const {
@@ -331,7 +331,7 @@ uint32_t CPUDetector::get_max_vector_width() const {
 }
 
 void CPUDetector::print_cpu_info() const {
-    std::cout << "🖥️  CPU INFORMATION" << std::endl;
+    std::cout << "�️  CPU INFORMATION" << std::endl;
     std::cout << "==================" << std::endl;
     std::cout << "Vendor: " << cpu_info_.brand_string << std::endl;
     std::cout << "Model: " << cpu_info_.model_name << std::endl;
@@ -367,12 +367,12 @@ CPUDetector& CPUDetector::get_instance() {
 
 BranchPredictor::BranchPredictor() 
     : total_branches_(0), correct_predictions_(0), current_strategy_(PredictionStrategy::BIMODAL) {
-    std::cout << "🔀 BRANCH PREDICTOR INITIALIZED" << std::endl;
+    std::cout << "� BRANCH PREDICTOR INITIALIZED" << std::endl;
 }
 
 BranchPredictor::~BranchPredictor() {
     print_branch_statistics();
-    std::cout << "🔀 BRANCH PREDICTOR SHUTDOWN" << std::endl;
+    std::cout << "� BRANCH PREDICTOR SHUTDOWN" << std::endl;
 }
 
 void BranchPredictor::record_branch(uint64_t address, bool taken) {
@@ -450,7 +450,7 @@ double BranchPredictor::get_overall_accuracy() const {
 }
 
 void BranchPredictor::print_branch_statistics() const {
-    std::cout << "🔀 BRANCH PREDICTION STATISTICS" << std::endl;
+    std::cout << "� BRANCH PREDICTION STATISTICS" << std::endl;
     std::cout << "===============================" << std::endl;
     std::cout << "Total branches: " << total_branches_ << std::endl;
     std::cout << "Correct predictions: " << correct_predictions_ << std::endl;
@@ -490,28 +490,28 @@ void BranchPredictor::print_branch_statistics() const {
 namespace CPUOptimizationIntegration {
 
 void initialize_cpu_optimization() {
-    std::cout << "🚀 INITIALIZING CPU OPTIMIZATION SYSTEM" << std::endl;
+    std::cout << "� INITIALIZING CPU OPTIMIZATION SYSTEM" << std::endl;
     
     // Initialize CPU detector
     auto& detector = CPUDetector::get_instance();
     detector.detect_cpu_info();
     
-    std::cout << "✅ CPU OPTIMIZATION SYSTEM INITIALIZED" << std::endl;
-    std::cout << "  🔍 CPU Detection: Complete" << std::endl;
-    std::cout << "  🔀 Branch Prediction: Ready" << std::endl;
-    std::cout << "  💾 Cache Optimization: Ready" << std::endl;
-    std::cout << "  📊 Performance Counters: Ready" << std::endl;
+    std::cout << "CPU OPTIMIZATION SYSTEM INITIALIZED" << std::endl;
+    std::cout << "  CPU Detection: Complete" << std::endl;
+    std::cout << "  � Branch Prediction: Ready" << std::endl;
+    std::cout << "  � Cache Optimization: Ready" << std::endl;
+    std::cout << "  � Performance Counters: Ready" << std::endl;
 }
 
 void shutdown_cpu_optimization() {
-    std::cout << "🚀 SHUTTING DOWN CPU OPTIMIZATION SYSTEM" << std::endl;
-    std::cout << "✅ CPU OPTIMIZATION SYSTEM SHUTDOWN" << std::endl;
+    std::cout << "� SHUTTING DOWN CPU OPTIMIZATION SYSTEM" << std::endl;
+    std::cout << "CPU OPTIMIZATION SYSTEM SHUTDOWN" << std::endl;
 }
 
 void detect_and_configure_cpu() {
     auto& detector = CPUDetector::get_instance();
     
-    std::cout << "🔧 CONFIGURING CPU-SPECIFIC OPTIMIZATIONS" << std::endl;
+    std::cout << "CONFIGURING CPU-SPECIFIC OPTIMIZATIONS" << std::endl;
     
     if (detector.get_vendor() == CPUVendor::INTEL) {
         std::cout << "  Applying Intel-specific optimizations..." << std::endl;
@@ -528,7 +528,7 @@ void detect_and_configure_cpu() {
     std::cout << "  Optimal instruction set: " << detector.get_optimal_instruction_set() << std::endl;
     std::cout << "  Max vector width: " << detector.get_max_vector_width() << " bits" << std::endl;
     
-    std::cout << "✅ CPU configuration complete" << std::endl;
+    std::cout << "CPU configuration complete" << std::endl;
 }
 
 void apply_cpu_specific_optimizations() {
@@ -559,7 +559,7 @@ void apply_cpu_specific_optimizations() {
         std::cout << "  Enabling bit manipulation instructions" << std::endl;
     }
     
-    std::cout << "✅ CPU optimizations applied" << std::endl;
+    std::cout << "CPU optimizations applied" << std::endl;
 }
 
 std::string get_cpu_optimization_summary() {
@@ -575,7 +575,7 @@ std::string get_cpu_optimization_summary() {
 }
 
 void configure_for_maximum_performance() {
-    std::cout << "🔥 CONFIGURING FOR MAXIMUM PERFORMANCE" << std::endl;
+    std::cout << "� CONFIGURING FOR MAXIMUM PERFORMANCE" << std::endl;
     
     apply_cpu_specific_optimizations();
     
@@ -585,7 +585,7 @@ void configure_for_maximum_performance() {
     std::cout << "  - Cache prefetching: AGGRESSIVE" << std::endl;
     std::cout << "  - Instruction scheduling: OPTIMIZED" << std::endl;
     
-    std::cout << "🔥 Maximum performance configuration applied" << std::endl;
+    std::cout << "� Maximum performance configuration applied" << std::endl;
 }
 
 } // namespace CPUOptimizationIntegration

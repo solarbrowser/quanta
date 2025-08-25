@@ -16,7 +16,7 @@
 namespace Quanta {
 
 //=============================================================================
-// PHASE 3: Lock-Free Data Structures - Ultra-High Performance Multi-Threading
+// Lock-Free Data Structures - Ultra-High Performance Multi-Threading
 // 
 // High-performance lock-free data structures for maximum throughput:
 // - Lock-free queue for task distribution
@@ -176,7 +176,7 @@ public:
         uint64_t enq_cont = get_enqueue_contentions();
         uint64_t deq_cont = get_dequeue_contentions();
         
-        printf("🔄 Lock-Free Queue Statistics:\n");
+        printf("� Lock-Free Queue Statistics:\n");
         printf("  Enqueues: %llu\n", enqueues);
         printf("  Dequeues: %llu\n", dequeues);
         printf("  Enqueue Contentions: %llu (%.2f%%)\n", enq_cont, 
@@ -271,7 +271,7 @@ public:
         uint64_t push_cont = get_push_contentions();
         uint64_t pop_cont = get_pop_contentions();
         
-        printf("📚 Lock-Free Stack Statistics:\n");
+        printf("� Lock-Free Stack Statistics:\n");
         printf("  Pushes: %llu\n", pushes);
         printf("  Pops: %llu\n", pops);
         printf("  Push Contentions: %llu (%.2f%%)\n", push_cont,
@@ -376,7 +376,7 @@ public:
         uint64_t write_fails = get_write_failures();
         uint64_t read_fails = get_read_failures();
         
-        printf("🔄 Lock-Free Ring Buffer Statistics (Size: %zu):\n", Size);
+        printf("� Lock-Free Ring Buffer Statistics (Size: %zu):\n", Size);
         printf("  Writes: %llu\n", writes);
         printf("  Reads: %llu\n", reads);
         printf("  Write Failures: %llu (%.2f%%)\n", write_fails,
@@ -519,7 +519,7 @@ public:
         uint64_t deletes = get_delete_count();
         uint64_t collisions = get_collision_count();
         
-        printf("🗺️  Lock-Free Hash Map Statistics (Buckets: %zu):\n", BucketCount);
+        printf("�️  Lock-Free Hash Map Statistics (Buckets: %zu):\n", BucketCount);
         printf("  Inserts: %llu\n", inserts);
         printf("  Lookups: %llu\n", lookups);
         printf("  Deletes: %llu\n", deletes);
@@ -644,7 +644,7 @@ public:
         uint64_t contentions = get_allocate_contentions();
         uint64_t expansions = get_pool_expansions();
         
-        printf("🏊 Lock-Free Object Pool Statistics (Pool Size: %zu):\n", PoolSize);
+        printf("� Lock-Free Object Pool Statistics (Pool Size: %zu):\n", PoolSize);
         printf("  Allocations: %llu\n", allocs);
         printf("  Deallocations: %llu\n", deallocs);
         printf("  Outstanding Objects: %lld\n", (long long)(allocs - deallocs));
@@ -697,7 +697,7 @@ public:
         uint64_t total_time = 0;
         size_t active_count = active_threads_.load();
         
-        printf("🚀 LOCK-FREE PERFORMANCE SUMMARY:\n");
+        printf("� LOCK-FREE PERFORMANCE SUMMARY:\n");
         printf("===============================\n");
         
         for (size_t i = 0; i < active_count; ++i) {

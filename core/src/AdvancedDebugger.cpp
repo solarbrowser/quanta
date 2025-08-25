@@ -20,12 +20,12 @@ namespace Quanta {
 
 ExecutionProfiler::ExecutionProfiler(size_t max_path_depth) 
     : max_path_depth_(max_path_depth) {
-    std::cout << "ðŸ” EXECUTION PROFILER INITIALIZED" << std::endl;
+    std::cout << "EXECUTION PROFILER INITIALIZED" << std::endl;
 }
 
 ExecutionProfiler::~ExecutionProfiler() {
     print_profile_summary();
-    std::cout << "ðŸ” EXECUTION PROFILER SHUTDOWN" << std::endl;
+    std::cout << "EXECUTION PROFILER SHUTDOWN" << std::endl;
 }
 
 void ExecutionProfiler::enter_function(const std::string& function_name) {
@@ -138,7 +138,7 @@ std::vector<std::pair<std::string, uint64_t>> ExecutionProfiler::get_hot_paths()
 }
 
 void ExecutionProfiler::print_profile_summary() const {
-    std::cout << "ðŸ“Š EXECUTION PROFILE SUMMARY" << std::endl;
+    std::cout << "Š EXECUTION PROFILE SUMMARY" << std::endl;
     std::cout << "============================" << std::endl;
     std::cout << "Total Function Calls: " << total_function_calls_ << std::endl;
     std::cout << "Total Execution Time: " << (total_execution_time_ns_ / 1000000.0) << " ms" << std::endl;
@@ -161,7 +161,7 @@ void ExecutionProfiler::print_profile_summary() const {
 }
 
 void ExecutionProfiler::print_detailed_profile() const {
-    std::cout << "ðŸ“Š DETAILED EXECUTION PROFILE" << std::endl;
+    std::cout << "Š DETAILED EXECUTION PROFILE" << std::endl;
     std::cout << "=============================" << std::endl;
     
     auto sorted_functions = get_sorted_by_total_time();
@@ -187,7 +187,7 @@ void ExecutionProfiler::print_detailed_profile() const {
 }
 
 void ExecutionProfiler::print_hot_paths() const {
-    std::cout << "ðŸ”¥ HOT EXECUTION PATHS" << std::endl;
+    std::cout << "¥ HOT EXECUTION PATHS" << std::endl;
     std::cout << "=====================" << std::endl;
     
     auto hot_paths = get_hot_paths();
@@ -227,13 +227,13 @@ ExecutionProfiler& ExecutionProfiler::get_instance() {
 //=============================================================================
 
 MemoryProfiler::MemoryProfiler() {
-    std::cout << "ðŸ’¾ MEMORY PROFILER INITIALIZED" << std::endl;
+    std::cout << "¾ MEMORY PROFILER INITIALIZED" << std::endl;
 }
 
 MemoryProfiler::~MemoryProfiler() {
     check_for_leaks();
     print_memory_summary();
-    std::cout << "ðŸ’¾ MEMORY PROFILER SHUTDOWN" << std::endl;
+    std::cout << "¾ MEMORY PROFILER SHUTDOWN" << std::endl;
 }
 
 void MemoryProfiler::track_allocation(void* ptr, size_t size, const std::string& file, int line) {
@@ -313,7 +313,7 @@ std::unordered_map<std::string, uint64_t> MemoryProfiler::get_file_allocations()
 }
 
 void MemoryProfiler::print_memory_summary() const {
-    std::cout << "ðŸ’¾ MEMORY PROFILE SUMMARY" << std::endl;
+    std::cout << "¾ MEMORY PROFILE SUMMARY" << std::endl;
     std::cout << "=========================" << std::endl;
     std::cout << "Total Allocated: " << (stats_.total_allocated_bytes / 1024.0) << " KB" << std::endl;
     std::cout << "Total Freed: " << (stats_.total_freed_bytes / 1024.0) << " KB" << std::endl;
@@ -333,7 +333,7 @@ void MemoryProfiler::print_memory_leaks() const {
     auto leaks = get_memory_leaks();
     
     if (leaks.empty()) {
-        std::cout << "âœ… NO MEMORY LEAKS DETECTED" << std::endl;
+        std::cout << "NO MEMORY LEAKS DETECTED" << std::endl;
         return;
     }
     
@@ -369,12 +369,12 @@ MemoryProfiler& MemoryProfiler::get_instance() {
 
 CallStackAnalyzer::CallStackAnalyzer() 
     : max_stack_depth_(0), total_calls_(0) {
-    std::cout << "ðŸ“ž CALL STACK ANALYZER INITIALIZED" << std::endl;
+    std::cout << "ž CALL STACK ANALYZER INITIALIZED" << std::endl;
 }
 
 CallStackAnalyzer::~CallStackAnalyzer() {
     print_stack_analysis();
-    std::cout << "ðŸ“ž CALL STACK ANALYZER SHUTDOWN" << std::endl;
+    std::cout << "ž CALL STACK ANALYZER SHUTDOWN" << std::endl;
 }
 
 void CallStackAnalyzer::enter_function(const std::string& function_name, const std::string& file, int line) {
@@ -437,7 +437,7 @@ std::vector<std::string> CallStackAnalyzer::get_current_call_stack() const {
 }
 
 void CallStackAnalyzer::print_call_tree() const {
-    std::cout << "ðŸŒ³ CALL TREE ANALYSIS" << std::endl;
+    std::cout << "³ CALL TREE ANALYSIS" << std::endl;
     std::cout << "=====================" << std::endl;
     
     std::function<void(const CallFrame*, int)> print_frame = [&](const CallFrame* frame, int depth) {
@@ -459,7 +459,7 @@ void CallStackAnalyzer::print_call_tree() const {
 }
 
 void CallStackAnalyzer::print_stack_analysis() const {
-    std::cout << "ðŸ“ž CALL STACK ANALYSIS" << std::endl;
+    std::cout << "ž CALL STACK ANALYSIS" << std::endl;
     std::cout << "======================" << std::endl;
     std::cout << "Total Function Calls: " << total_calls_ << std::endl;
     std::cout << "Maximum Stack Depth: " << max_stack_depth_ << std::endl;
@@ -504,7 +504,7 @@ PerformanceMonitor::~PerformanceMonitor() {
 void PerformanceMonitor::start_monitoring() {
     should_stop_monitoring_ = false;
     monitoring_thread_ = std::thread(&PerformanceMonitor::monitoring_loop, this);
-    std::cout << "ðŸ” Real-time performance monitoring started" << std::endl;
+    std::cout << "Real-time performance monitoring started" << std::endl;
 }
 
 void PerformanceMonitor::stop_monitoring() {
@@ -512,7 +512,7 @@ void PerformanceMonitor::stop_monitoring() {
     if (monitoring_thread_.joinable()) {
         monitoring_thread_.join();
     }
-    std::cout << "ðŸ” Real-time performance monitoring stopped" << std::endl;
+    std::cout << "Real-time performance monitoring stopped" << std::endl;
 }
 
 void PerformanceMonitor::record_jit_compilation(uint64_t compile_time_ns) {
@@ -612,7 +612,7 @@ PerformanceMonitor& PerformanceMonitor::get_instance() {
 namespace DebugIntegration {
 
 void initialize_debugging_systems() {
-    std::cout << "ðŸ”§ INITIALIZING ADVANCED DEBUGGING SYSTEMS" << std::endl;
+    std::cout << "INITIALIZING ADVANCED DEBUGGING SYSTEMS" << std::endl;
     
     // Initialize all debugging components
     ExecutionProfiler::get_instance();
@@ -620,20 +620,20 @@ void initialize_debugging_systems() {
     CallStackAnalyzer::get_instance();
     PerformanceMonitor::get_instance();
     
-    std::cout << "âœ… ALL DEBUGGING SYSTEMS INITIALIZED" << std::endl;
-    std::cout << "  ðŸ“Š Execution Profiler: Ready" << std::endl;
-    std::cout << "  ðŸ’¾ Memory Profiler: Ready" << std::endl;
-    std::cout << "  ðŸ“ž Call Stack Analyzer: Ready" << std::endl;
+    std::cout << "ALL DEBUGGING SYSTEMS INITIALIZED" << std::endl;
+    std::cout << "  Š Execution Profiler: Ready" << std::endl;
+    std::cout << "  ¾ Memory Profiler: Ready" << std::endl;
+    std::cout << "  ž Call Stack Analyzer: Ready" << std::endl;
     std::cout << "   Performance Monitor: Ready" << std::endl;
 }
 
 void shutdown_debugging_systems() {
-    std::cout << "ðŸ”§ SHUTTING DOWN DEBUGGING SYSTEMS" << std::endl;
+    std::cout << "SHUTTING DOWN DEBUGGING SYSTEMS" << std::endl;
     
     // Print final reports
     print_all_profiles();
     
-    std::cout << "âœ… ALL DEBUGGING SYSTEMS SHUTDOWN" << std::endl;
+    std::cout << "ALL DEBUGGING SYSTEMS SHUTDOWN" << std::endl;
 }
 
 void start_profiling() {
@@ -641,7 +641,7 @@ void start_profiling() {
     MemoryProfiler::get_instance().enable_tracking();
     PerformanceMonitor::get_instance().enable_monitoring();
     
-    std::cout << "ðŸ” PROFILING STARTED" << std::endl;
+    std::cout << "PROFILING STARTED" << std::endl;
 }
 
 void stop_profiling() {
@@ -649,12 +649,12 @@ void stop_profiling() {
     MemoryProfiler::get_instance().disable_tracking();
     PerformanceMonitor::get_instance().disable_monitoring();
     
-    std::cout << "ðŸ” PROFILING STOPPED" << std::endl;
+    std::cout << "PROFILING STOPPED" << std::endl;
 }
 
 void print_all_profiles() {
     std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "ðŸ” COMPREHENSIVE DEBUG REPORT" << std::endl;
+    std::cout << "COMPREHENSIVE DEBUG REPORT" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
     
     ExecutionProfiler::get_instance().print_detailed_profile();
@@ -676,7 +676,7 @@ void check_memory_leaks() {
 }
 
 void print_debug_summary() {
-    std::cout << "ðŸ” DEBUG SYSTEM SUMMARY" << std::endl;
+    std::cout << "DEBUG SYSTEM SUMMARY" << std::endl;
     std::cout << "=======================" << std::endl;
     
     auto& profiler = ExecutionProfiler::get_instance();
@@ -684,14 +684,14 @@ void print_debug_summary() {
     auto& stack = CallStackAnalyzer::get_instance();
     auto& perf = PerformanceMonitor::get_instance();
     
-    std::cout << "ðŸ“Š Execution Profiler:" << std::endl;
+    std::cout << "Š Execution Profiler:" << std::endl;
     std::cout << "  Tracked Functions: " << profiler.get_tracked_functions_count() << std::endl;
     std::cout << "  Total Calls: " << profiler.get_total_function_calls() << std::endl;
     
-    std::cout << "ðŸ’¾ Memory Profiler:" << std::endl;
+    std::cout << "¾ Memory Profiler:" << std::endl;
     std::cout << "  Memory Leaks: " << (memory.has_memory_leaks() ? "DETECTED" : "NONE") << std::endl;
     
-    std::cout << "ðŸ“ž Call Stack Analyzer:" << std::endl;
+    std::cout << "ž Call Stack Analyzer:" << std::endl;
     std::cout << "  Max Stack Depth: " << stack.get_max_stack_depth() << std::endl;
     std::cout << "  Total Calls: " << stack.get_total_calls() << std::endl;
     

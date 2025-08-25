@@ -15,7 +15,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Native Array Operations - V8 Level Performance
+// Native Array Operations - High-performance Implementation
 //=============================================================================
 
 enum class ArrayType : uint8_t {
@@ -30,37 +30,37 @@ enum class ArrayType : uint8_t {
 
 class NativeArrayOps {
 public:
-    // üöÄ ULTRA-FAST MAP OPERATION
+    // Ä ULTRA-FAST MAP OPERATION
     static Value native_map(const Value& array, const std::function<Value(Value, int)>& callback);
     
-    // üî• ULTRA-FAST REDUCE OPERATION
+    // • ULTRA-FAST REDUCE OPERATION
     static Value native_reduce(const Value& array, const std::function<Value(Value, Value, int)>& callback, const Value& initial);
     
     // ‚ö° ULTRA-FAST FILTER OPERATION
     static Value native_filter(const Value& array, const std::function<bool(Value, int)>& callback);
     
-    // üéØ SPECIALIZED NUMERIC OPERATIONS
+    // Ø SPECIALIZED NUMERIC OPERATIONS
     static Value native_sum_numbers(const Value& array);
     static Value native_multiply_numbers(const Value& array, double factor);
     static Value native_find_max(const Value& array);
     static Value native_find_min(const Value& array);
     
-    // üí• SIMD ACCELERATED OPERATIONS
+    // SIMD ACCELERATED OPERATIONS
     static Value simd_sum_double_array(const std::vector<double>& data);
     static std::vector<double> simd_multiply_double_array(const std::vector<double>& data, double factor);
     static std::vector<double> simd_add_double_arrays(const std::vector<double>& a, const std::vector<double>& b);
     
-    // üîç TYPE DETECTION & OPTIMIZATION
+    // TYPE DETECTION & OPTIMIZATION
     static ArrayType detect_array_type(const Value& array);
     static bool is_packed_array(const Value& array);
     static bool can_use_simd(const Value& array);
     
-    // üöÄ BOUND CHECK ELIMINATION
+    // Ä BOUND CHECK ELIMINATION
     static inline bool bounds_check_elimination_safe(size_t index, size_t length) {
         return index < length; // This will be optimized away in hot loops
     }
     
-    // üéØ FAST PATH FOR-OF ITERATION
+    // Ø FAST PATH FOR-OF ITERATION
     static void native_for_of(const Value& array, const std::function<void(Value, int)>& callback);
     
 private:
@@ -87,16 +87,16 @@ public:
                     is_numeric_only(false), can_vectorize(false), iteration_count(0) {}
     };
     
-    // üî• HOT LOOP DETECTION
+    // • HOT LOOP DETECTION
     static LoopInfo analyze_loop(const std::string& loop_body, size_t iterations);
     
-    // üí• BOUND CHECK ELIMINATION
+    // BOUND CHECK ELIMINATION
     static std::string eliminate_bounds_checks(const std::string& loop_code);
     
     // ‚ö° TYPE GUARD ELIMINATION  
     static std::string eliminate_type_guards(const std::string& loop_code);
     
-    // üöÄ VECTORIZATION OPPORTUNITIES
+    // Ä VECTORIZATION OPPORTUNITIES
     static bool can_vectorize_loop(const LoopInfo& info);
     static std::string vectorize_loop(const std::string& loop_code);
 };
@@ -122,13 +122,13 @@ public:
         }
     };
     
-    // üîç ESCAPE ANALYSIS
+    // ESCAPE ANALYSIS
     static ObjectInfo analyze_object_escape(const std::string& code, const std::string& var_name);
     
-    // üöÄ STACK ALLOCATION OPPORTUNITIES
+    // Ä STACK ALLOCATION OPPORTUNITIES
     static std::vector<std::string> find_stack_allocation_candidates(const std::string& code);
     
-    // üí• HEAP ALLOCATION ELIMINATION
+    // HEAP ALLOCATION ELIMINATION
     static std::string optimize_for_stack_allocation(const std::string& code);
 };
 
@@ -138,10 +138,10 @@ public:
 
 class ShapeOptimizer {
 public:
-    // üéØ SHAPE PREDICTION
+    // Ø SHAPE PREDICTION
     static bool predict_object_shape(const Value& object, const std::string& property);
     
-    // üöÄ FAST PROPERTY ACCESS (BYPASS ALL CHECKS)
+    // Ä FAST PROPERTY ACCESS (BYPASS ALL CHECKS)
     static inline Value ultra_fast_property_get(const Value& object, size_t offset) {
         // DIRECT MEMORY ACCESS - NO BOUNDS CHECKING
         // This assumes shape validation already passed
@@ -154,7 +154,7 @@ public:
         object.set_property_direct(offset, value);
     }
     
-    // üî• SHAPE-BASED METHOD DISPATCH
+    // • SHAPE-BASED METHOD DISPATCH
     static Value dispatch_method_by_shape(const Value& object, const std::string& method, const std::vector<Value>& args);
 };
 

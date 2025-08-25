@@ -140,7 +140,7 @@ public:
     void set_jit_threshold(uint32_t threshold);
     std::string get_jit_stats() const;
     
-    // PHASE 2: JIT Compiler access
+    // JIT Compiler access
     class JITCompiler* get_jit_compiler() const { return jit_compiler_.get(); }
     
     // Garbage Collection
@@ -163,11 +163,11 @@ public:
     // Zero-leak optimization system
     ZeroLeakOptimizer* get_zero_leak_optimizer() const { return zero_leak_optimizer_.get(); }
     void prepare_for_heavy_operations(ZeroLeakOptimizer::OperationType type, size_t scale);
-    void enable_nuclear_performance_mode();
+    void enable_optimized_performance_mode();
     
-    // Ultra-fast array optimization system
+    // Optimized array optimization system
     ArrayOptimizer* get_array_optimizer() const { return array_optimizer_.get(); }
-    void enable_ultra_fast_arrays();
+    void enable_optimized_arrays();
     
     // Error handling
     void set_error_handler(std::function<void(const std::string&)> handler);
@@ -206,7 +206,7 @@ private:
     // Execution helpers
     Result execute_internal(const std::string& source, const std::string& filename);
     
-    // ULTRA-PERFORMANCE optimization methods
+    // HIGH PERFORMANCE optimization methods
     bool is_simple_mathematical_loop(ASTNode* ast);
     Result execute_optimized_mathematical_loop(ASTNode* ast);
     void handle_exception(const Value& exception);

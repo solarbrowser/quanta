@@ -16,11 +16,11 @@
 namespace Quanta {
 
 //=============================================================================
-// ULTRA-FAST BYTECODE VM - No AST, Direct Execution
+// OPTIMIZED BYTECODE VM - No AST, Direct Execution
 //=============================================================================
 
 enum class FastOp : uint8_t {
-    // Ultra-fast operations
+    // Optimized operations
     LOAD_NUMBER = 0x01,     // Load immediate number
     LOAD_VAR = 0x02,        // Load variable by register
     STORE_VAR = 0x03,       // Store to variable
@@ -38,7 +38,7 @@ enum class FastOp : uint8_t {
     FAST_RETURN = 0x23,     // Return value
     
     // Special optimizations
-    MATH_LOOP_SUM = 0x30,   // Ultra-fast mathematical sum loop
+    MATH_LOOP_SUM = 0x30,   // Optimized mathematical sum loop
     NATIVE_EXEC = 0x31,     // Execute native C++ code
 };
 
@@ -64,7 +64,7 @@ public:
     // Compile JavaScript directly to fast bytecode (skip AST)
     bool compile_direct(const std::string& source);
     
-    // Execute bytecode with ultra-fast VM
+    // Execute bytecode with optimized VM
     Value execute_fast();
     
     // Add optimized instruction
@@ -74,7 +74,7 @@ public:
     uint32_t get_register_count() const { return static_cast<uint32_t>(registers_.size()); }
     
 private:
-    // Pattern recognition for ultra-fast compilation
+    // Pattern recognition for optimized compilation
     bool is_simple_math_loop(const std::string& source);
     void compile_math_loop_direct(const std::string& source);
     
@@ -91,7 +91,7 @@ public:
     // Detect and compile mathematical loops directly
     static bool try_compile_math_loop(const std::string& source, FastBytecodeVM& vm);
     
-    // Extract loop parameters from source (regex-based, ultra-fast)
+    // Extract loop parameters from source (regex-based, optimized)
     struct LoopParams {
         std::string var_name;
         int64_t start_val;

@@ -752,7 +752,7 @@ public:
     ASTNode* get_update() const { return update_.get(); }
     ASTNode* get_body() const { return body_.get(); }
     
-    // V8-style loop optimization methods
+    // Standard loop optimization methods
     bool can_optimize_as_simple_loop() const;
     Value execute_optimized_loop(Context& ctx) const;
     

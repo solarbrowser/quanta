@@ -19,7 +19,7 @@ namespace Quanta {
 class ASTNode;
 
 //=============================================================================
-// Bytecode Instructions - PHASE 2: V8-Level Performance Optimization
+// Bytecode Instructions - High-performance Optimization
 //=============================================================================
 
 enum class BytecodeInstruction : uint8_t {
@@ -86,7 +86,7 @@ enum class BytecodeInstruction : uint8_t {
     TYPEOF = 0x90,          // typeof operator
     INSTANCEOF = 0x91,      // instanceof operator
     
-    // Hot Path Optimizations (PHASE 2)
+    // Hot Path Optimizations
     FAST_ADD_INT = 0xA0,    // Fast integer addition
     FAST_ADD_NUM = 0xA1,    // Fast number addition
     FAST_PROP_LOAD = 0xA2,  // Fast property load with inline cache
@@ -129,7 +129,7 @@ struct BytecodeOp {
 };
 
 //=============================================================================
-// Bytecode Function - PHASE 2: Advanced Compilation Unit
+// Bytecode Function - Advanced Compilation Unit
 //=============================================================================
 
 class BytecodeFunction {
@@ -141,7 +141,7 @@ public:
     uint32_t parameter_count;              // Number of parameters
     std::string function_name;             // Function name for debugging
     
-    // PHASE 2: Optimization metadata
+    // Optimization metadata
     std::unordered_map<uint32_t, uint32_t> hot_spots;  // PC -> execution count
     bool is_optimized;                     // Whether this function is optimized
     uint32_t optimization_level;           // 0=None, 1=Basic, 2=Advanced, 3=Maximum
@@ -173,7 +173,7 @@ public:
 };
 
 //=============================================================================
-// Bytecode Compiler - PHASE 2: AST to Bytecode Translation
+// Bytecode Compiler - AST to Bytecode Translation
 //=============================================================================
 
 class BytecodeCompiler {
@@ -213,7 +213,7 @@ private:
 };
 
 //=============================================================================
-// Bytecode Virtual Machine - PHASE 2: High-Performance Execution Engine
+// Bytecode Virtual Machine - High-Performance Execution Engine
 //=============================================================================
 
 class BytecodeVM {

@@ -16,7 +16,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Advanced Inline Cache - V8 Level Performance
+// Advanced Inline Cache - High-performance Implementation
 //=============================================================================
 
 enum class ICState : uint8_t {
@@ -56,7 +56,7 @@ public:
     AdvancedInlineCache(const std::string& prop_name);
     ~AdvancedInlineCache();
     
-    // ðŸš€ ULTRA-FAST PROPERTY ACCESS
+    // € ULTRA-FAST PROPERTY ACCESS
     Value get_property_fast(const Value& object, bool& cache_hit);
     bool set_property_fast(Value& object, const Value& value);
     
@@ -74,7 +74,7 @@ public:
     ICState get_state() const { return state_; }
     void print_stats() const;
     
-    // ðŸ”¥ MONOMORPHIC FAST PATH - INLINE ASM READY
+    // ¥ MONOMORPHIC FAST PATH - INLINE ASM READY
     inline Value monomorphic_get(const Value& object) {
         if (entries_.empty()) return Value::undefined();
         
@@ -90,7 +90,7 @@ public:
         return Value::undefined();
     }
     
-    // ðŸŽ¯ POLYMORPHIC OPTIMIZED PATH
+    // ¯ POLYMORPHIC OPTIMIZED PATH
     inline Value polymorphic_get(const Value& object) {
         HiddenClass* obj_shape = object.get_hidden_class();
         
@@ -131,7 +131,7 @@ public:
     double get_global_hit_rate() const;
     void print_global_stats() const;
     
-    // ðŸš€ MEGA OPTIMIZATION: DIRECT PROPERTY ACCESS BYPASS
+    // € MEGA OPTIMIZATION: DIRECT PROPERTY ACCESS BYPASS
     static inline Value ultra_fast_property_access(
         const Value& object, 
         const std::string& property,

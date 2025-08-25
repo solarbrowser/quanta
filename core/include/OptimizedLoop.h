@@ -1,10 +1,10 @@
 /*
- * Ultra-Fast Loop Optimization for V8-level Performance
+ * Ultra-Fast Loop Optimization for High-performance Execution
  * Detects and optimizes simple counting loops at runtime
  */
 
-#ifndef QUANTA_ULTRA_FAST_LOOP_H
-#define QUANTA_ULTRA_FAST_LOOP_H
+#ifndef QUANTA_OPTIMIZED_LOOP_H
+#define QUANTA_OPTIMIZED_LOOP_H
 
 #include "Value.h"
 #include <cstdint>
@@ -15,7 +15,7 @@ namespace Quanta {
 class Context;
 
 // Ultra-fast loop optimizer
-class UltraFastLoop {
+class OptimizedLoop {
 public:
     // Detect if this is a simple counting loop and execute it optimized
     static Value optimize_simple_loop(Context& ctx, const std::string& loop_var, 

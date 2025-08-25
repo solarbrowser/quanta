@@ -240,7 +240,7 @@ void ZeroLeakOptimizer::verify_no_leaks() {
         std::cout << "⚠️  HIGH MEMORY USAGE DETECTED: " << (current_usage / 1024 / 1024) << " MB" << std::endl;
         emergency_cleanup();
     } else {
-        std::cout << "✅ MEMORY USAGE NORMAL: " << (current_usage / 1024 / 1024) << " MB" << std::endl;
+        std::cout << " MEMORY USAGE NORMAL: " << (current_usage / 1024 / 1024) << " MB" << std::endl;
     }
 }
 
@@ -258,7 +258,7 @@ void ZeroLeakOptimizer::force_complete_cleanup() {
 
 void ZeroLeakOptimizer::print_optimization_report() const {
     std::cout << "\n═══════════════════════════════════════════════════" << std::endl;
-    std::cout << "🚀 ZERO-LEAK OPTIMIZER REPORT" << std::endl;
+    std::cout << "� ZERO-LEAK OPTIMIZER REPORT" << std::endl;
     std::cout << "═══════════════════════════════════════════════════" << std::endl;
     std::cout << "Objects Reused: " << stats_.objects_reused.load() << std::endl;
     std::cout << "Memory Saved: " << (stats_.memory_saved.load() / 1024 / 1024) << " MB" << std::endl;
@@ -270,7 +270,7 @@ void ZeroLeakOptimizer::print_optimization_report() const {
     if (high_memory_pressure_.load()) {
         std::cout << "⚠️  HIGH MEMORY PRESSURE DETECTED" << std::endl;
     } else {
-        std::cout << "✅ MEMORY PRESSURE NORMAL" << std::endl;
+        std::cout << " MEMORY PRESSURE NORMAL" << std::endl;
     }
     
     std::cout << "═══════════════════════════════════════════════════" << std::endl;

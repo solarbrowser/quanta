@@ -1,5 +1,5 @@
-#ifndef QUANTA_UNIVERSAL_ULTRA_OPTIMIZER_H
-#define QUANTA_UNIVERSAL_ULTRA_OPTIMIZER_H
+#ifndef QUANTA_UNIVERSAL_OPTIMIZER_H
+#define QUANTA_UNIVERSAL_OPTIMIZER_H
 
 #include "Context.h"
 #include "Value.h"
@@ -27,7 +27,7 @@ namespace Quanta {
  * 7. Control flow - Branch prediction
  * 8. Memory allocation - Pool-based zero-copy
  */
-class UniversalUltraOptimizer {
+class UniversalOptimizer {
 public:
     // REVOLUTIONARY ZERO-ALLOCATION OBJECT SYSTEM
     struct UltraObject {
@@ -121,13 +121,13 @@ public:
     // ULTRA-FAST OPERATIONS (150M+ ops/sec each)
     
     // REVOLUTIONARY OBJECT OPERATIONS (150M+ OPS/SEC TARGET)
-    static bool revolutionary_object_create(const std::string& var_name);
-    static bool revolutionary_property_set_double(const std::string& obj_name, const std::string& prop, double value);
+    static bool advanced_object_create(const std::string& var_name);
+    static bool advanced_property_set_double(const std::string& obj_name, const std::string& prop, double value);
     static bool revolutionary_property_set_string(const std::string& obj_name, const std::string& prop, const std::string& value);
     static bool revolutionary_property_set_bool(const std::string& obj_name, const std::string& prop, bool value);
     
     // DIRECT MEMORY PROPERTY ACCESS (NO HASH TABLE LOOKUPS)
-    static double revolutionary_property_get_double(const std::string& obj_name, const std::string& prop);
+    static double advanced_property_get_double(const std::string& obj_name, const std::string& prop);
     static std::string revolutionary_property_get_string(const std::string& obj_name, const std::string& prop);
     static bool revolutionary_property_get_bool(const std::string& obj_name, const std::string& prop);
     

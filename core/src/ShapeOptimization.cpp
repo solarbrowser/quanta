@@ -15,7 +15,7 @@
 namespace Quanta {
 
 //=============================================================================
-// ObjectShape Implementation - PHASE 2: V8-Level Shape Optimization
+// ObjectShape Implementation - High-performance Shape Optimization
 //=============================================================================
 
 ShapeID ObjectShape::next_shape_id_ = 1;
@@ -114,7 +114,7 @@ std::shared_ptr<ObjectShape> ObjectShape::get_shape_by_id(ShapeID id) {
 
 void ObjectShape::cleanup_unused_shapes() {
     // Remove shapes with no references (would need reference counting in full implementation)
-    std::cout << "🧹 Shape cleanup: " << global_shapes_.size() << " shapes tracked" << std::endl;
+    std::cout << "� Shape cleanup: " << global_shapes_.size() << " shapes tracked" << std::endl;
 }
 
 std::string ObjectShape::to_string() const {
@@ -214,7 +214,7 @@ void ShapeCache::clear() {
 }
 
 void ShapeCache::print_stats() const {
-    std::cout << "🔍 Shape Cache Statistics:" << std::endl;
+    std::cout << "� Shape Cache Statistics:" << std::endl;
     std::cout << "  Total Lookups: " << total_lookups_ << std::endl;
     std::cout << "  Cache Hits: " << cache_hits_ << std::endl;
     std::cout << "  Cache Misses: " << cache_misses_ << std::endl;
@@ -222,7 +222,7 @@ void ShapeCache::print_stats() const {
 }
 
 //=============================================================================
-// ShapeOptimizedObject Implementation - V8-Style Object Optimization
+// ShapeOptimizedObject Implementation - Standard Object Optimization
 //=============================================================================
 
 ShapeCache ShapeOptimizedObject::global_shape_cache_;
@@ -350,7 +350,7 @@ void ShapeOptimizedObject::transition_shape(std::shared_ptr<ObjectShape> new_sha
     // Update shape
     shape_ = new_shape;
     
-    std::cout << "🔄 SHAPE TRANSITION: " << shape_->to_string() << std::endl;
+    std::cout << "� SHAPE TRANSITION: " << shape_->to_string() << std::endl;
 }
 
 Value ShapeOptimizedObject::get_fast_property(PropertyOffset offset) const {
@@ -419,7 +419,7 @@ std::shared_ptr<ObjectShape> ShapeTransitionManager::delete_property_transition(
 }
 
 void ShapeTransitionManager::print_transition_stats() const {
-    std::cout << "🔄 Shape Transition Statistics:" << std::endl;
+    std::cout << "� Shape Transition Statistics:" << std::endl;
     std::cout << "  Total Transitions: " << stats_.total_transitions << std::endl;
     std::cout << "  Add Property: " << stats_.add_property_transitions << std::endl;
     std::cout << "  Delete Property: " << stats_.delete_property_transitions << std::endl;
@@ -453,7 +453,7 @@ void ShapeOptimizer::optimize_object(Object* obj) {
     // This is a simplified version - full implementation would be more complex
     objects_optimized_++;
     
-    std::cout << "🚀 SHAPE OPTIMIZATION: Object optimized (Total: " << objects_optimized_ << ")" << std::endl;
+    std::cout << "� SHAPE OPTIMIZATION: Object optimized (Total: " << objects_optimized_ << ")" << std::endl;
 }
 
 std::unique_ptr<ShapeOptimizedObject> ShapeOptimizer::create_optimized_object() {
@@ -485,7 +485,7 @@ std::unique_ptr<ShapeOptimizedObject> ShapeOptimizer::create_optimized_object_wi
 }
 
 void ShapeOptimizer::analyze_object_shapes() {
-    std::cout << "🔍 SHAPE ANALYSIS:" << std::endl;
+    std::cout << "� SHAPE ANALYSIS:" << std::endl;
     std::cout << "  Objects Optimized: " << objects_optimized_ << std::endl;
     std::cout << "  Fast Property Accesses: " << fast_property_accesses_ << std::endl;
     
@@ -517,7 +517,7 @@ PropertyOffset ShapeOptimizer::get_optimized_offset(const std::string& property,
 
 void ShapeOptimizer::enable_shape_optimization(bool enabled) {
     optimization_enabled_ = enabled;
-    std::cout << "🔧 Shape optimization " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
+    std::cout << "� Shape optimization " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
 }
 
 bool ShapeOptimizer::is_shape_optimization_enabled() {
@@ -525,7 +525,7 @@ bool ShapeOptimizer::is_shape_optimization_enabled() {
 }
 
 //=============================================================================
-// ShapeInlineCache Implementation - V8-Style Inline Caching
+// ShapeInlineCache Implementation - Standard Inline Caching
 //=============================================================================
 
 ShapeInlineCache::ShapeInlineCache() : current_size_(0), total_accesses_(0), ic_hits_(0) {
@@ -597,7 +597,7 @@ double ShapeInlineCache::get_hit_ratio() const {
 }
 
 void ShapeInlineCache::print_cache_state() const {
-    std::cout << "🔍 Inline Cache State:" << std::endl;
+    std::cout << "� Inline Cache State:" << std::endl;
     std::cout << "  Size: " << current_size_ << "/" << IC_SIZE;
     if (is_monomorphic()) std::cout << " (MONOMORPHIC)";
     else if (is_polymorphic()) std::cout << " (POLYMORPHIC)";

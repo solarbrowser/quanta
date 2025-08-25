@@ -194,7 +194,7 @@ public:
     
     // optimized mode
     void enable_maximum_performance_mode();
-    void cleanup_ultra_fast_caches();
+    void cleanup_optimized_caches();
 };
 
 } // namespace Quanta

@@ -13,12 +13,12 @@
 namespace Quanta {
 
 //=============================================================================
-// Simplified BytecodeCompiler Implementation - PHASE 2
+// Simplified BytecodeCompiler Implementation
 //=============================================================================
 
 BytecodeCompiler::BytecodeCompiler() 
     : optimization_enabled_(true), next_register_(0) {
-    std::cout << "🚀 BYTECODE COMPILER INITIALIZED" << std::endl;
+    std::cout << "� BYTECODE COMPILER INITIALIZED" << std::endl;
 }
 
 BytecodeCompiler::~BytecodeCompiler() {
@@ -31,7 +31,7 @@ std::unique_ptr<BytecodeFunction> BytecodeCompiler::compile(ASTNode* ast, const 
     auto function = std::make_unique<BytecodeFunction>(function_name);
     reset_registers();
     
-    std::cout << "🚀 BYTECODE COMPILATION: " << function_name << std::endl;
+    std::cout << "� BYTECODE COMPILATION: " << function_name << std::endl;
     
     // Simple compilation - just create basic bytecode structure
     compile_node_simple(ast, function.get());
@@ -107,7 +107,7 @@ void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* func
 void BytecodeCompiler::optimize_bytecode(BytecodeFunction* function, uint32_t level) {
     if (!function || level == 0) return;
     
-    std::cout << "🚀 BYTECODE OPTIMIZATION LEVEL " << level << ": " << function->function_name << std::endl;
+    std::cout << "� BYTECODE OPTIMIZATION LEVEL " << level << ": " << function->function_name << std::endl;
     
     // Simple optimization: remove NOP instructions
     auto it = std::remove_if(function->instructions.begin(), function->instructions.end(),
@@ -121,7 +121,7 @@ void BytecodeCompiler::optimize_bytecode(BytecodeFunction* function, uint32_t le
 }
 
 //=============================================================================
-// Simplified BytecodeVM Implementation - PHASE 2
+// Simplified BytecodeVM Implementation
 //=============================================================================
 
 BytecodeVM::BytecodeVM() : profiling_enabled_(true) {
@@ -306,7 +306,7 @@ bool BytecodeJITBridge::should_jit_compile(BytecodeFunction* function) {
 bool BytecodeJITBridge::compile_to_machine_code(BytecodeFunction* function) {
     if (!function || function->is_optimized) return false;
     
-    std::cout << "🚀 JIT COMPILING BYTECODE: " << function->function_name << std::endl;
+    std::cout << "� JIT COMPILING BYTECODE: " << function->function_name << std::endl;
     
     function->is_optimized = true;
     function->optimization_level = 3;

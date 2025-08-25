@@ -19,7 +19,7 @@ namespace Quanta {
 class Value;
 
 //=============================================================================
-// PHASE 3: WebAssembly (WASM) Support - Near-Native Performance
+// WebAssembly (WASM) Support - Near-Native Performance
 // 
 // Complete WebAssembly implementation for ultra-fast execution:
 // - WASM binary parsing and validation

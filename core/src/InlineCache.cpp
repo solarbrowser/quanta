@@ -12,8 +12,8 @@
 #include <atomic>
 
 // optimized thread-local caches for maximum performance
-thread_local std::unordered_map<std::string, Quanta::InlineCache::CacheEntry> ultra_fast_property_cache;
-thread_local std::unordered_map<std::string, Quanta::MethodCallCache::MethodEntry> ultra_fast_method_cache;
+thread_local std::unordered_map<std::string, Quanta::InlineCache::CacheEntry> optimized_property_cache;
+thread_local std::unordered_map<std::string, Quanta::MethodCallCache::MethodEntry> optimized_method_cache;
 thread_local uint64_t cache_generation = 0;
 
 namespace Quanta {
@@ -25,19 +25,19 @@ namespace Quanta {
 bool InlineCache::try_get_property(Object* obj, const std::string& property, Value& result) {
     if (!obj) return false;
     
-    // optimized: Try thread-local ultra-fast cache first
-    std::string ultra_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
-    auto ultra_it = ultra_fast_property_cache.find(ultra_key);
-    if (ultra_it != ultra_fast_property_cache.end()) {
-        CacheEntry& ultra_entry = ultra_it->second;
-        if (is_cache_entry_valid(ultra_entry, obj)) {
-            result = ultra_entry.cached_value;
-            ultra_entry.access_count++;
+    // optimized: Try thread-local optimized cache first
+    std::string optimized_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
+    auto optimized_it = optimized_property_cache.find(optimized_key);
+    if (optimized_it != optimized_property_cache.end()) {
+        CacheEntry& optimized_entry = optimized_it->second;
+        if (is_cache_entry_valid(optimized_entry, obj)) {
+            result = optimized_entry.cached_value;
+            optimized_entry.access_count++;
             total_hits_++;
-            return true; // ULTRA-FAST cache hit!
+            return true; // OPTIMIZED cache hit!
         } else {
-            // Invalidate stale ultra-fast entry
-            ultra_fast_property_cache.erase(ultra_it);
+            // Invalidate stale optimized entry
+            optimized_property_cache.erase(optimized_it);
         }
     }
     
@@ -65,17 +65,17 @@ bool InlineCache::try_get_property(Object* obj, const std::string& property, Val
         return false;
     }
     
-    // Cache hit! Promote to ultra-fast cache for optimized
+    // Cache hit! Promote to optimized cache for enhanced performance
     result = entry.cached_value;
     entry.access_count++;
     entry.timestamp = std::chrono::high_resolution_clock::now();
     cache.hit_count++;
     total_hits_++;
     
-    // Promote hot entries to thread-local ultra-fast cache
+    // Promote hot entries to thread-local optimized cache
     if (entry.access_count > 5) {
-        if (ultra_fast_property_cache.size() < 1000) { // Massive ultra-fast cache for 5-7M ops/sec
-            ultra_fast_property_cache[ultra_key] = entry;
+        if (optimized_property_cache.size() < 1000) { // Massive optimized cache for 5-7M ops/sec
+            optimized_property_cache[optimized_key] = entry;
         }
     }
     
@@ -100,14 +100,14 @@ void InlineCache::cache_property(Object* obj, const std::string& property, const
     entry.access_count = 1;
     entry.is_valid = true;
     
-    // optimized: Pre-populate ultra-fast cache for frequently accessed properties
-    std::string ultra_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
+    // optimized: Pre-populate optimized cache for frequently accessed properties
+    std::string optimized_key = std::to_string(reinterpret_cast<uintptr_t>(obj)) + ":" + property;
     
-    // Common hot properties get immediate ultra-fast caching
+    // Common hot properties get immediate optimized caching
     if (property == "length" || property == "prototype" || property == "constructor" || 
         property == "toString" || property == "valueOf") {
-        if (ultra_fast_property_cache.size() < 800) { // Massive cache for hot properties
-            ultra_fast_property_cache[ultra_key] = entry;
+        if (optimized_property_cache.size() < 800) { // Massive cache for hot properties
+            optimized_property_cache[optimized_key] = entry;
         }
     }
 }
@@ -188,9 +188,9 @@ void InlineCache::print_cache_stats() const {
     }
     std::cout << "Total Cache Entries: " << total_entries << std::endl;
     
-    // Ultra-fast cache statistics
-    std::cout << "Ultra-Fast Property Cache: " << ultra_fast_property_cache.size() << " entries" << std::endl;
-    std::cout << "Ultra-Fast Method Cache: " << ultra_fast_method_cache.size() << " entries" << std::endl;
+    // Optimized cache statistics
+    std::cout << "Optimized Property Cache: " << optimized_property_cache.size() << " entries" << std::endl;
+    std::cout << "Optimized Method Cache: " << optimized_method_cache.size() << " entries" << std::endl;
     
     // Performance classification
     double hit_ratio = get_hit_ratio();
@@ -305,18 +305,18 @@ void StringInterning::update_memory_savings() {
 bool MethodCallCache::try_get_method(Object* receiver, const std::string& method_name, Value& method) {
     std::string key = make_cache_key(receiver, method_name);
     
-    // optimized: Try ultra-fast thread-local cache first
-    auto ultra_it = ultra_fast_method_cache.find(key);
-    if (ultra_it != ultra_fast_method_cache.end()) {
-        MethodEntry& ultra_entry = ultra_it->second;
-        if (ultra_entry.receiver == receiver) {
-            method = ultra_entry.method;
-            ultra_entry.call_count++;
+    // optimized: Try optimized thread-local cache first
+    auto optimized_it = optimized_method_cache.find(key);
+    if (optimized_it != optimized_method_cache.end()) {
+        MethodEntry& optimized_entry = optimized_it->second;
+        if (optimized_entry.receiver == receiver) {
+            method = optimized_entry.method;
+            optimized_entry.call_count++;
             cache_hits_++;
-            return true; // ULTRA-FAST method cache hit!
+            return true; // OPTIMIZED method cache hit!
         } else {
-            // Invalidate stale ultra-fast entry
-            ultra_fast_method_cache.erase(ultra_it);
+            // Invalidate stale optimized entry
+            optimized_method_cache.erase(optimized_it);
         }
     }
     
@@ -335,16 +335,16 @@ bool MethodCallCache::try_get_method(Object* receiver, const std::string& method
         return false;
     }
     
-    // Cache hit - promote to ultra-fast cache for optimized
+    // Cache hit - promote to optimized cache for enhanced performance
     method = entry.method;
     entry.call_count++;
     entry.last_access = std::chrono::high_resolution_clock::now();
     cache_hits_++;
     
-    // Promote frequently called methods to ultra-fast cache
+    // Promote frequently called methods to optimized cache
     if (entry.call_count > 3) {
-        if (ultra_fast_method_cache.size() < 600) { // Massive ultra-fast method cache
-            ultra_fast_method_cache[key] = entry;
+        if (optimized_method_cache.size() < 600) { // Massive optimized method cache
+            optimized_method_cache[key] = entry;
         }
     }
     
@@ -365,11 +365,11 @@ void MethodCallCache::cache_method(Object* receiver, const std::string& method_n
     entry.call_count = 1;
     entry.last_access = std::chrono::high_resolution_clock::now();
     
-    // optimized: Pre-populate ultra-fast cache for hot methods
+    // optimized: Pre-populate optimized cache for hot methods
     if (method_name == "toString" || method_name == "valueOf" || method_name == "call" || 
         method_name == "apply" || method_name == "bind" || method_name == "constructor") {
-        if (ultra_fast_method_cache.size() < 25) { // Reserve space for hot methods
-            ultra_fast_method_cache[key] = entry;
+        if (optimized_method_cache.size() < 25) { // Reserve space for hot methods
+            optimized_method_cache[key] = entry;
         }
     }
 }
@@ -406,7 +406,7 @@ void MethodCallCache::print_method_cache_stats() const {
     std::cout << "Cache Misses: " << cache_misses_ << std::endl;
     std::cout << "Hit Ratio: " << (get_hit_ratio() * 100) << "%" << std::endl;
     std::cout << "Cached Methods: " << method_cache_.size() << std::endl;
-    std::cout << "Ultra-Fast Method Cache: " << ultra_fast_method_cache.size() << " entries" << std::endl;
+    std::cout << "Optimized Method Cache: " << optimized_method_cache.size() << " entries" << std::endl;
     
     // Performance classification
     double hit_ratio = get_hit_ratio();
@@ -482,20 +482,20 @@ double PerformanceCache::get_overall_performance_gain() const {
 }
 
 //=============================================================================
-// optimized Ultra-Fast Cache Management
+// optimized High-Performance Cache Management
 //=============================================================================
 
-void PerformanceCache::cleanup_ultra_fast_caches() {
-    // Clean up thread-local ultra-fast caches periodically
+void PerformanceCache::cleanup_optimized_caches() {
+    // Clean up thread-local optimized caches periodically
     static uint32_t cleanup_counter = 0;
     cleanup_counter++;
     
     if (cleanup_counter % 1000 == 0) { // Every 1000 operations
         // Keep only most frequently accessed entries
-        if (ultra_fast_property_cache.size() > 75) {
+        if (optimized_property_cache.size() > 75) {
             // Remove least accessed entries
             std::vector<std::pair<std::string, InlineCache::CacheEntry*>> entries;
-            for (auto& pair : ultra_fast_property_cache) {
+            for (auto& pair : optimized_property_cache) {
                 entries.emplace_back(pair.first, &pair.second);
             }
             
@@ -506,16 +506,16 @@ void PerformanceCache::cleanup_ultra_fast_caches() {
                 });
             
             // Keep top 50 entries
-            ultra_fast_property_cache.clear();
+            optimized_property_cache.clear();
             for (size_t i = 0; i < std::min(size_t(50), entries.size()); ++i) {
-                ultra_fast_property_cache[entries[i].first] = *entries[i].second;
+                optimized_property_cache[entries[i].first] = *entries[i].second;
             }
         }
         
-        if (ultra_fast_method_cache.size() > 40) {
+        if (optimized_method_cache.size() > 40) {
             // Similar cleanup for method cache
             std::vector<std::pair<std::string, MethodCallCache::MethodEntry*>> method_entries;
-            for (auto& pair : ultra_fast_method_cache) {
+            for (auto& pair : optimized_method_cache) {
                 method_entries.emplace_back(pair.first, &pair.second);
             }
             
@@ -524,9 +524,9 @@ void PerformanceCache::cleanup_ultra_fast_caches() {
                     return a.second->call_count > b.second->call_count;
                 });
             
-            ultra_fast_method_cache.clear();
+            optimized_method_cache.clear();
             for (size_t i = 0; i < std::min(size_t(25), method_entries.size()); ++i) {
-                ultra_fast_method_cache[method_entries[i].first] = *method_entries[i].second;
+                optimized_method_cache[method_entries[i].first] = *method_entries[i].second;
             }
         }
     }
@@ -538,14 +538,14 @@ void PerformanceCache::enable_maximum_performance_mode() {
     // Increase cache sizes for maximum performance
     inline_cache_->set_max_entries(5000);
     
-    // Clear and pre-warm ultra-fast caches
-    ultra_fast_property_cache.clear();
-    ultra_fast_method_cache.clear();
+    // Clear and pre-warm optimized caches
+    optimized_property_cache.clear();
+    optimized_method_cache.clear();
     cache_generation++;
     
     std::cout << " optimized mode activated!" << std::endl;
-    std::cout << "   - Ultra-fast property caching enabled" << std::endl;
-    std::cout << "   - Ultra-fast method caching enabled" << std::endl;
+    std::cout << "   - Optimized property caching enabled" << std::endl;
+    std::cout << "   - Optimized method caching enabled" << std::endl;
     std::cout << "   - Thread-local optimizations active" << std::endl;
     std::cout << "   - Cache sizes optimized for maximum speed" << std::endl;
 }

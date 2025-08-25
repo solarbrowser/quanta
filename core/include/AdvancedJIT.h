@@ -23,9 +23,9 @@ class AST;
 class Value;
 
 //=============================================================================
-// PHASE 3: Advanced JIT Optimizations - Microsecond-level Performance
+// Advanced JIT Optimizations - Microsecond-level Performance
 // 
-// Ultra-advanced JIT compilation techniques for nanosecond execution:
+// Advanced JIT compilation techniques for nanosecond execution:
 // - Loop unrolling and vectorization
 // - Inline function expansion
 // - Dead code elimination
@@ -45,7 +45,7 @@ enum class AdvancedOptimizationLevel : uint8_t {
     BASIC = 1,          // Basic loop unrolling
     AGGRESSIVE = 2,     // Aggressive inlining + vectorization
     MAXIMUM = 3,        // All optimizations + speculative execution
-    optimized_SPEED = 4 // Experimental ultra-optimizations
+    optimized_SPEED = 4 // Experimental optimizations
 };
 
 //=============================================================================

@@ -28,7 +28,7 @@ static LockFreeHashMap<int, int>* g_test_hashmap = nullptr;
 static LockFreeRingBuffer<int, 1024>* g_test_ringbuffer = nullptr;
 
 void initialize_lockfree_systems() {
-    std::cout << "🚀 INITIALIZING LOCK-FREE SYSTEMS" << std::endl;
+    std::cout << "� INITIALIZING LOCK-FREE SYSTEMS" << std::endl;
     
     // Initialize performance monitor
     g_performance_monitor = &LockFreePerformanceMonitor::get_instance();
@@ -39,7 +39,7 @@ void initialize_lockfree_systems() {
     g_test_hashmap = new LockFreeHashMap<int, int>();
     g_test_ringbuffer = new LockFreeRingBuffer<int, 1024>();
     
-    std::cout << "✅ LOCK-FREE SYSTEMS INITIALIZED" << std::endl;
+    std::cout << "LOCK-FREE SYSTEMS INITIALIZED" << std::endl;
     std::cout << "  Queue: Ready for lock-free operations" << std::endl;
     std::cout << "  Stack: Ready for LIFO operations" << std::endl;
     std::cout << "  HashMap: Ready for concurrent key-value operations" << std::endl;
@@ -47,7 +47,7 @@ void initialize_lockfree_systems() {
 }
 
 void shutdown_lockfree_systems() {
-    std::cout << "🔄 SHUTTING DOWN LOCK-FREE SYSTEMS" << std::endl;
+    std::cout << "� SHUTTING DOWN LOCK-FREE SYSTEMS" << std::endl;
     
     if (g_performance_monitor) {
         g_performance_monitor->print_comprehensive_stats();
@@ -64,15 +64,15 @@ void shutdown_lockfree_systems() {
     g_test_hashmap = nullptr;
     g_test_ringbuffer = nullptr;
     
-    std::cout << "✅ LOCK-FREE SYSTEMS SHUTDOWN COMPLETE" << std::endl;
+    std::cout << "LOCK-FREE SYSTEMS SHUTDOWN COMPLETE" << std::endl;
 }
 
 void test_queue_performance(size_t num_threads, size_t operations_per_thread) {
-    std::cout << "🔄 TESTING LOCK-FREE QUEUE PERFORMANCE" << std::endl;
+    std::cout << "� TESTING LOCK-FREE QUEUE PERFORMANCE" << std::endl;
     std::cout << "  Threads: " << num_threads << ", Operations: " << operations_per_thread << std::endl;
     
     if (!g_test_queue) {
-        std::cout << "❌ Queue not initialized!" << std::endl;
+        std::cout << " Queue not initialized!" << std::endl;
         return;
     }
     
@@ -124,7 +124,7 @@ void test_queue_performance(size_t num_threads, size_t operations_per_thread) {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     
-    std::cout << "✅ QUEUE PERFORMANCE TEST COMPLETE" << std::endl;
+    std::cout << "QUEUE PERFORMANCE TEST COMPLETE" << std::endl;
     std::cout << "  Total time: " << total_time << " ms" << std::endl;
     std::cout << "  Total operations: " << (num_threads * operations_per_thread) << std::endl;
     std::cout << "  Throughput: " << ((num_threads * operations_per_thread * 1000) / total_time) << " ops/sec" << std::endl;
@@ -133,11 +133,11 @@ void test_queue_performance(size_t num_threads, size_t operations_per_thread) {
 }
 
 void test_stack_performance(size_t num_threads, size_t operations_per_thread) {
-    std::cout << "📚 TESTING LOCK-FREE STACK PERFORMANCE" << std::endl;
+    std::cout << "� TESTING LOCK-FREE STACK PERFORMANCE" << std::endl;
     std::cout << "  Threads: " << num_threads << ", Operations: " << operations_per_thread << std::endl;
     
     if (!g_test_stack) {
-        std::cout << "❌ Stack not initialized!" << std::endl;
+        std::cout << " Stack not initialized!" << std::endl;
         return;
     }
     
@@ -189,7 +189,7 @@ void test_stack_performance(size_t num_threads, size_t operations_per_thread) {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     
-    std::cout << "✅ STACK PERFORMANCE TEST COMPLETE" << std::endl;
+    std::cout << "STACK PERFORMANCE TEST COMPLETE" << std::endl;
     std::cout << "  Total time: " << total_time << " ms" << std::endl;
     std::cout << "  Total operations: " << (num_threads * operations_per_thread) << std::endl;
     std::cout << "  Throughput: " << ((num_threads * operations_per_thread * 1000) / total_time) << " ops/sec" << std::endl;
@@ -198,11 +198,11 @@ void test_stack_performance(size_t num_threads, size_t operations_per_thread) {
 }
 
 void test_hashmap_performance(size_t num_threads, size_t operations_per_thread) {
-    std::cout << "🗺️  TESTING LOCK-FREE HASHMAP PERFORMANCE" << std::endl;
+    std::cout << "�️  TESTING LOCK-FREE HASHMAP PERFORMANCE" << std::endl;
     std::cout << "  Threads: " << num_threads << ", Operations: " << operations_per_thread << std::endl;
     
     if (!g_test_hashmap) {
-        std::cout << "❌ HashMap not initialized!" << std::endl;
+        std::cout << " HashMap not initialized!" << std::endl;
         return;
     }
     
@@ -246,7 +246,7 @@ void test_hashmap_performance(size_t num_threads, size_t operations_per_thread) 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     
-    std::cout << "✅ HASHMAP PERFORMANCE TEST COMPLETE" << std::endl;
+    std::cout << "HASHMAP PERFORMANCE TEST COMPLETE" << std::endl;
     std::cout << "  Total time: " << total_time << " ms" << std::endl;
     std::cout << "  Total operations: " << (num_threads * operations_per_thread) << std::endl;
     std::cout << "  Throughput: " << ((num_threads * operations_per_thread * 1000) / total_time) << " ops/sec" << std::endl;
@@ -255,11 +255,11 @@ void test_hashmap_performance(size_t num_threads, size_t operations_per_thread) 
 }
 
 void test_ringbuffer_performance(size_t num_threads, size_t operations_per_thread) {
-    std::cout << "🔄 TESTING LOCK-FREE RING BUFFER PERFORMANCE" << std::endl;
+    std::cout << "� TESTING LOCK-FREE RING BUFFER PERFORMANCE" << std::endl;
     std::cout << "  Threads: " << num_threads << ", Operations: " << operations_per_thread << std::endl;
     
     if (!g_test_ringbuffer) {
-        std::cout << "❌ RingBuffer not initialized!" << std::endl;
+        std::cout << " RingBuffer not initialized!" << std::endl;
         return;
     }
     
@@ -321,7 +321,7 @@ void test_ringbuffer_performance(size_t num_threads, size_t operations_per_threa
     auto end_time = std::chrono::high_resolution_clock::now();
     auto total_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
     
-    std::cout << "✅ RING BUFFER PERFORMANCE TEST COMPLETE" << std::endl;
+    std::cout << "RING BUFFER PERFORMANCE TEST COMPLETE" << std::endl;
     std::cout << "  Total time: " << total_time << " ms" << std::endl;
     std::cout << "  Total operations: " << (num_threads * operations_per_thread) << std::endl;
     std::cout << "  Throughput: " << ((num_threads * operations_per_thread * 1000) / total_time) << " ops/sec" << std::endl;
@@ -330,7 +330,7 @@ void test_ringbuffer_performance(size_t num_threads, size_t operations_per_threa
 }
 
 void run_lockfree_benchmarks() {
-    std::cout << "🚀 RUNNING COMPREHENSIVE LOCK-FREE BENCHMARKS" << std::endl;
+    std::cout << "� RUNNING COMPREHENSIVE LOCK-FREE BENCHMARKS" << std::endl;
     std::cout << "===============================================" << std::endl;
     
     const size_t num_threads = std::thread::hardware_concurrency();
@@ -356,11 +356,11 @@ void run_lockfree_benchmarks() {
     // Print comprehensive performance summary
     g_performance_monitor->print_comprehensive_stats();
     
-    std::cout << "🏆 LOCK-FREE BENCHMARKS COMPLETE!" << std::endl;
+    std::cout << "LOCK-FREE BENCHMARKS COMPLETE!" << std::endl;
 }
 
 void print_all_lockfree_statistics() {
-    std::cout << "📊 COMPREHENSIVE LOCK-FREE STATISTICS" << std::endl;
+    std::cout << "� COMPREHENSIVE LOCK-FREE STATISTICS" << std::endl;
     std::cout << "=====================================" << std::endl;
     
     if (g_test_queue) {
@@ -389,19 +389,19 @@ void print_all_lockfree_statistics() {
 }
 
 void optimize_for_numa() {
-    std::cout << "🧠 OPTIMIZING FOR NUMA ARCHITECTURE" << std::endl;
+    std::cout << "� OPTIMIZING FOR NUMA ARCHITECTURE" << std::endl;
     std::cout << "  Analyzing memory topology..." << std::endl;
     std::cout << "  Setting memory affinity for lock-free structures..." << std::endl;
     std::cout << "  Optimizing inter-node communication..." << std::endl;
-    std::cout << "✅ NUMA OPTIMIZATION COMPLETE" << std::endl;
+    std::cout << "NUMA OPTIMIZATION COMPLETE" << std::endl;
 }
 
 void set_thread_affinity() {
-    std::cout << "🔧 SETTING THREAD AFFINITY" << std::endl;
+    std::cout << "SETTING THREAD AFFINITY" << std::endl;
     std::cout << "  Binding threads to specific CPU cores..." << std::endl;
     std::cout << "  Optimizing cache locality..." << std::endl;
     std::cout << "  Reducing context switching overhead..." << std::endl;
-    std::cout << "✅ THREAD AFFINITY OPTIMIZATION COMPLETE" << std::endl;
+    std::cout << "THREAD AFFINITY OPTIMIZATION COMPLETE" << std::endl;
 }
 
 void enable_lock_free_optimizations() {
@@ -416,7 +416,7 @@ void enable_lock_free_optimizations() {
     std::cout << "  Cache-line padding verification..." << std::endl;
     std::cout << "  Hazard pointer optimization..." << std::endl;
     
-    std::cout << "🚀 ALL LOCK-FREE OPTIMIZATIONS ENABLED!" << std::endl;
+    std::cout << "� ALL LOCK-FREE OPTIMIZATIONS ENABLED!" << std::endl;
     std::cout << "   Ready for ultra-high performance concurrent operations" << std::endl;
 }
 

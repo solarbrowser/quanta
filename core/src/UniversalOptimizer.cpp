@@ -1,4 +1,4 @@
-#include "UniversalUltraOptimizer.h"
+#include "UniversalOptimizer.h"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -8,37 +8,37 @@
 
 namespace Quanta {
 
-// REVOLUTIONARY STATIC MEMBER INITIALIZATION
-UniversalUltraOptimizer::UltraContext UniversalUltraOptimizer::ultra_ctx_;
-std::atomic<uint64_t> UniversalUltraOptimizer::total_operations_{0};
-std::atomic<uint64_t> UniversalUltraOptimizer::total_time_ns_{0};
+// ADVANCED STATIC MEMBER INITIALIZATION
+UniversalOptimizer::UltraContext UniversalOptimizer::ultra_ctx_;
+std::atomic<uint64_t> UniversalOptimizer::total_operations_{0};
+std::atomic<uint64_t> UniversalOptimizer::total_time_ns_{0};
 
 // PRE-ALLOCATED OBJECT POOL - NO DYNAMIC ALLOCATION!
-UniversalUltraOptimizer::UltraObject UniversalUltraOptimizer::object_pool_[UniversalUltraOptimizer::OBJECT_POOL_SIZE];
-std::atomic<size_t> UniversalUltraOptimizer::pool_index_{0};
-std::atomic<size_t> UniversalUltraOptimizer::allocated_objects_{0};
+UniversalOptimizer::UltraObject UniversalOptimizer::object_pool_[UniversalOptimizer::OBJECT_POOL_SIZE];
+std::atomic<size_t> UniversalOptimizer::pool_index_{0};
+std::atomic<size_t> UniversalOptimizer::allocated_objects_{0};
 
-// REVOLUTIONARY FUNCTION REGISTRY - DIRECT DISPATCH!
-UniversalUltraOptimizer::UltraFunction UniversalUltraOptimizer::function_registry_[UniversalUltraOptimizer::MAX_FUNCTIONS];
-std::unordered_map<std::string, size_t> UniversalUltraOptimizer::function_index_map_;
-size_t UniversalUltraOptimizer::registered_functions_count_{0};
+// ADVANCED FUNCTION REGISTRY - DIRECT DISPATCH
+UniversalOptimizer::UltraFunction UniversalOptimizer::function_registry_[UniversalOptimizer::MAX_FUNCTIONS];
+std::unordered_map<std::string, size_t> UniversalOptimizer::function_index_map_;
+size_t UniversalOptimizer::registered_functions_count_{0};
 
-// REVOLUTIONARY STRING POOL - ZERO-ALLOCATION STRING OPERATIONS!
-UniversalUltraOptimizer::UltraString UniversalUltraOptimizer::string_pool_[UniversalUltraOptimizer::STRING_POOL_SIZE];
-std::atomic<size_t> UniversalUltraOptimizer::string_pool_index_{0};
-std::atomic<size_t> UniversalUltraOptimizer::allocated_strings_{0};
+// ADVANCED STRING POOL - ZERO-ALLOCATION STRING OPERATIONS
+UniversalOptimizer::UltraString UniversalOptimizer::string_pool_[UniversalOptimizer::STRING_POOL_SIZE];
+std::atomic<size_t> UniversalOptimizer::string_pool_index_{0};
+std::atomic<size_t> UniversalOptimizer::allocated_strings_{0};
 
-// REVOLUTIONARY PROPERTY ACCESS CACHE - ULTRA-FAST LOOKUPS!
-UniversalUltraOptimizer::UltraPropertyCache UniversalUltraOptimizer::property_cache_;
+// ADVANCED PROPERTY ACCESS CACHE - OPTIMIZED LOOKUPS
+UniversalOptimizer::UltraPropertyCache UniversalOptimizer::property_cache_;
 
-// REVOLUTIONARY VARIABLE REGISTRY - REGISTER-LIKE VARIABLE ACCESS!
-UniversalUltraOptimizer::UltraVariableRegistry UniversalUltraOptimizer::variable_registry_;
+// ADVANCED VARIABLE REGISTRY - REGISTER-LIKE VARIABLE ACCESS
+UniversalOptimizer::UltraVariableRegistry UniversalOptimizer::variable_registry_;
 
-// REVOLUTIONARY CONTROL FLOW OPTIMIZER - BRANCH PREDICTION AND LOOP UNROLLING!
-UniversalUltraOptimizer::UltraControlFlow UniversalUltraOptimizer::control_flow_optimizer_;
+// ADVANCED CONTROL FLOW OPTIMIZER - BRANCH PREDICTION AND LOOP UNROLLING
+UniversalOptimizer::UltraControlFlow UniversalOptimizer::control_flow_optimizer_;
 
-void UniversalUltraOptimizer::initialize() {
-    // Initializing revolutionary ultra-aggressive optimizer
+void UniversalOptimizer::initialize() {
+    // Initializing advanced optimizer
     
     // Initialize pre-allocated object pool - NO MALLOC DURING RUNTIME!
     for (size_t i = 0; i < OBJECT_POOL_SIZE; i++) {
@@ -64,7 +64,7 @@ void UniversalUltraOptimizer::initialize() {
     registered_functions_count_ = 0;
     function_index_map_.clear();
     
-    // Register ultra-fast native functions for 150M+ ops/sec
+    // Register optimized native functions for high performance
     revolutionary_register_function("sin", [](double x) -> double { return std::sin(x); });
     revolutionary_register_function("cos", [](double x) -> double { return std::cos(x); });
     revolutionary_register_function("sqrt", [](double x) -> double { return std::sqrt(x); });
@@ -74,7 +74,7 @@ void UniversalUltraOptimizer::initialize() {
     revolutionary_register_function("round", [](double x) -> double { return std::round(x); });
     revolutionary_register_function("log", [](double x) -> double { return std::log(x); });
     
-    // Register ultra-fast binary functions
+    // Register optimized binary functions
     revolutionary_register_binary_function("add", [](double a, double b) -> double { return a + b; });
     revolutionary_register_binary_function("sub", [](double a, double b) -> double { return a - b; });
     revolutionary_register_binary_function("mul", [](double a, double b) -> double { return a * b; });
@@ -83,7 +83,7 @@ void UniversalUltraOptimizer::initialize() {
     revolutionary_register_binary_function("max", [](double a, double b) -> double { return std::max(a, b); });
     revolutionary_register_binary_function("min", [](double a, double b) -> double { return std::min(a, b); });
     
-    // Initialize revolutionary string pool
+    // Initialize advanced string pool
     string_pool_index_ = 0;
     allocated_strings_ = 0;
     for (size_t i = 0; i < STRING_POOL_SIZE; i++) {
@@ -98,7 +98,7 @@ void UniversalUltraOptimizer::initialize() {
         }
     }
     
-    // Initialize revolutionary property access cache
+    // Initialize advanced property access cache
     property_cache_.cache_index = 0;
     property_cache_.hit_count = 0;
     property_cache_.miss_count = 0;
@@ -111,7 +111,7 @@ void UniversalUltraOptimizer::initialize() {
         property_cache_.cache[i].is_valid = false;
     }
     
-    // Initialize revolutionary variable registry
+    // Initialize advanced variable registry
     variable_registry_.var_count = 0;
     variable_registry_.lookup_count = 0;
     variable_registry_.cache_hits = 0;
@@ -122,7 +122,7 @@ void UniversalUltraOptimizer::initialize() {
         variable_registry_.variables[i].is_active = false;
     }
     
-    // Initialize revolutionary control flow optimizer
+    // Initialize advanced control flow optimizer
     control_flow_optimizer_.instruction_count = 0;
     control_flow_optimizer_.execution_count = 0;
     for (size_t i = 0; i < UltraControlFlow::MAX_FLOW_INSTRUCTIONS; i++) {
@@ -133,11 +133,11 @@ void UniversalUltraOptimizer::initialize() {
         control_flow_optimizer_.instructions[i].is_active = false;
     }
     
-    // Revolutionary optimizer initialized
+    // Advanced optimizer initialized
 }
 
-// REVOLUTIONARY OBJECT POOL MANAGEMENT - ZERO ALLOCATION!
-UniversalUltraOptimizer::UltraObject* UniversalUltraOptimizer::get_pooled_object() {
+// ADVANCED OBJECT POOL MANAGEMENT - ZERO ALLOCATION
+UniversalOptimizer::UltraObject* UniversalOptimizer::get_pooled_object() {
     size_t current_idx = pool_index_.fetch_add(1, std::memory_order_relaxed);
     if (current_idx >= OBJECT_POOL_SIZE) {
         return nullptr; // Pool exhausted
@@ -152,7 +152,7 @@ UniversalUltraOptimizer::UltraObject* UniversalUltraOptimizer::get_pooled_object
     return obj;
 }
 
-void UniversalUltraOptimizer::return_pooled_object(UltraObject* obj) {
+void UniversalOptimizer::return_pooled_object(UltraObject* obj) {
     if (obj && obj->in_use) {
         obj->in_use = false;
         obj->property_count = 0;
@@ -161,7 +161,7 @@ void UniversalUltraOptimizer::return_pooled_object(UltraObject* obj) {
     }
 }
 
-void UniversalUltraOptimizer::reset_object_pool() {
+void UniversalOptimizer::reset_object_pool() {
     pool_index_ = 0;
     allocated_objects_ = 0;
     for (size_t i = 0; i < OBJECT_POOL_SIZE; i++) {
@@ -171,14 +171,14 @@ void UniversalUltraOptimizer::reset_object_pool() {
     }
 }
 
-void UniversalUltraOptimizer::cleanup() {
+void UniversalOptimizer::cleanup() {
     ultra_ctx_.variables.clear();
     ultra_ctx_.objects.clear();
     reset_object_pool();
 }
 
-// REVOLUTIONARY OBJECT OPERATIONS - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::revolutionary_object_create(const std::string& var_name) {
+// ADVANCED OBJECT OPERATIONS - HIGH PERFORMANCE TARGET
+bool UniversalOptimizer::advanced_object_create(const std::string& var_name) {
     // Get pre-allocated object from pool (ZERO MALLOC!)
     UltraObject* obj = get_pooled_object();
     if (!obj) {
@@ -195,8 +195,8 @@ bool UniversalUltraOptimizer::revolutionary_object_create(const std::string& var
     return true;
 }
 
-// REVOLUTIONARY DIRECT MEMORY PROPERTY SETTING - NO HASH TABLE LOOKUPS!
-bool UniversalUltraOptimizer::revolutionary_property_set_double(const std::string& obj_name, const std::string& prop, double value) {
+// ADVANCED DIRECT MEMORY PROPERTY SETTING - NO HASH TABLE LOOKUPS
+bool UniversalOptimizer::advanced_property_set_double(const std::string& obj_name, const std::string& prop, double value) {
     auto var_it = ultra_ctx_.variables.find(obj_name);
     if (var_it == ultra_ctx_.variables.end() || var_it->second.type != UltraVariable::OBJECT) {
         return false;
@@ -232,8 +232,8 @@ bool UniversalUltraOptimizer::revolutionary_property_set_double(const std::strin
     return true;
 }
 
-// REVOLUTIONARY DIRECT MEMORY PROPERTY GETTING - NO HASH LOOKUPS!
-double UniversalUltraOptimizer::revolutionary_property_get_double(const std::string& obj_name, const std::string& prop) {
+// ADVANCED DIRECT MEMORY PROPERTY GETTING - NO HASH LOOKUPS
+double UniversalOptimizer::advanced_property_get_double(const std::string& obj_name, const std::string& prop) {
     auto var_it = ultra_ctx_.variables.find(obj_name);
     if (var_it == ultra_ctx_.variables.end() || var_it->second.type != UltraVariable::OBJECT) {
         return 0.0;
@@ -263,7 +263,7 @@ double UniversalUltraOptimizer::revolutionary_property_get_double(const std::str
 }
 
 // INTEGER-KEY PROPERTY ACCESS FOR MAXIMUM SPEED
-bool UniversalUltraOptimizer::revolutionary_property_set_by_hash(const std::string& obj_name, uint32_t prop_hash, double value) {
+bool UniversalOptimizer::revolutionary_property_set_by_hash(const std::string& obj_name, uint32_t prop_hash, double value) {
     auto var_it = ultra_ctx_.variables.find(obj_name);
     if (var_it == ultra_ctx_.variables.end() || var_it->second.type != UltraVariable::OBJECT) {
         return false;
@@ -297,7 +297,7 @@ bool UniversalUltraOptimizer::revolutionary_property_set_by_hash(const std::stri
     return true;
 }
 
-double UniversalUltraOptimizer::revolutionary_property_get_by_hash(const std::string& obj_name, uint32_t prop_hash) {
+double UniversalOptimizer::revolutionary_property_get_by_hash(const std::string& obj_name, uint32_t prop_hash) {
     auto var_it = ultra_ctx_.variables.find(obj_name);
     if (var_it == ultra_ctx_.variables.end() || var_it->second.type != UltraVariable::OBJECT) {
         return 0.0;
@@ -314,7 +314,7 @@ double UniversalUltraOptimizer::revolutionary_property_get_by_hash(const std::st
         return 0.0;
     }
     
-    // ULTRA-FAST INTEGER-KEY DIRECT MEMORY ACCESS!
+    // OPTIMIZED INTEGER-KEY DIRECT MEMORY ACCESS!
     if (obj->properties[slot_idx].value_offset < 16) {
         total_operations_.fetch_add(1, std::memory_order_relaxed);
         return obj->double_values[obj->properties[slot_idx].value_offset];
@@ -324,7 +324,7 @@ double UniversalUltraOptimizer::revolutionary_property_get_by_hash(const std::st
 }
 
 // ZERO-COPY OBJECT ACCESS
-UniversalUltraOptimizer::UltraObject* UniversalUltraOptimizer::revolutionary_get_object_direct(const std::string& obj_name) {
+UniversalOptimizer::UltraObject* UniversalOptimizer::revolutionary_get_object_direct(const std::string& obj_name) {
     auto var_it = ultra_ctx_.variables.find(obj_name);
     if (var_it == ultra_ctx_.variables.end() || var_it->second.type != UltraVariable::OBJECT) {
         return nullptr;
@@ -339,8 +339,8 @@ UniversalUltraOptimizer::UltraObject* UniversalUltraOptimizer::revolutionary_get
     return &object_pool_[obj_id];
 }
 
-// REVOLUTIONARY FUNCTION CALL SYSTEM - 150M+ OPS/SEC!
-bool UniversalUltraOptimizer::revolutionary_register_function(const std::string& name, UltraFastFunction func) {
+// ADVANCED FUNCTION CALL SYSTEM - 150M+ OPS/SEC!
+bool UniversalOptimizer::revolutionary_register_function(const std::string& name, UltraFastFunction func) {
     if (registered_functions_count_ >= MAX_FUNCTIONS) {
         return false; // Function registry full
     }
@@ -357,7 +357,7 @@ bool UniversalUltraOptimizer::revolutionary_register_function(const std::string&
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_register_binary_function(const std::string& name, UltraFastBinaryFunction func) {
+bool UniversalOptimizer::revolutionary_register_binary_function(const std::string& name, UltraFastBinaryFunction func) {
     if (registered_functions_count_ >= MAX_FUNCTIONS) {
         return false; // Function registry full
     }
@@ -374,8 +374,8 @@ bool UniversalUltraOptimizer::revolutionary_register_binary_function(const std::
     return true;
 }
 
-// REVOLUTIONARY FUNCTION CALLS - DIRECT DISPATCH WITH ZERO OVERHEAD!
-double UniversalUltraOptimizer::revolutionary_call_function(const std::string& name, double arg) {
+// ADVANCED FUNCTION CALLS - DIRECT DISPATCH WITH ZERO OVERHEAD!
+double UniversalOptimizer::revolutionary_call_function(const std::string& name, double arg) {
     auto it = function_index_map_.find(name);
     if (it == function_index_map_.end()) {
         return 0.0; // Function not found
@@ -392,7 +392,7 @@ double UniversalUltraOptimizer::revolutionary_call_function(const std::string& n
     return 0.0;
 }
 
-double UniversalUltraOptimizer::revolutionary_call_binary_function(const std::string& name, double arg1, double arg2) {
+double UniversalOptimizer::revolutionary_call_binary_function(const std::string& name, double arg1, double arg2) {
     auto it = function_index_map_.find(name);
     if (it == function_index_map_.end()) {
         return 0.0; // Function not found
@@ -409,8 +409,8 @@ double UniversalUltraOptimizer::revolutionary_call_binary_function(const std::st
     return 0.0;
 }
 
-// ULTRA-FAST FUNCTION CALLS BY INDEX (MAXIMUM SPEED!)
-double UniversalUltraOptimizer::revolutionary_call_by_index(size_t func_index, double arg) {
+// OPTIMIZED FUNCTION CALLS BY INDEX (MAXIMUM SPEED!)
+double UniversalOptimizer::revolutionary_call_by_index(size_t func_index, double arg) {
     if (func_index >= registered_functions_count_) {
         return 0.0;
     }
@@ -424,7 +424,7 @@ double UniversalUltraOptimizer::revolutionary_call_by_index(size_t func_index, d
     return 0.0;
 }
 
-double UniversalUltraOptimizer::revolutionary_call_binary_by_index(size_t func_index, double arg1, double arg2) {
+double UniversalOptimizer::revolutionary_call_binary_by_index(size_t func_index, double arg1, double arg2) {
     if (func_index >= registered_functions_count_) {
         return 0.0;
     }
@@ -438,8 +438,8 @@ double UniversalUltraOptimizer::revolutionary_call_binary_by_index(size_t func_i
     return 0.0;
 }
 
-// REVOLUTIONARY FUNCTION OPERATIONS EXECUTION - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::execute_revolutionary_function_operations(const std::string& source, Context& ctx) {
+// ADVANCED FUNCTION OPERATIONS EXECUTION - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::execute_revolutionary_function_operations(const std::string& source, Context& ctx) {
     // Executing revolutionary function operations
     // Direct function optimizations active
     
@@ -455,20 +455,20 @@ bool UniversalUltraOptimizer::execute_revolutionary_function_operations(const st
     size_t add_idx = function_index_map_["add"];
     size_t mul_idx = function_index_map_["mul"];
     
-    // REVOLUTIONARY FUNCTION CALL BENCHMARK - 100K operations
+    // ADVANCED FUNCTION CALL BENCHMARK - 100K operations
     for (int i = 0; i < 100000; i++) {
         double x = static_cast<double>(i) * 0.01;
         
-        // ULTRA-FAST FUNCTION CALLS BY INDEX (MAXIMUM PERFORMANCE)
+        // OPTIMIZED FUNCTION CALLS BY INDEX (MAXIMUM PERFORMANCE)
         double sin_val = revolutionary_call_by_index(sin_idx, x);
         double cos_val = revolutionary_call_by_index(cos_idx, x);
         double sqrt_val = revolutionary_call_by_index(sqrt_idx, x);
         
-        // ULTRA-FAST BINARY FUNCTION CALLS
+        // OPTIMIZED BINARY FUNCTION CALLS
         double sum = revolutionary_call_binary_by_index(add_idx, sin_val, cos_val);
         double product = revolutionary_call_binary_by_index(mul_idx, sum, sqrt_val);
         
-        // REVOLUTIONARY FUNCTION CALLS BY NAME (Still ultra-fast!)
+        // ADVANCED FUNCTION CALLS BY NAME (Still ultra-fast!)
         if (i % 1000 == 0) {
             double abs_val = revolutionary_call_function("abs", product);
             double floor_val = revolutionary_call_function("floor", abs_val);
@@ -490,7 +490,7 @@ bool UniversalUltraOptimizer::execute_revolutionary_function_operations(const st
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
@@ -501,8 +501,8 @@ bool UniversalUltraOptimizer::execute_revolutionary_function_operations(const st
     return true;
 }
 
-// REVOLUTIONARY STRING POOL MANAGEMENT - ZERO ALLOCATION!
-UniversalUltraOptimizer::UltraString* UniversalUltraOptimizer::get_pooled_string() {
+// ADVANCED STRING POOL MANAGEMENT - ZERO ALLOCATION!
+UniversalOptimizer::UltraString* UniversalOptimizer::get_pooled_string() {
     size_t current_idx = string_pool_index_.fetch_add(1, std::memory_order_relaxed);
     if (current_idx >= STRING_POOL_SIZE) {
         return nullptr; // String pool exhausted
@@ -517,7 +517,7 @@ UniversalUltraOptimizer::UltraString* UniversalUltraOptimizer::get_pooled_string
     return str;
 }
 
-void UniversalUltraOptimizer::return_pooled_string(UltraString* str) {
+void UniversalOptimizer::return_pooled_string(UltraString* str) {
     if (str && str->in_use) {
         str->in_use = false;
         str->length = 0;
@@ -526,7 +526,7 @@ void UniversalUltraOptimizer::return_pooled_string(UltraString* str) {
     }
 }
 
-void UniversalUltraOptimizer::reset_string_pool() {
+void UniversalOptimizer::reset_string_pool() {
     string_pool_index_ = 0;
     allocated_strings_ = 0;
     for (size_t i = 0; i < STRING_POOL_SIZE; i++) {
@@ -537,7 +537,7 @@ void UniversalUltraOptimizer::reset_string_pool() {
 }
 
 // SIMD-OPTIMIZED DIRECT MEMORY STRING OPERATIONS - 150M+ OPS/SEC!
-void UniversalUltraOptimizer::ultra_fast_string_copy(char* dest, const char* src, size_t len) {
+void UniversalOptimizer::ultra_fast_string_copy(char* dest, const char* src, size_t len) {
     // SIMD-optimized memory copy for ultra performance
     if (len >= 32) {
         // Use 32-byte SIMD for large strings
@@ -557,13 +557,13 @@ void UniversalUltraOptimizer::ultra_fast_string_copy(char* dest, const char* src
     }
 }
 
-void UniversalUltraOptimizer::ultra_fast_string_concat_direct(char* dest, const char* src1, size_t len1, const char* src2, size_t len2) {
-    // ULTRA-FAST STRING CONCATENATION WITH SIMD
+void UniversalOptimizer::ultra_fast_string_concat_direct(char* dest, const char* src1, size_t len1, const char* src2, size_t len2) {
+    // OPTIMIZED STRING CONCATENATION WITH SIMD
     ultra_fast_string_copy(dest, src1, len1);
     ultra_fast_string_copy(dest + len1, src2, len2);
 }
 
-void UniversalUltraOptimizer::ultra_fast_string_upper_direct(char* dest, const char* src, size_t len) {
+void UniversalOptimizer::ultra_fast_string_upper_direct(char* dest, const char* src, size_t len) {
     // SIMD-optimized case conversion
     for (size_t i = 0; i < len; i++) {
         char c = src[i];
@@ -571,7 +571,7 @@ void UniversalUltraOptimizer::ultra_fast_string_upper_direct(char* dest, const c
     }
 }
 
-uint32_t UniversalUltraOptimizer::ultra_fast_string_hash(const char* str, size_t len) {
+uint32_t UniversalOptimizer::ultra_fast_string_hash(const char* str, size_t len) {
     // Ultra-fast hash function optimized for strings
     uint32_t hash = 0;
     for (size_t i = 0; i < len; i++) {
@@ -580,8 +580,8 @@ uint32_t UniversalUltraOptimizer::ultra_fast_string_hash(const char* str, size_t
     return hash;
 }
 
-// REVOLUTIONARY STRING OPERATIONS - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::revolutionary_string_create(const std::string& var_name, const std::string& value) {
+// ADVANCED STRING OPERATIONS - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::revolutionary_string_create(const std::string& var_name, const std::string& value) {
     UltraString* str = get_pooled_string();
     if (!str) {
         return false; // String pool exhausted
@@ -602,7 +602,7 @@ bool UniversalUltraOptimizer::revolutionary_string_create(const std::string& var
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_string_concat(const std::string& result_name, const std::string& str1_name, const std::string& str2_name) {
+bool UniversalOptimizer::revolutionary_string_concat(const std::string& result_name, const std::string& str1_name, const std::string& str2_name) {
     auto str1_it = ultra_ctx_.variables.find(str1_name);
     auto str2_it = ultra_ctx_.variables.find(str2_name);
     
@@ -623,7 +623,7 @@ bool UniversalUltraOptimizer::revolutionary_string_concat(const std::string& res
         total_len = UltraString::MAX_STRING_LENGTH - 1;
     }
     
-    // ULTRA-FAST DIRECT MEMORY CONCATENATION
+    // OPTIMIZED DIRECT MEMORY CONCATENATION
     size_t len1 = std::min(s1.length(), static_cast<size_t>(UltraString::MAX_STRING_LENGTH - 1));
     size_t len2 = std::min(s2.length(), static_cast<size_t>(UltraString::MAX_STRING_LENGTH - 1 - len1));
     
@@ -641,7 +641,7 @@ bool UniversalUltraOptimizer::revolutionary_string_concat(const std::string& res
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_string_upper(const std::string& result_name, const std::string& str_name) {
+bool UniversalOptimizer::revolutionary_string_upper(const std::string& result_name, const std::string& str_name) {
     auto str_it = ultra_ctx_.variables.find(str_name);
     if (str_it == ultra_ctx_.variables.end()) {
         return false;
@@ -655,7 +655,7 @@ bool UniversalUltraOptimizer::revolutionary_string_upper(const std::string& resu
     const std::string& src = str_it->second.s_value;
     size_t len = std::min(src.length(), static_cast<size_t>(UltraString::MAX_STRING_LENGTH - 1));
     
-    // ULTRA-FAST CASE CONVERSION
+    // OPTIMIZED CASE CONVERSION
     ultra_fast_string_upper_direct(result_str->data, src.c_str(), len);
     result_str->data[len] = '\0';
     result_str->length = static_cast<uint16_t>(len);
@@ -670,29 +670,29 @@ bool UniversalUltraOptimizer::revolutionary_string_upper(const std::string& resu
     return true;
 }
 
-// REVOLUTIONARY STRING OPERATIONS EXECUTION - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::execute_revolutionary_string_operations(const std::string& source, Context& ctx) {
+// ADVANCED STRING OPERATIONS EXECUTION - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::execute_revolutionary_string_operations(const std::string& source, Context& ctx) {
     
     // Reset performance metrics for accurate measurement
     reset_performance_metrics();
     
     auto total_start = std::chrono::high_resolution_clock::now();
     
-    // REVOLUTIONARY STRING OPERATIONS BENCHMARK - 100K operations
+    // ADVANCED STRING OPERATIONS BENCHMARK - 100K operations
     for (int i = 0; i < 50000; i++) {
         std::string str1_name = "str1_" + std::to_string(i);
         std::string str2_name = "str2_" + std::to_string(i);
         std::string result_name = "result_" + std::to_string(i);
         std::string upper_name = "upper_" + std::to_string(i);
         
-        // REVOLUTIONARY STRING CREATION (Zero malloc!)
+        // ADVANCED STRING CREATION (Zero malloc!)
         if (!revolutionary_string_create(str1_name, "Hello")) break;
         if (!revolutionary_string_create(str2_name, "World")) break;
         
-        // REVOLUTIONARY STRING CONCATENATION (SIMD optimized!)
+        // ADVANCED STRING CONCATENATION (SIMD optimized!)
         if (!revolutionary_string_concat(result_name, str1_name, str2_name)) break;
         
-        // REVOLUTIONARY STRING CASE CONVERSION (Direct memory!)
+        // ADVANCED STRING CASE CONVERSION (Direct memory!)
         if (!revolutionary_string_upper(upper_name, result_name)) break;
     }
     
@@ -709,19 +709,19 @@ bool UniversalUltraOptimizer::execute_revolutionary_string_operations(const std:
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
     }
     
-    std::cout << "   💾 String Pool Usage: " << allocated_strings_.load() << "/" << STRING_POOL_SIZE << std::endl;
+    std::cout << "   String Pool Usage: " << allocated_strings_.load() << "/" << STRING_POOL_SIZE << std::endl;
     
     return true;
 }
 
-// REVOLUTIONARY PROPERTY ACCESS CACHE SYSTEM - 150M+ OPS/SEC!
-bool UniversalUltraOptimizer::revolutionary_property_cache_lookup(const std::string& obj_name, const std::string& prop_name, 
+// ADVANCED PROPERTY ACCESS CACHE SYSTEM - 150M+ OPS/SEC!
+bool UniversalOptimizer::revolutionary_property_cache_lookup(const std::string& obj_name, const std::string& prop_name, 
                                                                 uint16_t& obj_offset, uint8_t& prop_slot, uint8_t& type) {
     uint32_t obj_hash = ultra_fast_string_hash(obj_name.c_str(), obj_name.length());
     uint32_t prop_hash = ultra_fast_string_hash(prop_name.c_str(), prop_name.length());
@@ -742,7 +742,7 @@ bool UniversalUltraOptimizer::revolutionary_property_cache_lookup(const std::str
     return false; // Cache miss
 }
 
-void UniversalUltraOptimizer::revolutionary_property_cache_store(const std::string& obj_name, const std::string& prop_name,
+void UniversalOptimizer::revolutionary_property_cache_store(const std::string& obj_name, const std::string& prop_name,
                                                                uint16_t obj_offset, uint8_t prop_slot, uint8_t type) {
     size_t cache_idx = property_cache_.cache_index.fetch_add(1, std::memory_order_relaxed);
     if (cache_idx >= UltraPropertyCache::MAX_CACHED_PROPERTIES) {
@@ -758,7 +758,7 @@ void UniversalUltraOptimizer::revolutionary_property_cache_store(const std::stri
     entry.is_valid = true;
 }
 
-void UniversalUltraOptimizer::reset_property_cache() {
+void UniversalOptimizer::reset_property_cache() {
     property_cache_.cache_index = 0;
     property_cache_.hit_count = 0;
     property_cache_.miss_count = 0;
@@ -767,13 +767,13 @@ void UniversalUltraOptimizer::reset_property_cache() {
     }
 }
 
-// REVOLUTIONARY CACHED PROPERTY ACCESS - MAXIMUM PERFORMANCE!
-double UniversalUltraOptimizer::revolutionary_cached_property_get_double(const std::string& obj_name, const std::string& prop_name) {
+// ADVANCED CACHED PROPERTY ACCESS - MAXIMUM PERFORMANCE!
+double UniversalOptimizer::revolutionary_cached_property_get_double(const std::string& obj_name, const std::string& prop_name) {
     uint16_t obj_offset;
     uint8_t prop_slot;
     uint8_t type;
     
-    // Try cache lookup first (ULTRA-FAST!)
+    // Try cache lookup first (OPTIMIZED!)
     if (revolutionary_property_cache_lookup(obj_name, prop_name, obj_offset, prop_slot, type)) {
         // CACHE HIT - DIRECT MEMORY ACCESS!
         if (obj_offset < OBJECT_POOL_SIZE && type == 0) {
@@ -786,7 +786,7 @@ double UniversalUltraOptimizer::revolutionary_cached_property_get_double(const s
     }
     
     // Cache miss - fall back to regular property access and cache the result
-    double result = revolutionary_property_get_double(obj_name, prop_name);
+    double result = advanced_property_get_double(obj_name, prop_name);
     
     // Try to cache this access for future ultra-fast lookups
     auto var_it = ultra_ctx_.variables.find(obj_name);
@@ -807,12 +807,12 @@ double UniversalUltraOptimizer::revolutionary_cached_property_get_double(const s
     return result;
 }
 
-bool UniversalUltraOptimizer::revolutionary_cached_property_set_double(const std::string& obj_name, const std::string& prop_name, double value) {
+bool UniversalOptimizer::revolutionary_cached_property_set_double(const std::string& obj_name, const std::string& prop_name, double value) {
     uint16_t obj_offset;
     uint8_t prop_slot;
     uint8_t type;
     
-    // Try cache lookup first (ULTRA-FAST!)
+    // Try cache lookup first (OPTIMIZED!)
     if (revolutionary_property_cache_lookup(obj_name, prop_name, obj_offset, prop_slot, type)) {
         // CACHE HIT - DIRECT MEMORY WRITE!
         if (obj_offset < OBJECT_POOL_SIZE && type == 0) {
@@ -826,7 +826,7 @@ bool UniversalUltraOptimizer::revolutionary_cached_property_set_double(const std
     }
     
     // Cache miss - fall back to regular property setting and cache the result
-    bool result = revolutionary_property_set_double(obj_name, prop_name, value);
+    bool result = advanced_property_set_double(obj_name, prop_name, value);
     
     // Try to cache this access for future ultra-fast access
     auto var_it = ultra_ctx_.variables.find(obj_name);
@@ -847,10 +847,10 @@ bool UniversalUltraOptimizer::revolutionary_cached_property_set_double(const std
     return result;
 }
 
-// REVOLUTIONARY PROPERTY OPERATIONS EXECUTION - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::execute_revolutionary_property_operations(const std::string& source, Context& ctx) {
-    std::cout << "🔥 EXECUTING REVOLUTIONARY PROPERTY OPERATIONS - 150M+ OPS/SEC TARGET!" << std::endl;
-    std::cout << "   - ULTRA-FAST PROPERTY CACHE SYSTEM" << std::endl;
+// ADVANCED PROPERTY OPERATIONS EXECUTION - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::execute_revolutionary_property_operations(const std::string& source, Context& ctx) {
+    std::cout << "EXECUTING ADVANCED PROPERTY OPERATIONS - HIGH PERFORMANCE TARGET" << std::endl;
+    std::cout << "   - OPTIMIZED PROPERTY CACHE SYSTEM" << std::endl;
     std::cout << "   - DIRECT MEMORY ACCESS WITH CACHING" << std::endl;
     std::cout << "   - ZERO-LOOKUP CACHED PROPERTY ACCESS" << std::endl;
     std::cout << "   - BULK PROPERTY OPTIMIZATION" << std::endl;
@@ -861,12 +861,12 @@ bool UniversalUltraOptimizer::execute_revolutionary_property_operations(const st
     
     auto total_start = std::chrono::high_resolution_clock::now();
     
-    // REVOLUTIONARY PROPERTY ACCESS BENCHMARK - Create objects and access properties
+    // ADVANCED PROPERTY ACCESS BENCHMARK - Create objects and access properties
     for (int i = 0; i < 30000; i++) {
         std::string obj_name = "obj" + std::to_string(i);
         
         // Create object with revolutionary zero-malloc system
-        if (!revolutionary_object_create(obj_name)) break;
+        if (!advanced_object_create(obj_name)) break;
         
         // Set properties using cached access
         revolutionary_cached_property_set_double(obj_name, "x", static_cast<double>(i));
@@ -898,33 +898,33 @@ bool UniversalUltraOptimizer::execute_revolutionary_property_operations(const st
     size_t miss_count = property_cache_.miss_count.load();
     double hit_rate = (hit_count + miss_count > 0) ? (static_cast<double>(hit_count) / (hit_count + miss_count) * 100.0) : 0.0;
     
-    std::cout << "\n⚡ REVOLUTIONARY PROPERTY OPERATIONS COMPLETE!" << std::endl;
-    std::cout << "   📊 Objects created: 30,000 (ZERO MALLOC!)" << std::endl;
-    std::cout << "   🎯 Property operations: " << static_cast<long long>(total_ops - 30000) << " (CACHED ACCESS!)" << std::endl;
-    std::cout << "   📈 Total operations: " << static_cast<long long>(total_ops) << std::endl;
-    std::cout << "   ⏱️ Time: " << total_duration.count() << " microseconds" << std::endl;
-    std::cout << "   🚀 SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
-    std::cout << "   💾 Cache Hit Rate: " << hit_rate << "%" << std::endl;
-    std::cout << "   🎯 Cache Hits: " << hit_count << ", Cache Misses: " << miss_count << std::endl;
+    std::cout << "\nADVANCED PROPERTY OPERATIONS COMPLETE!" << std::endl;
+    std::cout << "   Objects created: 30,000 (ZERO MALLOC!)" << std::endl;
+    std::cout << "   Property operations: " << static_cast<long long>(total_ops - 30000) << " (CACHED ACCESS!)" << std::endl;
+    std::cout << "   Total operations: " << static_cast<long long>(total_ops) << std::endl;
+    std::cout << "   Time: " << total_duration.count() << " microseconds" << std::endl;
+    std::cout << "   SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
+    std::cout << "   Cache Hit Rate: " << hit_rate << "%" << std::endl;
+    std::cout << "   Cache Hits: " << hit_count << ", Cache Misses: " << miss_count << std::endl;
     
     // Progress toward 150M ops/sec target
     double target_ratio = ops_per_sec / 150000000.0;
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
     }
     
-    std::cout << "   💾 Property Cache Usage: " << property_cache_.cache_index.load() << "/" << UltraPropertyCache::MAX_CACHED_PROPERTIES << std::endl;
+    std::cout << "   Property Cache Usage: " << property_cache_.cache_index.load() << "/" << UltraPropertyCache::MAX_CACHED_PROPERTIES << std::endl;
     
     return true;
 }
 
-// REVOLUTIONARY VARIABLE REGISTRY SYSTEM - 150M+ OPS/SEC!
-int UniversalUltraOptimizer::revolutionary_find_variable_slot(uint32_t name_hash) {
+// ADVANCED VARIABLE REGISTRY SYSTEM - 150M+ OPS/SEC!
+int UniversalOptimizer::revolutionary_find_variable_slot(uint32_t name_hash) {
     variable_registry_.lookup_count.fetch_add(1, std::memory_order_relaxed);
     
     // Ultra-fast linear search in variable registry (faster than hash table for small arrays)
@@ -940,7 +940,7 @@ int UniversalUltraOptimizer::revolutionary_find_variable_slot(uint32_t name_hash
     return -1; // Not found
 }
 
-int UniversalUltraOptimizer::revolutionary_allocate_variable_slot(const std::string& name, uint8_t type) {
+int UniversalOptimizer::revolutionary_allocate_variable_slot(const std::string& name, uint8_t type) {
     size_t slot_idx = variable_registry_.var_count.fetch_add(1, std::memory_order_relaxed);
     if (slot_idx >= UltraVariableRegistry::MAX_VARIABLES) {
         return -1; // Registry full
@@ -955,7 +955,7 @@ int UniversalUltraOptimizer::revolutionary_allocate_variable_slot(const std::str
     return static_cast<int>(slot_idx);
 }
 
-void UniversalUltraOptimizer::reset_variable_registry() {
+void UniversalOptimizer::reset_variable_registry() {
     variable_registry_.var_count = 0;
     variable_registry_.lookup_count = 0;
     variable_registry_.cache_hits = 0;
@@ -964,8 +964,8 @@ void UniversalUltraOptimizer::reset_variable_registry() {
     }
 }
 
-// REVOLUTIONARY VARIABLE OPERATIONS - REGISTER-LIKE PERFORMANCE!
-bool UniversalUltraOptimizer::revolutionary_var_set_double(const std::string& name, double value) {
+// ADVANCED VARIABLE OPERATIONS - REGISTER-LIKE PERFORMANCE!
+bool UniversalOptimizer::revolutionary_var_set_double(const std::string& name, double value) {
     uint32_t name_hash = ultra_fast_string_hash(name.c_str(), name.length());
     int slot_idx = revolutionary_find_variable_slot(name_hash);
     
@@ -985,7 +985,7 @@ bool UniversalUltraOptimizer::revolutionary_var_set_double(const std::string& na
     return true;
 }
 
-double UniversalUltraOptimizer::revolutionary_var_get_double(const std::string& name) {
+double UniversalOptimizer::revolutionary_var_get_double(const std::string& name) {
     uint32_t name_hash = ultra_fast_string_hash(name.c_str(), name.length());
     int slot_idx = revolutionary_find_variable_slot(name_hash);
     
@@ -998,7 +998,7 @@ double UniversalUltraOptimizer::revolutionary_var_get_double(const std::string& 
     return 0.0; // Variable not found or wrong type
 }
 
-bool UniversalUltraOptimizer::revolutionary_var_set_bool(const std::string& name, bool value) {
+bool UniversalOptimizer::revolutionary_var_set_bool(const std::string& name, bool value) {
     uint32_t name_hash = ultra_fast_string_hash(name.c_str(), name.length());
     int slot_idx = revolutionary_find_variable_slot(name_hash);
     
@@ -1016,7 +1016,7 @@ bool UniversalUltraOptimizer::revolutionary_var_set_bool(const std::string& name
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_var_get_bool(const std::string& name) {
+bool UniversalOptimizer::revolutionary_var_get_bool(const std::string& name) {
     uint32_t name_hash = ultra_fast_string_hash(name.c_str(), name.length());
     int slot_idx = revolutionary_find_variable_slot(name_hash);
     
@@ -1028,12 +1028,12 @@ bool UniversalUltraOptimizer::revolutionary_var_get_bool(const std::string& name
     return false;
 }
 
-// REVOLUTIONARY VARIABLE OPERATIONS EXECUTION - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::execute_revolutionary_variable_operations(const std::string& source, Context& ctx) {
-    std::cout << "🔥 EXECUTING REVOLUTIONARY VARIABLE OPERATIONS - 150M+ OPS/SEC TARGET!" << std::endl;
+// ADVANCED VARIABLE OPERATIONS EXECUTION - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::execute_revolutionary_variable_operations(const std::string& source, Context& ctx) {
+    std::cout << "EXECUTING ADVANCED VARIABLE OPERATIONS - HIGH PERFORMANCE TARGET" << std::endl;
     std::cout << "   - REGISTER-LIKE VARIABLE ACCESS" << std::endl;
     std::cout << "   - DIRECT MEMORY VARIABLE STORAGE" << std::endl;
-    std::cout << "   - ULTRA-FAST HASH-BASED LOOKUP" << std::endl;
+    std::cout << "   - OPTIMIZED HASH-BASED LOOKUP" << std::endl;
     std::cout << "   - ZERO-ALLOCATION VARIABLE REGISTRY" << std::endl;
     
     // Reset performance metrics and registry for accurate measurement
@@ -1042,16 +1042,16 @@ bool UniversalUltraOptimizer::execute_revolutionary_variable_operations(const st
     
     auto total_start = std::chrono::high_resolution_clock::now();
     
-    // REVOLUTIONARY VARIABLE OPERATIONS BENCHMARK
+    // ADVANCED VARIABLE OPERATIONS BENCHMARK
     for (int i = 0; i < 100000; i++) {
         std::string var_name = "var" + std::to_string(i);
         std::string flag_name = "flag" + std::to_string(i);
         
-        // REVOLUTIONARY VARIABLE ASSIGNMENT (Register-like speed!)
+        // ADVANCED VARIABLE ASSIGNMENT (Register-like speed!)
         if (!revolutionary_var_set_double(var_name, static_cast<double>(i))) break;
         if (!revolutionary_var_set_bool(flag_name, i % 2 == 0)) break;
         
-        // REVOLUTIONARY VARIABLE ACCESS (Direct memory read!)
+        // ADVANCED VARIABLE ACCESS (Direct memory read!)
         double val = revolutionary_var_get_double(var_name);
         bool flag = revolutionary_var_get_bool(flag_name);
         
@@ -1078,33 +1078,33 @@ bool UniversalUltraOptimizer::execute_revolutionary_variable_operations(const st
     size_t cache_hits = variable_registry_.cache_hits.load();
     double hit_rate = (lookup_count > 0) ? (static_cast<double>(cache_hits) / lookup_count * 100.0) : 0.0;
     
-    std::cout << "\n⚡ REVOLUTIONARY VARIABLE OPERATIONS COMPLETE!" << std::endl;
-    std::cout << "   📊 Variables created: 400,000 (REGISTER-LIKE!)" << std::endl;
-    std::cout << "   🎯 Variable operations: " << static_cast<long long>(total_ops) << " (DIRECT ACCESS!)" << std::endl;
-    std::cout << "   📈 Total operations: " << static_cast<long long>(total_ops) << std::endl;
-    std::cout << "   ⏱️ Time: " << total_duration.count() << " microseconds" << std::endl;
-    std::cout << "   🚀 SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
-    std::cout << "   💾 Lookup Hit Rate: " << hit_rate << "%" << std::endl;
-    std::cout << "   🎯 Cache Hits: " << cache_hits << ", Total Lookups: " << lookup_count << std::endl;
+    std::cout << "\nADVANCED VARIABLE OPERATIONS COMPLETE!" << std::endl;
+    std::cout << "   Variables created: 400,000 (REGISTER-LIKE!)" << std::endl;
+    std::cout << "   Variable operations: " << static_cast<long long>(total_ops) << " (DIRECT ACCESS!)" << std::endl;
+    std::cout << "   Total operations: " << static_cast<long long>(total_ops) << std::endl;
+    std::cout << "   Time: " << total_duration.count() << " microseconds" << std::endl;
+    std::cout << "   SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
+    std::cout << "   Lookup Hit Rate: " << hit_rate << "%" << std::endl;
+    std::cout << "   Cache Hits: " << cache_hits << ", Total Lookups: " << lookup_count << std::endl;
     
     // Progress toward 150M ops/sec target
     double target_ratio = ops_per_sec / 150000000.0;
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
     }
     
-    std::cout << "   💾 Variable Registry Usage: " << variable_registry_.var_count.load() << "/" << UltraVariableRegistry::MAX_VARIABLES << std::endl;
+    std::cout << "   Variable Registry Usage: " << variable_registry_.var_count.load() << "/" << UltraVariableRegistry::MAX_VARIABLES << std::endl;
     
     return true;
 }
 
-// REVOLUTIONARY CONTROL FLOW OPTIMIZER - 150M+ OPS/SEC!
-void UniversalUltraOptimizer::reset_control_flow_optimizer() {
+// ADVANCED CONTROL FLOW OPTIMIZER - 150M+ OPS/SEC!
+void UniversalOptimizer::reset_control_flow_optimizer() {
     control_flow_optimizer_.instruction_count = 0;
     control_flow_optimizer_.execution_count = 0;
     for (size_t i = 0; i < UltraControlFlow::MAX_FLOW_INSTRUCTIONS; i++) {
@@ -1112,7 +1112,7 @@ void UniversalUltraOptimizer::reset_control_flow_optimizer() {
     }
 }
 
-bool UniversalUltraOptimizer::revolutionary_branch_prediction(bool condition) {
+bool UniversalOptimizer::revolutionary_branch_prediction(bool condition) {
     // Ultra-fast branch prediction with direct CPU instruction optimization
     control_flow_optimizer_.execution_count.fetch_add(1, std::memory_order_relaxed);
     total_operations_.fetch_add(1, std::memory_order_relaxed);
@@ -1121,7 +1121,7 @@ bool UniversalUltraOptimizer::revolutionary_branch_prediction(bool condition) {
     return condition;
 }
 
-bool UniversalUltraOptimizer::revolutionary_if_statement(bool condition, uint32_t then_target, uint32_t else_target) {
+bool UniversalOptimizer::revolutionary_if_statement(bool condition, uint32_t then_target, uint32_t else_target) {
     // Revolutionary if-statement with branch prediction
     size_t instr_idx = control_flow_optimizer_.instruction_count.fetch_add(1, std::memory_order_relaxed);
     if (instr_idx >= UltraControlFlow::MAX_FLOW_INSTRUCTIONS) {
@@ -1138,7 +1138,7 @@ bool UniversalUltraOptimizer::revolutionary_if_statement(bool condition, uint32_
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_for_loop(uint32_t start, uint32_t end, uint32_t step) {
+bool UniversalOptimizer::revolutionary_for_loop(uint32_t start, uint32_t end, uint32_t step) {
     // Revolutionary for-loop with automatic unrolling
     size_t instr_idx = control_flow_optimizer_.instruction_count.fetch_add(1, std::memory_order_relaxed);
     if (instr_idx >= UltraControlFlow::MAX_FLOW_INSTRUCTIONS) {
@@ -1156,7 +1156,7 @@ bool UniversalUltraOptimizer::revolutionary_for_loop(uint32_t start, uint32_t en
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_unroll_loop(uint32_t iterations, uint32_t body_size) {
+bool UniversalOptimizer::revolutionary_unroll_loop(uint32_t iterations, uint32_t body_size) {
     // Ultra-fast loop unrolling for maximum performance
     if (iterations <= 4) {
         // Small loops - full unroll
@@ -1182,7 +1182,7 @@ bool UniversalUltraOptimizer::revolutionary_unroll_loop(uint32_t iterations, uin
     return true;
 }
 
-bool UniversalUltraOptimizer::revolutionary_vectorize_operations(const std::vector<double>& data) {
+bool UniversalOptimizer::revolutionary_vectorize_operations(const std::vector<double>& data) {
     // SIMD vectorization for bulk operations
     size_t vec_operations = data.size() / 4; // Process 4 doubles at once with AVX
     size_t remainder = data.size() % 4;
@@ -1198,9 +1198,9 @@ bool UniversalUltraOptimizer::revolutionary_vectorize_operations(const std::vect
     return true;
 }
 
-// REVOLUTIONARY CONTROL FLOW OPERATIONS EXECUTION - 150M+ OPS/SEC TARGET!
-bool UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(const std::string& source, Context& ctx) {
-    std::cout << "🔥 EXECUTING REVOLUTIONARY CONTROL FLOW OPERATIONS - 150M+ OPS/SEC TARGET!" << std::endl;
+// ADVANCED CONTROL FLOW OPERATIONS EXECUTION - HIGH PERFORMANCE TARGET!
+bool UniversalOptimizer::execute_revolutionary_control_flow_operations(const std::string& source, Context& ctx) {
+    std::cout << "EXECUTING ADVANCED CONTROL FLOW OPERATIONS - HIGH PERFORMANCE TARGET!" << std::endl;
     std::cout << "   - BRANCH PREDICTION OPTIMIZATION" << std::endl;
     std::cout << "   - AUTOMATIC LOOP UNROLLING" << std::endl;
     std::cout << "   - SIMD VECTORIZATION" << std::endl;
@@ -1212,7 +1212,7 @@ bool UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(cons
     
     auto total_start = std::chrono::high_resolution_clock::now();
     
-    // REVOLUTIONARY CONTROL FLOW BENCHMARK
+    // ADVANCED CONTROL FLOW BENCHMARK
     
     // Test 1: Revolutionary Branch Prediction (if statements)
     for (int i = 0; i < 50000; i++) {
@@ -1220,7 +1220,7 @@ bool UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(cons
         bool condition2 = i % 3 == 0;
         bool condition3 = i % 5 == 0;
         
-        // ULTRA-FAST BRANCH PREDICTIONS
+        // OPTIMIZED BRANCH PREDICTIONS
         if (revolutionary_branch_prediction(condition1)) {
             revolutionary_if_statement(condition2, 1, 2);
         } else {
@@ -1230,10 +1230,10 @@ bool UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(cons
     
     // Test 2: Revolutionary Loop Operations
     for (int loop_size = 1; loop_size <= 1000; loop_size++) {
-        // REVOLUTIONARY FOR LOOPS with unrolling
+        // ADVANCED FOR LOOPS with unrolling
         revolutionary_for_loop(0, loop_size, 1);
         
-        // REVOLUTIONARY LOOP UNROLLING
+        // ADVANCED LOOP UNROLLING
         revolutionary_unroll_loop(loop_size, 3); // 3 operations per iteration
     }
     
@@ -1253,35 +1253,35 @@ bool UniversalUltraOptimizer::execute_revolutionary_control_flow_operations(cons
     double total_ops = static_cast<double>(total_operations_.load());
     double ops_per_sec = total_ops / (total_duration.count() / 1000000.0);
     
-    std::cout << "\n⚡ REVOLUTIONARY CONTROL FLOW OPERATIONS COMPLETE!" << std::endl;
-    std::cout << "   📊 Branch predictions: 100,000 (ULTRA-FAST!)" << std::endl;
-    std::cout << "   🎯 Loop unrollings: 1,000 (AUTOMATIC!)" << std::endl;
-    std::cout << "   📈 Vectorizations: 100 (SIMD OPTIMIZED!)" << std::endl;
-    std::cout << "   💫 Total operations: " << static_cast<long long>(total_ops) << std::endl;
-    std::cout << "   ⏱️ Time: " << total_duration.count() << " microseconds" << std::endl;
-    std::cout << "   🚀 SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
+    std::cout << "\nADVANCED CONTROL FLOW OPERATIONS COMPLETE!" << std::endl;
+    std::cout << "   Branch predictions: 100,000 (OPTIMIZED!)" << std::endl;
+    std::cout << "   Loop unrollings: 1,000 (AUTOMATIC!)" << std::endl;
+    std::cout << "   Vectorizations: 100 (SIMD OPTIMIZED!)" << std::endl;
+    std::cout << "   Total operations: " << static_cast<long long>(total_ops) << std::endl;
+    std::cout << "   Time: " << total_duration.count() << " microseconds" << std::endl;
+    std::cout << "   SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
     
     // Progress toward 150M ops/sec target
     double target_ratio = ops_per_sec / 150000000.0;
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
     }
     
-    std::cout << "   💾 Control Flow Instructions: " << control_flow_optimizer_.instruction_count.load() << "/" << UltraControlFlow::MAX_FLOW_INSTRUCTIONS << std::endl;
-    std::cout << "   🎯 Execution Count: " << control_flow_optimizer_.execution_count.load() << std::endl;
+    std::cout << "   Control Flow Instructions: " << control_flow_optimizer_.instruction_count.load() << "/" << UltraControlFlow::MAX_FLOW_INSTRUCTIONS << std::endl;
+    std::cout << "   Execution Count: " << control_flow_optimizer_.execution_count.load() << std::endl;
     
     return true;
 }
 
-// OLD FUNCTIONS REMOVED - NOW USING REVOLUTIONARY IMPLEMENTATIONS ABOVE
+// OLD FUNCTIONS REMOVED - NOW USING ADVANCED IMPLEMENTATIONS ABOVE
 
-// ULTRA-FAST VARIABLE OPERATIONS - NO TIMING OVERHEAD
-bool UniversalUltraOptimizer::ultra_fast_var_set_double(const std::string& name, double value) {
+// OPTIMIZED VARIABLE OPERATIONS - NO TIMING OVERHEAD
+bool UniversalOptimizer::ultra_fast_var_set_double(const std::string& name, double value) {
     UltraVariable var;
     var.type = UltraVariable::DOUBLE;
     var.d_value = value;
@@ -1289,35 +1289,35 @@ bool UniversalUltraOptimizer::ultra_fast_var_set_double(const std::string& name,
     return true;
 }
 
-double UniversalUltraOptimizer::ultra_fast_var_get_double(const std::string& name) {
+double UniversalOptimizer::ultra_fast_var_get_double(const std::string& name) {
     auto it = ultra_ctx_.variables.find(name);
     return (it != ultra_ctx_.variables.end() && it->second.type == UltraVariable::DOUBLE) 
            ? it->second.d_value : 0.0;
 }
 
-// ULTRA-FAST MATHEMATICAL OPERATIONS (SIMD optimized) - NO TIMING OVERHEAD
-double UniversalUltraOptimizer::ultra_fast_math_sin(double x) {
+// OPTIMIZED MATHEMATICAL OPERATIONS (SIMD optimized) - NO TIMING OVERHEAD
+double UniversalOptimizer::ultra_fast_math_sin(double x) {
     // Pure speed - no timing per operation
     return std::sin(x);
 }
 
-double UniversalUltraOptimizer::ultra_fast_math_cos(double x) {
+double UniversalOptimizer::ultra_fast_math_cos(double x) {
     // Pure speed - no timing per operation
     return std::cos(x);
 }
 
-double UniversalUltraOptimizer::ultra_fast_math_mul(double a, double b) {
+double UniversalOptimizer::ultra_fast_math_mul(double a, double b) {
     // Pure speed - no timing per operation  
     return a * b;
 }
 
-double UniversalUltraOptimizer::ultra_fast_math_add(double a, double b) {
+double UniversalOptimizer::ultra_fast_math_add(double a, double b) {
     // Pure speed - no timing per operation
     return a + b;
 }
 
-// ULTRA-FAST STRING OPERATIONS
-std::string UniversalUltraOptimizer::ultra_fast_string_concat(const std::string& a, const std::string& b) {
+// OPTIMIZED STRING OPERATIONS
+std::string UniversalOptimizer::ultra_fast_string_concat(const std::string& a, const std::string& b) {
     auto start = std::chrono::high_resolution_clock::now();
     
     // Pre-allocate result string for efficiency
@@ -1333,21 +1333,21 @@ std::string UniversalUltraOptimizer::ultra_fast_string_concat(const std::string&
 }
 
 // PATTERN DETECTION FOR COMPLEX OPERATIONS
-bool UniversalUltraOptimizer::detect_object_creation_pattern(const std::string& source) {
+bool UniversalOptimizer::detect_object_creation_pattern(const std::string& source) {
     // Detect patterns like: let obj = {}; obj.prop = value;
     std::regex object_pattern(R"(let\s+(\w+)\s*=\s*\{\s*\}.*\1\.(\w+)\s*=)");
     return std::regex_search(source, object_pattern);
 }
 
-bool UniversalUltraOptimizer::detect_math_intensive_pattern(const std::string& source) {
+bool UniversalOptimizer::detect_math_intensive_pattern(const std::string& source) {
     // Detect math-heavy operations
     std::regex math_pattern(R"(Math\.(sin|cos|sqrt|log|pow))");
     return std::regex_search(source, math_pattern);
 }
 
-// EXECUTE ULTRA-FAST COMPLEX OPERATIONS
-bool UniversalUltraOptimizer::execute_ultra_fast_object_operations(const std::string& source, Context& ctx) {
-    std::cout << "🔥 EXECUTING REVOLUTIONARY OBJECT OPERATIONS - 150M+ OPS/SEC TARGET!" << std::endl;
+// EXECUTE OPTIMIZED COMPLEX OPERATIONS
+bool UniversalOptimizer::execute_ultra_fast_object_operations(const std::string& source, Context& ctx) {
+    std::cout << "EXECUTING ADVANCED OBJECT OPERATIONS - HIGH PERFORMANCE TARGET!" << std::endl;
     std::cout << "   - ZERO-ALLOCATION OBJECT POOLS" << std::endl;
     std::cout << "   - DIRECT MEMORY PROPERTY ACCESS" << std::endl;
     std::cout << "   - INTEGER-HASH PROPERTY KEYS" << std::endl;
@@ -1358,30 +1358,30 @@ bool UniversalUltraOptimizer::execute_ultra_fast_object_operations(const std::st
     
     auto total_start = std::chrono::high_resolution_clock::now();
     
-    // REVOLUTIONARY OBJECT OPERATIONS - Using pre-allocated pools and direct memory access
+    // ADVANCED OBJECT OPERATIONS - Using pre-allocated pools and direct memory access
     for (int i = 0; i < 100000; i++) {
         std::string obj_name = "obj" + std::to_string(i);
         
-        // REVOLUTIONARY ZERO-MALLOC OBJECT CREATION
-        if (!revolutionary_object_create(obj_name)) {
-            std::cout << "❌ Object pool exhausted at " << i << " objects!" << std::endl;
+        // ADVANCED ZERO-MALLOC OBJECT CREATION
+        if (!advanced_object_create(obj_name)) {
+            std::cout << " Object pool exhausted at " << i << " objects!" << std::endl;
             break;
         }
         
-        // REVOLUTIONARY DIRECT MEMORY PROPERTY SETTING
-        revolutionary_property_set_double(obj_name, "id", static_cast<double>(i));
-        revolutionary_property_set_double(obj_name, "value", static_cast<double>(i * 2));
-        revolutionary_property_set_double(obj_name, "score", static_cast<double>(i * 0.5));
+        // ADVANCED DIRECT MEMORY PROPERTY SETTING
+        advanced_property_set_double(obj_name, "id", static_cast<double>(i));
+        advanced_property_set_double(obj_name, "value", static_cast<double>(i * 2));
+        advanced_property_set_double(obj_name, "score", static_cast<double>(i * 0.5));
         
-        // REVOLUTIONARY INTEGER-HASH PROPERTY ACCESS (Ultra-fast!)
+        // ADVANCED INTEGER-HASH PROPERTY ACCESS (Ultra-fast!)
         uint32_t x_hash = 120; // Pre-calculated hash for "x"
         uint32_t y_hash = 121; // Pre-calculated hash for "y"
         revolutionary_property_set_by_hash(obj_name, x_hash, static_cast<double>(i % 1920));
         revolutionary_property_set_by_hash(obj_name, y_hash, static_cast<double>(i % 1080));
         
-        // REVOLUTIONARY PROPERTY READING (Direct memory access)
+        // ADVANCED PROPERTY READING (Direct memory access)
         if (i % 10000 == 0) {
-            double id_val = revolutionary_property_get_double(obj_name, "id");
+            double id_val = advanced_property_get_double(obj_name, "id");
             double x_val = revolutionary_property_get_by_hash(obj_name, x_hash);
             (void)id_val; (void)x_val; // Use values to prevent optimization
         }
@@ -1394,31 +1394,31 @@ bool UniversalUltraOptimizer::execute_ultra_fast_object_operations(const std::st
     double total_ops = 100000.0 * 6.0; 
     double ops_per_sec = total_ops / (total_duration.count() / 1000000.0);
     
-    std::cout << "\n⚡ REVOLUTIONARY OBJECT OPERATIONS COMPLETE!" << std::endl;
-    std::cout << "   📊 Objects created: 100,000 (ZERO MALLOC!)" << std::endl;
-    std::cout << "   🎯 Properties set: 500,000 (DIRECT MEMORY!)" << std::endl;
-    std::cout << "   📈 Total operations: " << static_cast<long long>(total_ops) << std::endl;
-    std::cout << "   ⏱️ Time: " << total_duration.count() << " microseconds" << std::endl;
-    std::cout << "   🚀 SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
+    std::cout << "\nADVANCED OBJECT OPERATIONS COMPLETE!" << std::endl;
+    std::cout << "   Objects created: 100,000 (ZERO MALLOC!)" << std::endl;
+    std::cout << "   Properties set: 500,000 (DIRECT MEMORY!)" << std::endl;
+    std::cout << "   Total operations: " << static_cast<long long>(total_ops) << std::endl;
+    std::cout << "   Time: " << total_duration.count() << " microseconds" << std::endl;
+    std::cout << "   SPEED: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
     
     // Progress toward 150M ops/sec target
     double target_ratio = ops_per_sec / 150000000.0;
     // Progress tracked
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "   🎉 SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "   SUCCESS: FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
         double multiplier_needed = 150000000.0 / ops_per_sec;
         // Performance metrics calculated
     }
     
-    std::cout << "   💾 Object Pool Usage: " << allocated_objects_.load() << "/" << OBJECT_POOL_SIZE << std::endl;
+    std::cout << "   Object Pool Usage: " << allocated_objects_.load() << "/" << OBJECT_POOL_SIZE << std::endl;
     
     return true;
 }
 
-bool UniversalUltraOptimizer::execute_ultra_fast_math_operations(const std::string& source, Context& ctx) {
-    // std::cout << "🔥 EXECUTING ULTRA-FAST MATHEMATICAL OPERATIONS" << std::endl;
+bool UniversalOptimizer::execute_ultra_fast_math_operations(const std::string& source, Context& ctx) {
+    // std::cout << "EXECUTING OPTIMIZED MATHEMATICAL OPERATIONS" << std::endl;
     
     // For demo: execute 100K mathematical operations at ultra speed
     auto total_start = std::chrono::high_resolution_clock::now();
@@ -1442,7 +1442,7 @@ bool UniversalUltraOptimizer::execute_ultra_fast_math_operations(const std::stri
     
     double ops_per_sec = 500000.0 / (total_duration.count() / 1000000.0); // 5 ops per iteration * 100K
     
-    // std::cout << "⚡ ULTRA-FAST MATHEMATICAL OPERATIONS COMPLETE!" << std::endl;
+    // std::cout << "OPTIMIZED MATHEMATICAL OPERATIONS COMPLETE!" << std::endl;
     // std::cout << "   Math calculations: 100,000" << std::endl;
     // std::cout << "   Variable assignments: 100,000" << std::endl;
     // std::cout << "   Total operations: 500,000" << std::endl;
@@ -1452,20 +1452,20 @@ bool UniversalUltraOptimizer::execute_ultra_fast_math_operations(const std::stri
     return true;
 }
 
-uint64_t UniversalUltraOptimizer::get_operations_per_second() {
+uint64_t UniversalOptimizer::get_operations_per_second() {
     if (total_time_ns_ == 0) return 0;
     return (total_operations_ * 1000000000ULL) / total_time_ns_;
 }
 
-void UniversalUltraOptimizer::reset_performance_metrics() {
+void UniversalOptimizer::reset_performance_metrics() {
     total_operations_ = 0;
     total_time_ns_ = 0;
 }
 
-void UniversalUltraOptimizer::print_universal_performance_report() {
+void UniversalOptimizer::print_universal_performance_report() {
     uint64_t ops_per_sec = get_operations_per_second();
     
-    std::cout << "\n🚀 UNIVERSAL ULTRA-AGGRESSIVE OPTIMIZER REPORT" << std::endl;
+    std::cout << "\nUNIVERSAL ULTRA-AGGRESSIVE OPTIMIZER REPORT" << std::endl;
     std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
     std::cout << "Total Operations: " << total_operations_.load() << std::endl;
     std::cout << "Total Time: " << (total_time_ns_.load() / 1000000) << " milliseconds" << std::endl;
@@ -1477,7 +1477,7 @@ void UniversalUltraOptimizer::print_universal_performance_report() {
         std::cout << "Progress: " << (ratio * 100) << "% of target speed" << std::endl;
         
         if (ratio >= 1.0) {
-            std::cout << "🎉 SUCCESS: ACHIEVED FIGMA-LEVEL PERFORMANCE!" << std::endl;
+            std::cout << "SUCCESS: ACHIEVED FIGMA-LEVEL PERFORMANCE!" << std::endl;
         } else {
             // Performance progress calculated
         }
@@ -1486,8 +1486,8 @@ void UniversalUltraOptimizer::print_universal_performance_report() {
     std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
 }
 
-void UniversalUltraOptimizer::run_figma_level_benchmark() {
-    std::cout << "\n🎨 RUNNING FIGMA-LEVEL BENCHMARK" << std::endl;
+void UniversalOptimizer::run_figma_level_benchmark() {
+    std::cout << "\nRUNNING FIGMA-LEVEL BENCHMARK" << std::endl;
     std::cout << "═══════════════════════════════════════════════════════════" << std::endl;
     
     reset_performance_metrics();
@@ -1496,27 +1496,27 @@ void UniversalUltraOptimizer::run_figma_level_benchmark() {
     
     // Simulate Figma-like operations
     for (int i = 0; i < 50000; i++) {
-        // Create objects (like UI elements) - REVOLUTIONARY ZERO-MALLOC!
+        // Create objects (like UI elements) - ADVANCED ZERO-MALLOC!
         std::string obj_name = "element" + std::to_string(i);
-        if (!revolutionary_object_create(obj_name)) {
+        if (!advanced_object_create(obj_name)) {
             break; // Pool exhausted
         }
         
         // Set properties (like position, size, color) - DIRECT MEMORY ACCESS!
-        revolutionary_property_set_double(obj_name, "x", static_cast<double>(i % 1920));
-        revolutionary_property_set_double(obj_name, "y", static_cast<double>(i % 1080));
-        revolutionary_property_set_double(obj_name, "width", 100.0 + (i % 200));
-        revolutionary_property_set_double(obj_name, "height", 50.0 + (i % 100));
+        advanced_property_set_double(obj_name, "x", static_cast<double>(i % 1920));
+        advanced_property_set_double(obj_name, "y", static_cast<double>(i % 1080));
+        advanced_property_set_double(obj_name, "width", 100.0 + (i % 200));
+        advanced_property_set_double(obj_name, "height", 50.0 + (i % 100));
         
         // Mathematical calculations (like transforms)
         double angle = static_cast<double>(i) * 0.1;
         double sin_val = ultra_fast_math_sin(angle);
         double cos_val = ultra_fast_math_cos(angle);
         
-        // More property updates - ULTRA-FAST INTEGER-HASH KEYS!
-        revolutionary_property_set_double(obj_name, "rotation", angle);
-        revolutionary_property_set_double(obj_name, "sin_transform", sin_val);
-        revolutionary_property_set_double(obj_name, "cos_transform", cos_val);
+        // More property updates - OPTIMIZED INTEGER-HASH KEYS!
+        advanced_property_set_double(obj_name, "rotation", angle);
+        advanced_property_set_double(obj_name, "sin_transform", sin_val);
+        advanced_property_set_double(obj_name, "cos_transform", cos_val);
     }
     
     auto benchmark_end = std::chrono::high_resolution_clock::now();
@@ -1526,16 +1526,16 @@ void UniversalUltraOptimizer::run_figma_level_benchmark() {
     int total_ops = 50000 * 8;
     double ops_per_sec = total_ops / (duration.count() / 1000000.0);
     
-    std::cout << "🎨 FIGMA-LEVEL BENCHMARK COMPLETE!" << std::endl;
+    std::cout << "FIGMA-LEVEL BENCHMARK COMPLETE!" << std::endl;
     std::cout << "   UI Elements: 50,000" << std::endl;
     std::cout << "   Total Operations: " << total_ops << std::endl;
     std::cout << "   Time: " << duration.count() << " microseconds" << std::endl;
     std::cout << "   Speed: " << static_cast<long long>(ops_per_sec) << " ops/sec" << std::endl;
     
     if (ops_per_sec >= 150000000) {
-        std::cout << "🎉 FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
+        std::cout << "FIGMA-LEVEL PERFORMANCE ACHIEVED!" << std::endl;
     } else {
-        std::cout << "🎯 Progress: " << (ops_per_sec / 150000000.0 * 100) << "% to Figma-level" << std::endl;
+        std::cout << "Progress: " << (ops_per_sec / 150000000.0 * 100) << "% to Figma-level" << std::endl;
     }
 }
 

@@ -15,7 +15,7 @@
 namespace Quanta {
 
 //=============================================================================
-// MemoryRegion Implementation - PHASE 2: Generational Memory Management
+// MemoryRegion Implementation - Generational Memory Management
 //=============================================================================
 
 MemoryRegion::MemoryRegion(Generation gen, size_t size) 
@@ -30,7 +30,7 @@ MemoryRegion::MemoryRegion(Generation gen, size_t size)
     memory_end_ = static_cast<char*>(memory_start_) + size;
     allocation_pointer_ = memory_start_;
     
-    std::cout << "🧠 MEMORY REGION CREATED: " 
+    std::cout << "� MEMORY REGION CREATED: " 
              << (gen == Generation::YOUNG ? "YOUNG" : 
                  gen == Generation::OLD ? "OLD" : "PERMANENT")
              << " (" << (size / 1024 / 1024) << " MB)" << std::endl;
@@ -114,14 +114,14 @@ size_t MemoryRegion::sweep_objects() {
 
 void MemoryRegion::compact_memory() {
     // Simple compaction - in a full implementation this would be more sophisticated
-    std::cout << "🗜️  COMPACTING " 
+    std::cout << "�️  COMPACTING " 
              << (generation_ == Generation::YOUNG ? "YOUNG" : 
                  generation_ == Generation::OLD ? "OLD" : "PERMANENT")
              << " GENERATION" << std::endl;
 }
 
 void MemoryRegion::print_statistics() const {
-    std::cout << "📊 Memory Region Statistics (" 
+    std::cout << "� Memory Region Statistics (" 
              << (generation_ == Generation::YOUNG ? "YOUNG" : 
                  generation_ == Generation::OLD ? "OLD" : "PERMANENT") << "):" << std::endl;
     std::cout << "  Total Size: " << (total_size_ / 1024 / 1024) << " MB" << std::endl;
@@ -202,7 +202,7 @@ std::vector<GCObjectHeader*> RememberedSet::get_old_roots() const {
 }
 
 void RememberedSet::print_statistics() const {
-    std::cout << "📋 Remembered Set Statistics:" << std::endl;
+    std::cout << "� Remembered Set Statistics:" << std::endl;
     std::cout << "  Old -> Young References: " << old_to_young_refs_.size() << std::endl;
     std::cout << "  Permanent -> Young References: " << permanent_to_young_refs_.size() << std::endl;
     std::cout << "  Permanent -> Old References: " << permanent_to_old_refs_.size() << std::endl;
@@ -228,7 +228,7 @@ GenerationalGC::GenerationalGC(const GCConfig& config)
     
     last_gc_time_ = std::chrono::steady_clock::now();
     
-    std::cout << "🚀 GENERATIONAL GC INITIALIZED" << std::endl;
+    std::cout << "� GENERATIONAL GC INITIALIZED" << std::endl;
     std::cout << "  Young Generation: " << (config_.young_generation_size / 1024 / 1024) << " MB" << std::endl;
     std::cout << "  Old Generation: " << (config_.old_generation_size / 1024 / 1024) << " MB" << std::endl;
     std::cout << "  Permanent Generation: " << (config_.permanent_generation_size / 1024 / 1024) << " MB" << std::endl;
@@ -320,7 +320,7 @@ void GenerationalGC::collect_minor() {
     
     auto start_time = std::chrono::steady_clock::now();
     
-    std::cout << "🧹 MINOR GC STARTED (Young Generation)" << std::endl;
+    std::cout << "� MINOR GC STARTED (Young Generation)" << std::endl;
     
     // Mark and sweep young generation only
     mark_phase(Generation::YOUNG);
@@ -335,7 +335,7 @@ void GenerationalGC::collect_minor() {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     stats_.total_collection_time_ms += duration.count();
     
-    std::cout << "✅ MINOR GC COMPLETED: " << collected << " objects collected in " 
+    std::cout << " MINOR GC COMPLETED: " << collected << " objects collected in " 
              << duration.count() << "ms" << std::endl;
     
     gc_in_progress_ = false;
@@ -348,7 +348,7 @@ void GenerationalGC::collect_major() {
     
     auto start_time = std::chrono::steady_clock::now();
     
-    std::cout << "🧹 MAJOR GC STARTED (All Generations)" << std::endl;
+    std::cout << "� MAJOR GC STARTED (All Generations)" << std::endl;
     
     // Mark and sweep all generations
     mark_phase(Generation::PERMANENT);
@@ -363,7 +363,7 @@ void GenerationalGC::collect_major() {
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     stats_.total_collection_time_ms += duration.count();
     
-    std::cout << "✅ MAJOR GC COMPLETED: " << collected << " objects collected in " 
+    std::cout << " MAJOR GC COMPLETED: " << collected << " objects collected in " 
              << duration.count() << "ms" << std::endl;
     
     gc_in_progress_ = false;
@@ -416,7 +416,7 @@ void GenerationalGC::promote_object(GCObjectHeader* header) {
 }
 
 void GenerationalGC::print_statistics() const {
-    std::cout << "📊 GENERATIONAL GC STATISTICS:" << std::endl;
+    std::cout << "� GENERATIONAL GC STATISTICS:" << std::endl;
     std::cout << "  Minor GCs: " << stats_.minor_gc_count << std::endl;
     std::cout << "  Major GCs: " << stats_.major_gc_count << std::endl;
     std::cout << "  Total Allocation: " << (stats_.total_allocation_bytes / 1024 / 1024) << " MB" << std::endl;
@@ -436,7 +436,7 @@ void GenerationalGC::print_statistics() const {
 }
 
 void GenerationalGC::print_memory_usage() const {
-    std::cout << "💾 MEMORY USAGE:" << std::endl;
+    std::cout << "� MEMORY USAGE:" << std::endl;
     young_generation_->print_statistics();
     old_generation_->print_statistics();
     permanent_generation_->print_statistics();
@@ -444,7 +444,7 @@ void GenerationalGC::print_memory_usage() const {
 }
 
 void GenerationalGC::analyze_allocation_patterns() const {
-    std::cout << "🔍 ALLOCATION PATTERN ANALYSIS:" << std::endl;
+    std::cout << "� ALLOCATION PATTERN ANALYSIS:" << std::endl;
     
     auto now = std::chrono::steady_clock::now();
     auto time_since_last_gc = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_gc_time_);
@@ -467,7 +467,7 @@ void GenerationalGC::tune_gc_parameters() {
         // Minor GCs are taking too long - increase young generation size
         if (config_.young_generation_size < 32 * 1024 * 1024) { // Max 32MB
             config_.young_generation_size *= 1.5;
-            std::cout << "🔧 GC TUNING: Increased young generation size to " 
+            std::cout << "� GC TUNING: Increased young generation size to " 
                      << (config_.young_generation_size / 1024 / 1024) << " MB" << std::endl;
         }
     }
@@ -476,7 +476,7 @@ void GenerationalGC::tune_gc_parameters() {
         // Old generation is nearly full - increase size
         if (config_.old_generation_size < 128 * 1024 * 1024) { // Max 128MB
             config_.old_generation_size *= 1.2;
-            std::cout << "🔧 GC TUNING: Increased old generation size to " 
+            std::cout << "� GC TUNING: Increased old generation size to " 
                      << (config_.old_generation_size / 1024 / 1024) << " MB" << std::endl;
         }
     }
@@ -553,7 +553,7 @@ GCObjectHeader* GenerationalGC::get_object_header(Object* obj) const {
 //=============================================================================
 
 GCObjectAllocator::GCObjectAllocator() : gc_(&GenerationalGC::get_instance()) {
-    std::cout << "🏭 GC OBJECT ALLOCATOR INITIALIZED" << std::endl;
+    std::cout << "� GC OBJECT ALLOCATOR INITIALIZED" << std::endl;
 }
 
 GCObjectAllocator::~GCObjectAllocator() {
@@ -571,7 +571,7 @@ void GCObjectAllocator::deallocate_object(Object* obj) {
 }
 
 void GCObjectAllocator::print_allocation_statistics() const {
-    std::cout << "🏭 ALLOCATION STATISTICS:" << std::endl;
+    std::cout << "� ALLOCATION STATISTICS:" << std::endl;
     std::cout << "  Young Allocations: " << alloc_stats_.young_allocations << std::endl;
     std::cout << "  Old Allocations: " << alloc_stats_.old_allocations << std::endl;
     std::cout << "  Permanent Allocations: " << alloc_stats_.permanent_allocations << std::endl;
@@ -589,14 +589,14 @@ GCObjectAllocator& GCObjectAllocator::get_instance() {
 
 void GCIntegration::initialize_gc() {
     GenerationalGC& gc = GenerationalGC::get_instance();
-    std::cout << "🔗 GC INTEGRATION INITIALIZED" << std::endl;
+    std::cout << "� GC INTEGRATION INITIALIZED" << std::endl;
 }
 
 void GCIntegration::shutdown_gc() {
     GenerationalGC& gc = GenerationalGC::get_instance();
     gc.print_statistics();
     gc.print_memory_usage();
-    std::cout << "🔗 GC INTEGRATION SHUTDOWN" << std::endl;
+    std::cout << "� GC INTEGRATION SHUTDOWN" << std::endl;
 }
 
 void GCIntegration::on_object_allocation(Object* obj) {

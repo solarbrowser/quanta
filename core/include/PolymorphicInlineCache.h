@@ -19,7 +19,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Polymorphic Inline Cache System - PHASE 2: V8-Level Property Access
+// Polymorphic Inline Cache System - High-performance Property Access
 //=============================================================================
 
 // Forward declarations

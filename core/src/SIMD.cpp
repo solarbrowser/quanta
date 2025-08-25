@@ -19,7 +19,7 @@
 namespace Quanta {
 
 //=============================================================================
-// SIMD Capabilities Detection - PHASE 3: Hardware feature detection
+// SIMD Capabilities Detection - Hardware feature detection
 //=============================================================================
 
 SIMDCapabilities::SIMDCapabilities() {
@@ -61,22 +61,22 @@ SIMDCapabilities::SIMDCapabilities() {
         max_vector_elements = 2;  // 2x float32 (fallback)
     }
     
-    std::cout << "🚀 SIMD CAPABILITIES DETECTED: " << get_best_instruction_set() 
+    std::cout << "� SIMD CAPABILITIES DETECTED: " << get_best_instruction_set() 
              << " (" << simd_width_bits << "-bit, " << max_vector_elements << " elements)" << std::endl;
 }
 
 void SIMDCapabilities::print_capabilities() const {
-    std::cout << "🔍 SIMD FEATURE DETECTION:" << std::endl;
-    std::cout << "  SSE: " << (has_sse ? "✅" : "❌") << std::endl;
-    std::cout << "  SSE2: " << (has_sse2 ? "✅" : "❌") << std::endl;
-    std::cout << "  SSE3: " << (has_sse3 ? "✅" : "❌") << std::endl;
-    std::cout << "  SSSE3: " << (has_ssse3 ? "✅" : "❌") << std::endl;
-    std::cout << "  SSE4.1: " << (has_sse4_1 ? "✅" : "❌") << std::endl;
-    std::cout << "  SSE4.2: " << (has_sse4_2 ? "✅" : "❌") << std::endl;
-    std::cout << "  AVX: " << (has_avx ? "✅" : "❌") << std::endl;
-    std::cout << "  AVX2: " << (has_avx2 ? "✅" : "❌") << std::endl;
-    std::cout << "  AVX-512F: " << (has_avx512f ? "✅" : "❌") << std::endl;
-    std::cout << "  FMA: " << (has_fma ? "✅" : "❌") << std::endl;
+    std::cout << "SIMD FEATURE DETECTION:" << std::endl;
+    std::cout << "  SSE: " << (has_sse ? "YES" : "NO") << std::endl;
+    std::cout << "  SSE2: " << (has_sse2 ? "YES" : "NO") << std::endl;
+    std::cout << "  SSE3: " << (has_sse3 ? "YES" : "NO") << std::endl;
+    std::cout << "  SSSE3: " << (has_ssse3 ? "YES" : "NO") << std::endl;
+    std::cout << "  SSE4.1: " << (has_sse4_1 ? "YES" : "NO") << std::endl;
+    std::cout << "  SSE4.2: " << (has_sse4_2 ? "YES" : "NO") << std::endl;
+    std::cout << "  AVX: " << (has_avx ? "YES" : "NO") << std::endl;
+    std::cout << "  AVX2: " << (has_avx2 ? "YES" : "NO") << std::endl;
+    std::cout << "  AVX-512F: " << (has_avx512f ? "YES" : "NO") << std::endl;
+    std::cout << "  FMA: " << (has_fma ? "YES" : "NO") << std::endl;
     std::cout << "  Cache Line Size: " << cache_line_size << " bytes" << std::endl;
     std::cout << "  Max SIMD Width: " << simd_width_bits << " bits" << std::endl;
 }
@@ -429,7 +429,7 @@ SIMDMathEngine& SIMDMathEngine::get_instance() {
 thread_local std::chrono::high_resolution_clock::time_point SIMDPerformanceProfiler::start_time_;
 
 SIMDPerformanceProfiler::SIMDPerformanceProfiler() {
-    std::cout << "📊 SIMD PERFORMANCE PROFILER INITIALIZED" << std::endl;
+    std::cout << "� SIMD PERFORMANCE PROFILER INITIALIZED" << std::endl;
 }
 
 SIMDPerformanceProfiler::~SIMDPerformanceProfiler() {
@@ -459,7 +459,7 @@ SIMDPerformanceProfiler::ScopedProfiler::~ScopedProfiler() {
 void SIMDPerformanceProfiler::print_performance_report() const {
     std::lock_guard<std::mutex> lock(profile_mutex_);
     
-    std::cout << "\n📊 SIMD PERFORMANCE PROFILER REPORT:" << std::endl;
+    std::cout << "\n� SIMD PERFORMANCE PROFILER REPORT:" << std::endl;
     std::cout << "=====================================\n" << std::endl;
     
     for (const auto& [name, data] : profile_data_) {
@@ -468,7 +468,7 @@ void SIMDPerformanceProfiler::print_performance_report() const {
             double throughput = data.elements_processed > 0 ? 
                 (static_cast<double>(data.elements_processed) * 1e9 / data.total_time_ns) : 0.0;
             
-            std::cout << "🔧 " << name << ":" << std::endl;
+            std::cout << name << ":" << std::endl;
             std::cout << "  Calls: " << data.call_count << std::endl;
             std::cout << "  Total Time: " << (data.total_time_ns / 1000.0) << " μs" << std::endl;
             std::cout << "  Average Time: " << (avg_ns / 1000.0) << " μs" << std::endl;
@@ -495,13 +495,13 @@ namespace SIMDIntegration {
 void initialize_simd_engine() {
     SIMDMathEngine::get_instance();
     SIMDPerformanceProfiler::get_instance();
-    std::cout << "🚀 SIMD ENGINE INITIALIZED FOR MICROSECOND PERFORMANCE!" << std::endl;
+    std::cout << "� SIMD ENGINE INITIALIZED FOR MICROSECOND PERFORMANCE!" << std::endl;
 }
 
 void shutdown_simd_engine() {
     SIMDMathEngine::get_instance().print_performance_report();
     SIMDPerformanceProfiler::get_instance().print_performance_report();
-    std::cout << "🔗 SIMD ENGINE SHUTDOWN" << std::endl;
+    std::cout << "� SIMD ENGINE SHUTDOWN" << std::endl;
 }
 
 void print_simd_performance_report() {
@@ -512,7 +512,7 @@ void print_simd_performance_report() {
 void detect_and_optimize_for_cpu() {
     SIMDCapabilities caps;
     caps.print_capabilities();
-    std::cout << "🔧 CPU-SPECIFIC OPTIMIZATIONS ENABLED" << std::endl;
+    std::cout << "CPU-SPECIFIC OPTIMIZATIONS ENABLED" << std::endl;
 }
 
 } // namespace SIMDIntegration

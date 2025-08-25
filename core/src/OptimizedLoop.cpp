@@ -1,9 +1,9 @@
 /*
  * Ultra-Fast Loop Optimization Implementation
- * Provides V8-level loop performance for simple counting loops
+ * Provides high-performance loop execution for simple counting loops
  */
 
-#include "../include/UltraFastLoop.h"
+#include "../include/OptimizedLoop.h"
 #include "../include/Context.h"
 #include <algorithm>
 #include <immintrin.h> // For SIMD operations
@@ -11,10 +11,10 @@
 namespace Quanta {
 
 // Static member initialization
-uint64_t UltraFastLoop::optimized_loops_ = 0;
-uint64_t UltraFastLoop::iterations_saved_ = 0;
+uint64_t OptimizedLoop::optimized_loops_ = 0;
+uint64_t OptimizedLoop::iterations_saved_ = 0;
 
-Value UltraFastLoop::optimize_simple_loop(Context& ctx, const std::string& loop_var,
+Value OptimizedLoop::optimize_simple_loop(Context& ctx, const std::string& loop_var,
                                          double start_val, double end_val, double step_val,
                                          const std::string& body_operation) {
     
@@ -41,7 +41,7 @@ Value UltraFastLoop::optimize_simple_loop(Context& ctx, const std::string& loop_
     }
 }
 
-Value UltraFastLoop::fast_arithmetic_loop(double start, double end, double step, char operation) {
+Value OptimizedLoop::fast_arithmetic_loop(double start, double end, double step, char operation) {
     if (step == 0) return Value(0.0);
     
     double result = 0.0;
@@ -74,7 +74,7 @@ Value UltraFastLoop::fast_arithmetic_loop(double start, double end, double step,
     return Value(result);
 }
 
-bool UltraFastLoop::can_optimize_loop(const std::string& body_operation) {
+bool OptimizedLoop::can_optimize_loop(const std::string& body_operation) {
     // Only optimize simple arithmetic operations
     return (body_operation.find("+=") != std::string::npos ||
             body_operation.find("*=") != std::string::npos ||
@@ -82,7 +82,7 @@ bool UltraFastLoop::can_optimize_loop(const std::string& body_operation) {
             body_operation.find("sum") != std::string::npos);
 }
 
-Value UltraFastLoop::fast_sum_loop(double start, double end, double step) {
+Value OptimizedLoop::fast_sum_loop(double start, double end, double step) {
     if (step <= 0) return Value(0.0);
     
     // Use arithmetic progression formula for ultra-fast summation
@@ -108,7 +108,7 @@ Value UltraFastLoop::fast_sum_loop(double start, double end, double step) {
     return Value(sum);
 }
 
-Value UltraFastLoop::fast_product_loop(double start, double end, double step) {
+Value OptimizedLoop::fast_product_loop(double start, double end, double step) {
     if (step <= 0) return Value(1.0);
     
     double product = 1.0;
@@ -123,7 +123,7 @@ Value UltraFastLoop::fast_product_loop(double start, double end, double step) {
     return Value(product);
 }
 
-Value UltraFastLoop::fast_counting_loop(double start, double end, double step) {
+Value OptimizedLoop::fast_counting_loop(double start, double end, double step) {
     if (step <= 0) return Value(0.0);
     
     double count = std::floor((end - start) / step);
@@ -131,7 +131,7 @@ Value UltraFastLoop::fast_counting_loop(double start, double end, double step) {
 }
 
 // SIMD-optimized summation for large integer loops
-Value UltraFastLoop::fast_simd_sum(int64_t start, int64_t step, int64_t count) {
+Value OptimizedLoop::fast_simd_sum(int64_t start, int64_t step, int64_t count) {
     // This would use actual SIMD instructions in a full implementation
     // For now, use optimized scalar code
     

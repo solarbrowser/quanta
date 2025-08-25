@@ -41,7 +41,7 @@ void RealTimePerformanceMonitor::start_monitoring() {
     
     should_stop_ = false;
     monitoring_thread_ = std::thread(&RealTimePerformanceMonitor::monitoring_loop, this);
-    std::cout << "ðŸ” Real-time performance monitoring started" << std::endl;
+    std::cout << "Real-time performance monitoring started" << std::endl;
 }
 
 void RealTimePerformanceMonitor::stop_monitoring() {
@@ -49,7 +49,7 @@ void RealTimePerformanceMonitor::stop_monitoring() {
     if (monitoring_thread_.joinable()) {
         monitoring_thread_.join();
     }
-    std::cout << "ðŸ” Real-time performance monitoring stopped" << std::endl;
+    std::cout << "Real-time performance monitoring stopped" << std::endl;
 }
 
 void RealTimePerformanceMonitor::record_jit_compilation(uint64_t compile_time_ns) {
@@ -347,13 +347,13 @@ AdaptiveOptimizer::AdaptiveOptimizer()
       current_level_(OptimizationLevel::BASIC) {
     
     current_thresholds_.set_balanced_thresholds();
-    std::cout << "ðŸ§  ADAPTIVE OPTIMIZER INITIALIZED" << std::endl;
+    std::cout << "  ADAPTIVE OPTIMIZER INITIALIZED" << std::endl;
 }
 
 AdaptiveOptimizer::~AdaptiveOptimizer() {
     stop_adaptive_optimization();
     print_optimization_summary();
-    std::cout << "ðŸ§  ADAPTIVE OPTIMIZER SHUTDOWN" << std::endl;
+    std::cout << "  ADAPTIVE OPTIMIZER SHUTDOWN" << std::endl;
 }
 
 void AdaptiveOptimizer::start_adaptive_optimization() {
@@ -361,7 +361,7 @@ void AdaptiveOptimizer::start_adaptive_optimization() {
     
     should_stop_adaptation_ = false;
     adaptation_thread_ = std::thread(&AdaptiveOptimizer::adaptation_loop, this);
-    std::cout << "ðŸ”„ Adaptive optimization started" << std::endl;
+    std::cout << "„ Adaptive optimization started" << std::endl;
 }
 
 void AdaptiveOptimizer::stop_adaptive_optimization() {
@@ -369,7 +369,7 @@ void AdaptiveOptimizer::stop_adaptive_optimization() {
     if (adaptation_thread_.joinable()) {
         adaptation_thread_.join();
     }
-    std::cout << "ðŸ”„ Adaptive optimization stopped" << std::endl;
+    std::cout << "„ Adaptive optimization stopped" << std::endl;
 }
 
 void AdaptiveOptimizer::set_optimization_strategy(OptimizationStrategy strategy) {
@@ -392,7 +392,7 @@ void AdaptiveOptimizer::set_optimization_strategy(OptimizationStrategy strategy)
             break;
     }
     
-    std::cout << "ðŸ”„ Optimization strategy changed: " << static_cast<int>(old_strategy) 
+    std::cout << "„ Optimization strategy changed: " << static_cast<int>(old_strategy) 
              << " -> " << static_cast<int>(strategy) << std::endl;
 }
 
@@ -402,7 +402,7 @@ void AdaptiveOptimizer::set_optimization_level(OptimizationLevel level) {
     OptimizationLevel old_level = current_level_;
     current_level_ = level;
     
-    std::cout << "ðŸ”„ Optimization level changed: " << static_cast<int>(old_level) 
+    std::cout << "„ Optimization level changed: " << static_cast<int>(old_level) 
              << " -> " << static_cast<int>(level) << std::endl;
 }
 
@@ -479,7 +479,7 @@ bool AdaptiveOptimizer::should_deoptimize(const std::string& function_name, uint
 }
 
 void AdaptiveOptimizer::print_optimization_summary() const {
-    std::cout << "ðŸ§  ADAPTIVE OPTIMIZATION SUMMARY" << std::endl;
+    std::cout << "  ADAPTIVE OPTIMIZATION SUMMARY" << std::endl;
     std::cout << "=================================" << std::endl;
     std::cout << "Current Strategy: " << static_cast<int>(current_strategy_) << std::endl;
     std::cout << "Current Level: " << static_cast<int>(current_level_) << std::endl;
@@ -554,7 +554,7 @@ void AdaptiveOptimizer::apply_optimization_strategy(OptimizationStrategy strateg
     
     optimization_history_.push_back(event);
     
-    std::cout << "ðŸ”„ Applied optimization: " << reason << std::endl;
+    std::cout << "„ Applied optimization: " << reason << std::endl;
     std::cout << "  Strategy: " << static_cast<int>(strategy) << std::endl;
     std::cout << "  Level: " << static_cast<int>(level) << std::endl;
 }
@@ -569,14 +569,14 @@ AdaptiveOptimizer& AdaptiveOptimizer::get_instance() {
 //=============================================================================
 
 ThermalPowerManager::ThermalPowerManager() {
-    std::cout << "ðŸŒ¡ï¸  THERMAL POWER MANAGER INITIALIZED" << std::endl;
+    std::cout << "¡ï¸  THERMAL POWER MANAGER INITIALIZED" << std::endl;
 }
 
 ThermalPowerManager::~ThermalPowerManager() {
     stop_thermal_monitoring();
     print_thermal_status();
     print_power_status();
-    std::cout << "ðŸŒ¡ï¸  THERMAL POWER MANAGER SHUTDOWN" << std::endl;
+    std::cout << "¡ï¸  THERMAL POWER MANAGER SHUTDOWN" << std::endl;
 }
 
 void ThermalPowerManager::start_thermal_monitoring() {
@@ -584,7 +584,7 @@ void ThermalPowerManager::start_thermal_monitoring() {
     
     should_stop_thermal_ = false;
     thermal_thread_ = std::thread(&ThermalPowerManager::thermal_monitoring_loop, this);
-    std::cout << "ðŸŒ¡ï¸  Thermal monitoring started" << std::endl;
+    std::cout << "¡ï¸  Thermal monitoring started" << std::endl;
 }
 
 void ThermalPowerManager::stop_thermal_monitoring() {
@@ -592,7 +592,7 @@ void ThermalPowerManager::stop_thermal_monitoring() {
     if (thermal_thread_.joinable()) {
         thermal_thread_.join();
     }
-    std::cout << "ðŸŒ¡ï¸  Thermal monitoring stopped" << std::endl;
+    std::cout << "¡ï¸  Thermal monitoring stopped" << std::endl;
 }
 
 void ThermalPowerManager::apply_thermal_throttling(double scaling_factor) {
@@ -600,14 +600,14 @@ void ThermalPowerManager::apply_thermal_throttling(double scaling_factor) {
     frequency_scaling_ = static_cast<uint32_t>(performance_scaling_ * 100);
     thermal_throttling_ = (scaling_factor < 1.0);
     
-    std::cout << "ðŸŒ¡ï¸  Thermal throttling applied: " << (scaling_factor * 100) << "%" << std::endl;
+    std::cout << "¡ï¸  Thermal throttling applied: " << (scaling_factor * 100) << "%" << std::endl;
 }
 
 void ThermalPowerManager::apply_power_throttling(double scaling_factor) {
     performance_scaling_ = std::max(0.1, std::min(1.0, scaling_factor));
     frequency_scaling_ = static_cast<uint32_t>(performance_scaling_ * 100);
     
-    std::cout << "ðŸ”‹ Power throttling applied: " << (scaling_factor * 100) << "%" << std::endl;
+    std::cout << "‹ Power throttling applied: " << (scaling_factor * 100) << "%" << std::endl;
 }
 
 void ThermalPowerManager::remove_throttling() {
@@ -619,7 +619,7 @@ void ThermalPowerManager::remove_throttling() {
 }
 
 void ThermalPowerManager::print_thermal_status() const {
-    std::cout << "ðŸŒ¡ï¸  THERMAL STATUS" << std::endl;
+    std::cout << "¡ï¸  THERMAL STATUS" << std::endl;
     std::cout << "==================" << std::endl;
     std::cout << "CPU Temperature: " << cpu_temperature_ << "Â°C" << std::endl;
     std::cout << "Thermal Threshold: " << thermal_threshold_ << "Â°C" << std::endl;
@@ -628,7 +628,7 @@ void ThermalPowerManager::print_thermal_status() const {
 }
 
 void ThermalPowerManager::print_power_status() const {
-    std::cout << "ðŸ”‹ POWER STATUS" << std::endl;
+    std::cout << "‹ POWER STATUS" << std::endl;
     std::cout << "===============" << std::endl;
     std::cout << "Battery Powered: " << (battery_powered_ ? "YES" : "NO") << std::endl;
     if (battery_powered_) {
@@ -699,26 +699,26 @@ ThermalPowerManager& ThermalPowerManager::get_instance() {
 namespace AdaptiveOptimizationIntegration {
 
 void initialize_adaptive_systems() {
-    std::cout << "ðŸ§  INITIALIZING ADAPTIVE OPTIMIZATION SYSTEMS" << std::endl;
+    std::cout << "  INITIALIZING ADAPTIVE OPTIMIZATION SYSTEMS" << std::endl;
     
     // Initialize all adaptive components
     RealTimePerformanceMonitor::get_instance();
     AdaptiveOptimizer::get_instance();
     ThermalPowerManager::get_instance();
     
-    std::cout << "âœ… ALL ADAPTIVE SYSTEMS INITIALIZED" << std::endl;
+    std::cout << "ALL ADAPTIVE SYSTEMS INITIALIZED" << std::endl;
     std::cout << "   Real-time Performance Monitor: Ready" << std::endl;
-    std::cout << "  ðŸ§  Adaptive Optimizer: Ready" << std::endl;
-    std::cout << "  ðŸŒ¡ï¸  Thermal Power Manager: Ready" << std::endl;
+    std::cout << "    Adaptive Optimizer: Ready" << std::endl;
+    std::cout << "  ¡ï¸  Thermal Power Manager: Ready" << std::endl;
 }
 
 void shutdown_adaptive_systems() {
-    std::cout << "ðŸ§  SHUTTING DOWN ADAPTIVE SYSTEMS" << std::endl;
+    std::cout << "  SHUTTING DOWN ADAPTIVE SYSTEMS" << std::endl;
     
     // Print final reports
     print_comprehensive_performance_report();
     
-    std::cout << "âœ… ALL ADAPTIVE SYSTEMS SHUTDOWN" << std::endl;
+    std::cout << "ALL ADAPTIVE SYSTEMS SHUTDOWN" << std::endl;
 }
 
 void start_all_monitoring() {
@@ -726,7 +726,7 @@ void start_all_monitoring() {
     AdaptiveOptimizer::get_instance().start_adaptive_optimization();
     ThermalPowerManager::get_instance().start_thermal_monitoring();
     
-    std::cout << "ðŸ” ALL MONITORING SYSTEMS STARTED" << std::endl;
+    std::cout << "ALL MONITORING SYSTEMS STARTED" << std::endl;
 }
 
 void stop_all_monitoring() {
@@ -734,27 +734,27 @@ void stop_all_monitoring() {
     AdaptiveOptimizer::get_instance().stop_adaptive_optimization();
     ThermalPowerManager::get_instance().stop_thermal_monitoring();
     
-    std::cout << "ðŸ” ALL MONITORING SYSTEMS STOPPED" << std::endl;
+    std::cout << "ALL MONITORING SYSTEMS STOPPED" << std::endl;
 }
 
 void enable_adaptive_optimization() {
     AdaptiveOptimizer::get_instance().enable_adaptive_optimization();
-    std::cout << "ðŸ§  Adaptive optimization enabled" << std::endl;
+    std::cout << "  Adaptive optimization enabled" << std::endl;
 }
 
 void disable_adaptive_optimization() {
     AdaptiveOptimizer::get_instance().disable_adaptive_optimization();
-    std::cout << "ðŸ§  Adaptive optimization disabled" << std::endl;
+    std::cout << "  Adaptive optimization disabled" << std::endl;
 }
 
 void set_global_strategy(OptimizationStrategy strategy) {
     AdaptiveOptimizer::get_instance().set_optimization_strategy(strategy);
-    std::cout << "ðŸ”„ Global optimization strategy set: " << static_cast<int>(strategy) << std::endl;
+    std::cout << "„ Global optimization strategy set: " << static_cast<int>(strategy) << std::endl;
 }
 
 void set_global_level(OptimizationLevel level) {
     AdaptiveOptimizer::get_instance().set_optimization_level(level);
-    std::cout << "ðŸ”„ Global optimization level set: " << static_cast<int>(level) << std::endl;
+    std::cout << "„ Global optimization level set: " << static_cast<int>(level) << std::endl;
 }
 
 void apply_emergency_throttling() {
@@ -762,7 +762,7 @@ void apply_emergency_throttling() {
     set_global_strategy(OptimizationStrategy::EFFICIENCY_FIRST);
     set_global_level(OptimizationLevel::MINIMAL);
     
-    std::cout << "ðŸš¨ EMERGENCY THROTTLING APPLIED" << std::endl;
+    std::cout << "¨ EMERGENCY THROTTLING APPLIED" << std::endl;
 }
 
 void remove_emergency_throttling() {
@@ -770,12 +770,12 @@ void remove_emergency_throttling() {
     set_global_strategy(OptimizationStrategy::BALANCED);
     set_global_level(OptimizationLevel::BASIC);
     
-    std::cout << "âœ… Emergency throttling removed" << std::endl;
+    std::cout << "Emergency throttling removed" << std::endl;
 }
 
 void print_comprehensive_performance_report() {
     std::cout << "\n" << std::string(80, '=') << std::endl;
-    std::cout << "ðŸ§  COMPREHENSIVE ADAPTIVE OPTIMIZATION REPORT" << std::endl;
+    std::cout << "  COMPREHENSIVE ADAPTIVE OPTIMIZATION REPORT" << std::endl;
     std::cout << std::string(80, '=') << std::endl;
     
     RealTimePerformanceMonitor::get_instance().print_real_time_stats();
@@ -794,39 +794,39 @@ void print_comprehensive_performance_report() {
 void configure_for_development() {
     set_global_strategy(OptimizationStrategy::BALANCED);
     set_global_level(OptimizationLevel::BASIC);
-    std::cout << "ðŸ”§ Configured for development environment" << std::endl;
+    std::cout << "Configured for development environment" << std::endl;
 }
 
 void configure_for_production() {
     set_global_strategy(OptimizationStrategy::PERFORMANCE_FIRST);
     set_global_level(OptimizationLevel::AGGRESSIVE);
-    std::cout << "ðŸš€ Configured for production environment" << std::endl;
+    std::cout << "€ Configured for production environment" << std::endl;
 }
 
 void configure_for_mobile() {
     set_global_strategy(OptimizationStrategy::BATTERY_SAVER);
     set_global_level(OptimizationLevel::BASIC);
-    std::cout << "ðŸ“± Configured for mobile environment" << std::endl;
+    std::cout << "± Configured for mobile environment" << std::endl;
 }
 
 void configure_for_server() {
     set_global_strategy(OptimizationStrategy::COMPUTE_INTENSIVE);
     set_global_level(OptimizationLevel::MAXIMUM);
-    std::cout << "ðŸ–¥ï¸  Configured for server environment" << std::endl;
+    std::cout << "¥ï¸  Configured for server environment" << std::endl;
 }
 
 void handle_thermal_emergency() {
-    std::cout << "ðŸš¨ THERMAL EMERGENCY DETECTED!" << std::endl;
+    std::cout << "¨ THERMAL EMERGENCY DETECTED!" << std::endl;
     apply_emergency_throttling();
 }
 
 void handle_memory_pressure() {
-    std::cout << "ðŸ’¾ MEMORY PRESSURE DETECTED!" << std::endl;
+    std::cout << "¾ MEMORY PRESSURE DETECTED!" << std::endl;
     set_global_strategy(OptimizationStrategy::MEMORY_CONSTRAINED);
 }
 
 void handle_battery_critical() {
-    std::cout << "ðŸ”‹ CRITICAL BATTERY LEVEL!" << std::endl;
+    std::cout << "‹ CRITICAL BATTERY LEVEL!" << std::endl;
     set_global_strategy(OptimizationStrategy::BATTERY_SAVER);
     set_global_level(OptimizationLevel::MINIMAL);
 }

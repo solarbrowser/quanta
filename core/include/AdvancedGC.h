@@ -17,7 +17,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Advanced Garbage Collector - V8 Level Performance
+// Advanced Garbage Collector - High-performance Implementation
 //=============================================================================
 
 enum class GCPhase : uint8_t {
@@ -62,7 +62,7 @@ public:
     NurseryAllocator();
     ~NurseryAllocator();
     
-    // ðŸš€ ULTRA-FAST BUMP ALLOCATION
+    // € ULTRA-FAST BUMP ALLOCATION
     inline void* allocate(size_t size) {
         if (size > ALLOCATION_LIMIT) {
             return nullptr; // Too large for nursery
@@ -127,12 +127,12 @@ public:
     void stop();
     bool is_running() const { return running_.load(); }
     
-    // ðŸš€ COLLECTION OPERATIONS
+    // € COLLECTION OPERATIONS
     void trigger_minor_collection();
     void trigger_major_collection();
     void request_incremental_step();
     
-    // ðŸ”¥ CONCURRENT OPERATIONS
+    // ¥ CONCURRENT OPERATIONS
     void concurrent_mark_phase();
     void incremental_sweep_phase();
     void concurrent_compact_phase();
@@ -187,7 +187,7 @@ public:
     MemoryPoolManager();
     ~MemoryPoolManager();
     
-    // ðŸš€ POOLED ALLOCATION
+    // € POOLED ALLOCATION
     void* allocate(size_t size, bool prefer_nursery = true);
     void deallocate(void* ptr, size_t size);
     
@@ -219,7 +219,7 @@ public:
     WriteBarrierOptimizer();
     ~WriteBarrierOptimizer();
     
-    // ðŸ”¥ OPTIMIZED WRITE BARRIER
+    // ¥ OPTIMIZED WRITE BARRIER
     inline void record_write(void* object, void* field, void* new_value) {
         // Fast path for nursery -> nursery writes
         if (is_young_to_young_write(object, new_value)) {
@@ -275,7 +275,7 @@ public:
     GCTuningEngine();
     ~GCTuningEngine();
     
-    // ðŸŽ¯ AUTO-TUNING
+    // ¯ AUTO-TUNING
     void analyze_performance(const GCStats& stats);
     TuningParams get_optimal_parameters() const;
     void adjust_parameters_for_workload(const std::string& workload_type);

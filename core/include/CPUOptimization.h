@@ -16,7 +16,7 @@
 namespace Quanta {
 
 //=============================================================================
-// PHASE 3: CPU-Specific Optimizations (Intel/AMD Instruction Sets)
+// CPU-Specific Optimizations (Intel/AMD Instruction Sets)
 //
 // Advanced CPU optimization system for maximum performance:
 // - CPU feature detection (SSE, AVX, AVX-512, etc.)

@@ -20,10 +20,10 @@ class Object;
 class Value;
 
 //=============================================================================
-// PHASE 2: V8-style Hidden Classes for Ultra-Fast Property Access
+// Standard Hidden Classes for Ultra-Fast Property Access
 // 
-// Hidden Classes (also called Maps in V8) are a fundamental optimization that
-// enables V8-level performance for JavaScript object property access.
+// Hidden Classes are a fundamental optimization that
+// enables high-performance JavaScript object property access.
 // This implementation provides:
 // - Fast property access through inline caching
 // - Efficient object layout optimization  
@@ -71,7 +71,7 @@ struct HiddenClassPropertyDescriptor {
 };
 
 //=============================================================================
-// HiddenClass - V8-style object shape representation
+// HiddenClass - Standard object shape representation
 //=============================================================================
 
 class HiddenClass : public std::enable_shared_from_this<HiddenClass> {

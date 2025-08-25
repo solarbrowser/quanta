@@ -24,7 +24,7 @@ class Value;
 class Function;
 
 //=============================================================================
-// PHASE 3: Real-Time Performance Monitoring and Adaptive Optimization
+// Real-Time Performance Monitoring and Adaptive Optimization
 //
 // Intelligent performance monitoring system with adaptive optimization:
 // - Real-time performance profiling and analysis

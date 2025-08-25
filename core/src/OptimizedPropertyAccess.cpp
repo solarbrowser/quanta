@@ -1,11 +1,11 @@
-#include "../include/UltraFastPropertyAccess.h"
+#include "../include/OptimizedPropertyAccess.h"
 #include <chrono>
 #include <algorithm>
 #include <functional>
 
 namespace Quanta {
 
-UltraFastPropertyAccessOptimizer::UltraFastPropertyAccessOptimizer(OptimizedAST* ast, SpecializedNodeProcessor* processor)
+OptimizedPropertyAccessOptimizer::OptimizedPropertyAccessOptimizer(OptimizedAST* ast, SpecializedNodeProcessor* processor)
     : ast_context_(ast), specialized_processor_(processor), next_class_id_(1),
       total_property_accesses_(0), fast_path_hits_(0), cache_hits_(0), 
       cache_misses_(0), hidden_class_transitions_(0) {
@@ -17,11 +17,11 @@ UltraFastPropertyAccessOptimizer::UltraFastPropertyAccessOptimizer(OptimizedAST*
     hash_to_property_name_.reserve(10000);
 }
 
-UltraFastPropertyAccessOptimizer::~UltraFastPropertyAccessOptimizer() {
+OptimizedPropertyAccessOptimizer::~OptimizedPropertyAccessOptimizer() {
     clear_optimization_caches();
 }
 
-Value UltraFastPropertyAccessOptimizer::get_property_optimized(Object* obj, const std::string& property_name, 
+Value OptimizedPropertyAccessOptimizer::get_property_optimized(Object* obj, const std::string& property_name, 
                                                               uint32_t call_site_id) {
     auto start_time = std::chrono::high_resolution_clock::now();
     
@@ -63,7 +63,7 @@ Value UltraFastPropertyAccessOptimizer::get_property_optimized(Object* obj, cons
     return result;
 }
 
-void UltraFastPropertyAccessOptimizer::set_property_optimized(Object* obj, const std::string& property_name, 
+void OptimizedPropertyAccessOptimizer::set_property_optimized(Object* obj, const std::string& property_name, 
                                                              const Value& value, uint32_t call_site_id) {
     total_property_accesses_++;
     
@@ -92,7 +92,7 @@ void UltraFastPropertyAccessOptimizer::set_property_optimized(Object* obj, const
     }
 }
 
-Value UltraFastPropertyAccessOptimizer::access_property_chain(Object* obj, const std::vector<std::string>& properties, 
+Value OptimizedPropertyAccessOptimizer::access_property_chain(Object* obj, const std::vector<std::string>& properties, 
                                                              uint32_t call_site_id) {
     if (properties.empty()) {
         return Value();
@@ -120,7 +120,7 @@ Value UltraFastPropertyAccessOptimizer::access_property_chain(Object* obj, const
     return result;
 }
 
-uint32_t UltraFastPropertyAccessOptimizer::get_or_create_hidden_class(Object* obj) {
+uint32_t OptimizedPropertyAccessOptimizer::get_or_create_hidden_class(Object* obj) {
     auto it = object_to_class_.find(obj);
     if (it != object_to_class_.end()) {
         return it->second;
@@ -166,7 +166,7 @@ uint32_t UltraFastPropertyAccessOptimizer::get_or_create_hidden_class(Object* ob
     return class_id;
 }
 
-uint32_t UltraFastPropertyAccessOptimizer::transition_hidden_class(uint32_t current_class_id, const std::string& property_name) {
+uint32_t OptimizedPropertyAccessOptimizer::transition_hidden_class(uint32_t current_class_id, const std::string& property_name) {
     auto current_class_it = hidden_classes_.find(current_class_id);
     if (current_class_it == hidden_classes_.end()) {
         return current_class_id;
@@ -214,7 +214,7 @@ uint32_t UltraFastPropertyAccessOptimizer::transition_hidden_class(uint32_t curr
     return new_class_id;
 }
 
-void UltraFastPropertyAccessOptimizer::update_inline_cache(uint32_t call_site_id, Object* obj, 
+void OptimizedPropertyAccessOptimizer::update_inline_cache(uint32_t call_site_id, Object* obj, 
                                                           const std::string& property_name, uint32_t offset) {
     uint32_t hidden_class_id = get_or_create_hidden_class(obj);
     
@@ -252,7 +252,7 @@ void UltraFastPropertyAccessOptimizer::update_inline_cache(uint32_t call_site_id
     }
 }
 
-InlineCacheEntry* UltraFastPropertyAccessOptimizer::lookup_inline_cache(uint32_t call_site_id, uint32_t hidden_class_id) {
+InlineCacheEntry* OptimizedPropertyAccessOptimizer::lookup_inline_cache(uint32_t call_site_id, uint32_t hidden_class_id) {
     auto cache_it = inline_caches_.find(call_site_id);
     if (cache_it == inline_caches_.end()) {
         return nullptr;
@@ -267,7 +267,7 @@ InlineCacheEntry* UltraFastPropertyAccessOptimizer::lookup_inline_cache(uint32_t
     return nullptr;
 }
 
-Value UltraFastPropertyAccessOptimizer::direct_property_access(Object* obj, uint32_t offset, uint32_t property_type) {
+Value OptimizedPropertyAccessOptimizer::direct_property_access(Object* obj, uint32_t offset, uint32_t property_type) {
     // Ultra-fast direct memory access to property
     // In a real implementation, this would access the object's internal storage directly
     
@@ -281,7 +281,7 @@ Value UltraFastPropertyAccessOptimizer::direct_property_access(Object* obj, uint
     return Value();
 }
 
-uint32_t UltraFastPropertyAccessOptimizer::hash_property_name(const std::string& name) {
+uint32_t OptimizedPropertyAccessOptimizer::hash_property_name(const std::string& name) {
     auto it = property_name_hashes_.find(name);
     if (it != property_name_hashes_.end()) {
         return it->second;
@@ -302,7 +302,7 @@ uint32_t UltraFastPropertyAccessOptimizer::hash_property_name(const std::string&
     return hash;
 }
 
-uint32_t UltraFastPropertyAccessOptimizer::calculate_property_offset(const HiddenClass& hidden_class, 
+uint32_t OptimizedPropertyAccessOptimizer::calculate_property_offset(const HiddenClass& hidden_class, 
                                                                     const std::string& property_name) {
     uint32_t property_hash = hash_property_name(property_name);
     
@@ -315,18 +315,18 @@ uint32_t UltraFastPropertyAccessOptimizer::calculate_property_offset(const Hidde
     return 0; // Property not found
 }
 
-double UltraFastPropertyAccessOptimizer::get_fast_path_hit_rate() const {
+double OptimizedPropertyAccessOptimizer::get_fast_path_hit_rate() const {
     if (total_property_accesses_ == 0) return 0.0;
     return static_cast<double>(fast_path_hits_) / total_property_accesses_;
 }
 
-double UltraFastPropertyAccessOptimizer::get_cache_hit_rate() const {
+double OptimizedPropertyAccessOptimizer::get_cache_hit_rate() const {
     uint64_t total_cache_accesses = cache_hits_ + cache_misses_;
     if (total_cache_accesses == 0) return 0.0;
     return static_cast<double>(cache_hits_) / total_cache_accesses;
 }
 
-void UltraFastPropertyAccessOptimizer::clear_optimization_caches() {
+void OptimizedPropertyAccessOptimizer::clear_optimization_caches() {
     hidden_classes_.clear();
     object_to_class_.clear();
     inline_caches_.clear();
@@ -341,7 +341,7 @@ void UltraFastPropertyAccessOptimizer::clear_optimization_caches() {
     hidden_class_transitions_ = 0;
 }
 
-size_t UltraFastPropertyAccessOptimizer::get_memory_usage() const {
+size_t OptimizedPropertyAccessOptimizer::get_memory_usage() const {
     size_t total = 0;
     
     // Hidden classes

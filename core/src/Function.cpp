@@ -95,7 +95,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     execution_count_++;
     last_call_time_ = std::chrono::high_resolution_clock::now();
     
-    // Ultra-aggressive optimization for hot functions
+    // Advanced optimization for hot functions
     if (execution_count_ >= 3) {
         // Enable maximum inlining and loop unrolling hints
         __builtin_prefetch(this, 0, 3); // Prefetch function object
@@ -104,8 +104,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         __builtin_prefetch(&ctx, 0, 2); // Prefetch context
     }
     
-    // V8-STYLE OPTIMIZATION PIPELINE (simplified for stability)
-    // Phase 1: Hot function detection after 2 calls  
+    // Optimization pipeline with hot function detection
+    // Hot function detection after 2 calls  
     if (execution_count_ >= 2 && !is_hot_) {
         is_hot_ = true;
     }

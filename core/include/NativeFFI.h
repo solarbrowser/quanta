@@ -21,7 +21,7 @@ class Value;
 class Context;
 
 //=============================================================================
-// PHASE 3: Native Module Loading and FFI (Foreign Function Interface)
+// Native Module Loading and FFI (Foreign Function Interface)
 //
 // Complete native interoperability system for maximum performance:
 // - Dynamic library loading and symbol resolution

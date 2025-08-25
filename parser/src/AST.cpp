@@ -584,7 +584,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
-    // ULTRA-AGGRESSIVE V8-LEVEL OPTIMIZATION
+    // ULTRA-AGGRESSIVE HIGH-PERFORMANCE OPTIMIZATION
     // Inline fast path for number operations (99% of benchmark cases)
     if (__builtin_expect(left_value.is_number() && right_value.is_number(), 1)) {
         // Direct register access - avoid function call overhead
@@ -2969,7 +2969,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 features->set_element(1, Value("Zero-Allocation Object Pools"));
                 features->set_element(2, Value("Direct Function Pointer Dispatch"));
                 features->set_element(3, Value("Register-Like Variable Access"));
-                features->set_element(4, Value("Ultra-Fast Hash Caching"));
+                features->set_element(4, Value("High-Performance Hash Caching"));
                 features->set_element(5, Value("Inline Cache Performance"));
                 features->set_element(6, Value("Shape-Based Optimization"));
                 features->set_element(7, Value("Branch Prediction"));
@@ -3231,7 +3231,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                                         while (std::getline(ss, element, ',')) {
                                             try {
                                                 double value = std::stod(element);
-                                                optimizer->ultra_fast_push(var_name, value);
+                                                optimizer->optimized_push(var_name, value);
                                             } catch (...) {
                                                 // Skip non-numeric elements for now
                                             }
@@ -3245,16 +3245,16 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                         for (const auto& arg : arguments_) {
                             Value arg_val = arg->evaluate(ctx);
                             if (arg_val.is_number()) {
-                                bool success = optimizer->ultra_fast_push(var_name, arg_val.as_number());
+                                bool success = optimizer->optimized_push(var_name, arg_val.as_number());
                                 if (success) {
                                     // Update context with new length for compatibility
-                                    size_t new_length = optimizer->ultra_fast_length(var_name);
+                                    size_t new_length = optimizer->optimized_length(var_name);
                                     
                                     // Also update the string representation for compatibility
                                     std::string new_array_str = "ARRAY:[";
                                     for (size_t i = 0; i < new_length; i++) {
                                         if (i > 0) new_array_str += ",";
-                                        double value = optimizer->ultra_fast_get(var_name, i);
+                                        double value = optimizer->optimized_get(var_name, i);
                                         // Format number without unnecessary decimals
                                         if (value == std::floor(value)) {
                                             new_array_str += std::to_string(static_cast<int>(value));
@@ -3273,14 +3273,14 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                     
                     // Handle other ultra-fast operations
                     else if (method_name == "pop" && optimizer->has_fast_array(var_name)) {
-                        double result = optimizer->ultra_fast_pop(var_name);
+                        double result = optimizer->optimized_pop(var_name);
                         
                         // Also update the string representation for compatibility
-                        size_t new_length = optimizer->ultra_fast_length(var_name);
+                        size_t new_length = optimizer->optimized_length(var_name);
                         std::string new_array_str = "ARRAY:[";
                         for (size_t i = 0; i < new_length; i++) {
                             if (i > 0) new_array_str += ",";
-                            double value = optimizer->ultra_fast_get(var_name, i);
+                            double value = optimizer->optimized_get(var_name, i);
                             // Format number without unnecessary decimals
                             if (value == std::floor(value)) {
                                 new_array_str += std::to_string(static_cast<int>(value));
@@ -3294,7 +3294,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                         return Value(result);
                     }
                     else if (method_name == "length" && optimizer->has_fast_array(var_name)) {
-                        size_t length = optimizer->ultra_fast_length(var_name);
+                        size_t length = optimizer->optimized_length(var_name);
                         return Value(static_cast<double>(length));
                     }
                 }
@@ -3627,7 +3627,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                         
                         if (prop_value.is_number()) {
                             size_t index = static_cast<size_t>(prop_value.as_number());
-                            double result = optimizer->ultra_fast_get(var_name, index);
+                            double result = optimizer->optimized_get(var_name, index);
                             return Value(result);
                         }
                     }
@@ -3699,7 +3699,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                         ArrayOptimizer* optimizer = engine->get_array_optimizer();
                         
                         if (optimizer->has_fast_array(var_name)) {
-                            size_t length = optimizer->ultra_fast_length(var_name);
+                            size_t length = optimizer->optimized_length(var_name);
                             return Value(static_cast<double>(length));
                         }
                     }
@@ -5463,7 +5463,7 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 Value WhileStatement::evaluate(Context& ctx) {
     // Safety counter to prevent infinite loops and memory issues
     int safety_counter = 0;
-    const int max_iterations = 1000000000; // Ultra-high-performance: 1B iterations
+    const int max_iterations = 1000000000; // High-performance: 1B iterations
     
     try {
         while (true) {
@@ -5533,7 +5533,7 @@ std::unique_ptr<ASTNode> WhileStatement::clone() const {
 Value DoWhileStatement::evaluate(Context& ctx) {
     // Safety counter to prevent infinite loops and memory issues
     int safety_counter = 0;
-    const int max_iterations = 1000000000; // Ultra-high-performance: 1B iterations
+    const int max_iterations = 1000000000; // High-performance: 1B iterations
     
     try {
         do {

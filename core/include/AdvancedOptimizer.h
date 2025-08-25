@@ -1,7 +1,7 @@
-#ifndef QUANTA_ULTRA_AGGRESSIVE_OPTIMIZER_H
-#define QUANTA_ULTRA_AGGRESSIVE_OPTIMIZER_H
+#ifndef QUANTA_ADVANCED_OPTIMIZER_H
+#define QUANTA_ADVANCED_OPTIMIZER_H
 
-#include "UltraFastArray.h"
+#include "OptimizedArray.h"
 #include "Context.h"
 #include <string>
 #include <regex>
@@ -10,7 +10,7 @@
 namespace Quanta {
 
 /**
- * Ultra-Aggressive Optimizer - Achieves C++ Demo Speed (671M+ ops/sec)
+ * Advanced Optimizer - Achieves C++ Demo Speed (671M+ ops/sec)
  * 
  * This optimizer detects simple array loop patterns and compiles them
  * directly to native C++ speed, bypassing ALL JavaScript overhead:
@@ -23,7 +23,7 @@ namespace Quanta {
  * - for (let i = 0; i < N; i++) { arr.push(i); }
  * - for (let i = 0; i < N; i++) { arr.push(value); }
  */
-class UltraAggressiveOptimizer {
+class AdvancedOptimizer {
 public:
     struct LoopPattern {
         std::string array_var;
@@ -58,4 +58,4 @@ public:
 
 } // namespace Quanta
 
-#endif // QUANTA_ULTRA_AGGRESSIVE_OPTIMIZER_H
+#endif // QUANTA_ADVANCED_OPTIMIZER_H

@@ -7,7 +7,7 @@ namespace Quanta {
 
 void ArrayOptimizer::initialize_array(const std::string& var_name) {
     if (fast_arrays_.find(var_name) == fast_arrays_.end()) {
-        fast_arrays_[var_name] = std::make_unique<UltraFastArray>();
+        fast_arrays_[var_name] = std::make_unique<OptimizedArray>();
     }
 }
 
@@ -15,7 +15,7 @@ bool ArrayOptimizer::has_fast_array(const std::string& var_name) const {
     return fast_arrays_.find(var_name) != fast_arrays_.end();
 }
 
-bool ArrayOptimizer::ultra_fast_push(const std::string& var_name, double value) {
+bool ArrayOptimizer::optimized_push(const std::string& var_name, double value) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -29,7 +29,7 @@ bool ArrayOptimizer::ultra_fast_push(const std::string& var_name, double value) 
     return false;
 }
 
-double ArrayOptimizer::ultra_fast_pop(const std::string& var_name) {
+double ArrayOptimizer::optimized_pop(const std::string& var_name) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -43,7 +43,7 @@ double ArrayOptimizer::ultra_fast_pop(const std::string& var_name) {
     return 0.0;
 }
 
-double ArrayOptimizer::ultra_fast_get(const std::string& var_name, size_t index) {
+double ArrayOptimizer::optimized_get(const std::string& var_name, size_t index) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -57,7 +57,7 @@ double ArrayOptimizer::ultra_fast_get(const std::string& var_name, size_t index)
     return 0.0;
 }
 
-size_t ArrayOptimizer::ultra_fast_length(const std::string& var_name) {
+size_t ArrayOptimizer::optimized_length(const std::string& var_name) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         return it->second->length();
@@ -90,7 +90,7 @@ std::string ArrayOptimizer::to_string_format(const std::string& var_name) {
     return "ARRAY:[]";
 }
 
-void ArrayOptimizer::ultra_fast_bulk_push(const std::string& var_name, const std::vector<double>& values) {
+void ArrayOptimizer::optimized_bulk_push(const std::string& var_name, const std::vector<double>& values) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         auto start = std::chrono::high_resolution_clock::now();
@@ -102,7 +102,7 @@ void ArrayOptimizer::ultra_fast_bulk_push(const std::string& var_name, const std
     }
 }
 
-void ArrayOptimizer::ultra_fast_clear(const std::string& var_name) {
+void ArrayOptimizer::optimized_clear(const std::string& var_name) {
     auto it = fast_arrays_.find(var_name);
     if (it != fast_arrays_.end()) {
         it->second->clear();
@@ -125,7 +125,7 @@ void ArrayOptimizer::reset_performance_metrics() {
 void ArrayOptimizer::print_performance_report() const {
     uint64_t ops_per_sec = get_operations_per_second();
     
-    std::cout << "\n🚀 ARRAY OPTIMIZER PERFORMANCE REPORT" << std::endl;
+    std::cout << "\nARRAY OPTIMIZER PERFORMANCE REPORT" << std::endl;
     std::cout << "═══════════════════════════════════════════" << std::endl;
     std::cout << "Total Operations:    " << operations_count_.load() << std::endl;
     std::cout << "Total Time:          " << (operations_time_.load() / 1000000.0) << " ms" << std::endl;
@@ -133,11 +133,11 @@ void ArrayOptimizer::print_performance_report() const {
     std::cout << "Active Arrays:       " << fast_arrays_.size() << std::endl;
     
     if (ops_per_sec > 100000000) {
-        std::cout << "🏆 STATUS: 100+ MILLION OPS/SEC ACHIEVED!" << std::endl;
+        std::cout << "STATUS: 100+ MILLION OPS/SEC ACHIEVED!" << std::endl;
     } else if (ops_per_sec > 10000000) {
-        std::cout << "⚡ STATUS: 10+ MILLION OPS/SEC ACHIEVED!" << std::endl;
+        std::cout << "STATUS: HIGH PERFORMANCE ACHIEVED!" << std::endl;
     } else if (ops_per_sec > 1000000) {
-        std::cout << "✅ STATUS: 1+ MILLION OPS/SEC ACHIEVED!" << std::endl;
+        std::cout << "STATUS: 1+ MILLION OPS/SEC ACHIEVED!" << std::endl;
     }
     
     std::cout << "═══════════════════════════════════════════" << std::endl;
@@ -163,13 +163,13 @@ bool ArrayOptimizer::is_array_access(const std::string& expression) {
 }
 
 void ArrayOptimizer::initialize_optimizer() {
-    UltraFastArray::initialize_pools();
+    OptimizedArray::initialize_pools();
     // Array optimizer initialized
 }
 
 void ArrayOptimizer::cleanup_optimizer() {
-    UltraFastArray::cleanup_pools();
-    std::cout << "🧹 ARRAY OPTIMIZER CLEANED UP" << std::endl;
+    OptimizedArray::cleanup_pools();
+    std::cout << "� ARRAY OPTIMIZER CLEANED UP" << std::endl;
 }
 
 } // namespace Quanta

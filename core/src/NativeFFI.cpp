@@ -150,12 +150,12 @@ NativeLibrary::NativeLibrary(const std::string& path)
     : library_path_(path), library_handle_(nullptr), is_loaded_(false),
       total_calls_(0), total_call_time_ns_(0) {
     
-    std::cout << "ðŸ“š NATIVE LIBRARY CREATED: " << path << std::endl;
+    std::cout << "š NATIVE LIBRARY CREATED: " << path << std::endl;
 }
 
 NativeLibrary::~NativeLibrary() {
     unload();
-    std::cout << "ðŸ“š NATIVE LIBRARY DESTROYED: " << library_path_ << std::endl;
+    std::cout << "š NATIVE LIBRARY DESTROYED: " << library_path_ << std::endl;
 }
 
 bool NativeLibrary::load() {
@@ -168,7 +168,7 @@ bool NativeLibrary::load() {
     }
     
     is_loaded_ = true;
-    std::cout << "âœ… Library loaded: " << library_path_ << std::endl;
+    std::cout << " Library loaded: " << library_path_ << std::endl;
     return true;
 }
 
@@ -184,11 +184,11 @@ void NativeLibrary::unload() {
     function_signatures_.clear();
     is_loaded_ = false;
     
-    std::cout << "ðŸ“š Library unloaded: " << library_path_ << std::endl;
+    std::cout << "š Library unloaded: " << library_path_ << std::endl;
 }
 
 bool NativeLibrary::reload() {
-    std::cout << "ðŸ”„ Reloading library: " << library_path_ << std::endl;
+    std::cout << "„ Reloading library: " << library_path_ << std::endl;
     
     // Store current state
     auto old_signatures = function_signatures_;
@@ -205,9 +205,9 @@ bool NativeLibrary::reload() {
             get_symbol(name); // This will cache the symbol
         }
         
-        std::cout << "âœ… Library reloaded successfully" << std::endl;
+        std::cout << " Library reloaded successfully" << std::endl;
     } else {
-        std::cout << "âŒ Library reload failed: " << get_last_error() << std::endl;
+        std::cout << " Library reload failed: " << get_last_error() << std::endl;
     }
     
     return success;
@@ -234,7 +234,7 @@ void* NativeLibrary::get_symbol(const std::string& name) {
     
     // Cache the symbol
     symbols_[name] = symbol;
-    std::cout << "ðŸ”— Symbol resolved: " << name << " -> " << symbol << std::endl;
+    std::cout << "— Symbol resolved: " << name << " -> " << symbol << std::endl;
     
     return symbol;
 }
@@ -245,7 +245,7 @@ bool NativeLibrary::has_symbol(const std::string& name) const {
 
 void NativeLibrary::register_function(const std::string& name, const FFISignature& signature) {
     function_signatures_[name] = signature;
-    std::cout << "ðŸ“ Function registered: " << signature.to_string() << std::endl;
+    std::cout << " Function registered: " << signature.to_string() << std::endl;
 }
 
 void NativeLibrary::register_function(const std::string& name, FFIType return_type, const std::vector<FFIType>& param_types) {
@@ -283,7 +283,7 @@ Value NativeLibrary::call_function(const std::string& name, const std::vector<Va
     total_call_time_ns_ += duration;
     function_call_counts_[name]++;
     
-    std::cout << "ðŸ“ž Function called: " << name << " (" << (duration / 1000.0) << " Î¼s)" << std::endl;
+    std::cout << "ž Function called: " << name << " (" << (duration / 1000.0) << " Î¼s)" << std::endl;
     
     return result;
 }
@@ -297,7 +297,7 @@ Value NativeLibrary::call_function_ptr(void* func_ptr, const FFISignature& signa
     }
     
     // For demonstration, we'll simulate a function call
-    std::cout << "ðŸ”§ Calling native function: " << signature.to_string() << std::endl;
+    std::cout << "§ Calling native function: " << signature.to_string() << std::endl;
     std::cout << "  Arguments: " << args.size() << std::endl;
     std::cout << "  Function pointer: " << func_ptr << std::endl;
     
@@ -321,7 +321,7 @@ double NativeLibrary::get_average_call_time_us() const {
 }
 
 void NativeLibrary::print_performance_stats() const {
-    std::cout << "ðŸ“Š LIBRARY PERFORMANCE STATS: " << library_path_ << std::endl;
+    std::cout << "Š LIBRARY PERFORMANCE STATS: " << library_path_ << std::endl;
     std::cout << "  Total calls: " << total_calls_ << std::endl;
     std::cout << "  Average call time: " << get_average_call_time_us() << " Î¼s" << std::endl;
     std::cout << "  Registered functions: " << function_signatures_.size() << std::endl;
@@ -394,7 +394,7 @@ FFIMarshaler::FFIMarshaler() : buffer_offset_(0) {
 FFIMarshaler::~FFIMarshaler() = default;
 
 void FFIMarshaler::marshal_argument(const Value& js_value, const FFITypeInfo& type_info) {
-    std::cout << "ðŸ”„ Marshaling argument: " << type_info.to_string() << std::endl;
+    std::cout << "„ Marshaling argument: " << type_info.to_string() << std::endl;
     
     switch (type_info.type) {
         case FFIType::BOOL: {
@@ -427,7 +427,7 @@ void FFIMarshaler::marshal_argument(const Value& js_value, const FFITypeInfo& ty
 }
 
 Value FFIMarshaler::unmarshal_return_value(const void* native_value, const FFITypeInfo& type_info, Context* context) {
-    std::cout << "ðŸ”„ Unmarshaling return value: " << type_info.to_string() << std::endl;
+    std::cout << "„ Unmarshaling return value: " << type_info.to_string() << std::endl;
     
     switch (type_info.type) {
         case FFIType::VOID:
@@ -486,7 +486,7 @@ void FFIMarshaler::marshal_string_to_native(const Value& js_value) {
 //=============================================================================
 
 NativeModuleManager::NativeModuleManager() : sandbox_enabled_(false) {
-    std::cout << "ðŸ—ï¸  NATIVE MODULE MANAGER INITIALIZED" << std::endl;
+    std::cout << "—ï¸  NATIVE MODULE MANAGER INITIALIZED" << std::endl;
     
     // Add default search paths
     add_search_path("./");
@@ -505,14 +505,14 @@ NativeModuleManager::NativeModuleManager() : sandbox_enabled_(false) {
 NativeModuleManager::~NativeModuleManager() {
     stop_hot_reload_monitoring();
     print_library_statistics();
-    std::cout << "ðŸ—ï¸  NATIVE MODULE MANAGER SHUTDOWN" << std::endl;
+    std::cout << "—ï¸  NATIVE MODULE MANAGER SHUTDOWN" << std::endl;
 }
 
 bool NativeModuleManager::load_library(const std::string& name, const std::string& path) {
     std::lock_guard<std::mutex> lock(manager_mutex_);
     
     if (sandbox_enabled_ && !is_library_allowed(path)) {
-        std::cout << "ðŸš« Library blocked by sandbox: " << path << std::endl;
+        std::cout << "« Library blocked by sandbox: " << path << std::endl;
         return false;
     }
     
@@ -524,12 +524,12 @@ bool NativeModuleManager::load_library(const std::string& name, const std::strin
     
     auto library = std::make_unique<NativeLibrary>(path);
     if (!library->load()) {
-        std::cout << "âŒ Failed to load library: " << library->get_last_error() << std::endl;
+        std::cout << " Failed to load library: " << library->get_last_error() << std::endl;
         return false;
     }
     
     loaded_libraries_[name] = std::move(library);
-    std::cout << "âœ… Library loaded: " << name << " (" << path << ")" << std::endl;
+    std::cout << " Library loaded: " << name << " (" << path << ")" << std::endl;
     
     return true;
 }
@@ -543,7 +543,7 @@ bool NativeModuleManager::unload_library(const std::string& name) {
     }
     
     loaded_libraries_.erase(it);
-    std::cout << "ðŸ“š Library unloaded: " << name << std::endl;
+    std::cout << "š Library unloaded: " << name << std::endl;
     return true;
 }
 
@@ -562,7 +562,7 @@ void NativeModuleManager::add_search_path(const std::string& path) {
     
     if (std::find(library_search_paths_.begin(), library_search_paths_.end(), path) == library_search_paths_.end()) {
         library_search_paths_.push_back(path);
-        std::cout << "ðŸ“ Search path added: " << path << std::endl;
+        std::cout << " Search path added: " << path << std::endl;
     }
 }
 
@@ -583,20 +583,20 @@ std::string NativeModuleManager::find_library(const std::string& name) {
             // Check if file exists (simplified check)
             std::ifstream file(full_path);
             if (file.good()) {
-                std::cout << "ðŸ” Library found: " << full_path << std::endl;
+                std::cout << " Library found: " << full_path << std::endl;
                 return full_path;
             }
         }
     }
     
-    std::cout << "ðŸ” Library not found in search paths: " << name << std::endl;
+    std::cout << " Library not found in search paths: " << name << std::endl;
     return "";
 }
 
 void NativeModuleManager::set_alias(const std::string& alias, const std::string& library_name) {
     std::lock_guard<std::mutex> lock(manager_mutex_);
     module_aliases_[alias] = library_name;
-    std::cout << "ðŸ·ï¸  Alias set: " << alias << " -> " << library_name << std::endl;
+    std::cout << "·ï¸  Alias set: " << alias << " -> " << library_name << std::endl;
 }
 
 std::string NativeModuleManager::resolve_alias(const std::string& name) const {
@@ -605,7 +605,7 @@ std::string NativeModuleManager::resolve_alias(const std::string& name) const {
 }
 
 void NativeModuleManager::print_library_statistics() const {
-    std::cout << "ðŸ“Š NATIVE MODULE MANAGER STATISTICS" << std::endl;
+    std::cout << "Š NATIVE MODULE MANAGER STATISTICS" << std::endl;
     std::cout << "====================================" << std::endl;
     std::cout << "Loaded libraries: " << loaded_libraries_.size() << std::endl;
     std::cout << "Search paths: " << library_search_paths_.size() << std::endl;
@@ -633,30 +633,30 @@ NativeModuleManager& NativeModuleManager::get_instance() {
 namespace FFIIntegration {
 
 void initialize_ffi_system() {
-    std::cout << "ðŸ”§ INITIALIZING FFI SYSTEM" << std::endl;
+    std::cout << "§ INITIALIZING FFI SYSTEM" << std::endl;
     
     // Initialize the native module manager
     NativeModuleManager::get_instance();
     
-    std::cout << "âœ… FFI SYSTEM INITIALIZED" << std::endl;
-    std::cout << "  ðŸ“š Native module manager: Ready" << std::endl;
-    std::cout << "  ðŸ”— Symbol resolution: Ready" << std::endl;
-    std::cout << "  ðŸ”„ Type marshaling: Ready" << std::endl;
-    std::cout << "  ðŸ“ž Function calling: Ready" << std::endl;
+    std::cout << " FFI SYSTEM INITIALIZED" << std::endl;
+    std::cout << "  š Native module manager: Ready" << std::endl;
+    std::cout << "  — Symbol resolution: Ready" << std::endl;
+    std::cout << "  „ Type marshaling: Ready" << std::endl;
+    std::cout << "  ž Function calling: Ready" << std::endl;
 }
 
 void shutdown_ffi_system() {
-    std::cout << "ðŸ”§ SHUTTING DOWN FFI SYSTEM" << std::endl;
+    std::cout << "§ SHUTTING DOWN FFI SYSTEM" << std::endl;
     
     // Manager will be destroyed automatically
     
-    std::cout << "âœ… FFI SYSTEM SHUTDOWN COMPLETE" << std::endl;
+    std::cout << " FFI SYSTEM SHUTDOWN COMPLETE" << std::endl;
 }
 
 void bind_standard_c_library() {
     auto& manager = NativeModuleManager::get_instance();
     
-    std::cout << "ðŸ“š Binding standard C library functions..." << std::endl;
+    std::cout << "š Binding standard C library functions..." << std::endl;
     
     // This would bind common C library functions
     // For demonstration, we'll just print the intent
@@ -664,13 +664,13 @@ void bind_standard_c_library() {
     std::cout << "  - printf, scanf, strlen, strcmp" << std::endl;
     std::cout << "  - fopen, fread, fwrite, fclose" << std::endl;
     
-    std::cout << "âœ… Standard C library bindings complete" << std::endl;
+    std::cout << " Standard C library bindings complete" << std::endl;
 }
 
 void bind_math_library() {
-    std::cout << "ðŸ“ Binding math library functions..." << std::endl;
+    std::cout << " Binding math library functions..." << std::endl;
     std::cout << "  - sin, cos, tan, sqrt, pow, log" << std::endl;
-    std::cout << "âœ… Math library bindings complete" << std::endl;
+    std::cout << " Math library bindings complete" << std::endl;
 }
 
 Value require_native_module(const std::string& name, Context* context) {
@@ -687,7 +687,7 @@ Value require_native_module(const std::string& name, Context* context) {
     }
     
     // Return a module object (simplified)
-    std::cout << "ðŸ“¦ Native module required: " << name << std::endl;
+    std::cout << "¦ Native module required: " << name << std::endl;
     return Value(); // Would return proper module object
 }
 

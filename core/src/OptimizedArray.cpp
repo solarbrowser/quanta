@@ -1,4 +1,4 @@
-#include "UltraFastArray.h"
+#include "OptimizedArray.h"
 #include <iostream>
 #include <algorithm>
 #include <cstdlib>
@@ -12,16 +12,16 @@ extern "C" {
 namespace Quanta {
 
 // Static member initialization
-std::vector<double*> UltraFastArray::small_pools_;
-std::vector<double*> UltraFastArray::medium_pools_;
-std::vector<double*> UltraFastArray::large_pools_;
+std::vector<double*> OptimizedArray::small_pools_;
+std::vector<double*> OptimizedArray::medium_pools_;
+std::vector<double*> OptimizedArray::large_pools_;
 
-std::atomic<size_t> UltraFastArray::small_pool_index_{0};
-std::atomic<size_t> UltraFastArray::medium_pool_index_{0};
-std::atomic<size_t> UltraFastArray::large_pool_index_{0};
+std::atomic<size_t> OptimizedArray::small_pool_index_{0};
+std::atomic<size_t> OptimizedArray::medium_pool_index_{0};
+std::atomic<size_t> OptimizedArray::large_pool_index_{0};
 
-void UltraFastArray::initialize_pools() {
-    // Initializing ultra-fast array pools
+void OptimizedArray::initialize_pools() {
+    // Initializing optimized array pools
     
     // Pre-allocate small arrays (1K elements each)
     small_pools_.reserve(SMALL_POOL_SIZE);
@@ -53,10 +53,10 @@ void UltraFastArray::initialize_pools() {
         }
     }
     
-    // Ultra-fast array pools initialized
+    // Optimized array pools initialized
 }
 
-void UltraFastArray::cleanup_pools() {
+void OptimizedArray::cleanup_pools() {
     // Free all pre-allocated memory
     for (double* array : small_pools_) {
         if (array) std::free(array);
@@ -73,7 +73,7 @@ void UltraFastArray::cleanup_pools() {
     large_pools_.clear();
 }
 
-void UltraFastArray::allocate_from_pool() {
+void OptimizedArray::allocate_from_pool() {
     // Default to small array for maximum speed
     data_ = get_small_pool_array();
     if (data_) {
@@ -87,7 +87,7 @@ void UltraFastArray::allocate_from_pool() {
     }
 }
 
-double* UltraFastArray::get_small_pool_array() {
+double* OptimizedArray::get_small_pool_array() {
     size_t index = small_pool_index_.fetch_add(1, std::memory_order_relaxed);
     if (index < small_pools_.size()) {
         return small_pools_[index];
@@ -95,7 +95,7 @@ double* UltraFastArray::get_small_pool_array() {
     return nullptr;
 }
 
-double* UltraFastArray::get_medium_pool_array() {
+double* OptimizedArray::get_medium_pool_array() {
     size_t index = medium_pool_index_.fetch_add(1, std::memory_order_relaxed);
     if (index < medium_pools_.size()) {
         return medium_pools_[index];
@@ -103,7 +103,7 @@ double* UltraFastArray::get_medium_pool_array() {
     return nullptr;
 }
 
-double* UltraFastArray::get_large_pool_array() {
+double* OptimizedArray::get_large_pool_array() {
     size_t index = large_pool_index_.fetch_add(1, std::memory_order_relaxed);
     if (index < large_pools_.size()) {
         return large_pools_[index];
@@ -111,7 +111,7 @@ double* UltraFastArray::get_large_pool_array() {
     return nullptr;
 }
 
-void UltraFastArray::return_to_pool() {
+void OptimizedArray::return_to_pool() {
     // For now, don't return to pool to avoid complexity
     // In production, implement proper pool return mechanism
     if (owns_memory_ && data_) {
@@ -133,7 +133,7 @@ void UltraFastArray::return_to_pool() {
     }
 }
 
-void UltraFastArray::expand_capacity() {
+void OptimizedArray::expand_capacity() {
     size_t new_capacity = capacity_ * 2;
     
     // Try to get a larger pool array
@@ -174,23 +174,23 @@ void UltraFastArray::expand_capacity() {
     owns_memory_ = true;
 }
 
-void UltraFastArray::bulk_push(const double* values, size_t count) {
+void OptimizedArray::bulk_push(const double* values, size_t count) {
     // Ensure capacity
     while (length_ + count > capacity_) {
         expand_capacity();
     }
     
-    // Ultra-fast memory copy
+    // Optimized memory copy
     memcpy(data_ + length_, values, count * sizeof(double));
     length_ += count;
 }
 
-void UltraFastArray::bulk_copy_from(const UltraFastArray& other) {
+void OptimizedArray::bulk_copy_from(const OptimizedArray& other) {
     clear();
     bulk_push(other.data_, other.length_);
 }
 
-size_t UltraFastArray::get_pool_stats() {
+size_t OptimizedArray::get_pool_stats() {
     return small_pools_.size() + medium_pools_.size() + large_pools_.size();
 }
 

@@ -1,5 +1,5 @@
-#ifndef QUANTA_ULTRA_FAST_PROPERTY_ACCESS_H
-#define QUANTA_ULTRA_FAST_PROPERTY_ACCESS_H
+#ifndef QUANTA_OPTIMIZED_PROPERTY_ACCESS_H
+#define QUANTA_OPTIMIZED_PROPERTY_ACCESS_H
 
 #include "OptimizedAST.h"
 #include "SpecializedNodes.h"
@@ -81,7 +81,7 @@ struct alignas(32) InlineCacheEntry {
     }
 };
 
-class UltraFastPropertyAccessOptimizer {
+class OptimizedPropertyAccessOptimizer {
 private:
     OptimizedAST* ast_context_;
     SpecializedNodeProcessor* specialized_processor_;
@@ -107,8 +107,8 @@ private:
     uint64_t hidden_class_transitions_;
     
 public:
-    UltraFastPropertyAccessOptimizer(OptimizedAST* ast, SpecializedNodeProcessor* processor);
-    ~UltraFastPropertyAccessOptimizer();
+    OptimizedPropertyAccessOptimizer(OptimizedAST* ast, SpecializedNodeProcessor* processor);
+    ~OptimizedPropertyAccessOptimizer();
     
     // Property access optimization
     Value get_property_optimized(Object* obj, const std::string& property_name, uint32_t call_site_id);

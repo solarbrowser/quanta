@@ -16,7 +16,7 @@
 namespace Quanta {
 
 //=============================================================================
-// PolymorphicInlineCache Implementation - PHASE 2: V8-Level Property Access
+// PolymorphicInlineCache Implementation - High-performance Property Access
 //=============================================================================
 
 PolymorphicInlineCache::PolymorphicInlineCache(const std::string& property_name)
@@ -115,7 +115,7 @@ void PolymorphicInlineCache::update(ShapeID shape_id, PropertyOffset offset, Fun
     
     if (old_state != state_) {
         state_transitions_++;
-        std::cout << "🔄 CACHE STATE TRANSITION: " << property_name_ 
+        std::cout << "� CACHE STATE TRANSITION: " << property_name_ 
                  << " -> " << cache_state_string() << std::endl;
     }
 }
@@ -163,7 +163,7 @@ double PolymorphicInlineCache::get_hit_ratio() const {
 }
 
 void PolymorphicInlineCache::print_cache_stats() const {
-    std::cout << "📊 Polymorphic IC Stats for '" << property_name_ << "':" << std::endl;
+    std::cout << "� Polymorphic IC Stats for '" << property_name_ << "':" << std::endl;
     std::cout << "  State: " << cache_state_string() << std::endl;
     std::cout << "  Entries: " << entry_count_ << "/" << MAX_POLYMORPHIC_ENTRIES << std::endl;
     std::cout << "  Total Lookups: " << total_lookups_ << std::endl;
@@ -188,7 +188,7 @@ std::string PolymorphicInlineCache::cache_state_string() const {
 //=============================================================================
 
 InlineCacheManager::InlineCacheManager() : next_call_site_id_(1) {
-    std::cout << "🚀 POLYMORPHIC INLINE CACHE MANAGER INITIALIZED" << std::endl;
+    std::cout << "� POLYMORPHIC INLINE CACHE MANAGER INITIALIZED" << std::endl;
 }
 
 InlineCacheManager::~InlineCacheManager() {
@@ -215,7 +215,7 @@ PolymorphicInlineCache* InlineCacheManager::create_cache(uint32_t call_site_id, 
     caches_[key] = std::move(cache);
     global_stats_.total_caches_created++;
     
-    std::cout << "🆕 CREATED POLYMORPHIC IC: " << property_name 
+    std::cout << "� CREATED POLYMORPHIC IC: " << property_name 
              << " (CallSite: " << call_site_id << ")" << std::endl;
     
     return cache_ptr;
@@ -256,7 +256,7 @@ Value InlineCacheManager::cached_property_get(Object* obj, const std::string& pr
                 Function* cached_method = result.is_function() ? result.as_function() : nullptr;
                 cache->update(shape_id, offset, cached_method);
                 
-                std::cout << "📝 POLYMORPHIC IC UPDATE: " << property 
+                std::cout << "� POLYMORPHIC IC UPDATE: " << property 
                          << " (State: " << cache->cache_state_string() << ")" << std::endl;
             }
             
@@ -346,7 +346,7 @@ void InlineCacheManager::analyze_cache_performance() {
 }
 
 void InlineCacheManager::print_global_statistics() const {
-    std::cout << "📊 POLYMORPHIC IC GLOBAL STATISTICS:" << std::endl;
+    std::cout << "� POLYMORPHIC IC GLOBAL STATISTICS:" << std::endl;
     std::cout << "  Total Caches Created: " << global_stats_.total_caches_created << std::endl;
     std::cout << "  Monomorphic Caches: " << global_stats_.monomorphic_caches << std::endl;
     std::cout << "  Polymorphic Caches: " << global_stats_.polymorphic_caches << std::endl;
@@ -362,7 +362,7 @@ void InlineCacheManager::cleanup_unused_caches() {
         const PolymorphicInlineCache* cache = it->second.get();
         
         if (cache->get_total_lookups() > 100 && cache->get_hit_ratio() < 0.1) {
-            std::cout << "🧹 CLEANUP: Removing ineffective cache for " << cache->get_property_name() << std::endl;
+            std::cout << "� CLEANUP: Removing ineffective cache for " << cache->get_property_name() << std::endl;
             it = caches_.erase(it);
         } else {
             ++it;
@@ -425,7 +425,7 @@ std::vector<CallSiteRegistry::CallSiteInfo> CallSiteRegistry::get_hot_call_sites
 }
 
 void CallSiteRegistry::print_call_site_statistics() const {
-    std::cout << "📍 CALL SITE REGISTRY STATISTICS:" << std::endl;
+    std::cout << "� CALL SITE REGISTRY STATISTICS:" << std::endl;
     std::cout << "  Total Call Sites: " << call_sites_.size() << std::endl;
     
     auto hot_sites = get_hot_call_sites(10);
@@ -451,7 +451,7 @@ PropertyAccessOptimizer::PropertyAccessOptimizer()
       cache_manager_(&InlineCacheManager::get_instance()),
       call_site_registry_(&CallSiteRegistry::get_instance()) {
     
-    std::cout << "🚀 PROPERTY ACCESS OPTIMIZER INITIALIZED" << std::endl;
+    std::cout << "� PROPERTY ACCESS OPTIMIZER INITIALIZED" << std::endl;
 }
 
 PropertyAccessOptimizer::~PropertyAccessOptimizer() {
@@ -513,7 +513,7 @@ Value PropertyAccessOptimizer::optimized_method_call(Object* obj, const std::str
 }
 
 void PropertyAccessOptimizer::analyze_optimization_effectiveness() {
-    std::cout << "🔍 ANALYZING PROPERTY ACCESS OPTIMIZATION:" << std::endl;
+    std::cout << "� ANALYZING PROPERTY ACCESS OPTIMIZATION:" << std::endl;
     
     cache_manager_->analyze_cache_performance();
     cache_manager_->print_global_statistics();
@@ -522,7 +522,7 @@ void PropertyAccessOptimizer::analyze_optimization_effectiveness() {
 }
 
 void PropertyAccessOptimizer::print_optimization_report() const {
-    std::cout << "📋 PROPERTY ACCESS OPTIMIZATION REPORT:" << std::endl;
+    std::cout << "� PROPERTY ACCESS OPTIMIZATION REPORT:" << std::endl;
     std::cout << "  Current Strategy: ";
     switch (current_strategy_) {
         case Strategy::NONE: std::cout << "NONE"; break;
@@ -572,14 +572,14 @@ void AdaptiveInlineCache::adapt_cache_parameters() {
         if (params_.max_entries > 2) {
             params_.max_entries--;
             total_adaptations_++;
-            std::cout << "🔧 ADAPTIVE IC: Reduced max entries to " << params_.max_entries << std::endl;
+            std::cout << "� ADAPTIVE IC: Reduced max entries to " << params_.max_entries << std::endl;
         }
     } else if (stats.monomorphic_caches > stats.polymorphic_caches * 2) {
         // Mostly monomorphic - can increase max entries
         if (params_.max_entries < 8) {
             params_.max_entries++;
             total_adaptations_++;
-            std::cout << "🔧 ADAPTIVE IC: Increased max entries to " << params_.max_entries << std::endl;
+            std::cout << "� ADAPTIVE IC: Increased max entries to " << params_.max_entries << std::endl;
         }
     }
 }
@@ -598,7 +598,7 @@ void AdaptiveInlineCache::monitor_cache_performance() {
 }
 
 void AdaptiveInlineCache::print_adaptive_stats() const {
-    std::cout << "🤖 ADAPTIVE IC STATISTICS:" << std::endl;
+    std::cout << "� ADAPTIVE IC STATISTICS:" << std::endl;
     std::cout << "  Total Adaptations: " << total_adaptations_ << std::endl;
     std::cout << "  Hit Ratio Threshold: " << params_.hit_ratio_threshold << std::endl;
     std::cout << "  Max Entries: " << params_.max_entries << std::endl;

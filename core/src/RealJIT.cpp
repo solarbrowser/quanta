@@ -1,6 +1,6 @@
 /*
  * Real JIT Compilation Implementation
- * Generates actual x86-64 machine code for V8-level performance
+ * Generates actual x86-64 machine code for high-performance execution
  */
 
 #include "../include/RealJIT.h"

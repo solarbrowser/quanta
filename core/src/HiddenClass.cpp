@@ -17,7 +17,7 @@
 namespace Quanta {
 
 //=============================================================================
-// HiddenClass Implementation - PHASE 2: V8-style Object Optimization
+// HiddenClass Implementation - Standard Object Optimization
 //=============================================================================
 
 std::atomic<HiddenClassID> HiddenClass::next_class_id_{1};
@@ -26,7 +26,7 @@ HiddenClass::HiddenClass()
     : class_id_(next_class_id_++), instance_count_(0), access_count_(0),
       is_stable_(true), is_deprecated_(false), fast_indices_valid_(false) {
     
-    std::cout << "🏗️  HIDDEN CLASS CREATED: ID=" << class_id_ << " (Empty)" << std::endl;
+    std::cout << "�️  HIDDEN CLASS CREATED: ID=" << class_id_ << " (Empty)" << std::endl;
 }
 
 HiddenClass::HiddenClass(std::shared_ptr<HiddenClass> parent) 
@@ -39,7 +39,7 @@ HiddenClass::HiddenClass(std::shared_ptr<HiddenClass> parent)
         property_map_ = parent_->property_map_;
     }
     
-    std::cout << "🏗️  HIDDEN CLASS CREATED: ID=" << class_id_ 
+    std::cout << "�️  HIDDEN CLASS CREATED: ID=" << class_id_ 
              << " (Parent=" << (parent_ ? parent_->class_id_ : 0) << ")" << std::endl;
 }
 
@@ -156,7 +156,7 @@ std::shared_ptr<HiddenClass> HiddenClass::change_property_type(const std::string
     new_class->invalidate_fast_indices();
     mark_unstable();
     
-    std::cout << "🔄 PROPERTY TYPE CHANGED: '" << name << "' in class " << class_id_ 
+    std::cout << "� PROPERTY TYPE CHANGED: '" << name << "' in class " << class_id_ 
              << " -> new class " << new_class->class_id_ << std::endl;
     
     return new_class;
@@ -168,7 +168,7 @@ void HiddenClass::mark_property_hot(const std::string& name) {
         properties_[it->second].is_frequently_accessed = true;
         access_count_++;
         
-        std::cout << "🔥 HOT PROPERTY: '" << name << "' in class " << class_id_ << std::endl;
+        std::cout << "� HOT PROPERTY: '" << name << "' in class " << class_id_ << std::endl;
     }
 }
 
@@ -251,7 +251,7 @@ void HiddenClass::invalidate_fast_indices() {
 }
 
 void HiddenClass::print_class_info() const {
-    std::cout << "📋 HIDDEN CLASS INFO:" << std::endl;
+    std::cout << "� HIDDEN CLASS INFO:" << std::endl;
     std::cout << "  ID: " << class_id_ << std::endl;
     std::cout << "  Properties: " << properties_.size() << std::endl;
     std::cout << "  Instances: " << instance_count_ << std::endl;
@@ -267,7 +267,7 @@ void HiddenClass::print_class_info() const {
 }
 
 void HiddenClass::print_transitions() const {
-    std::cout << "🔄 CLASS TRANSITIONS from " << class_id_ << ":" << std::endl;
+    std::cout << "� CLASS TRANSITIONS from " << class_id_ << ":" << std::endl;
     for (const auto& [property, target_class] : transitions_) {
         std::cout << "  +" << property << " -> " << target_class->class_id_ << std::endl;
     }
@@ -280,7 +280,7 @@ void HiddenClass::print_transitions() const {
 HiddenClassCache::HiddenClassCache() 
     : cache_hits_(0), cache_misses_(0), total_lookups_(0) {
     
-    std::cout << "🗄️  HIDDEN CLASS CACHE INITIALIZED" << std::endl;
+    std::cout << "�️  HIDDEN CLASS CACHE INITIALIZED" << std::endl;
     
     // Pre-create common classes
     common_classes_["empty"] = std::make_shared<HiddenClass>();
@@ -324,7 +324,7 @@ std::shared_ptr<HiddenClass> HiddenClassCache::get_or_create_class(const std::ve
     
     cache_misses_++;
     
-    std::cout << "💾 CLASS CACHED: " << property_names.size() 
+    std::cout << "� CLASS CACHED: " << property_names.size() 
              << " properties -> " << hidden_class->get_class_id() << std::endl;
     
     return hidden_class;
@@ -384,7 +384,7 @@ void HiddenClassCache::cleanup_deprecated_classes() {
     }
     
     if (removed > 0) {
-        std::cout << "🧹 CACHE CLEANUP: Removed " << removed << " expired classes" << std::endl;
+        std::cout << "� CACHE CLEANUP: Removed " << removed << " expired classes" << std::endl;
     }
 }
 
@@ -401,7 +401,7 @@ double HiddenClassCache::get_cache_hit_ratio() const {
 }
 
 void HiddenClassCache::print_cache_statistics() const {
-    std::cout << "📊 HIDDEN CLASS CACHE STATISTICS:" << std::endl;
+    std::cout << "� HIDDEN CLASS CACHE STATISTICS:" << std::endl;
     std::cout << "  Total Lookups: " << total_lookups_ << std::endl;
     std::cout << "  Cache Hits: " << cache_hits_ << std::endl;
     std::cout << "  Cache Misses: " << cache_misses_ << std::endl;
@@ -422,7 +422,7 @@ HiddenClassCache& HiddenClassCache::get_instance() {
 }
 
 //=============================================================================
-// HiddenClassObject Implementation - Objects with V8-style optimization
+// HiddenClassObject Implementation - Objects with standard optimization
 //=============================================================================
 
 HiddenClassObject::HiddenClassObject(std::shared_ptr<HiddenClass> hidden_class)
@@ -584,7 +584,7 @@ bool HiddenClassObject::is_optimized() const {
 }
 
 void HiddenClassObject::print_object_layout() const {
-    std::cout << "🏗️  OBJECT LAYOUT:" << std::endl;
+    std::cout << "�️  OBJECT LAYOUT:" << std::endl;
     if (hidden_class_) {
         std::cout << "  Hidden Class: " << hidden_class_->get_class_id() << std::endl;
         std::cout << "  Properties: " << property_values_.size() << std::endl;
@@ -606,12 +606,12 @@ namespace HiddenClassIntegration {
 
 void initialize_hidden_classes() {
     HiddenClassCache::get_instance();
-    std::cout << "🚀 HIDDEN CLASS SYSTEM INITIALIZED" << std::endl;
+    std::cout << "� HIDDEN CLASS SYSTEM INITIALIZED" << std::endl;
 }
 
 void shutdown_hidden_classes() {
     HiddenClassCache::get_instance().print_cache_statistics();
-    std::cout << "🔗 HIDDEN CLASS SYSTEM SHUTDOWN" << std::endl;
+    std::cout << "� HIDDEN CLASS SYSTEM SHUTDOWN" << std::endl;
 }
 
 std::shared_ptr<HiddenClass> create_class_for_object(Object* obj) {
@@ -647,11 +647,11 @@ void print_hidden_class_statistics() {
 }
 
 void enable_adaptive_optimization() {
-    std::cout << "🧠 ADAPTIVE OPTIMIZATION ENABLED" << std::endl;
+    std::cout << "� ADAPTIVE OPTIMIZATION ENABLED" << std::endl;
 }
 
 void tune_optimization_thresholds() {
-    std::cout << "🔧 OPTIMIZATION THRESHOLDS TUNED" << std::endl;
+    std::cout << "OPTIMIZATION THRESHOLDS TUNED" << std::endl;
 }
 
 } // namespace HiddenClassIntegration

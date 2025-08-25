@@ -20,7 +20,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Loop Optimizer Implementation - PHASE 3: Advanced loop optimizations
+// Loop Optimizer Implementation - Advanced loop optimizations
 //=============================================================================
 
 LoopOptimizer::LoopOptimizer() : simd_engine_(&SIMDMathEngine::get_instance()) {
@@ -57,7 +57,7 @@ void LoopOptimizer::analyze_loop(uint32_t loop_id, const AST* loop_body) {
     
     info.unroll_factor = std::min(info.unroll_factor, MAX_UNROLL_FACTOR);
     
-    std::cout << "🔍 LOOP ANALYZED: ID=" << loop_id 
+    std::cout << "LOOP ANALYZED: ID=" << loop_id 
              << ", Unroll=" << info.unroll_factor 
              << ", Vectorizable=" << (info.is_vectorizable ? "Yes" : "No") << std::endl;
 }
@@ -160,7 +160,7 @@ void LoopOptimizer::print_loop_optimization_report() const {
 //=============================================================================
 
 FunctionInliner::FunctionInliner() {
-    std::cout << "📤 FUNCTION INLINER INITIALIZED" << std::endl;
+    std::cout << "� FUNCTION INLINER INITIALIZED" << std::endl;
 }
 
 FunctionInliner::~FunctionInliner() {
@@ -193,7 +193,7 @@ void FunctionInliner::analyze_function_for_inlining(Function* func) {
         static_cast<size_t>(candidate.cost_benefit_ratio * 20), size_t(80)
     );
     
-    std::cout << "📊 INLINE ANALYSIS: Function analyzed, Benefit=" 
+    std::cout << "� INLINE ANALYSIS: Function analyzed, Benefit=" 
              << candidate.inline_benefit_score << ", Speedup=" 
              << candidate.estimated_speedup_percentage << "%" << std::endl;
 }
@@ -220,7 +220,7 @@ bool FunctionInliner::inline_function_call(Function* caller, Function* callee, s
     MICROSECOND_TIMER("function_inlining");
     
     // Perform function inlining (simplified)
-    std::cout << "📤 FUNCTION INLINED: " << callee << " into " << caller 
+    std::cout << "� FUNCTION INLINED: " << callee << " into " << caller 
              << " at call site " << call_site << std::endl;
     
     // Update statistics
@@ -233,7 +233,7 @@ bool FunctionInliner::inline_function_call(Function* caller, Function* callee, s
 }
 
 void FunctionInliner::print_inlining_report() const {
-    std::cout << "📤 FUNCTION INLINING REPORT:" << std::endl;
+    std::cout << "� FUNCTION INLINING REPORT:" << std::endl;
     std::cout << "  Candidate Functions: " << inline_candidates_.size() << std::endl;
     
     size_t inlinable = 0;
@@ -318,7 +318,7 @@ bool AdvancedCodeGenerator::compile_with_advanced_optimizations(Function* func, 
     stats_.total_compile_time_ns += duration;
     stats_.total_optimizations_applied += static_cast<int>(level);
     
-    std::cout << "✅ ADVANCED COMPILATION COMPLETE: " << duration / 1000.0 << " μs" << std::endl;
+    std::cout << "ADVANCED COMPILATION COMPLETE: " << duration / 1000.0 << " μs" << std::endl;
     
     return success;
 }
@@ -337,7 +337,7 @@ bool AdvancedCodeGenerator::optimize_arithmetic_operations(Function* func) {
     MICROSECOND_TIMER("arithmetic_optimization");
     
     // Optimize arithmetic operations
-    std::cout << "🧮 OPTIMIZING ARITHMETIC: Function=" << func << std::endl;
+    std::cout << "OPTIMIZING ARITHMETIC: Function=" << func << std::endl;
     
     return true;
 }
@@ -346,7 +346,7 @@ bool AdvancedCodeGenerator::eliminate_dead_code(Function* func) {
     MICROSECOND_TIMER("dead_code_elimination");
     
     // Remove dead code
-    std::cout << "🗑️  ELIMINATING DEAD CODE: Function=" << func << std::endl;
+    std::cout << "�️  ELIMINATING DEAD CODE: Function=" << func << std::endl;
     
     return true;
 }
@@ -355,7 +355,7 @@ bool AdvancedCodeGenerator::propagate_constants(Function* func) {
     MICROSECOND_TIMER("constant_propagation");
     
     // Propagate constants
-    std::cout << "📊 PROPAGATING CONSTANTS: Function=" << func << std::endl;
+    std::cout << "� PROPAGATING CONSTANTS: Function=" << func << std::endl;
     
     return true;
 }
@@ -364,7 +364,7 @@ bool AdvancedCodeGenerator::optimize_branch_prediction(Function* func) {
     MICROSECOND_TIMER("branch_optimization");
     
     // Optimize branches for better prediction
-    std::cout << "🔀 OPTIMIZING BRANCHES: Function=" << func << std::endl;
+    std::cout << "� OPTIMIZING BRANCHES: Function=" << func << std::endl;
     
     return true;
 }
@@ -373,7 +373,7 @@ bool AdvancedCodeGenerator::apply_speculative_optimizations(Function* func) {
     MICROSECOND_TIMER("speculative_optimization");
     
     // Apply aggressive speculative optimizations
-    std::cout << "🎯 APPLYING SPECULATIVE OPTIMIZATIONS: Function=" << func << std::endl;
+    std::cout << "� APPLYING SPECULATIVE OPTIMIZATIONS: Function=" << func << std::endl;
     
     return true;
 }
@@ -479,7 +479,7 @@ void MicrosecondPerformanceMonitor::print_microsecond_report() const {
     
     for (const auto& [name, metrics] : metrics_) {
         if (metrics.total_calls > 0) {
-            std::cout << "🔧 " << name << ":" << std::endl;
+            std::cout << name << ":" << std::endl;
             std::cout << "  Calls: " << metrics.total_calls << std::endl;
             std::cout << "  Total Time: " << (metrics.total_time_ns / 1000.0) << " μs" << std::endl;
             std::cout << "  Average: " << (metrics.average_time_ns / 1000.0) << " μs" << std::endl;
@@ -502,7 +502,7 @@ void MicrosecondPerformanceMonitor::print_nanosecond_report() const {
     
     for (const auto& [name, metrics] : metrics_) {
         if (metrics.total_calls > 0) {
-            std::cout << "🔧 " << name << ":" << std::endl;
+            std::cout << name << ":" << std::endl;
             std::cout << "  Calls: " << metrics.total_calls << std::endl;
             std::cout << "  Total Time: " << metrics.total_time_ns << " ns" << std::endl;
             std::cout << "  Average: " << static_cast<uint64_t>(metrics.average_time_ns) << " ns" << std::endl;

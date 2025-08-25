@@ -17,7 +17,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Shape-Based Optimization System - PHASE 2: V8-Level Performance
+// Shape-Based Optimization System - High-performance Implementation
 //=============================================================================
 
 // Forward declarations
@@ -252,7 +252,7 @@ private:
 };
 
 //=============================================================================
-// Shape-Based Inline Cache - V8-style property access optimization
+// Shape-Based Inline Cache - Standard property access optimization
 //=============================================================================
 
 class ShapeInlineCache {

@@ -27,15 +27,15 @@ namespace Quanta {
 //=============================================================================
 
 NUMATopology::NUMATopology() : local_node_id_(0), numa_available_(false) {
-    std::cout << "ðŸ§  NUMA TOPOLOGY DETECTOR INITIALIZED" << std::endl;
+    std::cout << "  NUMA TOPOLOGY DETECTOR INITIALIZED" << std::endl;
 }
 
 NUMATopology::~NUMATopology() {
-    std::cout << "ðŸ§  NUMA TOPOLOGY DETECTOR SHUTDOWN" << std::endl;
+    std::cout << "  NUMA TOPOLOGY DETECTOR SHUTDOWN" << std::endl;
 }
 
 bool NUMATopology::detect_numa_topology() {
-    std::cout << "ðŸ” Detecting NUMA topology..." << std::endl;
+    std::cout << " Detecting NUMA topology..." << std::endl;
     
     nodes_.clear();
     distance_matrix_.clear();
@@ -65,7 +65,7 @@ bool NUMATopology::detect_numa_topology() {
     
     detect_distances();
     
-    std::cout << "âœ… NUMA topology detected:" << std::endl;
+    std::cout << " NUMA topology detected:" << std::endl;
     std::cout << "  Nodes: " << nodes_.size() << std::endl;
     std::cout << "  NUMA available: " << (numa_available_ ? "YES" : "NO") << std::endl;
     
@@ -206,7 +206,7 @@ uint32_t NUMATopology::get_distance(uint32_t from_node, uint32_t to_node) const 
 }
 
 void NUMATopology::print_topology() const {
-    std::cout << "ðŸ§  NUMA TOPOLOGY" << std::endl;
+    std::cout << "  NUMA TOPOLOGY" << std::endl;
     std::cout << "================" << std::endl;
     std::cout << "NUMA Available: " << (numa_available_ ? "YES" : "NO") << std::endl;
     std::cout << "Node Count: " << nodes_.size() << std::endl;
@@ -266,12 +266,12 @@ NUMAAllocator::NUMAAllocator()
         node_allocated_bytes_[i] = 0;
     }
     
-    std::cout << "ðŸ’¾ NUMA ALLOCATOR INITIALIZED (" << node_count << " nodes)" << std::endl;
+    std::cout << "¾ NUMA ALLOCATOR INITIALIZED (" << node_count << " nodes)" << std::endl;
 }
 
 NUMAAllocator::~NUMAAllocator() {
     print_allocation_statistics();
-    std::cout << "ðŸ’¾ NUMA ALLOCATOR SHUTDOWN" << std::endl;
+    std::cout << "¾ NUMA ALLOCATOR SHUTDOWN" << std::endl;
 }
 
 void* NUMAAllocator::allocate(size_t size, uint32_t preferred_node) {
@@ -298,7 +298,7 @@ void* NUMAAllocator::allocate(size_t size, uint32_t preferred_node) {
         allocations_[ptr] = info;
         node_allocated_bytes_[target_node] += size;
         
-        std::cout << "ðŸ’¾ Allocated " << size << " bytes on node " << target_node 
+        std::cout << "¾ Allocated " << size << " bytes on node " << target_node 
                  << " at " << ptr << std::endl;
     }
     
@@ -331,7 +331,7 @@ void NUMAAllocator::deallocate(void* ptr) {
         
         node_allocated_bytes_[info.node_id] -= info.size;
         
-        std::cout << "ðŸ’¾ Deallocated " << info.size << " bytes from node " 
+        std::cout << "¾ Deallocated " << info.size << " bytes from node " 
                  << info.node_id << " at " << ptr << std::endl;
         
         allocations_.erase(it);
@@ -424,7 +424,7 @@ uint32_t NUMAAllocator::choose_latency_optimal_node() const {
 void NUMAAllocator::print_allocation_statistics() const {
     std::lock_guard<std::mutex> lock(allocator_mutex_);
     
-    std::cout << "ðŸ’¾ NUMA ALLOCATION STATISTICS" << std::endl;
+    std::cout << "¾ NUMA ALLOCATION STATISTICS" << std::endl;
     std::cout << "=============================" << std::endl;
     std::cout << "Active allocations: " << allocations_.size() << std::endl;
     std::cout << "Current policy: " << static_cast<int>(current_policy_) << std::endl;
@@ -448,16 +448,16 @@ void NUMAAllocator::print_allocation_statistics() const {
 //=============================================================================
 
 NUMAMemoryManager::NUMAMemoryManager() : auto_optimization_enabled_(false) {
-    std::cout << "ðŸ§  NUMA MEMORY MANAGER INITIALIZED" << std::endl;
+    std::cout << "  NUMA MEMORY MANAGER INITIALIZED" << std::endl;
 }
 
 NUMAMemoryManager::~NUMAMemoryManager() {
     shutdown();
-    std::cout << "ðŸ§  NUMA MEMORY MANAGER SHUTDOWN" << std::endl;
+    std::cout << "  NUMA MEMORY MANAGER SHUTDOWN" << std::endl;
 }
 
 bool NUMAMemoryManager::initialize() {
-    std::cout << "ðŸ”§ Initializing NUMA memory management..." << std::endl;
+    std::cout << "§ Initializing NUMA memory management..." << std::endl;
     
     // Initialize topology
     auto& topology = NUMATopology::get_instance();
@@ -473,7 +473,7 @@ bool NUMAMemoryManager::initialize() {
     // Start performance monitoring
     performance_monitor_->start_monitoring();
     
-    std::cout << "âœ… NUMA memory management initialized" << std::endl;
+    std::cout << " NUMA memory management initialized" << std::endl;
     topology.print_topology();
     
     return true;
@@ -544,18 +544,18 @@ NUMAThreadManager::NUMAThreadManager() {
         count = 0;
     }
     
-    std::cout << "ðŸ§µ NUMA THREAD MANAGER INITIALIZED" << std::endl;
+    std::cout << "µ NUMA THREAD MANAGER INITIALIZED" << std::endl;
 }
 
 NUMAThreadManager::~NUMAThreadManager() {
     print_thread_statistics();
-    std::cout << "ðŸ§µ NUMA THREAD MANAGER SHUTDOWN" << std::endl;
+    std::cout << "µ NUMA THREAD MANAGER SHUTDOWN" << std::endl;
 }
 
 void NUMAThreadManager::print_thread_statistics() const {
     std::lock_guard<std::mutex> lock(manager_mutex_);
     
-    std::cout << "ðŸ§µ NUMA THREAD STATISTICS" << std::endl;
+    std::cout << "µ NUMA THREAD STATISTICS" << std::endl;
     std::cout << "=========================" << std::endl;
     std::cout << "Registered threads: " << threads_.size() << std::endl;
     
@@ -573,13 +573,13 @@ NUMAPerformanceMonitor::NUMAPerformanceMonitor() {
     auto& topology = NUMATopology::get_instance();
     node_metrics_.resize(topology.get_node_count());
     
-    std::cout << "ðŸ“Š NUMA PERFORMANCE MONITOR INITIALIZED" << std::endl;
+    std::cout << "Š NUMA PERFORMANCE MONITOR INITIALIZED" << std::endl;
 }
 
 NUMAPerformanceMonitor::~NUMAPerformanceMonitor() {
     stop_monitoring();
     print_performance_summary();
-    std::cout << "ðŸ“Š NUMA PERFORMANCE MONITOR SHUTDOWN" << std::endl;
+    std::cout << "Š NUMA PERFORMANCE MONITOR SHUTDOWN" << std::endl;
 }
 
 void NUMAPerformanceMonitor::start_monitoring() {
@@ -587,7 +587,7 @@ void NUMAPerformanceMonitor::start_monitoring() {
     
     should_stop_ = false;
     monitoring_thread_ = std::thread(&NUMAPerformanceMonitor::monitoring_loop, this);
-    std::cout << "ðŸ“Š NUMA performance monitoring started" << std::endl;
+    std::cout << "Š NUMA performance monitoring started" << std::endl;
 }
 
 void NUMAPerformanceMonitor::stop_monitoring() {
@@ -595,7 +595,7 @@ void NUMAPerformanceMonitor::stop_monitoring() {
     if (monitoring_thread_.joinable()) {
         monitoring_thread_.join();
     }
-    std::cout << "ðŸ“Š NUMA performance monitoring stopped" << std::endl;
+    std::cout << "Š NUMA performance monitoring stopped" << std::endl;
 }
 
 void NUMAPerformanceMonitor::monitoring_loop() {
@@ -618,7 +618,7 @@ void NUMAPerformanceMonitor::analyze_access_patterns() {
 }
 
 void NUMAPerformanceMonitor::print_performance_summary() const {
-    std::cout << "ðŸ“Š NUMA PERFORMANCE SUMMARY" << std::endl;
+    std::cout << "Š NUMA PERFORMANCE SUMMARY" << std::endl;
     std::cout << "===========================" << std::endl;
     
     for (size_t i = 0; i < node_metrics_.size(); ++i) {
@@ -643,25 +643,25 @@ void NUMAPerformanceMonitor::print_performance_summary() const {
 namespace NUMAIntegration {
 
 void initialize_numa_system() {
-    std::cout << "ðŸ§  INITIALIZING NUMA SYSTEM" << std::endl;
+    std::cout << "  INITIALIZING NUMA SYSTEM" << std::endl;
     
     auto& manager = NUMAMemoryManager::get_instance();
     manager.initialize();
     
-    std::cout << "âœ… NUMA SYSTEM INITIALIZED" << std::endl;
-    std::cout << "  ðŸ§  Topology detection: Complete" << std::endl;
-    std::cout << "  ðŸ’¾ NUMA allocator: Ready" << std::endl;
-    std::cout << "  ðŸ§µ Thread manager: Ready" << std::endl;
-    std::cout << "  ðŸ“Š Performance monitor: Active" << std::endl;
+    std::cout << " NUMA SYSTEM INITIALIZED" << std::endl;
+    std::cout << "    Topology detection: Complete" << std::endl;
+    std::cout << "  ¾ NUMA allocator: Ready" << std::endl;
+    std::cout << "  µ Thread manager: Ready" << std::endl;
+    std::cout << "  Š Performance monitor: Active" << std::endl;
 }
 
 void shutdown_numa_system() {
-    std::cout << "ðŸ§  SHUTTING DOWN NUMA SYSTEM" << std::endl;
+    std::cout << "  SHUTTING DOWN NUMA SYSTEM" << std::endl;
     
     auto& manager = NUMAMemoryManager::get_instance();
     manager.shutdown();
     
-    std::cout << "âœ… NUMA SYSTEM SHUTDOWN COMPLETE" << std::endl;
+    std::cout << " NUMA SYSTEM SHUTDOWN COMPLETE" << std::endl;
 }
 
 bool is_numa_available() {
@@ -675,7 +675,7 @@ uint32_t get_numa_node_count() {
 }
 
 void print_numa_recommendations() {
-    std::cout << "ðŸ§  NUMA OPTIMIZATION RECOMMENDATIONS" << std::endl;
+    std::cout << "  NUMA OPTIMIZATION RECOMMENDATIONS" << std::endl;
     std::cout << "====================================" << std::endl;
     
     auto& topology = NUMATopology::get_instance();

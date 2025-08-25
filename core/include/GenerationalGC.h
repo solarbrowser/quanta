@@ -20,7 +20,7 @@
 namespace Quanta {
 
 //=============================================================================
-// Generational Garbage Collection - PHASE 2: V8-Level Memory Management
+// Generational Garbage Collection - High-performance Memory Management
 //=============================================================================
 
 // Forward declarations

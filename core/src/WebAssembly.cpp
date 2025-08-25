@@ -17,7 +17,7 @@
 namespace Quanta {
 
 //=============================================================================
-// WASMValue Implementation - PHASE 3: High-performance value system
+// WASMValue Implementation - High-performance value system
 //=============================================================================
 
 Value WASMValue::to_js_value() const {
@@ -57,12 +57,12 @@ WASMMemory::WASMMemory(uint32_t initial_pages, uint32_t max_pages)
     
     memory_.resize(initial_pages * WASM_PAGE_SIZE);
     
-    std::cout << "💾 WASM MEMORY CREATED: " << initial_pages << " pages (" 
+    std::cout << "� WASM MEMORY CREATED: " << initial_pages << " pages (" 
              << (initial_pages * 64) << " KB)" << std::endl;
 }
 
 WASMMemory::~WASMMemory() {
-    std::cout << "💾 WASM MEMORY DESTROYED: " << current_pages_ << " pages" << std::endl;
+    std::cout << "� WASM MEMORY DESTROYED: " << current_pages_ << " pages" << std::endl;
 }
 
 bool WASMMemory::grow(uint32_t delta_pages) {
@@ -75,7 +75,7 @@ bool WASMMemory::grow(uint32_t delta_pages) {
     memory_.resize(new_size * WASM_PAGE_SIZE);
     current_pages_ = new_size;
     
-    std::cout << "📈 WASM MEMORY GROWN: +" << delta_pages << " pages (total: " 
+    std::cout << "� WASM MEMORY GROWN: +" << delta_pages << " pages (total: " 
              << current_pages_ << " pages)" << std::endl;
     
     return true;
@@ -136,7 +136,7 @@ std::vector<WASMValue> WASMFunction::execute(const std::vector<WASMValue>& args,
     
     execution_count++;
     
-    std::cout << "🚀 WASM FUNCTION EXECUTION: Count=" << execution_count << std::endl;
+    std::cout << "� WASM FUNCTION EXECUTION: Count=" << execution_count << std::endl;
     
     // Check if function should be JIT compiled
     if (execution_count > 10 && !is_compiled) {
@@ -160,7 +160,7 @@ bool WASMFunction::compile_to_native() {
     
     MICROSECOND_TIMER("wasm_jit_compilation");
     
-    std::cout << "🔥 WASM JIT COMPILATION: Function compiled to native code" << std::endl;
+    std::cout << "� WASM JIT COMPILATION: Function compiled to native code" << std::endl;
     
     // Simplified compilation
     compiled_code = reinterpret_cast<void*>(0x1000); // Dummy address
@@ -178,11 +178,11 @@ WASMTable::WASMTable(uint32_t initial_size, uint32_t max_size, WASMValueType typ
     
     elements_.resize(initial_size, nullptr);
     
-    std::cout << "📋 WASM TABLE CREATED: " << initial_size << " elements" << std::endl;
+    std::cout << "� WASM TABLE CREATED: " << initial_size << " elements" << std::endl;
 }
 
 WASMTable::~WASMTable() {
-    std::cout << "📋 WASM TABLE DESTROYED: " << elements_.size() << " elements" << std::endl;
+    std::cout << "� WASM TABLE DESTROYED: " << elements_.size() << " elements" << std::endl;
 }
 
 WASMFunction* WASMTable::get_function(uint32_t index) const {
@@ -206,7 +206,7 @@ std::vector<WASMValue> WASMTable::call_indirect(uint32_t index, const std::vecto
         throw std::runtime_error("WASM call_indirect: null function");
     }
     
-    std::cout << "📞 WASM CALL INDIRECT: Table index=" << index << std::endl;
+    std::cout << "� WASM CALL INDIRECT: Table index=" << index << std::endl;
     
     return func->execute(args, module);
 }
@@ -219,19 +219,19 @@ WASMModule::WASMModule(const std::string& name)
     : module_name_(name), is_instantiated_(false), 
       total_function_calls_(0), total_execution_time_ns_(0) {
     
-    std::cout << "📦 WASM MODULE CREATED: " << (name.empty() ? "unnamed" : name) << std::endl;
+    std::cout << "� WASM MODULE CREATED: " << (name.empty() ? "unnamed" : name) << std::endl;
 }
 
 WASMModule::~WASMModule() {
     print_performance_stats();
-    std::cout << "📦 WASM MODULE DESTROYED: " << module_name_ << std::endl;
+    std::cout << "� WASM MODULE DESTROYED: " << module_name_ << std::endl;
 }
 
 uint32_t WASMModule::add_type(const WASMFunctionType& type) {
     types_.push_back(type);
     uint32_t index = types_.size() - 1;
     
-    std::cout << "🏷️  WASM TYPE ADDED: Index=" << index 
+    std::cout << "�️  WASM TYPE ADDED: Index=" << index 
              << ", Params=" << type.params.size() 
              << ", Results=" << type.results.size() << std::endl;
     
@@ -251,7 +251,7 @@ uint32_t WASMModule::add_memory(std::unique_ptr<WASMMemory> memory) {
     memories_.push_back(std::move(memory));
     uint32_t index = memories_.size() - 1;
     
-    std::cout << "💾 WASM MEMORY ADDED: Index=" << index << std::endl;
+    std::cout << "� WASM MEMORY ADDED: Index=" << index << std::endl;
     
     return index;
 }
@@ -259,7 +259,7 @@ uint32_t WASMModule::add_memory(std::unique_ptr<WASMMemory> memory) {
 void WASMModule::add_export(const std::string& name, uint32_t index) {
     exports_[name] = index;
     
-    std::cout << "📤 WASM EXPORT ADDED: '" << name << "' -> Index=" << index << std::endl;
+    std::cout << "� WASM EXPORT ADDED: '" << name << "' -> Index=" << index << std::endl;
 }
 
 WASMFunction* WASMModule::get_exported_function(const std::string& name) {
@@ -275,7 +275,7 @@ bool WASMModule::instantiate() {
         return true;
     }
     
-    std::cout << "🚀 WASM MODULE INSTANTIATION STARTED" << std::endl;
+    std::cout << "� WASM MODULE INSTANTIATION STARTED" << std::endl;
     
     // Initialize memory if present
     if (!memories_.empty()) {
@@ -292,7 +292,7 @@ bool WASMModule::instantiate() {
     
     is_instantiated_ = true;
     
-    std::cout << "✅ WASM MODULE INSTANTIATED: " << module_name_ << std::endl;
+    std::cout << " WASM MODULE INSTANTIATED: " << module_name_ << std::endl;
     std::cout << "  Functions: " << functions_.size() << std::endl;
     std::cout << "  Types: " << types_.size() << std::endl;
     std::cout << "  Exports: " << exports_.size() << std::endl;
@@ -312,7 +312,7 @@ std::vector<WASMValue> WASMModule::call_function(const std::string& name, const 
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    std::cout << "📞 WASM FUNCTION CALL: '" << name << "' with " << args.size() << " args" << std::endl;
+    std::cout << "� WASM FUNCTION CALL: '" << name << "' with " << args.size() << " args" << std::endl;
     
     std::vector<WASMValue> results = func->execute(args, this);
     
@@ -322,7 +322,7 @@ std::vector<WASMValue> WASMModule::call_function(const std::string& name, const 
     total_function_calls_++;
     total_execution_time_ns_ += duration;
     
-    std::cout << "✅ WASM FUNCTION COMPLETED: " << (duration / 1000.0) << " μs" << std::endl;
+    std::cout << " WASM FUNCTION COMPLETED: " << (duration / 1000.0) << " μs" << std::endl;
     
     return results;
 }
@@ -330,7 +330,7 @@ std::vector<WASMValue> WASMModule::call_function(const std::string& name, const 
 void WASMModule::print_performance_stats() const {
     if (total_function_calls_ == 0) return;
     
-    std::cout << "📊 WASM MODULE PERFORMANCE STATS:" << std::endl;
+    std::cout << "� WASM MODULE PERFORMANCE STATS:" << std::endl;
     std::cout << "  Module: " << module_name_ << std::endl;
     std::cout << "  Total Function Calls: " << total_function_calls_ << std::endl;
     std::cout << "  Total Execution Time: " << (total_execution_time_ns_ / 1000000.0) << " ms" << std::endl;
@@ -346,18 +346,18 @@ void WASMModule::print_performance_stats() const {
 WASMInterpreter::WASMInterpreter(WASMModule* module) 
     : module_(module), jit_enabled_(true) {
     
-    std::cout << "🎯 WASM INTERPRETER CREATED" << std::endl;
+    std::cout << "� WASM INTERPRETER CREATED" << std::endl;
 }
 
 WASMInterpreter::~WASMInterpreter() {
     print_execution_stats();
-    std::cout << "🎯 WASM INTERPRETER DESTROYED" << std::endl;
+    std::cout << "� WASM INTERPRETER DESTROYED" << std::endl;
 }
 
 std::vector<WASMValue> WASMInterpreter::execute_function(WASMFunction* func, const std::vector<WASMValue>& args) {
     MICROSECOND_TIMER("wasm_interpreter_execution");
     
-    std::cout << "🎯 WASM INTERPRETER EXECUTION: Function with " << args.size() << " args" << std::endl;
+    std::cout << "� WASM INTERPRETER EXECUTION: Function with " << args.size() << " args" << std::endl;
     
     // Check for JIT compiled version
     if (jit_enabled_ && func->is_compiled) {
@@ -391,7 +391,7 @@ WASMValue WASMInterpreter::pop() {
 }
 
 void WASMInterpreter::print_execution_stats() const {
-    std::cout << "🎯 WASM INTERPRETER STATS:" << std::endl;
+    std::cout << "� WASM INTERPRETER STATS:" << std::endl;
     std::cout << "  JIT Enabled: " << (jit_enabled_ ? "Yes" : "No") << std::endl;
     std::cout << "  Compiled Functions: " << compiled_functions_.size() << std::endl;
     std::cout << "  Stack Size: " << operand_stack_.size() << std::endl;
@@ -404,7 +404,7 @@ void WASMInterpreter::print_execution_stats() const {
 WASMJITCompiler::WASMJITCompiler() 
     : total_compilations_(0), total_compile_time_ns_(0), compiled_function_calls_(0) {
     
-    std::cout << "🔥 WASM JIT COMPILER INITIALIZED" << std::endl;
+    std::cout << "� WASM JIT COMPILER INITIALIZED" << std::endl;
 }
 
 WASMJITCompiler::~WASMJITCompiler() {
@@ -420,7 +420,7 @@ bool WASMJITCompiler::compile_function(WASMFunction* func, const WASMFunctionTyp
     
     auto start = std::chrono::high_resolution_clock::now();
     
-    std::cout << "🔥 WASM JIT COMPILING: Function with " << type.params.size() 
+    std::cout << "� WASM JIT COMPILING: Function with " << type.params.size() 
              << " params, " << type.results.size() << " results" << std::endl;
     
     // Simulate compilation process
@@ -432,7 +432,7 @@ bool WASMJITCompiler::compile_function(WASMFunction* func, const WASMFunctionTyp
     total_compilations_++;
     total_compile_time_ns_ += duration;
     
-    std::cout << "✅ WASM JIT COMPILATION COMPLETE: " << (duration / 1000.0) << " μs" << std::endl;
+    std::cout << " WASM JIT COMPILATION COMPLETE: " << (duration / 1000.0) << " μs" << std::endl;
     
     return true;
 }
@@ -447,7 +447,7 @@ bool WASMJITCompiler::is_compiled(WASMFunction* func) const {
 }
 
 void WASMJITCompiler::print_compilation_stats() const {
-    std::cout << "🔥 WASM JIT COMPILER STATS:" << std::endl;
+    std::cout << "� WASM JIT COMPILER STATS:" << std::endl;
     std::cout << "  Total Compilations: " << total_compilations_ << std::endl;
     std::cout << "  Total Compile Time: " << (total_compile_time_ns_ / 1000000.0) << " ms" << std::endl;
     
@@ -473,7 +473,7 @@ namespace WASMJavaScriptIntegration {
 std::unique_ptr<WASMModule> compile_wasm_module(const std::vector<uint8_t>& wasm_bytes) {
     MICROSECOND_TIMER("wasm_module_compilation");
     
-    std::cout << "📦 COMPILING WASM MODULE: " << wasm_bytes.size() << " bytes" << std::endl;
+    std::cout << "� COMPILING WASM MODULE: " << wasm_bytes.size() << " bytes" << std::endl;
     
     // Create a simple test module
     auto module = std::make_unique<WASMModule>("compiled_module");
@@ -499,7 +499,7 @@ std::unique_ptr<WASMModule> compile_wasm_module(const std::vector<uint8_t>& wasm
     // Instantiate the module
     module->instantiate();
     
-    std::cout << "✅ WASM MODULE COMPILED SUCCESSFULLY" << std::endl;
+    std::cout << " WASM MODULE COMPILED SUCCESSFULLY" << std::endl;
     
     return module;
 }
@@ -517,7 +517,7 @@ Value call_wasm_function(WASMModule* module, const std::string& function_name, c
         wasm_args.push_back(WASMValue::from_js_value(arg));
     }
     
-    std::cout << "📞 JS->WASM CALL: '" << function_name << "' with " << args.size() << " args" << std::endl;
+    std::cout << "� JS->WASM CALL: '" << function_name << "' with " << args.size() << " args" << std::endl;
     
     // Call the WASM function
     std::vector<WASMValue> results = module->call_function(function_name, wasm_args);
@@ -535,13 +535,13 @@ void enable_wasm_simd_optimization() {
 }
 
 void enable_wasm_jit_compilation() {
-    std::cout << "🔥 WASM JIT COMPILATION ENABLED" << std::endl;
+    std::cout << "� WASM JIT COMPILATION ENABLED" << std::endl;
 }
 
 void print_wasm_module_info(const WASMModule* module) {
     if (!module) return;
     
-    std::cout << "📦 WASM MODULE INFO:" << std::endl;
+    std::cout << "� WASM MODULE INFO:" << std::endl;
     std::cout << "  Instantiated: " << (module->is_instantiated() ? "Yes" : "No") << std::endl;
     std::cout << "  Function Calls: " << module->get_total_function_calls() << std::endl;
 }
@@ -551,12 +551,12 @@ void initialize_wasm_runtime() {
     enable_wasm_jit_compilation();
     enable_wasm_simd_optimization();
     
-    std::cout << "🚀 WASM RUNTIME INITIALIZED" << std::endl;
+    std::cout << "� WASM RUNTIME INITIALIZED" << std::endl;
 }
 
 void shutdown_wasm_runtime() {
     WASMJITCompiler::get_instance().print_compilation_stats();
-    std::cout << "🔗 WASM RUNTIME SHUTDOWN" << std::endl;
+    std::cout << "� WASM RUNTIME SHUTDOWN" << std::endl;
 }
 
 } // namespace WASMJavaScriptIntegration

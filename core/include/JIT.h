@@ -68,7 +68,7 @@ private:
     uint32_t recompile_threshold_;
     bool jit_enabled_;
     
-    // PHASE 2: Integration with Phase 1 hot function detection
+    // Integration with hot function detection
     std::unordered_map<class Function*, CompiledCode> function_cache_;
     uint32_t function_compile_threshold_;
     
@@ -128,7 +128,7 @@ public:
     std::function<Value(Context&)> compile_advanced_optimization(ASTNode* node);
     std::function<Value(Context&)> compile_maximum_optimization(ASTNode* node);
     
-    // PHASE 2: Hot Function JIT Compilation
+    // Hot Function JIT Compilation
     bool should_compile_function(class Function* func);
     bool try_execute_compiled_function(class Function* func, Context& ctx, const std::vector<Value>& args, Value& result);
     bool compile_hot_function(class Function* func);

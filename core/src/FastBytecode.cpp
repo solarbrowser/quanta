@@ -5,7 +5,7 @@
  */
 
 #include "../include/FastBytecode.h"
-#include "../include/UltraPerformance.h"
+#include "../include/HighPerformance.h"
 #include <iostream>
 #include <regex>
 #include <chrono>
@@ -14,12 +14,12 @@
 namespace Quanta {
 
 //=============================================================================
-// Ultra-Fast Bytecode VM Implementation
+// Optimized Bytecode VM Implementation
 //=============================================================================
 
 FastBytecodeVM::FastBytecodeVM() : pc_(0) {
     registers_.resize(256); // Pre-allocate registers
-    // Ultra-fast bytecode VM initialized
+    // Optimized bytecode VM initialized
 }
 
 FastBytecodeVM::~FastBytecodeVM() {
@@ -33,9 +33,9 @@ bool FastBytecodeVM::compile_direct(const std::string& source) {
     code_.clear();
     pc_ = 0;
     
-    // Try ultra-fast pattern compilation first
+    // Try optimized pattern compilation first
     if (DirectPatternCompiler::try_compile_math_loop(source, *this)) {
-        std::cout << "🔥 PATTERN DETECTED: Using ultra-fast mathematical loop optimization" << std::endl;
+        std::cout << "PATTERN DETECTED: Using optimized mathematical loop optimization" << std::endl;
         return true;
     }
     
@@ -49,14 +49,14 @@ void FastBytecodeVM::emit(FastOp op, uint32_t a, uint32_t b, uint32_t c, double 
 }
 
 Value FastBytecodeVM::execute_fast() {
-    std::cout << "⚡ EXECUTING ULTRA-FAST BYTECODE" << std::endl;
+    std::cout << "EXECUTING OPTIMIZED BYTECODE" << std::endl;
     
     auto start = std::chrono::high_resolution_clock::now();
     
     pc_ = 0;
     Value result;
     
-    // ULTRA-FAST VM LOOP
+    // OPTIMIZED VM LOOP
     while (pc_ < code_.size()) {
         const FastInstruction& instr = code_[pc_];
         
@@ -82,27 +82,27 @@ Value FastBytecodeVM::execute_fast() {
                 break;
                 
             case FastOp::MATH_LOOP_SUM: {
-                // 🔥🔥🔥 NUCLEAR ULTRA-PERFORMANCE OPTIMIZATION 🔥🔥🔥
+                // OPTIMIZED HIGH PERFORMANCE CALCULATION
                 int64_t n = static_cast<int64_t>(instr.immediate);
-                std::cout << "💥💥💥 ACTIVATING NUCLEAR PERFORMANCE MODULE 💥💥💥" << std::endl;
+                std::cout << "ACTIVATING OPTIMIZED PERFORMANCE MODULE" << std::endl;
                 
-                auto nuclear_start = std::chrono::high_resolution_clock::now();
+                auto opt_start = std::chrono::high_resolution_clock::now();
                 
-                // 💀 NUCLEAR GAUSS FORMULA - INSTANT CALCULATION!
-                int64_t sum = UltraPerformance::ultimate_sum_optimization(n);
+                // OPTIMIZED GAUSS FORMULA - INSTANT CALCULATION!
+                int64_t sum = HighPerformance::ultimate_sum_optimization(n);
                 
-                auto nuclear_end = std::chrono::high_resolution_clock::now();
-                auto nuclear_time = std::chrono::duration_cast<std::chrono::nanoseconds>(nuclear_end - nuclear_start);
+                auto opt_end = std::chrono::high_resolution_clock::now();
+                auto opt_time = std::chrono::duration_cast<std::chrono::nanoseconds>(opt_end - opt_start);
                 
-                std::cout << "💀 NUCLEAR CALCULATION: " << n << " ops in " << nuclear_time.count() << " nanoseconds" << std::endl;
+                std::cout << "OPTIMIZED CALCULATION: " << n << " ops in " << opt_time.count() << " nanoseconds" << std::endl;
                 
-                // Calculate INSANE performance metrics
-                double ops_per_second = (n * 1000000000.0) / nuclear_time.count();
-                std::cout << "🚀 NUCLEAR PERFORMANCE: " << (ops_per_second / 1000000000.0) << " BILLION OPS/SEC!" << std::endl;
+                // Calculate high performance metrics
+                double ops_per_second = (n * 1000000000.0) / opt_time.count();
+                std::cout << "OPTIMIZED PERFORMANCE: " << (ops_per_second / 1000000000.0) << " BILLION OPS/SEC!" << std::endl;
                 
                 if (ops_per_second > 1000000000000.0) { // 1+ TRILLION
-                    std::cout << "💀💀💀 TRILLION-SCALE PERFORMANCE ACHIEVED! 💀💀💀" << std::endl;
-                    std::cout << "🔥 THIS IS FASTER THAN PHYSICS ALLOWS! 🔥" << std::endl;
+                    std::cout << "HIGH-SCALE PERFORMANCE ACHIEVED!" << std::endl;
+                    std::cout << "PERFORMANCE EXCEEDS EXPECTATIONS!" << std::endl;
                 }
                 
                 registers_[instr.a] = static_cast<double>(sum);
@@ -114,7 +114,7 @@ Value FastBytecodeVM::execute_fast() {
                 int64_t n = static_cast<int64_t>(instr.immediate);
                 int64_t result_val = 0;
                 
-                // Ultra-optimized C++ loop (still much faster than JS interpretation)
+                // Optimized C++ loop (still much faster than JS interpretation)
                 for (int64_t i = 0; i < n; ++i) {
                     result_val += i + 1;
                 }
@@ -138,13 +138,13 @@ vm_exit:
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
-    std::cout << "⚡ BYTECODE EXECUTION COMPLETED in " << duration.count() << " microseconds" << std::endl;
+    std::cout << "BYTECODE EXECUTION COMPLETED in " << duration.count() << " microseconds" << std::endl;
     
     return result;
 }
 
 //=============================================================================
-// Direct Pattern Compiler - Ultra-Fast Pattern Recognition
+// Direct Pattern Compiler - Optimized Pattern Recognition
 //=============================================================================
 
 bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, FastBytecodeVM& vm) {
@@ -155,7 +155,7 @@ bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, Fas
         return false;
     }
     
-    std::cout << "🎯 MATH LOOP DETECTED: " << params.var_name 
+    std::cout << "MATH LOOP DETECTED: " << params.var_name 
               << " from " << params.start_val << " to " << params.end_val << std::endl;
     
     // Determine the best optimization strategy
@@ -167,12 +167,12 @@ bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, Fas
          params.operation.find("i +") != std::string::npos)) {
         
         // This is a summation loop - use Gauss formula
-        std::cout << "🧮 USING GAUSS FORMULA for instant computation" << std::endl;
+        std::cout << "USING GAUSS FORMULA for instant computation" << std::endl;
         vm.emit(FastOp::MATH_LOOP_SUM, 0, 0, 0, static_cast<double>(iterations));
         
     } else {
         // Use native C++ execution for other patterns
-        std::cout << "🔥 USING NATIVE C++ EXECUTION" << std::endl;
+        std::cout << "USING NATIVE C++ EXECUTION" << std::endl;
         vm.emit(FastOp::NATIVE_EXEC, 0, 0, 0, static_cast<double>(iterations));
     }
     
@@ -206,9 +206,9 @@ DirectPatternCompiler::LoopParams DirectPatternCompiler::extract_loop_params(con
             params.operation = "summation"; // Assume summation for now
             params.valid = true;
             
-            std::cout << "✅ PATTERN " << (i+1) << " MATCHED: Loop from " << params.start_val 
+            std::cout << "PATTERN " << (i+1) << " MATCHED: Loop from " << params.start_val 
                       << " to " << params.end_val << std::endl;
-            std::cout << "🎯 DETECTED MATHEMATICAL SUMMATION LOOP!" << std::endl;
+            std::cout << "DETECTED MATHEMATICAL SUMMATION LOOP!" << std::endl;
             break;
         }
     }

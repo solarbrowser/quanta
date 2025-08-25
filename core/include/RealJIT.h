@@ -1,5 +1,5 @@
 /*
- * Real JIT Compilation for V8-level Performance
+ * Real JIT Compilation for High-performance Execution
  * This generates actual x86-64 machine code for hot functions
  */
 

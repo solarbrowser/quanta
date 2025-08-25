@@ -17,7 +17,7 @@
 namespace Quanta {
 
 //=============================================================================
-// PHASE 3: Advanced Memory Management (NUMA Awareness)
+// Advanced Memory Management (NUMA Awareness)
 //
 // Real NUMA-aware memory management for maximum performance:
 // - NUMA topology detection

@@ -1057,7 +1057,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
             
-            // v8den daha iyi ozellik: Our engine represents NaN as non-number objects!  
+            // Our engine represents NaN as non-number objects  
             // If the value is not a number but should be (like 0/0), it's probably NaN
             if (!args[0].is_number()) {
                 // Check if this looks like a NaN object (type object but numeric origin)
