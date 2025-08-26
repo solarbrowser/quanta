@@ -150,10 +150,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // CLOSURE FIX: Use captured closure variables stored in function properties
     // But maintain persistent state between calls by using the function object as storage
     auto property_names = this->get_own_property_keys();
+    // DEBUG: std::cout << "DEBUG: Function::call - found " << property_names.size() << " properties" << std::endl;
     for (const auto& prop_name : property_names) {
         if (prop_name.substr(0, 10) == "__closure_") {
             std::string var_name = prop_name.substr(10); // Remove "__closure_" prefix
             Value captured_value = this->get_property(prop_name);
+            // DEBUG: std::cout << "DEBUG: Loading closure variable '" << var_name << "' = " << captured_value.to_string() << std::endl;
             
             // Create binding that references the function's property for persistence
             function_context_ptr->create_binding(var_name, captured_value, false);

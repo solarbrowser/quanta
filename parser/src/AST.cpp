@@ -5644,15 +5644,37 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     }
     
     
-    // CLOSURE FIX: Capture current context bindings in function
+    // CLOSURE FIX: Capture variables from the current context's binding scope
     if (function_obj) {
-        auto env = ctx.get_lexical_environment();
-        if (env) {
-            auto binding_names = env->get_binding_names();
-            for (const auto& name : binding_names) {
-                Value value = env->get_binding(name);
-                if (!value.is_undefined()) {
-                    function_obj->set_property("__closure_" + name, value);
+        // Get all variables currently accessible (including parent scopes)
+        // DEBUG: std::cout << "DEBUG: Capturing closure variables for function" << std::endl;
+        
+        // Check the context's variable environment (where let/var/const are stored)
+        auto var_env = ctx.get_variable_environment();
+        if (var_env) {
+            auto var_binding_names = var_env->get_binding_names();
+            for (const auto& name : var_binding_names) {
+                if (name != "this" && name != "arguments") { // Skip special bindings
+                    Value value = ctx.get_binding(name);
+                    if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
+                        // DEBUG: std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
+                        function_obj->set_property("__closure_" + name, value);
+                    }
+                }
+            }
+        }
+        
+        // Also check lexical environment for block-scoped variables
+        auto lex_env = ctx.get_lexical_environment();
+        if (lex_env && lex_env != var_env) {
+            auto lex_binding_names = lex_env->get_binding_names();
+            for (const auto& name : lex_binding_names) {
+                if (name != "this" && name != "arguments") { // Skip special bindings
+                    Value value = ctx.get_binding(name);
+                    if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
+                        // DEBUG: std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
+                        function_obj->set_property("__closure_" + name, value);
+                    }
                 }
             }
         }
@@ -5968,15 +5990,36 @@ Value FunctionExpression::evaluate(Context& ctx) {
     // Create function object with Parameter objects
     auto function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
     
-    // CLOSURE FIX: Capture current context bindings in function
+    // CLOSURE FIX: Capture variables from the current context's binding scope  
     if (function) {
-        auto env = ctx.get_lexical_environment();
-        if (env) {
-            auto binding_names = env->get_binding_names();
-            for (const auto& name : binding_names) {
-                Value value = env->get_binding(name);
-                if (!value.is_undefined()) {
-                    function->set_property("__closure_" + name, value);
+        // DEBUG: std::cout << "DEBUG: Capturing closure variables for function expression" << std::endl;
+        
+        // Check the context's variable environment (where let/var/const are stored)
+        auto var_env = ctx.get_variable_environment();
+        if (var_env) {
+            auto var_binding_names = var_env->get_binding_names();
+            for (const auto& name : var_binding_names) {
+                if (name != "this" && name != "arguments") { // Skip special bindings
+                    Value value = ctx.get_binding(name);
+                    if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
+                        // DEBUG: std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
+                        function->set_property("__closure_" + name, value);
+                    }
+                }
+            }
+        }
+        
+        // Also check lexical environment for block-scoped variables
+        auto lex_env = ctx.get_lexical_environment();
+        if (lex_env && lex_env != var_env) {
+            auto lex_binding_names = lex_env->get_binding_names();
+            for (const auto& name : lex_binding_names) {
+                if (name != "this" && name != "arguments") { // Skip special bindings
+                    Value value = ctx.get_binding(name);
+                    if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
+                        // DEBUG: std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
+                        function->set_property("__closure_" + name, value);
+                    }
                 }
             }
         }
