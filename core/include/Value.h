@@ -89,26 +89,25 @@ private:
         return reinterpret_cast<void*>(heap_base_ + compressed);
     }
     #endif
-    // NaN-boxing implementation for optimal memory usage
+    // NaN-boxing implementation using different base NaN pattern
     // Uses IEEE 754 double precision format with tagged pointers
     static constexpr uint64_t SIGN_MASK     = 0x8000000000000000ULL;
     static constexpr uint64_t EXPONENT_MASK = 0x7FF0000000000000ULL;
     static constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
-    static constexpr uint64_t QUIET_NAN     = 0x7FF8000000000000ULL;
-    static constexpr uint64_t TAG_MASK      = 0x000F000000000000ULL;  // Back to original 4-bit
+    static constexpr uint64_t QUIET_NAN     = 0x7FF0000000000000ULL;  // Use 0x7FF0 - no tag bits set
+    static constexpr uint64_t TAG_MASK      = 0x000F000000000000ULL;  // 4-bit tag space is sufficient
     static constexpr uint64_t PAYLOAD_MASK  = 0x0000FFFFFFFFFFFFULL;  // 48-bit payload space
     
-    // Type tags - redesigned to avoid QUIET_NAN collision
-    // QUIET_NAN has bits 1000, so we avoid patterns that result in same final value
-    static constexpr uint64_t TAG_UNDEFINED = 0x0000000000000000ULL;  // Use 0x0000 (result: 0x8)
-    static constexpr uint64_t TAG_NULL      = 0x0001000000000000ULL;  // Use 0x0001 (result: 0x9)
-    static constexpr uint64_t TAG_FALSE     = 0x0002000000000000ULL;  // Use 0x0002 (result: 0xA)
-    static constexpr uint64_t TAG_TRUE      = 0x0003000000000000ULL;  // Use 0x0003 (result: 0xB)
-    static constexpr uint64_t TAG_STRING    = 0x0004000000000000ULL;  // Use 0x0004 (result: 0xC)
-    static constexpr uint64_t TAG_SYMBOL    = 0x0005000000000000ULL;  // Use 0x0005 (result: 0xD)
-    static constexpr uint64_t TAG_BIGINT    = 0x0006000000000000ULL;  // Use 0x0006 (result: 0xE)
-    static constexpr uint64_t TAG_OBJECT    = 0x0007000000000000ULL;  // Use 0x0007 (result: 0xF)
-    static constexpr uint64_t TAG_FUNCTION  = 0x000A000000000000ULL;  // Keep this separate
+    // Type tags using 4-bit space - no collisions possible
+    static constexpr uint64_t TAG_UNDEFINED = 0x0000000000000000ULL;  // 0x0 → 0x7FFC
+    static constexpr uint64_t TAG_NULL      = 0x0001000000000000ULL;  // 0x1 → 0x7FFD  
+    static constexpr uint64_t TAG_FALSE     = 0x0002000000000000ULL;  // 0x2 → 0x7FFE
+    static constexpr uint64_t TAG_TRUE      = 0x0003000000000000ULL;  // 0x3 → 0x7FFF
+    static constexpr uint64_t TAG_STRING    = 0x0004000000000000ULL;  // 0x4 → 0x7FC0
+    static constexpr uint64_t TAG_SYMBOL    = 0x0005000000000000ULL;  // 0x5 → 0x7FC1
+    static constexpr uint64_t TAG_BIGINT    = 0x0006000000000000ULL;  // 0x6 → 0x7FC2
+    static constexpr uint64_t TAG_OBJECT    = 0x0007000000000000ULL;  // 0x7 → 0x7FC3
+    static constexpr uint64_t TAG_FUNCTION  = 0x0008000000000000ULL;  // 0x8 → 0x7FC4
 
     union {
         uint64_t bits_;
