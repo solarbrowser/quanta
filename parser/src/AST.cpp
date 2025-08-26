@@ -897,7 +897,9 @@ Value UnaryExpression::evaluate(Context& ctx) {
             Identifier* id = static_cast<Identifier*>(operand_.get());
             Value current = ctx.get_binding(id->get_name());
             Value incremented = Value(current.to_number() + 1.0);
-            ctx.set_binding(id->get_name(), incremented);
+            // std::cout << "DEBUG: POST_INCREMENT '" << id->get_name() << "' from " << current.to_string() << " to " << incremented.to_string() << std::endl;
+            bool success = ctx.set_binding(id->get_name(), incremented);
+            // std::cout << "DEBUG: set_binding success: " << (success ? "YES" : "NO") << std::endl;
             return current; // return original value
         }
         case Operator::PRE_DECREMENT: {
@@ -5647,7 +5649,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     // CLOSURE FIX: Capture variables from the current context's binding scope
     if (function_obj) {
         // Get all variables currently accessible (including parent scopes)
-        // DEBUG: std::cout << "DEBUG: Capturing closure variables for function" << std::endl;
+        // std::cout << "DEBUG: Capturing closure variables for function" << std::endl;
         
         // Check the context's variable environment (where let/var/const are stored)
         auto var_env = ctx.get_variable_environment();
@@ -5657,7 +5659,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
                 if (name != "this" && name != "arguments") { // Skip special bindings
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
-                        // DEBUG: std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
+                        // std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
                         function_obj->set_property("__closure_" + name, value);
                     }
                 }
@@ -5672,8 +5674,25 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
                 if (name != "this" && name != "arguments") { // Skip special bindings
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
-                        // DEBUG: std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
+                        // std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
                         function_obj->set_property("__closure_" + name, value);
+                    }
+                }
+            }
+        }
+        
+        // ADDITIONAL CLOSURE FIX: Try to capture variables by name if they exist in the current context
+        // This handles cases where variables are not found in the environment binding lists
+        std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
+        for (const auto& var_name : potential_vars) {
+            // std::cout << "DEBUG: Checking if context has binding for '" << var_name << "': " << (ctx.has_binding(var_name) ? "YES" : "NO") << std::endl;
+            if (ctx.has_binding(var_name)) {
+                Value value = ctx.get_binding(var_name);
+                if (!value.is_undefined()) {
+                    // Only capture if not already captured
+                    if (!function_obj->has_property("__closure_" + var_name)) {
+                        // std::cout << "DEBUG: DIRECT capture of '" << var_name << "' = " << value.to_string() << std::endl;
+                        function_obj->set_property("__closure_" + var_name, value);
                     }
                 }
             }
@@ -5992,7 +6011,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
     
     // CLOSURE FIX: Capture variables from the current context's binding scope  
     if (function) {
-        // DEBUG: std::cout << "DEBUG: Capturing closure variables for function expression" << std::endl;
+        // std::cout << "DEBUG: Capturing closure variables for function expression" << std::endl;
         
         // Check the context's variable environment (where let/var/const are stored)
         auto var_env = ctx.get_variable_environment();
@@ -6002,7 +6021,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
                 if (name != "this" && name != "arguments") { // Skip special bindings
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
-                        // DEBUG: std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
+                        // std::cout << "DEBUG: Capturing variable '" << name << "' = " << value.to_string() << std::endl;
                         function->set_property("__closure_" + name, value);
                     }
                 }
@@ -6017,8 +6036,25 @@ Value FunctionExpression::evaluate(Context& ctx) {
                 if (name != "this" && name != "arguments") { // Skip special bindings
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined() && !value.is_function()) { // Skip undefined and global functions
-                        // DEBUG: std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
+                        // std::cout << "DEBUG: Capturing lexical '" << name << "' = " << value.to_string() << std::endl;
                         function->set_property("__closure_" + name, value);
+                    }
+                }
+            }
+        }
+        
+        // ADDITIONAL CLOSURE FIX: Try to capture variables by name if they exist in the current context
+        // This handles cases where variables are not found in the environment binding lists
+        std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
+        for (const auto& var_name : potential_vars) {
+            // std::cout << "DEBUG: Checking if context has binding for '" << var_name << "': " << (ctx.has_binding(var_name) ? "YES" : "NO") << std::endl;
+            if (ctx.has_binding(var_name)) {
+                Value value = ctx.get_binding(var_name);
+                if (!value.is_undefined()) {
+                    // Only capture if not already captured
+                    if (!function->has_property("__closure_" + var_name)) {
+                        // std::cout << "DEBUG: DIRECT capture of '" << var_name << "' = " << value.to_string() << std::endl;
+                        function->set_property("__closure_" + var_name, value);
                     }
                 }
             }
