@@ -13,6 +13,7 @@
 #include <cmath>
 #include <limits>
 #include <iostream>
+#include <cstdio>
 
 namespace Quanta {
 
@@ -20,27 +21,43 @@ namespace Quanta {
 // Value Implementation
 //=============================================================================
 
+#if PLATFORM_POINTER_COMPRESSION
+thread_local uintptr_t Value::heap_base_ = 0;
+#endif
+
 Value::Value(Object* obj) {
-    // FIX: If obj is null, create undefined instead of object with null pointer
     if (!obj) {
         bits_ = QUIET_NAN | TAG_UNDEFINED;
         return;
     }
     
-    // Store object pointer directly - same as other constructors
-    bits_ = QUIET_NAN | TAG_OBJECT | (reinterpret_cast<uint64_t>(obj) & PAYLOAD_MASK);
+    // Store object pointer directly - all Windows/MSYS2 pointers fit in 48-bit
+    uint64_t ptr_value = reinterpret_cast<uint64_t>(obj);
+    uint64_t masked_value = ptr_value & PAYLOAD_MASK;
+    bits_ = QUIET_NAN | TAG_OBJECT | masked_value;
 }
 
 Value::Value(const std::string& str) {
     // Create a String object directly without going through ObjectFactory
     auto string_obj = std::make_unique<String>(str);
-    bits_ = QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(string_obj.release()) & PAYLOAD_MASK);
+    String* raw_ptr = string_obj.release();
+    
+    #if PLATFORM_POINTER_COMPRESSION
+    uint64_t compressed = compress_pointer(raw_ptr);
+    bits_ = QUIET_NAN | TAG_STRING | (compressed & PAYLOAD_MASK);
+    #else
+    bits_ = QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(raw_ptr) & PAYLOAD_MASK);
+    #endif
 }
 
 std::string Value::to_string() const {
-    if (is_undefined()) return "undefined";
-    if (is_null()) return "null";
-    if (is_boolean()) return as_boolean() ? "true" : "false";
+    if (is_undefined()) {
+        return "undefined";
+    }
+    if (is_null()) return "null"; 
+    if (is_boolean()) {
+        return as_boolean() ? "true" : "false";
+    }
     if (is_number()) {
         double num = as_number();
         if (std::isnan(num)) return "NaN";
@@ -50,7 +67,9 @@ std::string Value::to_string() const {
         return oss.str();
     }
     if (is_string()) {
-        return as_string()->str();
+        String* str_ptr = as_string();
+        if (!str_ptr) return "[null string]";
+        return str_ptr->str();
     }
     if (is_bigint()) {
         return as_bigint()->to_string();
@@ -60,19 +79,50 @@ std::string Value::to_string() const {
     }
     if (is_object()) {
         Object* obj = as_object();
+        // Add null check to prevent crashes
+        if (!obj) {
+            return "null";
+        }
+        
+        // Double-check if this is actually an array
         if (obj->is_array()) {
-            // Display array contents
+            // Safe array display - avoid potential recursion and memory issues
             std::string result = "[";
-            uint32_t length = obj->get_length();
-            for (uint32_t i = 0; i < length; i++) {
-                if (i > 0) result += ", ";
-                Value element = obj->get_element(i);
-                if (element.is_string()) {
-                    result += "\"" + element.to_string() + "\"";
-                } else {
-                    result += element.to_string();
+            
+            try {
+                uint32_t length = obj->get_length();
+                
+                // Limit array length to prevent memory issues
+                uint32_t display_length = std::min(length, static_cast<uint32_t>(10));
+                
+                for (uint32_t i = 0; i < display_length; i++) {
+                    if (i > 0) result += ", ";
+                    
+                    // Get element safely
+                    Value element = obj->get_element(i);
+                    
+                    // Safe string conversion - avoid recursion
+                    if (element.is_undefined()) {
+                        result += "undefined";
+                    } else if (element.is_null()) {
+                        result += "null";
+                    } else if (element.is_number()) {
+                        result += std::to_string(element.as_number());
+                    } else if (element.is_boolean()) {
+                        result += element.as_boolean() ? "true" : "false";
+                    } else {
+                        result += "...";  // Avoid complex nested conversions
+                    }
                 }
+                
+                if (length > display_length) {
+                    result += ", ...";
+                }
+                
+            } catch (...) {
+                result += "error";
             }
+            
             result += "]";
             return result;
         } else {

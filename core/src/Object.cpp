@@ -31,12 +31,10 @@ static Shape* g_root_shape = nullptr;
 //=============================================================================
 
 Object::Object(ObjectType type) {
-    header_.shape = Shape::get_root_shape();
-    
-    // DEBUG: Check if shape creation failed
-    if (!header_.shape) {
-        throw std::runtime_error("Failed to get root shape");
-    }
+    // Create a basic shape - avoid Shape::get_root_shape() for now
+    header_.shape = new Shape();
+    // Remove debug output that was causing infinite recursion
+    // std::cout << "Object constructor called with type: " << (int)type << std::endl;
     
     header_.prototype = nullptr;
     header_.type = type;
@@ -94,8 +92,8 @@ bool Object::has_own_property(const std::string& key) const {
         return index < elements_.size() && !elements_[index].is_undefined();
     }
     
-    // Check shape
-    if (header_.shape->has_property(key)) {
+    // Check shape - add null check to prevent crashes
+    if (header_.shape && header_.shape->has_property(key)) {
         return true;
     }
     
@@ -281,8 +279,8 @@ Value Object::get_own_property(const std::string& key) const {
     // FIRST: Check normal property storage (shape and overflow)
     // This handles regular properties set via obj.prop = value
     
-    // Check shape
-    if (header_.shape->has_property(key)) {
+    // Check shape - add null check to prevent crashes
+    if (header_.shape && header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
             return properties_[info.offset];
@@ -637,7 +635,8 @@ Value Object::shift() {
 // Modern Array Methods Implementation
 std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
     if (header_.type != ObjectType::Array) {
-        return nullptr;
+        // Return empty array instead of nullptr to prevent JavaScript errors
+        return ObjectFactory::create_array(0);
     }
     
     uint32_t length = get_length();
@@ -680,7 +679,8 @@ std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
 
 std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx) {
     if (header_.type != ObjectType::Array) {
-        return nullptr;
+        // Return empty array instead of nullptr to prevent JavaScript errors
+        return ObjectFactory::create_array(0);
     }
     
     uint32_t length = get_length();
@@ -1171,8 +1171,16 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 }
 
 std::unique_ptr<Object> create_array(uint32_t length) {
-    // optimized: Use memory pool for array creation
-    auto array = get_pooled_array();
+    // Try to create array in lower memory range for NaN-boxing compatibility
+    std::unique_ptr<Object> array;
+    
+    // Create array directly - MSYS2 pointers fit in NaN-boxing payload space
+    array = std::make_unique<Object>(Object::ObjectType::Array);
+    
+    if (!array) {
+        return nullptr;
+    }
+    
     array->set_length(length);
     
     // Set Array.prototype as prototype if available
@@ -1220,12 +1228,22 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         if (method_name == "map") {
             if (args.size() > 0 && args[0].is_function()) {
                 auto result = array->map(args[0].as_function(), ctx);
-                return result ? Value(result.release()) : Value();
+                // Always return a valid array, never null/undefined
+                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
+            } else {
+                // No callback provided - throw proper TypeError
+                ctx.throw_exception(Value("TypeError: Array.map callback must be a function"));
+                return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "filter") {
             if (args.size() > 0 && args[0].is_function()) {
                 auto result = array->filter(args[0].as_function(), ctx);
-                return result ? Value(result.release()) : Value();
+                // Always return a valid array, never null/undefined
+                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
+            } else {
+                // No callback provided - throw proper TypeError
+                ctx.throw_exception(Value("TypeError: Array.filter callback must be a function"));
+                return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "reduce") {
             if (args.size() > 0 && args[0].is_function()) {

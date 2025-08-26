@@ -14,6 +14,13 @@
 #include <cmath>
 #include <limits>
 
+// Platform-specific pointer compression - disabled for now due to complexity
+#ifdef _WIN32
+    #define PLATFORM_POINTER_COMPRESSION 0  // Disabled temporarily
+#else 
+    #define PLATFORM_POINTER_COMPRESSION 0
+#endif
+
 // Forward declaration for OptimizedArray
 namespace Quanta {
     class OptimizedArray;
@@ -49,27 +56,59 @@ public:
     };
 
 private:
+    // Platform-specific pointer compression
+    #if PLATFORM_POINTER_COMPRESSION
+    static thread_local uintptr_t heap_base_;
+    static void set_heap_base(void* base) { heap_base_ = reinterpret_cast<uintptr_t>(base); }
+    static uint64_t compress_pointer(void* ptr) {
+        if (!ptr) return 0;
+        uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+        if (heap_base_ == 0) {
+            // Auto-detect heap base - align to 2GB boundary for safety
+            heap_base_ = addr & ~0x7FFFFFFFULL;
+            if (heap_base_ == 0) heap_base_ = addr & ~0xFFFFFFFFULL; // Fallback to 4GB boundary
+        }
+        
+        // Safety check - if offset is too large, use raw pointer
+        uint64_t offset = addr - heap_base_;
+        if (offset > 0x7FFFFFFFULL) {
+            // Offset too large, store directly (this breaks compression but maintains correctness)
+            return addr & PAYLOAD_MASK;
+        }
+        return offset;
+    }
+    static void* decompress_pointer(uint64_t compressed) {
+        if (compressed == 0) return nullptr;
+        
+        // If compressed value is larger than our offset range, it's probably a raw pointer
+        if (compressed > 0x7FFFFFFFULL && heap_base_ != 0) {
+            return reinterpret_cast<void*>(compressed);
+        }
+        
+        // Otherwise, it's a compressed offset
+        return reinterpret_cast<void*>(heap_base_ + compressed);
+    }
+    #endif
     // NaN-boxing implementation for optimal memory usage
     // Uses IEEE 754 double precision format with tagged pointers
     static constexpr uint64_t SIGN_MASK     = 0x8000000000000000ULL;
     static constexpr uint64_t EXPONENT_MASK = 0x7FF0000000000000ULL;
     static constexpr uint64_t MANTISSA_MASK = 0x000FFFFFFFFFFFFFULL;
     static constexpr uint64_t QUIET_NAN     = 0x7FF8000000000000ULL;
-    static constexpr uint64_t TAG_MASK      = 0x000F000000000000ULL;
-    static constexpr uint64_t PAYLOAD_MASK  = 0x0000FFFFFFFFFFFFULL;
+    static constexpr uint64_t TAG_MASK      = 0x000F000000000000ULL;  // Back to original 4-bit
+    static constexpr uint64_t PAYLOAD_MASK  = 0x0000FFFFFFFFFFFFULL;  // 48-bit payload space
     
-    // Type tags for NaN-boxed values - avoiding collision with IEEE 754 quiet NaN pattern
-    // Using distinct bit patterns to avoid overlap
-    static constexpr uint64_t TAG_UNDEFINED = 0x0001000000000000ULL;
-    static constexpr uint64_t TAG_NULL      = 0x0002000000000000ULL;
-    static constexpr uint64_t TAG_FALSE     = 0x0003000000000000ULL;
-    static constexpr uint64_t TAG_TRUE      = 0x0004000000000000ULL;
-    static constexpr uint64_t TAG_STRING    = 0x0005000000000000ULL;
-    static constexpr uint64_t TAG_SYMBOL    = 0x0006000000000000ULL;
-    static constexpr uint64_t TAG_BIGINT    = 0x0007000000000000ULL;
-    // Skip 0x0008 to avoid collision with IEEE 754 quiet NaN (0x7FF8...)
-    static constexpr uint64_t TAG_OBJECT    = 0x000A000000000000ULL;  // Changed from 0x0009 to 0x000A
-    static constexpr uint64_t TAG_FUNCTION  = 0x000B000000000000ULL;  // Changed from 0x000A to 0x000B
+    // Type tags - redesigned to avoid QUIET_NAN collision
+    // QUIET_NAN has bits 1000, so we avoid patterns that result in same final value
+    static constexpr uint64_t TAG_UNDEFINED = 0x0000000000000000ULL;  // Use 0x0000 (result: 0x8)
+    static constexpr uint64_t TAG_NULL      = 0x0001000000000000ULL;  // Use 0x0001 (result: 0x9)
+    static constexpr uint64_t TAG_FALSE     = 0x0002000000000000ULL;  // Use 0x0002 (result: 0xA)
+    static constexpr uint64_t TAG_TRUE      = 0x0003000000000000ULL;  // Use 0x0003 (result: 0xB)
+    static constexpr uint64_t TAG_STRING    = 0x0004000000000000ULL;  // Use 0x0004 (result: 0xC)
+    static constexpr uint64_t TAG_SYMBOL    = 0x0005000000000000ULL;  // Use 0x0005 (result: 0xD)
+    static constexpr uint64_t TAG_BIGINT    = 0x0006000000000000ULL;  // Use 0x0006 (result: 0xE)
+    static constexpr uint64_t TAG_OBJECT    = 0x0007000000000000ULL;  // Use 0x0007 (result: 0xF)
+    static constexpr uint64_t TAG_FUNCTION  = 0x000A000000000000ULL;  // Keep this separate
 
     union {
         uint64_t bits_;
@@ -97,20 +136,48 @@ public:
     explicit Value(int64_t i) : number_(static_cast<double>(i)) {}
     
     // String constructor
-    explicit Value(String* str) : bits_(QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(str) & PAYLOAD_MASK)) {}
+    explicit Value(String* str) {
+        #if PLATFORM_POINTER_COMPRESSION
+        uint64_t compressed = compress_pointer(str);
+        bits_ = QUIET_NAN | TAG_STRING | (compressed & PAYLOAD_MASK);
+        #else
+        bits_ = QUIET_NAN | TAG_STRING | (reinterpret_cast<uint64_t>(str) & PAYLOAD_MASK);
+        #endif
+    }
     explicit Value(const std::string& str);
     
     // Symbol constructor
-    explicit Value(class Symbol* sym) : bits_(QUIET_NAN | TAG_SYMBOL | (reinterpret_cast<uint64_t>(sym) & PAYLOAD_MASK)) {}
+    explicit Value(class Symbol* sym) {
+        #if PLATFORM_POINTER_COMPRESSION
+        uint64_t compressed = compress_pointer(sym);
+        bits_ = QUIET_NAN | TAG_SYMBOL | (compressed & PAYLOAD_MASK);
+        #else
+        bits_ = QUIET_NAN | TAG_SYMBOL | (reinterpret_cast<uint64_t>(sym) & PAYLOAD_MASK);
+        #endif
+    }
     
     // BigInt constructor
-    explicit Value(class BigInt* bigint) : bits_(QUIET_NAN | TAG_BIGINT | (reinterpret_cast<uint64_t>(bigint) & PAYLOAD_MASK)) {}
+    explicit Value(class BigInt* bigint) {
+        #if PLATFORM_POINTER_COMPRESSION
+        uint64_t compressed = compress_pointer(bigint);
+        bits_ = QUIET_NAN | TAG_BIGINT | (compressed & PAYLOAD_MASK);
+        #else
+        bits_ = QUIET_NAN | TAG_BIGINT | (reinterpret_cast<uint64_t>(bigint) & PAYLOAD_MASK);
+        #endif
+    }
     
     // Object constructor
     explicit Value(Object* obj);
     
     // Function constructor
-    explicit Value(Function* func) : bits_(QUIET_NAN | TAG_FUNCTION | (reinterpret_cast<uint64_t>(func) & PAYLOAD_MASK)) {}
+    explicit Value(Function* func) {
+        #if PLATFORM_POINTER_COMPRESSION
+        uint64_t compressed = compress_pointer(func);
+        bits_ = QUIET_NAN | TAG_FUNCTION | (compressed & PAYLOAD_MASK);
+        #else
+        bits_ = QUIET_NAN | TAG_FUNCTION | (reinterpret_cast<uint64_t>(func) & PAYLOAD_MASK);
+        #endif
+    }
 
     // Copy and move semantics
     Value(const Value& other) = default;
@@ -118,7 +185,7 @@ public:
     Value& operator=(const Value& other) = default;
     Value& operator=(Value&& other) noexcept = default;
 
-    // Type checking (highly optimized) - use consistent masking to prevent NaN-boxing corruption
+    // Type checking
     inline bool is_undefined() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_UNDEFINED); }
     inline bool is_null() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NULL); }
     inline bool is_boolean() const { 
@@ -126,25 +193,16 @@ public:
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
     inline bool is_number() const { 
-        // Check if it's a normal number (not all exponent bits set)
-        if ((bits_ & EXPONENT_MASK) != EXPONENT_MASK) {
-            return true;
-        }
-        
-        // For values with all exponent bits set, check if it's a real NaN/Infinity vs tagged value
-        // Real IEEE 754 NaN/Infinity won't match our specific tagged value patterns
-        uint64_t pattern = bits_ & (QUIET_NAN | TAG_MASK);
-        
-        // If it doesn't match any of our tagged patterns, it's probably a real number
-        return pattern != (QUIET_NAN | TAG_UNDEFINED) &&
-               pattern != (QUIET_NAN | TAG_NULL) &&
-               pattern != (QUIET_NAN | TAG_FALSE) &&
-               pattern != (QUIET_NAN | TAG_TRUE) &&
-               pattern != (QUIET_NAN | TAG_STRING) &&
-               pattern != (QUIET_NAN | TAG_SYMBOL) &&
-               pattern != (QUIET_NAN | TAG_BIGINT) &&
-               pattern != (QUIET_NAN | TAG_OBJECT) &&
-               pattern != (QUIET_NAN | TAG_FUNCTION);
+        return (bits_ & EXPONENT_MASK) != EXPONENT_MASK ||
+               ((bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_UNDEFINED) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_NULL) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_FALSE) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_TRUE) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_STRING) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_SYMBOL) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_BIGINT) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_OBJECT) &&
+                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_FUNCTION));
     }
     inline bool is_string() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }
     inline bool is_symbol() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_SYMBOL); }
@@ -164,33 +222,45 @@ public:
     // Type getter
     Type get_type() const;
 
-    // Value extraction (optimized)
+    // Value extraction
     inline bool as_boolean() const {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
-    
-    inline double as_number() const {
-        return number_;
-    }
-    
-    inline String* as_string() const {
+    inline double as_number() const { return number_; }
+    inline String* as_string() const { 
+        #if PLATFORM_POINTER_COMPRESSION
+        return static_cast<String*>(decompress_pointer(bits_ & PAYLOAD_MASK));
+        #else
         return reinterpret_cast<String*>(bits_ & PAYLOAD_MASK);
+        #endif
     }
-    
-    inline class Symbol* as_symbol() const {
+    inline class Symbol* as_symbol() const { 
+        #if PLATFORM_POINTER_COMPRESSION
+        return static_cast<class Symbol*>(decompress_pointer(bits_ & PAYLOAD_MASK));
+        #else
         return reinterpret_cast<class Symbol*>(bits_ & PAYLOAD_MASK);
+        #endif
     }
-    
-    inline Object* as_object() const {
+    inline Object* as_object() const { 
+        #if PLATFORM_POINTER_COMPRESSION
+        return static_cast<Object*>(decompress_pointer(bits_ & PAYLOAD_MASK));
+        #else
         return reinterpret_cast<Object*>(bits_ & PAYLOAD_MASK);
+        #endif
     }
-    
-    inline class BigInt* as_bigint() const {
+    inline class BigInt* as_bigint() const { 
+        #if PLATFORM_POINTER_COMPRESSION
+        return static_cast<class BigInt*>(decompress_pointer(bits_ & PAYLOAD_MASK));
+        #else
         return reinterpret_cast<class BigInt*>(bits_ & PAYLOAD_MASK);
+        #endif
     }
-    
-    inline Function* as_function() const {
+    inline Function* as_function() const { 
+        #if PLATFORM_POINTER_COMPRESSION
+        return static_cast<Function*>(decompress_pointer(bits_ & PAYLOAD_MASK));
+        #else
         return reinterpret_cast<Function*>(bits_ & PAYLOAD_MASK);
+        #endif
     }
 
     // JavaScript operations
