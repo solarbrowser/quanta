@@ -257,6 +257,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
         
         // Handle return statements or exceptions
+        // CLOSURE FIX: Write back closure variable changes to function properties for persistence
+        for (const auto& prop_name : property_names) {
+            if (prop_name.substr(0, 10) == "__closure_") {
+                std::string var_name = prop_name.substr(10); // Remove "__closure_" prefix
+                if (function_context.has_binding(var_name)) {
+                    Value updated_value = function_context.get_binding(var_name);
+                    // std::cout << "DEBUG: Writing back closure variable '" << var_name << "' = " << updated_value.to_string() << std::endl;
+                    this->set_property(prop_name, updated_value);
+                }
+            }
+        }
+        
         if (function_context.has_return_value()) {
             return function_context.get_return_value();
         }

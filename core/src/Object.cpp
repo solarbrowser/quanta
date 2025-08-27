@@ -115,6 +115,7 @@ PerformanceCache* Object::get_global_performance_cache() {
 }
 
 Value Object::get_property(const std::string& key) const {
+    
     // optimized: Try inline cache first for maximum performance
     if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
         Value cached_result;
@@ -335,6 +336,7 @@ Value Object::get_own_property(const std::string& key) const {
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    
     // Check for array index
     uint32_t index;
     if (is_array_index(key, &index)) {
@@ -342,7 +344,8 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     }
     
     // Check if property exists
-    if (has_own_property(key)) {
+    bool prop_exists = has_own_property(key);
+    if (prop_exists) {
         // Check if writable
         PropertyDescriptor desc = get_property_descriptor(key);
         if (desc.is_data_descriptor() && !desc.is_writable()) {
@@ -354,12 +357,30 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             auto info = header_.shape->get_property_info(key);
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
+                
+                // CRITICAL FIX: Invalidate inline cache after property update
+                if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+                    g_performance_cache->get_inline_cache()->invalidate_property(this, key);
+                }
+                
                 return true;
             }
         }
         
         if (overflow_properties_) {
+            if (key == "count") {
+                std::cout << "[DEBUG] Updating in overflow_properties_" << std::endl;
+            }
             (*overflow_properties_)[key] = value;
+            
+            // CRITICAL FIX: Invalidate inline cache after overflow property update
+            if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+                g_performance_cache->get_inline_cache()->invalidate_property(this, key);
+                if (key == "count") {
+                    std::cout << "[DEBUG] Cache invalidated for overflow property: " << key << std::endl;
+                }
+            }
+            
             return true;
         }
     }
@@ -841,6 +862,15 @@ bool Object::store_in_shape(const std::string& key, const Value& value, Property
         }
         
         update_hash_code();
+        
+        // CRITICAL FIX: Invalidate inline cache after new property addition
+        if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+            g_performance_cache->get_inline_cache()->invalidate_property(this, key);
+            if (key == "count") {
+                std::cout << "[DEBUG] Cache invalidated for new shape property: " << key << std::endl;
+            }
+        }
+        
         return true;
     }
     
@@ -863,6 +893,15 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     }
     
     update_hash_code();
+    
+    // CRITICAL FIX: Invalidate inline cache after overflow property addition
+    if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
+        g_performance_cache->get_inline_cache()->invalidate_property(this, key);
+        if (key == "count") {
+            std::cout << "[DEBUG] Cache invalidated for new overflow property: " << key << std::endl;
+        }
+    }
+    
     return true;
 }
 

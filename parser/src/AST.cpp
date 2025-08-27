@@ -878,53 +878,181 @@ Value UnaryExpression::evaluate(Context& ctx) {
         }
         case Operator::PRE_INCREMENT: {
             // For ++x, increment first then return new value
-            if (operand_->get_type() != ASTNode::Type::IDENTIFIER) {
+            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(operand_.get());
+                Value current = ctx.get_binding(id->get_name());
+                Value incremented = Value(current.to_number() + 1.0);
+                ctx.set_binding(id->get_name(), incremented);
+                return incremented;
+            } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
+                Value current = member->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                Value incremented = Value(current.to_number() + 1.0);
+                
+                // Perform assignment
+                Value obj = member->get_object()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!obj.is_object()) {
+                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    return Value();
+                }
+                
+                std::string prop_name;
+                if (member->is_computed()) {
+                    Value prop_value = member->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = prop_value.to_string();
+                } else {
+                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Identifier* id = static_cast<Identifier*>(member->get_property());
+                        prop_name = id->get_name();
+                    } else {
+                        ctx.throw_exception(Value("Invalid property name"));
+                        return Value();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
+                obj.as_object()->set_property(prop_name, incremented);
+                return incremented;
+            } else {
                 ctx.throw_exception(Value("Invalid left-hand side in assignment"));
                 return Value();
             }
-            Identifier* id = static_cast<Identifier*>(operand_.get());
-            Value current = ctx.get_binding(id->get_name());
-            Value incremented = Value(current.to_number() + 1.0);
-            ctx.set_binding(id->get_name(), incremented);
-            return incremented;
         }
         case Operator::POST_INCREMENT: {
             // For x++, return old value then increment
-            if (operand_->get_type() != ASTNode::Type::IDENTIFIER) {
+            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(operand_.get());
+                Value current = ctx.get_binding(id->get_name());
+                Value incremented = Value(current.to_number() + 1.0);
+                // std::cout << "DEBUG: POST_INCREMENT '" << id->get_name() << "' from " << current.to_string() << " to " << incremented.to_string() << std::endl;
+                bool success = ctx.set_binding(id->get_name(), incremented);
+                // std::cout << "DEBUG: set_binding success: " << (success ? "YES" : "NO") << std::endl;
+                return current; // return original value
+            } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
+                Value current = member->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                Value incremented = Value(current.to_number() + 1.0);
+                
+                // Perform assignment
+                Value obj = member->get_object()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!obj.is_object()) {
+                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    return Value();
+                }
+                
+                std::string prop_name;
+                if (member->is_computed()) {
+                    Value prop_value = member->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = prop_value.to_string();
+                } else {
+                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Identifier* id = static_cast<Identifier*>(member->get_property());
+                        prop_name = id->get_name();
+                    } else {
+                        ctx.throw_exception(Value("Invalid property name"));
+                        return Value();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
+                obj.as_object()->set_property(prop_name, incremented);
+                return current; // return original value for post-increment
+            } else {
                 ctx.throw_exception(Value("Invalid left-hand side in assignment"));
                 return Value();
             }
-            Identifier* id = static_cast<Identifier*>(operand_.get());
-            Value current = ctx.get_binding(id->get_name());
-            Value incremented = Value(current.to_number() + 1.0);
-            // std::cout << "DEBUG: POST_INCREMENT '" << id->get_name() << "' from " << current.to_string() << " to " << incremented.to_string() << std::endl;
-            bool success = ctx.set_binding(id->get_name(), incremented);
-            // std::cout << "DEBUG: set_binding success: " << (success ? "YES" : "NO") << std::endl;
-            return current; // return original value
         }
         case Operator::PRE_DECREMENT: {
             // For --x, decrement first then return new value
-            if (operand_->get_type() != ASTNode::Type::IDENTIFIER) {
+            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(operand_.get());
+                Value current = ctx.get_binding(id->get_name());
+                Value decremented = Value(current.to_number() - 1.0);
+                ctx.set_binding(id->get_name(), decremented);
+                return decremented;
+            } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
+                Value current = member->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                Value decremented = Value(current.to_number() - 1.0);
+                
+                // Perform assignment
+                Value obj = member->get_object()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!obj.is_object()) {
+                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    return Value();
+                }
+                
+                std::string prop_name;
+                if (member->is_computed()) {
+                    Value prop_value = member->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = prop_value.to_string();
+                } else {
+                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Identifier* id = static_cast<Identifier*>(member->get_property());
+                        prop_name = id->get_name();
+                    } else {
+                        ctx.throw_exception(Value("Invalid property name"));
+                        return Value();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
+                obj.as_object()->set_property(prop_name, decremented);
+                return decremented;
+            } else {
                 ctx.throw_exception(Value("Invalid left-hand side in assignment"));
                 return Value();
             }
-            Identifier* id = static_cast<Identifier*>(operand_.get());
-            Value current = ctx.get_binding(id->get_name());
-            Value decremented = Value(current.to_number() - 1.0);
-            ctx.set_binding(id->get_name(), decremented);
-            return decremented;
         }
         case Operator::POST_DECREMENT: {
             // For x--, return old value then decrement
-            if (operand_->get_type() != ASTNode::Type::IDENTIFIER) {
+            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(operand_.get());
+                Value current = ctx.get_binding(id->get_name());
+                Value decremented = Value(current.to_number() - 1.0);
+                ctx.set_binding(id->get_name(), decremented);
+                return current; // return original value
+            } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
+                Value current = member->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                Value decremented = Value(current.to_number() - 1.0);
+                
+                // Perform assignment
+                Value obj = member->get_object()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                if (!obj.is_object()) {
+                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    return Value();
+                }
+                
+                std::string prop_name;
+                if (member->is_computed()) {
+                    Value prop_value = member->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = prop_value.to_string();
+                } else {
+                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Identifier* id = static_cast<Identifier*>(member->get_property());
+                        prop_name = id->get_name();
+                    } else {
+                        ctx.throw_exception(Value("Invalid property name"));
+                        return Value();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
+                obj.as_object()->set_property(prop_name, decremented);
+                return current; // return original value for post-decrement
+            } else {
                 ctx.throw_exception(Value("Invalid left-hand side in assignment"));
                 return Value();
             }
-            Identifier* id = static_cast<Identifier*>(operand_.get());
-            Value current = ctx.get_binding(id->get_name());
-            Value decremented = Value(current.to_number() - 1.0);
-            ctx.set_binding(id->get_name(), decremented);
-            return current; // return original value
         }
         default:
             ctx.throw_exception(Value("Unsupported unary operator"));
@@ -1121,9 +1249,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
         
-        // Check if this is an accessor property (has getter/setter)
-        PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-        if (desc.is_accessor_descriptor() && desc.has_setter()) {
+        // Check if this is an accessor property (has getter/setter) - only for real objects
+        if (obj && !is_string_object) {
+            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            if (desc.is_accessor_descriptor() && desc.has_setter()) {
             
             // Special handling for cookie since we need to call WebAPI directly
             if (prop_name == "cookie") {
@@ -1145,6 +1274,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 }
             }
+        }
         }
         
         // Set the property
@@ -1179,7 +1309,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         }
                     }
                 } else {
-                    obj->set_property(prop_name, right_value);
+                    std::cout << "[DEBUG] Real object assignment: prop=" << prop_name << ", value=" << right_value.to_string() << std::endl;
+                    if (obj) {
+                        std::cout << "[DEBUG] obj is valid" << std::endl;
+                        obj->set_property(prop_name, right_value);
+                        std::cout << "[DEBUG] set_property called" << std::endl;
+                    } else {
+                        std::cout << "[DEBUG] obj is NULL!" << std::endl;
+                    }
                 }
                 break;
             case Operator::PLUS_ASSIGN: {
