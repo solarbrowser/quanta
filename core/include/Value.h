@@ -108,6 +108,9 @@ private:
     static constexpr uint64_t TAG_BIGINT    = 0x0006000000000000ULL;  // 0x6 → 0x7FC2
     static constexpr uint64_t TAG_OBJECT    = 0x0007000000000000ULL;  // 0x7 → 0x7FC3
     static constexpr uint64_t TAG_FUNCTION  = 0x0008000000000000ULL;  // 0x8 → 0x7FC4
+    static constexpr uint64_t TAG_NAN       = 0x0009000000000000ULL;  // 0x9 → 0x7FC5 - Dedicated NaN tag
+    static constexpr uint64_t TAG_NEG_INF   = 0x000A000000000000ULL;  // 0xA → 0x7FC6 - Dedicated -Infinity tag
+    static constexpr uint64_t TAG_POS_INF   = 0x000B000000000000ULL;  // 0xB → 0x7FC7 - Dedicated +Infinity tag
 
     union {
         uint64_t bits_;
@@ -122,6 +125,26 @@ public:
     static Value null() {
         Value v;
         v.bits_ = QUIET_NAN | TAG_NULL;
+        return v;
+    }
+    
+    // NaN constructor - dedicated tag to avoid collision with IEEE 754 NaN
+    static Value nan() {
+        Value v;
+        v.bits_ = QUIET_NAN | TAG_NAN;
+        return v;
+    }
+    
+    // Infinity constructors - dedicated tags to avoid collision
+    static Value positive_infinity() {
+        Value v;
+        v.bits_ = QUIET_NAN | TAG_POS_INF;
+        return v;
+    }
+    
+    static Value negative_infinity() {
+        Value v;
+        v.bits_ = QUIET_NAN | TAG_NEG_INF;
         return v;
     }
     
@@ -193,16 +216,13 @@ public:
     }
     inline bool is_number() const { 
         return (bits_ & EXPONENT_MASK) != EXPONENT_MASK ||
-               ((bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_UNDEFINED) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_NULL) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_FALSE) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_TRUE) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_STRING) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_SYMBOL) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_BIGINT) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_OBJECT) &&
-                (bits_ & (QUIET_NAN | TAG_MASK)) != (QUIET_NAN | TAG_FUNCTION));
+               (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN) ||
+               (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF) ||
+               (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF);
     }
+    inline bool is_nan() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN); }
+    inline bool is_positive_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF); }
+    inline bool is_negative_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF); }
     inline bool is_string() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }
     inline bool is_symbol() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_SYMBOL); }
     inline bool is_bigint() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_BIGINT); }
@@ -225,7 +245,12 @@ public:
     inline bool as_boolean() const {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
-    inline double as_number() const { return number_; }
+    inline double as_number() const { 
+        if (is_nan()) return std::numeric_limits<double>::quiet_NaN();
+        if (is_positive_infinity()) return std::numeric_limits<double>::infinity();
+        if (is_negative_infinity()) return -std::numeric_limits<double>::infinity();
+        return number_; 
+    }
     inline String* as_string() const { 
         #if PLATFORM_POINTER_COMPRESSION
         return static_cast<String*>(decompress_pointer(bits_ & PAYLOAD_MASK));

@@ -1934,14 +1934,10 @@ void Context::setup_global_bindings() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(true);
             
-            // Special handling: if the argument is a number type and its string representation is "NaN"
-            if (args[0].is_number()) {
-                std::string str_repr = args[0].to_string();
-                if (str_repr == "NaN" || str_repr == "nan") {
-                    return Value(true);
-                }
-            }
+            // Check for our tagged NaN value first
+            if (args[0].is_nan()) return Value(true);
             
+            // Then check for IEEE 754 NaN in regular numbers
             double num = args[0].to_number();
             return Value(std::isnan(num));
         });
@@ -1958,8 +1954,7 @@ void Context::setup_global_bindings() {
     // Global constants
     lexical_environment_->create_binding("undefined", Value(), false);
     lexical_environment_->create_binding("null", Value::null(), false);
-    lexical_environment_->create_binding("NaN", Value(std::numeric_limits<double>::quiet_NaN()), false);
-    lexical_environment_->create_binding("Infinity", Value(std::numeric_limits<double>::infinity()), false);
+    // NaN and Infinity will be set later with arithmetic workaround
     
     // Global object access - bind the global object to standard names
     if (global_object_) {
@@ -1977,9 +1972,9 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("true", Value(true), false);
     lexical_environment_->create_binding("false", Value(false), false);
     
-    // Global values - create proper NaN value
-    lexical_environment_->create_binding("NaN", Value(std::numeric_limits<double>::quiet_NaN()), false);
-    lexical_environment_->create_binding("Infinity", Value(std::numeric_limits<double>::infinity()), false);
+    // Global values - create proper NaN and Infinity values using dedicated tags to avoid bit collisions
+    lexical_environment_->create_binding("NaN", Value::nan(), false);
+    lexical_environment_->create_binding("Infinity", Value::positive_infinity(), false);
     
     // Missing global functions
     auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",

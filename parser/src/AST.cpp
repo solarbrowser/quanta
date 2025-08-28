@@ -256,8 +256,8 @@ Value Identifier::evaluate(Context& ctx) {
         return Value(math_obj.release());
     }
     
-    // In strict mode, check if the variable is declared
-    if (ctx.is_strict_mode() && !ctx.has_binding(name_)) {
+    // Check if the variable is declared - should throw ReferenceError if not
+    if (!ctx.has_binding(name_)) {
         // Check if it's a known global like console, Math, etc.
         static const std::set<std::string> known_globals = {
             "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number", 
@@ -608,8 +608,25 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 return Value(result);
             }
             case Operator::DIVIDE: {
-                // Fast division with NaN check inlined
+                // Handle division by zero explicitly before computing
+                if (right_num == 0.0) {
+                    if (left_num == 0.0) {
+                        return Value::nan(); // 0/0 = NaN
+                    }
+                    return left_num > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                }
+                
+                // Regular division
                 double result = left_num / right_num;
+                
+                // Handle potential special results from regular division
+                if (std::isinf(result)) {
+                    return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                }
+                if (std::isnan(result)) {
+                    return Value::nan();
+                }
+                
                 return Value(result);
             }
             case Operator::MODULO: {
@@ -3266,6 +3283,12 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     // Handle general object method calls (obj.method())
     Value object_value = member->get_object()->evaluate(ctx);
     if (ctx.has_exception()) {
+        return Value();
+    }
+    
+    // Check for null/undefined method calls - should throw TypeError
+    if (object_value.is_null() || object_value.is_undefined()) {
+        ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
     
@@ -6298,11 +6321,21 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     );
     
     // CLOSURE FIX: Capture free variables from current context
-    // This is a simplified approach - we'll capture common variable names
-    // A more sophisticated implementation would analyze the AST for free variables
+    // But exclude parameter names to avoid shadowing function parameters
     std::vector<std::string> common_vars = {"x", "y", "z", "i", "j", "k", "a", "b", "c", "value", "result", "data"};
     
+    // Create set of parameter names to exclude from closure capture
+    std::set<std::string> param_names;
+    for (const auto& param : params_) {
+        param_names.insert(param->get_name()->get_name());
+    }
+    
     for (const std::string& var_name : common_vars) {
+        // Skip capturing variables that are function parameters
+        if (param_names.find(var_name) != param_names.end()) {
+            continue;
+        }
+        
         if (ctx.has_binding(var_name)) {
             Value var_value = ctx.get_binding(var_name);
             arrow_function->set_property("__closure_" + var_name, var_value);

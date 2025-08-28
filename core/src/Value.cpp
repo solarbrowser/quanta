@@ -202,10 +202,20 @@ bool Value::strict_equals(const Value& other) const {
     if (is_null() && other.is_null()) return true;
     if (is_boolean() && other.is_boolean()) return as_boolean() == other.as_boolean();
     if (is_number() && other.is_number()) {
+        // Handle tagged special values directly for perfect equality
+        if (is_nan() || other.is_nan()) {
+            return false; // NaN is never equal to anything, including itself
+        }
+        if (is_positive_infinity() && other.is_positive_infinity()) return true;
+        if (is_negative_infinity() && other.is_negative_infinity()) return true;
+        if (is_positive_infinity() || is_negative_infinity() || 
+            other.is_positive_infinity() || other.is_negative_infinity()) {
+            return false; // Different infinity types or infinity vs regular number
+        }
+        
+        // Regular number comparison
         double a = as_number();
         double b = other.as_number();
-        // Handle NaN properly: NaN is never equal to anything, including itself
-        if (std::isnan(a) || std::isnan(b)) return false;
         return a == b;
     }
     if (is_string() && other.is_string()) return as_string()->str() == other.as_string()->str();
@@ -325,15 +335,33 @@ Value Value::divide(const Value& other) const {
         double a = as_number();
         double b = other.as_number();
         
-        // JavaScript division by zero behavior
+        // JavaScript division by zero behavior with tagged special values
         if (b == 0.0) {
-            if (a == 0.0) return Value(std::numeric_limits<double>::quiet_NaN()); // 0/0 = NaN
-            return Value(a > 0 ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity());
+            if (a == 0.0) return Value::nan(); // 0/0 = NaN
+            return a > 0 ? Value::positive_infinity() : Value::negative_infinity();
         }
-        return Value(a / b);
+        
+        // Check result for special values to avoid IEEE 754 collisions
+        double result = a / b;
+        if (std::isinf(result)) {
+            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        }
+        if (std::isnan(result)) {
+            return Value::nan();
+        }
+        
+        return Value(result);
     }
     
-    return Value(to_number() / other.to_number());
+    // Fallback path with special value handling
+    double result = to_number() / other.to_number();
+    if (std::isinf(result)) {
+        return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+    }
+    if (std::isnan(result)) {
+        return Value::nan();
+    }
+    return Value(result);
 }
 
 Value Value::modulo(const Value& other) const {
@@ -364,11 +392,39 @@ Value Value::unary_plus() const {
 }
 
 Value Value::unary_minus() const {
-    // optimized: Fast path for -number
-    if (is_number()) {
-        return Value(-as_number());
+    // Handle tagged special values directly
+    if (is_positive_infinity()) {
+        return Value::negative_infinity();
     }
-    return Value(-to_number());
+    if (is_negative_infinity()) {
+        return Value::positive_infinity();
+    }
+    if (is_nan()) {
+        return Value::nan(); // -NaN = NaN
+    }
+    
+    // optimized: Fast path for regular numbers
+    if (is_number()) {
+        double result = -as_number();
+        // Check if result becomes a special value
+        if (std::isinf(result)) {
+            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        }
+        if (std::isnan(result)) {
+            return Value::nan();
+        }
+        return Value(result);
+    }
+    
+    // Fallback path
+    double result = -to_number();
+    if (std::isinf(result)) {
+        return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+    }
+    if (std::isnan(result)) {
+        return Value::nan();
+    }
+    return Value(result);
 }
 
 Value Value::logical_not() const {
