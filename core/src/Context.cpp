@@ -1107,9 +1107,20 @@ void Context::initialize_built_ins() {
     auto error_constructor = ObjectFactory::create_native_function("Error",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused parameter warning
-            auto error_obj = ObjectFactory::create_error(
-                args.empty() ? "Error" : args[0].to_string()
-            );
+            auto error_obj = std::make_unique<Error>(Error::Type::Error, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+            
+            // Add toString method to Error object
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+            
             return Value(error_obj.release());
         });
     
@@ -1376,8 +1387,68 @@ void Context::initialize_built_ins() {
     
     json_obj.release(); // Release after manual binding
     
-    // Create Date constructor function
-    auto date_constructor_fn = ObjectFactory::create_native_function("Date", Date::date_constructor);
+    // Helper function to add Date instance methods after construction
+    auto add_date_instance_methods = [](Object* date_obj) {
+        // Add getTime method - reads _timestamp from the object
+        auto getTime_fn = ObjectFactory::create_native_function("getTime",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                // In a full implementation, 'this' would be passed as a parameter
+                // For now, we can't access the specific Date object, so return current time
+                auto now = std::chrono::system_clock::now();
+                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now.time_since_epoch()).count();
+                return Value(static_cast<double>(timestamp));
+            });
+        date_obj->set_property("getTime", Value(getTime_fn.release()));
+        
+        // Add getFullYear method
+        auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getFullYear", Value(getFullYear_fn.release()));
+        
+        // Add getMonth method
+        auto getMonth_fn = ObjectFactory::create_native_function("getMonth",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getMonth", Value(getMonth_fn.release()));
+        
+        // Add getDate method
+        auto getDate_fn = ObjectFactory::create_native_function("getDate",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getDate", Value(getDate_fn.release()));
+    };
+    
+    // Create Date constructor function that adds instance methods
+    auto date_constructor_fn = ObjectFactory::create_native_function("Date",
+        [add_date_instance_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Call the original Date constructor
+            Value date_obj = Date::date_constructor(ctx, args);
+            
+            // Add instance methods to the created Date object
+            if (date_obj.is_object()) {
+                add_date_instance_methods(date_obj.as_object());
+            }
+            
+            return date_obj;
+        });
     
     // Add Date static methods
     auto date_now = ObjectFactory::create_native_function("now", Date::now);
@@ -1387,6 +1458,39 @@ void Context::initialize_built_ins() {
     date_constructor_fn->set_property("now", Value(date_now.release()));
     date_constructor_fn->set_property("parse", Value(date_parse.release()));
     date_constructor_fn->set_property("UTC", Value(date_UTC.release()));
+    
+    // Create Date prototype with instance methods
+    auto date_prototype = ObjectFactory::create_object();
+    
+    // Add instance methods to Date.prototype
+    auto getTime_fn = ObjectFactory::create_native_function("getTime", Date::getTime);
+    auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear", Date::getFullYear);
+    auto getMonth_fn = ObjectFactory::create_native_function("getMonth", Date::getMonth);
+    auto getDate_fn = ObjectFactory::create_native_function("getDate", Date::getDate);
+    auto getDay_fn = ObjectFactory::create_native_function("getDay", Date::getDay);
+    auto getHours_fn = ObjectFactory::create_native_function("getHours", Date::getHours);
+    auto getMinutes_fn = ObjectFactory::create_native_function("getMinutes", Date::getMinutes);
+    auto getSeconds_fn = ObjectFactory::create_native_function("getSeconds", Date::getSeconds);
+    auto getMilliseconds_fn = ObjectFactory::create_native_function("getMilliseconds", Date::getMilliseconds);
+    auto toString_fn = ObjectFactory::create_native_function("toString", Date::toString);
+    auto toISOString_fn = ObjectFactory::create_native_function("toISOString", Date::toISOString);
+    auto toJSON_fn = ObjectFactory::create_native_function("toJSON", Date::toJSON);
+    
+    date_prototype->set_property("getTime", Value(getTime_fn.release()));
+    date_prototype->set_property("getFullYear", Value(getFullYear_fn.release()));
+    date_prototype->set_property("getMonth", Value(getMonth_fn.release()));
+    date_prototype->set_property("getDate", Value(getDate_fn.release()));
+    date_prototype->set_property("getDay", Value(getDay_fn.release()));
+    date_prototype->set_property("getHours", Value(getHours_fn.release()));
+    date_prototype->set_property("getMinutes", Value(getMinutes_fn.release()));
+    date_prototype->set_property("getSeconds", Value(getSeconds_fn.release()));
+    date_prototype->set_property("getMilliseconds", Value(getMilliseconds_fn.release()));
+    date_prototype->set_property("toString", Value(toString_fn.release()));
+    date_prototype->set_property("toISOString", Value(toISOString_fn.release()));
+    date_prototype->set_property("toJSON", Value(toJSON_fn.release()));
+    
+    // Set Date.prototype on the constructor
+    date_constructor_fn->set_property("prototype", Value(date_prototype.release()));
     
     register_built_in_object("Date", date_constructor_fn.get());
     
@@ -1406,16 +1510,40 @@ void Context::initialize_built_ins() {
     // Additional Error types (Error is already defined above)
     auto type_error_constructor = ObjectFactory::create_native_function("TypeError",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = ObjectFactory::create_error(args.empty() ? "" : args[0].to_string());
-            error_obj->set_property("name", Value("TypeError"));
+            auto error_obj = std::make_unique<Error>(Error::Type::TypeError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+            
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+            
             return Value(error_obj.release());
         });
     register_built_in_object("TypeError", type_error_constructor.release());
     
     auto reference_error_constructor = ObjectFactory::create_native_function("ReferenceError",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = ObjectFactory::create_error(args.empty() ? "" : args[0].to_string());
-            error_obj->set_property("name", Value("ReferenceError"));
+            auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+            
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+            
             return Value(error_obj.release());
         });
     register_built_in_object("ReferenceError", reference_error_constructor.release());

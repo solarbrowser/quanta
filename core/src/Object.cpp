@@ -7,6 +7,7 @@
 #include "Object.h"
 #include "Context.h"
 #include "Value.h"
+#include "Error.h"
 #include "InlineCache.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
@@ -948,6 +949,31 @@ std::string Object::to_string() const {
         return oss.str();
     }
     
+    // Check if object has its own toString method
+    Value toString_method = get_own_property("toString");
+    if (toString_method.is_function()) {
+        try {
+            // Call the toString method
+            Function* func = toString_method.as_function();
+            Context* dummy_ctx = nullptr; // We need a context but this is risky
+            std::vector<Value> args;
+            // For safety, just use the Error types we know have proper toString
+            Value name_prop = get_own_property("name");
+            Value message_prop = get_own_property("message");
+            if (name_prop.is_string() && (name_prop.to_string() == "Error" || 
+                name_prop.to_string() == "TypeError" || name_prop.to_string() == "ReferenceError")) {
+                std::string name = name_prop.to_string();
+                std::string message = message_prop.is_string() ? message_prop.to_string() : "";
+                if (message.empty()) {
+                    return name;
+                }
+                return name + ": " + message;
+            }
+        } catch (...) {
+            // Fall through to default
+        }
+    }
+    
     return "[object Object]";
 }
 
@@ -1534,11 +1560,12 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
 }
 
 std::unique_ptr<Object> create_error(const std::string& message) {
-    auto error_obj = std::make_unique<Object>(Object::ObjectType::Error);
-    error_obj->set_property("message", Value(message));
-    error_obj->set_property("name", Value("Error"));
+    // Use proper Error class instead of generic Object with Error type
+    auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
+    
+    // Error class handles name and message internally, only set _isError for compatibility
     error_obj->set_property("_isError", Value(true));
-    return error_obj;
+    return std::unique_ptr<Object>(error_obj.release());
 }
 
 } // namespace ObjectFactory

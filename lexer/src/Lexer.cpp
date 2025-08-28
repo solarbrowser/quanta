@@ -196,6 +196,16 @@ void Lexer::reset(size_t position) {
         if (source_[i] == '\n') {
             current_position_.line++;
             current_position_.column = 1;
+        } else if (source_[i] == '\r') {
+            // Handle CR: if next char is LF, it's CRLF, just skip CR
+            if (i + 1 < source_.length() && source_[i + 1] == '\n') {
+                // CRLF sequence, don't increment line yet (LF will do it)
+                continue;
+            } else {
+                // Standalone CR (Mac-style), treat as line terminator
+                current_position_.line++;
+                current_position_.column = 1;
+            }
         } else {
             current_position_.column++;
         }
@@ -233,6 +243,16 @@ void Lexer::advance_position(char ch) {
     if (ch == '\n') {
         current_position_.line++;
         current_position_.column = 1;
+    } else if (ch == '\r') {
+        // Handle CR: check if next char is LF (CRLF)
+        if (position_ < source_.length() && source_[position_] == '\n') {
+            // CRLF sequence, don't increment line yet (LF will do it)
+            current_position_.column++;
+        } else {
+            // Standalone CR (Mac-style), treat as line terminator
+            current_position_.line++;
+            current_position_.column = 1;
+        }
     } else {
         current_position_.column++;
     }
@@ -608,7 +628,7 @@ bool Lexer::is_whitespace(char ch) const {
 }
 
 bool Lexer::is_line_terminator(char ch) const {
-    return ch == '\n';
+    return ch == '\n' || ch == '\r';
 }
 
 double Lexer::parse_decimal_literal() {

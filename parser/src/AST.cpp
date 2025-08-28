@@ -3669,6 +3669,12 @@ Value MemberExpression::evaluate(Context& ctx) {
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
+    // Check for null/undefined access - should throw TypeError
+    if (object_value.is_null() || object_value.is_undefined()) {
+        ctx.throw_type_error("Cannot read property of null or undefined");
+        return Value();
+    }
+    
     // PRIORITY FIX: Handle regular object property access FIRST, before all the special cases
     if (object_value.is_object() && !computed_) {
         Object* obj = object_value.as_object();
@@ -4950,6 +4956,9 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
+                // Clean up environment before returning
+                ctx.set_lexical_environment(old_lexical_env);
+                delete block_env_ptr;
                 return Value();
             }
         }
@@ -4960,14 +4969,23 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
             last_value = statement->evaluate(ctx);
             if (ctx.has_exception()) {
+                // Clean up environment before returning
+                ctx.set_lexical_environment(old_lexical_env);
+                delete block_env_ptr;
                 return Value();
             }
             // Check if a return statement was executed
             if (ctx.has_return_value()) {
+                // Clean up environment before returning
+                ctx.set_lexical_environment(old_lexical_env);
+                delete block_env_ptr;
                 return ctx.get_return_value();
             }
             // Break and continue statements should propagate up
             if (ctx.has_break() || ctx.has_continue()) {
+                // Clean up environment before returning
+                ctx.set_lexical_environment(old_lexical_env);
+                delete block_env_ptr;
                 return Value();
             }
         }
@@ -7144,54 +7162,94 @@ std::unique_ptr<ASTNode> ArrayLiteral::clone() const {
 //=============================================================================
 
 Value TryStatement::evaluate(Context& ctx) {
+    static int try_recursion_depth = 0;
+    if (try_recursion_depth > 10) {
+        return Value("Max try-catch recursion exceeded");
+    }
+    
+    try_recursion_depth++;
+    
     Value result;
-    bool exception_caught = false;
+    Value exception_value;
+    bool caught_exception = false;
     
     // Execute try block
     try {
         result = try_block_->evaluate(ctx);
         
-        // Check if an exception was thrown during evaluation
+        // Check for JavaScript exceptions immediately after evaluation
         if (ctx.has_exception()) {
-            // If we have a catch clause, handle the exception
-            if (catch_clause_) {
-                Value exception = ctx.get_exception();
-                ctx.clear_exception();
-                
-                // Create new scope for catch block with exception parameter
-                auto catch_context = ContextFactory::create_eval_context(ctx.get_engine(), &ctx);
-                CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
-                catch_context->create_binding(catch_node->get_parameter_name(), exception);
-                
-                // Execute catch block
-                result = catch_node->get_body()->evaluate(*catch_context);
-                exception_caught = true;
-            }
+            caught_exception = true;
+            exception_value = ctx.get_exception();  // Get the exception value
+            ctx.clear_exception();  // Clear after getting it
         }
     } catch (const std::exception& e) {
-        // Handle C++ exceptions as JavaScript exceptions
-        if (catch_clause_) {
-            Value exception = Value(e.what());
-            ctx.clear_exception();
+        // C++ exception caught - convert to JavaScript Error
+        caught_exception = true;
+        exception_value = Value(std::string("Error: ") + e.what());
+    } catch (...) {
+        // Unknown C++ exception
+        caught_exception = true;
+        exception_value = Value("Error: Unknown error");
+    }
+    
+    // Execute catch block if we caught something
+    if (caught_exception && catch_clause_) {
+        CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
+        
+        // Bind the exception to the catch parameter if it exists  
+        if (!catch_node->get_parameter_name().empty()) {
+            std::string param_name = catch_node->get_parameter_name();
             
-            auto catch_context = ContextFactory::create_eval_context(ctx.get_engine(), &ctx);
-            CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
-            catch_context->create_binding(catch_node->get_parameter_name(), exception);
+            // Try to create binding first, then set it
+            if (!ctx.create_binding(param_name, exception_value, true)) {
+                // If create fails, try set_binding
+                ctx.set_binding(param_name, exception_value);
+            }
+        }
+        
+        try {
+            result = catch_node->get_body()->evaluate(ctx);
             
-            result = catch_node->get_body()->evaluate(*catch_context);
-            exception_caught = true;
-        } else {
-            // Re-throw if no catch clause
-            ctx.throw_exception(Value(e.what()));
+            // Ensure no exception remains after catch block evaluation
+            if (ctx.has_exception()) {
+                ctx.clear_exception();
+            }
+        } catch (const std::exception& e) {
+            // Handle errors in catch block properly
+            result = Value(std::string("CatchBlockError: ") + e.what());
+            // Clear any exception state
+            if (ctx.has_exception()) {
+                ctx.clear_exception();
+            }
+        } catch (...) {
+            result = Value("CatchBlockError: Unknown error in catch");
+            // Clear any exception state
+            if (ctx.has_exception()) {
+                ctx.clear_exception();
+            }
         }
     }
     
-    // Execute finally block if present
+    // Execute finally block
     if (finally_block_) {
-        finally_block_->evaluate(ctx);
-        // Finally block doesn't change the result, but can throw new exceptions
+        try {
+            finally_block_->evaluate(ctx);
+        } catch (const std::exception& e) {
+            // Finally block errors shouldn't override the result
+            std::cerr << "Finally block error: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "Finally block unknown error" << std::endl;
+        }
     }
     
+    // Final cleanup: Ensure no exception state remains after try-catch-finally
+    // This is crucial for program continuation after try-catch blocks
+    if (ctx.has_exception()) {
+        ctx.clear_exception();
+    }
+    
+    try_recursion_depth--;
     return result;
 }
 

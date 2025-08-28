@@ -40,6 +40,15 @@ private:
 public:
     Promise(Context* ctx = nullptr) : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx) {}
     
+    // Add explicit destructor to handle cleanup
+    virtual ~Promise() {
+        // Clear handlers to avoid dangling pointers
+        fulfillment_handlers_.clear();
+        rejection_handlers_.clear();
+        // Don't delete context_ as it's not owned by Promise
+        context_ = nullptr;
+    }
+    
     // Core Promise methods
     void fulfill(const Value& value);
     void reject(const Value& reason);

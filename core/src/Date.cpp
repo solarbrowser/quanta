@@ -283,14 +283,13 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
         date_impl = std::make_unique<Date>(year, month, day, hour, minute, second, millisecond);
     }
     
-    // Create a simple Date object wrapper without complex nested functions
-    // The date methods will be added by Context.cpp when setting up Date constructor
+    // Create a simple Date object wrapper
     auto js_date_obj = ObjectFactory::create_object();
     
     // Add standard properties
     js_date_obj->set_property("_isDate", Value(true));
     
-    // Store the timestamp as a property that can be accessed by global Date methods
+    // Store the timestamp as a property that can be accessed by instance methods
     js_date_obj->set_property("_timestamp", Value(static_cast<double>(date_impl->getTimestamp())));
     
     return Value(js_date_obj.release());

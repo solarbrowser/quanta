@@ -1570,8 +1570,20 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     Position start = expr->get_start();
     Position end = expr->get_end();
     
-    // Consume optional semicolon
-    consume_if_match(TokenType::SEMICOLON);
+    // Automatic Semicolon Insertion (ASI) rules:
+    // 1. If there's an explicit semicolon, consume it
+    // 2. If we're at EOF, line terminator, or '}', ASI applies
+    // 3. Otherwise, we can still continue (for expressions that span multiple lines)
+    if (match(TokenType::SEMICOLON)) {
+        advance(); // Consume explicit semicolon
+    } else if (at_end() || match(TokenType::RIGHT_BRACE) || current_token().get_start().line > end.line) {
+        // ASI: Automatic semicolon insertion applies
+        // - At end of file
+        // - Before '}'
+        // - After line terminator (different line)
+        // No need to consume anything, semicolon is automatically inserted
+    }
+    // If none of the above, continue without semicolon (valid for multi-line expressions)
     
     return std::make_unique<ExpressionStatement>(std::move(expr), start, end);
 }
