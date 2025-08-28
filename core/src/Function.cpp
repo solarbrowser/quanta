@@ -6,7 +6,6 @@
 
 #include "../include/Object.h"
 #include "../include/Context.h"
-#include "../include/Engine.h"
 #include "../include/InlineCache.h"
 #include "../../parser/include/AST.h"
 #include <sstream>
@@ -146,15 +145,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         
         // Don't update closure_context_ to preserve original closure semantics when possible
     }
-    
-    // GLOBAL VARIABLE ACCESS FIX: Ensure parent context is global context for global functions
-    // If the closure context is the global context, use it; otherwise fall back to global context
-    if (parent_context && parent_context->get_type() != Context::Type::Global) {
-        Context* global_ctx = ctx.get_engine()->get_global_context();
-        if (global_ctx) {
-            parent_context = global_ctx;
-        }
-    }
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     
     // CLOSURE FIX: Use captured closure variables stored in function properties
@@ -172,8 +162,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
     Context& function_context = *function_context_ptr;
-    
-    // GLOBAL VARIABLE ACCESS FIX: Function context should now inherit from global context
     
     // Bind parameters to arguments with default value support
     if (!parameter_objects_.empty()) {
