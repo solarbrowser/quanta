@@ -376,9 +376,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             // CRITICAL FIX: Invalidate inline cache after overflow property update
             if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
                 g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-                if (key == "count") {
-                    std::cout << "[DEBUG] Cache invalidated for overflow property: " << key << std::endl;
-                }
             }
             
             return true;
@@ -866,9 +863,6 @@ bool Object::store_in_shape(const std::string& key, const Value& value, Property
         // CRITICAL FIX: Invalidate inline cache after new property addition
         if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
             g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-            if (key == "count") {
-                std::cout << "[DEBUG] Cache invalidated for new shape property: " << key << std::endl;
-            }
         }
         
         return true;
@@ -897,9 +891,6 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     // CRITICAL FIX: Invalidate inline cache after overflow property addition
     if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
         g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-        if (key == "count") {
-            std::cout << "[DEBUG] Cache invalidated for new overflow property: " << key << std::endl;
-        }
     }
     
     return true;
