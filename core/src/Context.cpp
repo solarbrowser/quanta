@@ -1982,7 +1982,16 @@ void Context::setup_global_bindings() {
     // Try to bind the complex built-in objects if they exist
     if (built_in_objects_.find("Object") != built_in_objects_.end() && built_in_objects_["Object"]) {
         // Use the proper Object constructor with Object.keys
-        lexical_environment_->create_binding("Object", Value(built_in_objects_["Object"]), false);
+        Object* obj_constructor = built_in_objects_["Object"];
+        Value binding_value;
+        if (obj_constructor->is_function()) {
+            // Cast to Function* to ensure correct Value constructor is used
+            Function* func_ptr = static_cast<Function*>(obj_constructor);
+            binding_value = Value(func_ptr);
+        } else {
+            binding_value = Value(obj_constructor);
+        }
+        lexical_environment_->create_binding("Object", binding_value, false);
     }
     
     // Array constructor  
@@ -1993,7 +2002,16 @@ void Context::setup_global_bindings() {
     
     // Function constructor
     if (built_in_objects_.find("Function") != built_in_objects_.end() && built_in_objects_["Function"]) {
-        lexical_environment_->create_binding("Function", Value(built_in_objects_["Function"]), false);
+        Object* func_constructor = built_in_objects_["Function"];
+        Value binding_value;
+        if (func_constructor->is_function()) {
+            // Cast to Function* to ensure correct Value constructor is used
+            Function* func_ptr = static_cast<Function*>(func_constructor);
+            binding_value = Value(func_ptr);
+        } else {
+            binding_value = Value(func_constructor);
+        }
+        lexical_environment_->create_binding("Function", binding_value, false);
     }
     
     // Bind all other built-in objects to global environment
@@ -2001,10 +2019,21 @@ void Context::setup_global_bindings() {
         if (pair.second) {
             // Skip the ones we already bound manually to avoid double-binding
             if (pair.first != "Object" && pair.first != "Array" && pair.first != "Function") {
-                lexical_environment_->create_binding(pair.first, Value(pair.second), false);
+                // Check if the object is actually a Function and cast it properly
+                Value binding_value;
+                if (pair.second->is_function()) {
+                    // Cast to Function* to ensure correct Value constructor is used
+                    Function* func_ptr = static_cast<Function*>(pair.second);
+                    binding_value = Value(func_ptr);
+                } else {
+                    // Use Object constructor for non-functions
+                    binding_value = Value(pair.second);
+                }
+                
+                lexical_environment_->create_binding(pair.first, binding_value, false);
                 // Also ensure it's bound to global object for property access
                 if (global_object_) {
-                    global_object_->set_property(pair.first, Value(pair.second));
+                    global_object_->set_property(pair.first, binding_value);
                 }
             }
         }
