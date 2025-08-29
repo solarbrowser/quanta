@@ -2,6 +2,18 @@
 
 A high-performance, production-ready JavaScript engine written in C++ for Solar Project with high ES6+ compatibility and advanced optimization features.
 
+## ECMAScript Compatibility
+
+**[████████████--------]**
+**%0          %60      %100**
+
+### Issues with ECMAScript
+- 90% of failures come from `'Expected test to throw error of type SyntaxError, but did not throw error'`. This means that if we fix this issue, Quanta will likely achieve ~90% compatibility with ES6+.
+
+### Notes
+- Quanta is being updated weekly and improvements are continuously applied.
+- Our goal is for Quanta to become one of the favorite JavaScript engines alongside Solar, by the second half of 2026.
+
 ## Features
 
 ### Core JavaScript Compatibility
