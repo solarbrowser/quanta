@@ -116,10 +116,10 @@ quanta/
 │   │   ├── Object.h                   # Object system
 │   │   ├── Async.h                    # Asynchronous operations
 │   │   ├── 📁 PhotonCore/            # Solar's optimization engine
-│   │   │   ├── PhotonCoreQuantum.h   # Quantum optimizations
-│   │   │   ├── PhotonCoreTurbo.h     # Turbo performance
-│   │   │   ├── PhotonCoreSonic.h     # Sonic speed features
-│   │   │   └── PhotonCoreVelocity.h  # Velocity enhancements
+│   │   │   ├── PhotonCoreQuantum.h   
+│   │   │   ├── PhotonCoreTurbo.h     
+│   │   │   ├── PhotonCoreSonic.h     
+│   │   │   └── PhotonCoreVelocity.h  
 │   │   └── 📁 platform/             # Platform-specific code
 │   └── 📁 src/                      # Implementation Files
 │       ├── Engine.cpp                # Core engine implementation
