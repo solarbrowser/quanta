@@ -158,32 +158,8 @@ quanta/
 ```
 
 ### Execution Flow
-```
-┌─────────────┐    ┌─────────────────────────────────────────────────────┐
-│   Source    │───▶│                   Engine                            │
-│    Code     │    │  ┌─────────────────────────────────────────────┐    │
-└─────────────┘    │  │          Optimization Layers               │    │
-                   │  │                                             │    │
-                   │  │  1. FastBytecode VM (Direct Compilation)   │    │
-                   │  │  2. Pattern Detection & Specialization     │    │
-                   │  │  3. Native C++ Loop Execution              │    │
-                   │  │  4. Math-intensive Operations              │    │
-                   │  │  5. Object/Array Optimizations             │    │
-                   │  └─────────────────────────────────────────────┘    │
-                   │                        │                           │
-                   │  ┌─────────────────────▼───────────────────────┐    │
-                   │  │            Fallback Path                    │    │
-                   │  │                                             │    │
-                   │  │  Lexer → Parser → AST → Context → Execute   │    │
-                   │  │                                             │    │
-                   │  └─────────────────────────────────────────────┘    │
-                   └─────────────────────────────────┬───────────────────┘
-                                                     │
-                   ┌─────────────┐                   │
-                   │   Output    │◀──────────────────┘
-                   │  (Results)  │
-                   └─────────────┘
-```
+![Execution Flow](docs/images/execution_flow.png)
+
 
 ### Optimization Pipeline
 ```

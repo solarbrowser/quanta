@@ -82,7 +82,7 @@ bool JITCompiler::try_execute_compiled(ASTNode* node, Context& ctx, Value& resul
         return true;
     } catch (const std::exception& e) {
         // JIT compilation failed, fallback to interpreter
-        std::cerr << "JIT execution failed: " << e.what() << std::endl;
+        // std::cerr << "JIT execution failed: " << e.what() << std::endl;
         invalidate_cache(node);
         return false;
     }
@@ -599,16 +599,16 @@ bool JITCompiler::try_execute_compiled_function(Function* func, Context& ctx,
         // Execute JIT-compiled function with optimized calling convention
         result = compiled.optimized_function(ctx);
         
-        // Debug output disabled for clean timing
+        // Debug output disabled for production
         // if (ultra_fast_mode_) {
-        //     std::cout << " JIT EXECUTION: " << func->get_name() 
+        //     std::cout << "🚀 JIT EXECUTION: " << func->get_name() 
         //              << " (compiled, " << compiled.execution_count << " JIT calls)" << std::endl;
         // }
         
         return true;
     } catch (const std::exception& e) {
         // JIT execution failed, fallback to interpreter
-        std::cerr << "� JIT function execution failed: " << e.what() << std::endl;
+        // std::cerr << "� JIT function execution failed: " << e.what() << std::endl;
         invalidate_function_cache(func);
         return false;
     }
@@ -627,29 +627,22 @@ bool JITCompiler::compile_hot_function(Function* func) {
         
         // Create optimized function that bypasses standard call overhead
         compiled_code.optimized_function = [func, this](Context& ctx) -> Value {
-            // optimized: Direct function body execution
+            // Execute the actual function instead of returning hardcoded values
             if (func->is_native()) {
-                // For native functions, we can't optimize much more
-                // Just execute with reduced overhead tracking
+                // For native functions, execute the real native function
                 try {
-                    // Temporarily disable JIT recursion and execute original
-                    return Value(static_cast<double>(42)); // Optimized native result
+                    // Call the actual native function
+                    return func->call(ctx, {});
                 } catch (...) {
                     return Value(); // Error fallback
                 }
             }
             
-            // For JavaScript functions, this is where we would:
-            // 1. Analyze the AST for optimization opportunities
-            // 2. Generate optimized bytecode or machine code
-            // 3. Execute with inline caching and type specialization
-            
-            // Simulated JIT-compiled execution
-            // In a full implementation, this would be compiled machine code
+            // For JavaScript functions, execute the real function
+            // TODO: Add proper JIT optimizations while maintaining correctness
             try {
-                // Simulate optimized execution path
-                // This represents what compiled machine code would do
-                return Value(static_cast<double>(999)); // JIT-optimized result
+                // Execute the actual JavaScript function
+                return func->call(ctx, {});
             } catch (...) {
                 return Value(); // Error fallback
             }
@@ -658,9 +651,9 @@ bool JITCompiler::compile_hot_function(Function* func) {
         // Cache the compiled function
         function_cache_[func] = std::move(compiled_code);
         
-        // Debug output disabled for clean timing
+        // Debug output disabled for production
         // if (ultra_fast_mode_) {
-        //     std::cout << "� JIT COMPILED: " << func->get_name() 
+        //     std::cout << "⚡ JIT COMPILED: " << func->get_name() 
         //              << " (execution count: " << func->get_execution_count() 
         //              << ", optimization level: Advanced)" << std::endl;
         // }
@@ -668,8 +661,8 @@ bool JITCompiler::compile_hot_function(Function* func) {
         return true;
         
     } catch (const std::exception& e) {
-        std::cerr << "JIT compilation failed for function " << func->get_name() 
-                  << ": " << e.what() << std::endl;
+        // std::cerr << "JIT compilation failed for function " << func->get_name() 
+        //          << ": " << e.what() << std::endl;
         return false;
     }
 }
@@ -689,9 +682,9 @@ void JITCompiler::invalidate_function_cache(Function* func) {
     auto it = function_cache_.find(func);
     if (it != function_cache_.end()) {
         function_cache_.erase(it);
-        if (ultra_fast_mode_) {
-            std::cout << "� JIT cache invalidated for function: " << func->get_name() << std::endl;
-        }
+        // if (ultra_fast_mode_) {
+        //     std::cout << "� JIT cache invalidated for function: " << func->get_name() << std::endl;
+        // }
     }
 }
 

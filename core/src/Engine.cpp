@@ -1595,38 +1595,38 @@ void Engine::setup_nodejs_apis() {
 // // JIT and GC Method Implementations
 // //=============================================================================
 // 
-// void Engine::enable_jit(bool enable) {
-//     config_.enable_jit = enable;
-//     if (jit_compiler_) {
-//         jit_compiler_->enable_jit(enable);
-//     }
-// }
-// 
-// bool Engine::is_jit_enabled() const {
-//     return config_.enable_jit && jit_compiler_ && jit_compiler_->is_jit_enabled();
-// }
-// 
-// void Engine::set_jit_threshold(uint32_t threshold) {
-//     if (jit_compiler_) {
-//         jit_compiler_->set_hotspot_threshold(threshold);
-//     }
-// }
-// 
-// std::string Engine::get_jit_stats() const {
-//     if (!jit_compiler_) {
-//         return "JIT Compiler not initialized";
-//     }
-//     
-//     std::ostringstream oss;
-//     oss << "=== JIT Compiler Statistics ===" << std::endl;
-//     oss << "JIT Enabled: " << (is_jit_enabled() ? "Yes" : "No") << std::endl;
-//     oss << "Total Compilations: " << jit_compiler_->get_total_compilations() << std::endl;
-//     oss << "Cache Hits: " << jit_compiler_->get_cache_hits() << std::endl;
-//     oss << "Cache Misses: " << jit_compiler_->get_cache_misses() << std::endl;
-//     oss << "Hit Ratio: " << (jit_compiler_->get_cache_hit_ratio() * 100) << "%" << std::endl;
-//     
-//     return oss.str();
-// }
+void Engine::enable_jit(bool enable) {
+    config_.enable_jit = enable;
+    if (jit_compiler_) {
+        jit_compiler_->enable_jit(enable);
+    }
+}
+
+bool Engine::is_jit_enabled() const {
+    return config_.enable_jit && jit_compiler_ && jit_compiler_->is_jit_enabled();
+}
+
+void Engine::set_jit_threshold(uint32_t threshold) {
+    if (jit_compiler_) {
+        jit_compiler_->set_hotspot_threshold(threshold);
+    }
+}
+
+std::string Engine::get_jit_stats() const {
+    if (!jit_compiler_) {
+        return "JIT Compiler not initialized";
+    }
+    
+    std::ostringstream oss;
+    oss << "=== JIT Compiler Statistics ===" << std::endl;
+    oss << "JIT Enabled: " << (is_jit_enabled() ? "Yes" : "No") << std::endl;
+    oss << "Total Compilations: " << jit_compiler_->get_total_compilations() << std::endl;
+    oss << "Cache Hits: " << jit_compiler_->get_cache_hits() << std::endl;
+    oss << "Cache Misses: " << jit_compiler_->get_cache_misses() << std::endl;
+    oss << "Hit Ratio: " << (jit_compiler_->get_cache_hit_ratio() * 100) << "%" << std::endl;
+    
+    return oss.str();
+}
 // 
 // void Engine::enable_gc(bool enable) {
 //     if (garbage_collector_) {
