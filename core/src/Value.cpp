@@ -276,7 +276,14 @@ bool Value::loose_equals(const Value& other) const {
 Value Value::add(const Value& other) const {
     // optimized: Fast path for number + number (most common case)
     if (is_number() && other.is_number()) {
-        return Value(as_number() + other.as_number());
+        double result = as_number() + other.as_number();
+        if (std::isinf(result)) {
+            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        }
+        if (std::isnan(result)) {
+            return Value::nan();
+        }
+        return Value(result);
     }
     
     // Handle BigInt cases
@@ -300,7 +307,14 @@ Value Value::add(const Value& other) const {
 Value Value::subtract(const Value& other) const {
     // optimized: Fast path for number - number
     if (is_number() && other.is_number()) {
-        return Value(as_number() - other.as_number());
+        double result = as_number() - other.as_number();
+        if (std::isinf(result)) {
+            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        }
+        if (std::isnan(result)) {
+            return Value::nan();
+        }
+        return Value(result);
     }
     
     if (is_bigint() && other.is_bigint()) {
@@ -316,7 +330,14 @@ Value Value::subtract(const Value& other) const {
 Value Value::multiply(const Value& other) const {
     // optimized: Fast path for number * number (very common)
     if (is_number() && other.is_number()) {
-        return Value(as_number() * other.as_number());
+        double result = as_number() * other.as_number();
+        if (std::isinf(result)) {
+            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        }
+        if (std::isnan(result)) {
+            return Value::nan();
+        }
+        return Value(result);
     }
     
     if (is_bigint() && other.is_bigint()) {
@@ -326,7 +347,14 @@ Value Value::multiply(const Value& other) const {
     if (is_bigint() || other.is_bigint()) {
         throw std::runtime_error("Cannot mix BigInt and other types in multiplication");
     }
-    return Value(to_number() * other.to_number());
+    double result = to_number() * other.to_number();
+    if (std::isinf(result)) {
+        return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+    }
+    if (std::isnan(result)) {
+        return Value::nan();
+    }
+    return Value(result);
 }
 
 Value Value::divide(const Value& other) const {
@@ -474,6 +502,22 @@ Value Value::bitwise_xor(const Value& other) const {
 
 int Value::compare(const Value& other) const {
     if (is_number() && other.is_number()) {
+        // Handle infinity comparisons explicitly for edge cases
+        if (is_positive_infinity()) {
+            if (other.is_positive_infinity()) return 0;
+            return 1; // +infinity > anything else
+        }
+        if (is_negative_infinity()) {
+            if (other.is_negative_infinity()) return 0;
+            return -1; // -infinity < anything else
+        }
+        if (other.is_positive_infinity()) {
+            return -1; // anything < +infinity
+        }
+        if (other.is_negative_infinity()) {
+            return 1; // anything > -infinity
+        }
+        
         double left = as_number();
         double right = other.as_number();
         if (left < right) return -1;

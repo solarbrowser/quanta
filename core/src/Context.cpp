@@ -1036,7 +1036,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(0.0);
             return Value(args[0].to_number());
         });
-    number_constructor->set_property("MAX_VALUE", Value(1.7976931348623157e+308));
+    number_constructor->set_property("MAX_VALUE", Value(std::numeric_limits<double>::max()));
     number_constructor->set_property("MIN_VALUE", Value(5e-324));
     number_constructor->set_property("NaN", Value(std::numeric_limits<double>::quiet_NaN()));
     number_constructor->set_property("POSITIVE_INFINITY", Value(std::numeric_limits<double>::infinity()));

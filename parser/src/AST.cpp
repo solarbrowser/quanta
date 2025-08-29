@@ -597,14 +597,32 @@ Value BinaryExpression::evaluate(Context& ctx) {
             case Operator::ADD: {
                 // Inline assembly hint for maximum speed
                 double result = left_num + right_num;
+                if (std::isinf(result)) {
+                    return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                }
+                if (std::isnan(result)) {
+                    return Value::nan();
+                }
                 return Value(result);
             }
             case Operator::SUBTRACT: {
                 double result = left_num - right_num;
+                if (std::isinf(result)) {
+                    return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                }
+                if (std::isnan(result)) {
+                    return Value::nan();
+                }
                 return Value(result);
             }
             case Operator::MULTIPLY: {
                 double result = left_num * right_num;
+                if (std::isinf(result)) {
+                    return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                }
+                if (std::isnan(result)) {
+                    return Value::nan();
+                }
                 return Value(result);
             }
             case Operator::DIVIDE: {
@@ -4755,6 +4773,7 @@ std::unique_ptr<ASTNode> NewExpression::clone() const {
 Value ExpressionStatement::evaluate(Context& ctx) {
     Value result = expression_->evaluate(ctx);
     if (ctx.has_exception()) {
+        return Value(); // Return undefined on exception
     }
     return result;
 }
@@ -4787,6 +4806,9 @@ Value Program::evaluate(Context& ctx) {
         }
     }
     
+    // VARIABLE HOISTING: Second pass - pre-declare all var variables with undefined
+    hoist_var_declarations(ctx);
+    
     // Second pass - process all other statements
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
@@ -4798,6 +4820,61 @@ Value Program::evaluate(Context& ctx) {
     }
     
     return last_value;
+}
+
+void Program::hoist_var_declarations(Context& ctx) {
+    // Recursively scan all statements for var declarations
+    for (const auto& statement : statements_) {
+        scan_for_var_declarations(statement.get(), ctx);
+    }
+}
+
+void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
+    if (!node) return;
+    
+    if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(node);
+        
+        // Only hoist var declarations, not let/const
+        for (const auto& declarator : var_decl->get_declarations()) {
+            if (declarator->get_kind() == VariableDeclarator::Kind::VAR) {
+                const std::string& name = declarator->get_id()->get_name();
+                
+                // Create binding with undefined value if it doesn't already exist
+                if (!ctx.has_binding(name)) {
+                    ctx.create_var_binding(name, Value(), true); // undefined, mutable
+                }
+            }
+        }
+    }
+    
+    // Recursively scan child nodes for nested var declarations
+    // Note: This is a simplified version - a full implementation would need
+    // to handle all possible AST node types that can contain statements
+    if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        BlockStatement* block = static_cast<BlockStatement*>(node);
+        for (const auto& stmt : block->get_statements()) {
+            scan_for_var_declarations(stmt.get(), ctx);
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::IF_STATEMENT) {
+        IfStatement* if_stmt = static_cast<IfStatement*>(node);
+        scan_for_var_declarations(if_stmt->get_consequent(), ctx);
+        if (if_stmt->get_alternate()) {
+            scan_for_var_declarations(if_stmt->get_alternate(), ctx);
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+        ForStatement* for_stmt = static_cast<ForStatement*>(node);
+        if (for_stmt->get_init()) {
+            scan_for_var_declarations(for_stmt->get_init(), ctx);
+        }
+        scan_for_var_declarations(for_stmt->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::WHILE_STATEMENT) {
+        WhileStatement* while_stmt = static_cast<WhileStatement*>(node);
+        scan_for_var_declarations(while_stmt->get_body(), ctx);
+    }
 }
 
 std::string Program::to_string() const {

@@ -8,7 +8,7 @@ CXX = g++
 CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.0.2"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD
-CXXFLAGS += -ffast-math -funroll-loops -finline-functions
+CXXFLAGS += -funroll-loops -finline-functions
 CXXFLAGS += -ftree-vectorize -ftree-loop-vectorize
 CXXFLAGS += -msse4.2 -mavx
 CXXFLAGS += -faggressive-loop-optimizations

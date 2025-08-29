@@ -1364,6 +1364,8 @@ private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
     
     void check_use_strict_directive(Context& ctx);
+    void hoist_var_declarations(Context& ctx);
+    void scan_for_var_declarations(ASTNode* node, Context& ctx);
 
 public:
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)

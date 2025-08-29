@@ -524,7 +524,13 @@ double Math::safe_to_number(const Value& value) {
     if (value.is_number()) {
         return value.to_number();
     }
-    return std::numeric_limits<double>::quiet_NaN();
+    
+    // Try to convert other types to numbers (like JavaScript does)
+    try {
+        return value.to_number();
+    } catch (...) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
 }
 
 bool Math::is_finite_number(double value) {
