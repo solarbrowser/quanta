@@ -106,55 +106,55 @@ let [first, second] = [10, 20];
 quanta/
 ├── 📁 core/                          # Core JavaScript Engine
 │   ├── 📁 include/                   # Header Files
-│   │   ├── Engine.h              # Main execution engine
-│   │   ├── Context.h             # Scope & environment management
-│   │   ├── Value.h               # NaN-boxing value system
-│   │   ├── GC.h                 # Garbage collection
-│   │   ├── JIT.h                # Just-in-time compilation
-│   │   ├── Math.h                # Mathematical operations
-│   │   ├── String.h              # String operations
-│   │   ├── Object.h              # Object system
-│   │   ├── Async.h               # Asynchronous operations
-│   │   ├── 📁 PhotonCore/           # Solar's optimization engine
-│   │   │   ├── PhotonCoreQuantum.h  # Quantum optimizations
-│   │   │   ├── PhotonCoreTurbo.h    # Turbo performance
-│   │   │   ├── PhotonCoreSonic.h    # Sonic speed features
-│   │   │   └── PhotonCoreVelocity.h # Velocity enhancements
-│   │   └── 📁 platform/            # Platform-specific code
-│   └── 📁 src/                       # Implementation Files
-│       ├── Engine.cpp               # Core engine implementation
-│       ├── Context.cpp              # Runtime context
-│       ├── Value.cpp                # Value operations
-│       ├── Math.cpp                 # Math functions
-│       ├── JIT.cpp                  # JIT compiler
-│       └── ...                      # Additional implementations
+│   │   ├── Engine.h                   # Main execution engine
+│   │   ├── Context.h                  # Scope & environment management
+│   │   ├── Value.h                    # NaN-boxing value system
+│   │   ├── GC.h                       # Garbage collection
+│   │   ├── JIT.h                      # Just-in-time compilation
+│   │   ├── Math.h                     # Mathematical operations
+│   │   ├── String.h                   # String operations
+│   │   ├── Object.h                   # Object system
+│   │   ├── Async.h                    # Asynchronous operations
+│   │   ├── 📁 PhotonCore/            # Solar's optimization engine
+│   │   │   ├── PhotonCoreQuantum.h   # Quantum optimizations
+│   │   │   ├── PhotonCoreTurbo.h     # Turbo performance
+│   │   │   ├── PhotonCoreSonic.h     # Sonic speed features
+│   │   │   └── PhotonCoreVelocity.h  # Velocity enhancements
+│   │   └── 📁 platform/             # Platform-specific code
+│   └── 📁 src/                      # Implementation Files
+│       ├── Engine.cpp                # Core engine implementation
+│       ├── Context.cpp               # Runtime context
+│       ├── Value.cpp                 # Value operations
+│       ├── Math.cpp                  # Math functions
+│       ├── JIT.cpp                   # JIT compiler
+│       └── ...                       # Additional implementations
 │
 ├── 📁 parser/                        # JavaScript Parser
 │   ├── 📁 include/
-│   │   ├── AST.h                 # Abstract Syntax Tree
-│   │   └── Parser.h              # Parser interface
+│   │   ├── AST.h                     # Abstract Syntax Tree
+│   │   └── Parser.h                  # Parser interface
 │   └── 📁 src/
-│       ├── AST.cpp                  # AST implementation
-│       └── Parser.cpp               # Parser implementation
+│       ├── AST.cpp                   # AST implementation
+│       └── Parser.cpp                # Parser implementation
 │
 ├── 📁 lexer/                         # JavaScript Lexer  
 │   ├── 📁 include/
-│   │   ├── Lexer.h               # Tokenizer interface
-│   │   └── Token.h               # Token definitions
+│   │   ├── Lexer.h                   # Tokenizer interface
+│   │   └── Token.h                   # Token definitions
 │   └── 📁 src/
-│       ├── Lexer.cpp                # Tokenizer implementation
-│       └── Token.cpp                # Token operations
+│       ├── Lexer.cpp                 # Tokenizer implementation
+│       └── Token.cpp                 # Token operations
 │
 ├── 📁 build/                         # Build Output
 │   ├── 📁 bin/
-│   │   └── quanta                # Main executable
+│   │   └── quanta                    # Main executable
 │   └── 📁 obj/                       # Object files
 │
-├── Makefile                       # Build system
-├── console.cpp                    # REPL interface
+├── Makefile                          # Build system
+├── console.cpp                       # REPL interface
 ├── .gitignore                     
-├── LICENSE                        # License file
-└── README.md                      # Documentation
+├── LICENSE                           # License file
+└── README.md                         # Documentation
 ```
 
 ### Execution Flow
