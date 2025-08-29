@@ -2064,6 +2064,43 @@ void Context::setup_global_bindings() {
     
     lexical_environment_->create_binding("console", Value(console_obj.release()), false);
     
+    // Add engine stats functions for debugging
+    auto gc_stats_fn = ObjectFactory::create_native_function("gcStats",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.get_engine()) {
+                std::string stats = ctx.get_engine()->get_gc_stats();
+                std::cout << stats << std::endl;
+            } else {
+                std::cout << "Engine not available" << std::endl;
+            }
+            return Value();
+        });
+    lexical_environment_->create_binding("gcStats", Value(gc_stats_fn.release()), false);
+    
+    auto jit_stats_fn = ObjectFactory::create_native_function("jitStats",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.get_engine()) {
+                std::string stats = ctx.get_engine()->get_jit_stats();
+                std::cout << stats << std::endl;
+            } else {
+                std::cout << "Engine not available" << std::endl;
+            }
+            return Value();
+        });
+    lexical_environment_->create_binding("jitStats", Value(jit_stats_fn.release()), false);
+    
+    auto force_gc_fn = ObjectFactory::create_native_function("forceGC",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.get_engine()) {
+                ctx.get_engine()->force_gc();
+                std::cout << "Garbage collection forced" << std::endl;
+            } else {
+                std::cout << "Engine not available" << std::endl;
+            }
+            return Value();
+        });
+    lexical_environment_->create_binding("forceGC", Value(force_gc_fn.release()), false);
+    
     // Manually bind JSON and Date objects to ensure they're available
     if (built_in_objects_.find("JSON") != built_in_objects_.end() && built_in_objects_["JSON"]) {
         lexical_environment_->create_binding("JSON", Value(built_in_objects_["JSON"]), false);

@@ -996,7 +996,7 @@ void GarbageCollector::enable_heavy_operation_mode() {
     young_generation_.reserve(100000);  // 100K objects
     old_generation_.reserve(500000);    // 500K objects
     
-    std::cout << "HEAVY OPERATION MODE ENABLED - GC optimized for large workloads" << std::endl;
+    // std::cout << "HEAVY OPERATION MODE ENABLED - GC optimized for large workloads" << std::endl;
 }
 
 void GarbageCollector::disable_heavy_operation_mode() {
@@ -1011,11 +1011,11 @@ void GarbageCollector::disable_heavy_operation_mode() {
     heap_size_limit_ = 512 * 1024 * 1024;  // 512MB normal
     gc_trigger_ratio_ = 0.3;  // Aggressive again
     
-    std::cout << "HEAVY OPERATION MODE DISABLED - GC back to normal mode" << std::endl;
+    // std::cout << "HEAVY OPERATION MODE DISABLED - GC back to normal mode" << std::endl;
 }
 
 void GarbageCollector::emergency_cleanup() {
-    std::cout << "� EMERGENCY CLEANUP TRIGGERED" << std::endl;
+    // std::cout << "� EMERGENCY CLEANUP TRIGGERED" << std::endl;
     
     // Immediate, aggressive cleanup
     std::lock_guard<std::mutex> lock(gc_mutex_);
@@ -1042,7 +1042,7 @@ void GarbageCollector::emergency_cleanup() {
     }
     
     stats_.total_deallocations += objects_freed;
-    std::cout << "� EMERGENCY CLEANUP COMPLETE - Freed " << objects_freed << " objects" << std::endl;
+    // std::cout << "� EMERGENCY CLEANUP COMPLETE - Freed " << objects_freed << " objects" << std::endl;
 }
 
 void GarbageCollector::prepare_for_heavy_load(size_t expected_objects) {
@@ -1063,7 +1063,7 @@ void GarbageCollector::prepare_for_heavy_load(size_t expected_objects) {
         emergency_cleanup_threshold_ = 1800UL * 1024 * 1024;  // 1.8GB
     }
     
-    std::cout << "GC PREPARED FOR HEAVY LOAD: " << expected_objects << " expected objects" << std::endl;
+    // std::cout << "GC PREPARED FOR HEAVY LOAD: " << expected_objects << " expected objects" << std::endl;
 }
 
 } // namespace Quanta

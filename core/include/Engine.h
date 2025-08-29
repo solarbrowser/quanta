@@ -149,6 +149,9 @@ public:
     void force_gc();
     std::string get_gc_stats() const;
     
+    // Garbage Collector access
+    class GarbageCollector* get_garbage_collector() const { return garbage_collector_.get(); }
+    
     // Performance and debugging
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);

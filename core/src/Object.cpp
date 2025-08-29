@@ -34,8 +34,6 @@ static Shape* g_root_shape = nullptr;
 Object::Object(ObjectType type) {
     // Create a basic shape - avoid Shape::get_root_shape() for now
     header_.shape = new Shape();
-    // Remove debug output that was causing infinite recursion
-    // std::cout << "Object constructor called with type: " << (int)type << std::endl;
     
     header_.prototype = nullptr;
     header_.type = type;
@@ -48,6 +46,9 @@ Object::Object(ObjectType type) {
     if (type == ObjectType::Array) {
         elements_.reserve(8);
     }
+    
+    // Register with GC if available
+    // Note: GC registration should be done by the context/engine that creates the object
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {

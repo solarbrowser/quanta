@@ -1627,48 +1627,46 @@ std::string Engine::get_jit_stats() const {
     
     return oss.str();
 }
-// 
-// void Engine::enable_gc(bool enable) {
-//     if (garbage_collector_) {
-//         garbage_collector_->set_collection_mode(enable ? 
-//             GarbageCollector::CollectionMode::Automatic : 
-//             GarbageCollector::CollectionMode::Manual);
-//     }
-// }
-// 
-// void Engine::set_gc_mode(GarbageCollector::CollectionMode mode) {
-//     if (garbage_collector_) {
-//         garbage_collector_->set_collection_mode(mode);
-//     }
-// }
-// 
-// void Engine::force_gc() {
-//     if (garbage_collector_) {
-//         garbage_collector_->force_full_collection();
-//         total_gc_runs_++;
-//     }
-// }
-// 
-// std::string Engine::get_gc_stats() const {
-//     if (!garbage_collector_) {
-//         return "Garbage Collector not initialized";
-//     }
-//     
-//     std::ostringstream oss;
-//     const auto& stats = garbage_collector_->get_statistics();
-//     
-//     oss << "=== Garbage Collector Statistics ===" << std::endl;
-//     oss << "Total Allocations: " << stats.total_allocations << std::endl;
-//     oss << "Total Deallocations: " << stats.total_deallocations << std::endl;
-//     oss << "Total Collections: " << stats.total_collections << std::endl;
-//     oss << "Bytes Allocated: " << stats.bytes_allocated << std::endl;
-//     oss << "Bytes Freed: " << stats.bytes_freed << std::endl;
-//     oss << "Peak Memory Usage: " << stats.peak_memory_usage << " bytes" << std::endl;
-//     oss << "Current Heap Size: " << garbage_collector_->get_heap_size() << " bytes" << std::endl;
-//     oss << "Average GC Time: " << stats.average_gc_time.count() << "ms" << std::endl;
-//     
-//     return oss.str();
-// }
+void Engine::enable_gc(bool enable) {
+    if (garbage_collector_) {
+        garbage_collector_->set_collection_mode(enable ? 
+            GarbageCollector::CollectionMode::Automatic : 
+            GarbageCollector::CollectionMode::Manual);
+    }
+}
+
+void Engine::set_gc_mode(GarbageCollector::CollectionMode mode) {
+    if (garbage_collector_) {
+        garbage_collector_->set_collection_mode(mode);
+    }
+}
+
+void Engine::force_gc() {
+    if (garbage_collector_) {
+        garbage_collector_->force_full_collection();
+        total_gc_runs_++;
+    }
+}
+std::string Engine::get_gc_stats() const {
+    if (!garbage_collector_) {
+        return "Garbage Collector not initialized";
+    }
+    
+    std::ostringstream oss;
+    const auto& stats = garbage_collector_->get_statistics();
+    
+    oss << "=== Garbage Collector Statistics ===" << std::endl;
+    oss << "Total Allocations: " << stats.total_allocations << std::endl;
+    oss << "Total Deallocations: " << stats.total_deallocations << std::endl;
+    oss << "Total Collections: " << stats.total_collections << std::endl;
+    oss << "Bytes Allocated: " << stats.bytes_allocated << std::endl;
+    oss << "Bytes Freed: " << stats.bytes_freed << std::endl;
+    oss << "Peak Memory Usage: " << stats.peak_memory_usage << " bytes" << std::endl;
+    oss << "Current Heap Size: " << garbage_collector_->get_heap_size() << " bytes" << std::endl;
+    oss << "Average GC Time: " << stats.average_gc_time.count() << "ms" << std::endl;
+    
+    return oss.str();
+}
 // 
 // void Engine::set_heap_limit(size_t limit) {
 //     config_.max_heap_size = limit;

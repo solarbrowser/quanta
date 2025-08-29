@@ -1758,6 +1758,12 @@ Value CallExpression::evaluate(Context& ctx) {
         
         // Call the function
         Function* function = callee_value.as_function();
+        
+        // Record function execution for JIT if engine is available
+        if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+            ctx.get_engine()->get_jit_compiler()->record_function_execution(function);
+        }
+        
         return function->call(ctx, arg_values);
     }
     
@@ -3628,6 +3634,12 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             
             // Call the method
             Function* method = method_value.as_function();
+            
+            // Record function execution for JIT if engine is available
+            if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+                ctx.get_engine()->get_jit_compiler()->record_function_execution(method);
+            }
+            
             return method->call(ctx, arg_values, object_value);
         } else {
             ctx.throw_exception(Value("Property is not a function"));
@@ -3650,6 +3662,12 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             
             // Call the method
             Function* method = method_value.as_function();
+            
+            // Record function execution for JIT if engine is available
+            if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+                ctx.get_engine()->get_jit_compiler()->record_function_execution(method);
+            }
+            
             return method->call(ctx, arg_values, object_value);
         } else {
             ctx.throw_exception(Value("Property is not a function"));
@@ -6705,6 +6723,11 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         return Value();
     }
     
+    // Register object with GC if engine is available
+    if (ctx.get_engine() && ctx.get_engine()->get_garbage_collector()) {
+        ctx.get_engine()->get_garbage_collector()->register_object(object.get());
+    }
+    
     // Add all properties to the object
     for (const auto& prop : properties_) {
         // Check if this is a spread element
@@ -6845,6 +6868,11 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     auto array = std::make_unique<Object>(Object::ObjectType::Array);
     if (!array) {
         return Value("[]");  // Return string representation as fallback
+    }
+    
+    // Register array with GC if engine is available
+    if (ctx.get_engine() && ctx.get_engine()->get_garbage_collector()) {
+        ctx.get_engine()->get_garbage_collector()->register_object(array.get());
     }
     
     // Add all elements to the array, expanding spread elements
