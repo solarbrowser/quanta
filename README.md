@@ -5,8 +5,8 @@ A high-performance, production-ready JavaScript engine written in C++ for Solar 
 ## Features
 
 ### Core JavaScript Compatibility
-- **100% JavaScript Compatibility** - Passes comprehensive test suites
-- **Full ES6+ Support** - Arrow functions, let/const, destructuring, classes, modules
+- **Nearly full JavaScript Compatibility** - Passes comprehensive test suites
+- **High ES6+ Support** - Arrow functions, let/const, destructuring, classes, modules
 - **Perfect Hoisting** - Proper variable and function hoisting behavior
 - **IEEE 754 Compliance** - Accurate floating-point arithmetic and special values
 - **Complete Type System** - All JavaScript types with proper coercion
