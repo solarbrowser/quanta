@@ -4,8 +4,7 @@ A high-performance, production-ready JavaScript engine written in C++ for Solar 
 
 ## ECMAScript Compatibility
 
-**[████████████--------]**
--**%0          %60      %100**
+**[████████████--------] %60**
 
 ### Issues with ECMAScript
 - 90% of failures come from `'Expected test to throw error of type SyntaxError, but did not throw error'`. This means that if we fix this issue, Quanta will likely achieve ~90% compatibility with ES6+.
