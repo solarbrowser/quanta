@@ -1,6 +1,6 @@
 # Quanta JavaScript Engine
 
-A high-performance, production-ready JavaScript engine written in C++ for Solar Project with full ES6+ compatibility and advanced optimization features.
+A high-performance, production-ready JavaScript engine written in C++ for Solar Project with high ES6+ compatibility and advanced optimization features.
 
 ## Features
 
