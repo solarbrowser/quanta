@@ -24,15 +24,15 @@
 
 using namespace Quanta;
 
-// ANSI color codes for better terminal output
-static const std::string RESET = "\033[0m";
-static const std::string BOLD = "\033[1m";
-static const std::string RED = "\033[31m";
-static const std::string GREEN = "\033[32m";
-static const std::string YELLOW = "\033[33m";
-static const std::string BLUE = "\033[34m";
-static const std::string MAGENTA = "\033[35m";
-static const std::string CYAN = "\033[36m";
+// ANSI color codes for better terminal output - disabled for test262 compatibility
+static const std::string RESET = "";
+static const std::string BOLD = "";
+static const std::string RED = "";
+static const std::string GREEN = "";
+static const std::string YELLOW = "";
+static const std::string BLUE = "";
+static const std::string MAGENTA = "";
+static const std::string CYAN = "";
 
 class QuantaConsole {
 private:
@@ -77,7 +77,7 @@ public:
     }
     
     // Execute file as ES6 module
-    void execute_as_module(const std::string& filename) {
+    bool execute_as_module(const std::string& filename) {
         try {
             std::cout << CYAN << "Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
             
@@ -85,19 +85,22 @@ public:
             ModuleLoader* module_loader = engine_->get_module_loader();
             if (!module_loader) {
                 std::cout << RED << "Error: ModuleLoader not available" << RESET << std::endl;
-                return;
+                return false;
             }
             
             // Load the module (this will execute it)
             Module* module = module_loader->load_module(filename, "");
             if (module) {
                 std::cout << GREEN << "Module loaded successfully!" << RESET << std::endl;
+                return true;
             } else {
                 std::cout << RED << "Module loading failed!" << RESET << std::endl;
+                return false;
             }
             
         } catch (const std::exception& e) {
             std::cout << RED << "Module execution error: " << e.what() << RESET << std::endl;
+            return false;
         }
     }
     
@@ -163,7 +166,7 @@ public:
         }
     }
     
-    void evaluate_expression(const std::string& input, bool show_prompt = true) {
+    bool evaluate_expression(const std::string& input, bool show_prompt = true) {
         try {
             auto start = std::chrono::high_resolution_clock::now();
             
@@ -173,8 +176,8 @@ public:
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
             
             if (!result.success) {
-                std::cout << RED << "Error: " << result.error_message << RESET << std::endl;
-                return;
+                std::cout << RED << result.error_message << RESET << std::endl;
+                return false;
             }
             
             // Only show result if it's not undefined
@@ -185,9 +188,10 @@ public:
             // debug only, for seeing execution time
             //std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
             
-            return;
+            return true;
         } catch (const std::exception& e) {
             std::cout << RED << "Error: " << e.what() << RESET << std::endl;
+            return false;
         }
     }
     
@@ -274,16 +278,30 @@ public:
 
 int main(int argc, char* argv[]) {
     try {
+        
         QuantaConsole console;
         
+        // Find the first non-flag argument (JavaScript file to execute)
+        std::string filename;
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
+            // Skip known Node.js/V8 flags that test262 might pass
+            if (arg.find("--") == 0) {
+                // Skip flags like --expose-gc, --harmony, etc.
+                continue;
+            }
+            filename = arg;
+            break;
+        }
+        
         // If file argument provided, execute it instead of interactive mode
-        if (argc > 1) {
+        if (!filename.empty()) {
             // Show banner for file execution too
             // Fast mode - no banner
             
-            std::ifstream file(argv[1]);
+            std::ifstream file(filename);
             if (!file.is_open()) {
-                std::cerr << "Error: Cannot open file " << argv[1] << std::endl;
+                std::cerr << "Error: Cannot open file " << filename << std::endl;
                 return 1;
             }
             
@@ -292,18 +310,19 @@ int main(int argc, char* argv[]) {
             std::string content = buffer.str();
             
             // Auto-detect ES6 module syntax and choose execution method
+            bool success = false;
             if (console.has_es6_module_syntax(content)) {
                 // Execute as ES6 module
-                console.execute_as_module(argv[1]);
+                success = console.execute_as_module(filename);
             } else {
                 // Execute as regular script
-                console.evaluate_expression(content, true);
+                success = console.evaluate_expression(content, true);
             }
             
             // Process any pending async tasks
             EventLoop::instance().process_microtasks();
             
-            return 0;
+            return success ? 0 : 1;
         }
         
         console.run();

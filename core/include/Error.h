@@ -9,6 +9,7 @@
 
 #include "Value.h"
 #include "Object.h"
+#include "CallStack.h"
 #include <string>
 #include <memory>
 

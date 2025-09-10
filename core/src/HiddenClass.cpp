@@ -7,9 +7,6 @@
 #include "../include/HiddenClass.h"
 #include "../include/Value.h"
 #include "../include/Object.h"
-#include "../include/PhotonCore/PhotonCoreQuantum.h"
-#include "../include/PhotonCore/PhotonCoreSonic.h"
-#include "../include/PhotonCore/PhotonCorePerformance.h"
 #include <iostream>
 #include <algorithm>
 #include <mutex>

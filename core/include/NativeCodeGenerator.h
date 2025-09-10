@@ -1,7 +1,6 @@
 #ifndef QUANTA_NATIVE_CODE_GENERATOR_H
 #define QUANTA_NATIVE_CODE_GENERATOR_H
 
-#include "OptimizedAST.h"
 #include "SpecializedNodes.h"
 #include "Value.h"
 #include "Context.h"

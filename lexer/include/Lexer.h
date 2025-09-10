@@ -115,6 +115,7 @@ private:
     double parse_hex_literal();
     double parse_binary_literal();
     double parse_octal_literal();
+    double parse_legacy_octal_literal();
     double parse_exponent();
     
     // String parsing helpers

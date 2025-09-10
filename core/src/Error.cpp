@@ -5,6 +5,7 @@
  */
 
 #include "../include/Error.h"
+#include "../include/CallStack.h"
 #include <sstream>
 #include <iostream>
 
@@ -18,6 +19,7 @@ Error::Error(Type type, const std::string& message)
     : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
       line_number_(0), column_number_(0) {
     set_error_name();
+    generate_stack_trace(); // Re-enabled with safety checks
     initialize_properties();
 }
 
@@ -25,6 +27,7 @@ Error::Error(Type type, const std::string& message, const std::string& filename,
     : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
       line_number_(line), column_number_(column), filename_(filename) {
     set_error_name();
+    generate_stack_trace(); // Re-enabled with safety checks
     initialize_properties();
 }
 
@@ -70,24 +73,52 @@ std::string Error::to_string() const {
 }
 
 void Error::generate_stack_trace() {
-    std::ostringstream oss;
-    oss << name_;
-    if (!message_.empty()) {
-        oss << ": " << message_;
-    }
-    
-    if (!filename_.empty()) {
-        oss << "\n    at " << filename_;
-        if (line_number_ > 0) {
-            oss << ":" << line_number_;
-            if (column_number_ > 0) {
-                oss << ":" << column_number_;
+    try {
+        std::ostringstream oss;
+        oss << name_;
+        if (!message_.empty()) {
+            oss << ": " << message_;
+        }
+        
+        // Get the call stack trace with safety checks
+        try {
+            CallStack& stack = CallStack::instance();
+            std::string stack_frames = stack.generate_stack_trace(20); // Limit to 20 frames
+            
+            if (!stack_frames.empty()) {
+                oss << "\n" << stack_frames;
+            } else {
+                // Fallback to simple location info if no call stack is available
+                if (!filename_.empty()) {
+                    oss << "\n    at " << filename_;
+                    if (line_number_ > 0) {
+                        oss << ":" << line_number_;
+                        if (column_number_ > 0) {
+                            oss << ":" << column_number_;
+                        }
+                    }
+                }
+            }
+        } catch (...) {
+            // If CallStack fails, use simple fallback
+            if (!filename_.empty()) {
+                oss << "\n    at " << filename_;
+                if (line_number_ > 0) {
+                    oss << ":" << line_number_;
+                    if (column_number_ > 0) {
+                        oss << ":" << column_number_;
+                    }
+                }
             }
         }
+        
+        stack_trace_ = oss.str();
+        set_property("stack", Value(stack_trace_));
+    } catch (...) {
+        // Complete fallback - just set a simple stack trace
+        stack_trace_ = name_ + (message_.empty() ? "" : ": " + message_);
+        set_property("stack", Value(stack_trace_));
     }
-    
-    stack_trace_ = oss.str();
-    set_property("stack", Value(stack_trace_));
 }
 
 std::string Error::type_to_name(Type type) {

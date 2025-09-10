@@ -88,6 +88,9 @@ private:
     // Engine reference
     Engine* engine_;
     
+    // Source file tracking for stack traces
+    std::string current_filename_;
+    
     // Web API interface for external implementations
     WebAPIInterface* web_api_interface_;
     
@@ -104,6 +107,10 @@ public:
     State get_state() const { return state_; }
     uint32_t get_id() const { return context_id_; }
     Engine* get_engine() const { return engine_; }
+    
+    // Source file tracking
+    const std::string& get_current_filename() const { return current_filename_; }
+    void set_current_filename(const std::string& filename) { current_filename_ = filename; }
     
     // Strict mode
     bool is_strict_mode() const { return strict_mode_; }
@@ -203,6 +210,7 @@ private:
     void initialize_global_context();
     void initialize_built_ins();
     void setup_global_bindings();
+    void register_typed_array_constructors();
 };
 
 /**

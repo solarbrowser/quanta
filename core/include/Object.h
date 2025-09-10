@@ -23,7 +23,6 @@ class Shape;
 class Context;
 class ASTNode;
 class Parameter;
-class PerformanceCache;
 
 /**
  * High-performance JavaScript object implementation
@@ -107,6 +106,17 @@ public:
                header_.type == ObjectType::Number || 
                header_.type == ObjectType::Boolean;
     }
+    
+    // Binary data type checking
+    virtual bool is_array_buffer() const { return header_.type == ObjectType::ArrayBuffer; }
+    virtual bool is_typed_array() const { return header_.type == ObjectType::TypedArray; }
+    virtual bool is_data_view() const { return header_.type == ObjectType::DataView; }
+    virtual bool is_shared_array_buffer() const { return false; } // Override in subclass
+    
+    // WebAssembly type checking
+    virtual bool is_wasm_memory() const { return false; }
+    virtual bool is_wasm_module() const { return false; }
+    virtual bool is_wasm_instance() const { return false; }
 
     // Prototype chain
     Object* get_prototype() const { return header_.prototype; }
@@ -120,7 +130,7 @@ public:
     virtual Value get_property(const std::string& key) const;
     Value get_own_property(const std::string& key) const;
     
-    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool delete_property(const std::string& key);
     
     // Array-like element access (optimized for indices)
@@ -136,10 +146,6 @@ public:
     // Property descriptor operations
     PropertyDescriptor get_property_descriptor(const std::string& key) const;
     bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
-    
-    // Performance optimization
-    static void set_global_performance_cache(PerformanceCache* cache);
-    static PerformanceCache* get_global_performance_cache();
     
     // Object operations
     bool is_extensible() const;

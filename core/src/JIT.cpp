@@ -5,13 +5,6 @@
  */
 
 #include "../include/JIT.h"
-#include "../include/PhotonCore/PhotonCoreQuantum.h"
-#include "../include/PhotonCore/PhotonCoreSonic.h"
-#include "../include/PhotonCore/PhotonCorePerformance.h"
-#include "../include/PhotonCore/PhotonCoreAcceleration.h"
-#include "../include/PhotonCore/PhotonCoreTurbo.h"
-#include "../include/PhotonCore/PhotonCoreFS.h"
-#include "../include/PhotonCore/PhotonCoreHPS.h"
 #include <iostream>
 #include <algorithm>
 
@@ -27,15 +20,7 @@ JITCompiler::JITCompiler()
       inline_cache_hits_(0), type_feedback_enabled_(true),
       ultra_fast_mode_(true), cpu_cache_optimized_(true) {
     
-    PhotonCoreFS::enable_minimal_startup();
-    PhotonCoreHPS::optimize_for_speed();
-    
-    if (PhotonCoreFS::is_fast_ready()) {
-        hotspot_threshold_ = 1;
-        recompile_threshold_ = 1;
-        ultra_fast_mode_ = true;
-        cpu_cache_optimized_ = true;
-    }
+    // JIT compiler initialization complete
 }
 
 JITCompiler::~JITCompiler() {
@@ -105,10 +90,7 @@ void JITCompiler::record_execution(ASTNode* node) {
     if (should_compile(node)) {
         OptimizationLevel level = OptimizationLevel::Basic;
         
-        if (PhotonCoreFS::is_fast_ready()) {
-            level = OptimizationLevel::Maximum;
-            PhotonCoreFS::optimize_boot();
-        } else if (hotspot.execution_count > 3) {
+        if (hotspot.execution_count > 3) {
             level = OptimizationLevel::Maximum;
         } else if (hotspot.execution_count > 1) {
             level = OptimizationLevel::Advanced;
@@ -306,14 +288,13 @@ std::function<Value(Context&)> JITCompiler::compile_advanced_optimization(ASTNod
 std::function<Value(Context&)> JITCompiler::compile_maximum_optimization(ASTNode* node) {
     if (!node) return nullptr;
     
-    bool fast_mode = PhotonCoreFS::is_fast_ready();
-    bool high_perf = PhotonCoreHPS::is_high_performance();
+    bool fast_mode = false;
+    bool high_perf = false;
     switch (node->get_type()) {
         case ASTNode::Type::FOR_STATEMENT: {
             return [node, this, fast_mode, high_perf](Context& ctx) -> Value {
                 if (fast_mode && high_perf) {
                     inline_cache_hits_ += 100;
-                    PhotonCoreFS::quick_start();
                     
                     static thread_local uint64_t perf_cache[1024];
                     for (int i = 0; i < 64; i++) {
@@ -392,7 +373,6 @@ std::function<Value(Context&)> JITCompiler::compile_maximum_optimization(ASTNode
                         for (int i = 0; i < 512; i++) {
                             if (monster_cache[i].node == node) {
                                 inline_cache_hits_ += 200; // MONSTER CACHE HIT!
-                                PhotonCoreFS::quick_start(); // TAK DİYE!
                                 return monster_cache[i].result;
                             }
                         }
@@ -456,7 +436,7 @@ std::function<Value(Context&)> JITCompiler::compile_maximum_optimization(ASTNode
                         inline_cache_hits_ += 200; // MONSTER FUNCTION BONUS!
                     }
                     
-                    PhotonCoreFS::optimize_boot();
+                    // Function call optimization applied
                 } else if (ultra_fast_mode_) {
                     // Standard function inlining optimization
                     inline_cache_hits_ += 18; // Function inline bonus

@@ -8,7 +8,8 @@
 #include "Context.h"
 #include "Value.h"
 #include "Error.h"
-#include "InlineCache.h"
+#include "ArrayBuffer.h"
+#include "TypedArray.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
 #include <sstream>
@@ -21,8 +22,6 @@ std::unordered_map<std::pair<Shape*, std::string>, Shape*, Object::ShapeTransiti
 std::unordered_map<std::string, std::string> Object::interned_keys_;
 uint32_t Shape::next_shape_id_ = 1;
 
-// Global performance cache for optimized property access
-static PerformanceCache* g_performance_cache = nullptr;
 
 // Global root shape
 static Shape* g_root_shape = nullptr;
@@ -107,26 +106,9 @@ bool Object::has_own_property(const std::string& key) const {
     return false;
 }
 
-// Performance cache management
-void Object::set_global_performance_cache(PerformanceCache* cache) {
-    g_performance_cache = cache;
-}
-
-PerformanceCache* Object::get_global_performance_cache() {
-    return g_performance_cache;
-}
 
 Value Object::get_property(const std::string& key) const {
     
-    // optimized: Try inline cache first for maximum performance
-    if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-        Value cached_result;
-        if (g_performance_cache->get_inline_cache()->try_get_property(
-                const_cast<Object*>(this), key, cached_result)) {
-            // Cache hit! Return immediately for optimized
-            return cached_result;
-        }
-    }
     // Handle Function objects explicitly here since virtual dispatch seems problematic
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
@@ -229,6 +211,69 @@ Value Object::get_property(const std::string& key) const {
         }
     }
     
+    // Handle ArrayBuffer objects explicitly  
+    if (this->get_type() == ObjectType::ArrayBuffer) {
+        const ArrayBuffer* buffer = static_cast<const ArrayBuffer*>(this);
+        
+        // Handle ArrayBuffer properties directly from C++ members
+        if (key == "byteLength") {
+            return Value(static_cast<double>(buffer->byte_length()));
+        }
+        if (key == "maxByteLength") {
+            return Value(static_cast<double>(buffer->max_byte_length()));
+        }
+        if (key == "resizable") {
+            return Value(buffer->is_resizable());
+        }
+        if (key == "_isArrayBuffer") {
+            return Value(true);
+        }
+        
+        // TODO: Add toString method support - currently causes segfaults when called
+        // Need to investigate why dynamic function creation in property getters is problematic
+        
+        // Check own properties for other ArrayBuffer properties
+        Value result = get_own_property(key);
+        if (!result.is_undefined()) {
+            return result;
+        }
+    }
+    
+    // Handle TypedArray objects explicitly
+    if (this->get_type() == ObjectType::TypedArray) {
+        const TypedArrayBase* typed_array = static_cast<const TypedArrayBase*>(this);
+        
+        // Handle numeric indices
+        char* end;
+        unsigned long index = std::strtoul(key.c_str(), &end, 10);
+        if (*end == '\0' && index < typed_array->length()) {
+            return typed_array->get_element(static_cast<size_t>(index));
+        }
+        
+        // Handle TypedArray properties
+        if (key == "length") {
+            return Value(static_cast<double>(typed_array->length()));
+        }
+        if (key == "byteLength") {
+            return Value(static_cast<double>(typed_array->byte_length()));
+        }
+        if (key == "byteOffset") {
+            return Value(static_cast<double>(typed_array->byte_offset()));
+        }
+        if (key == "buffer") {
+            return Value(typed_array->buffer());
+        }
+        if (key == "BYTES_PER_ELEMENT") {
+            return Value(static_cast<double>(typed_array->bytes_per_element()));
+        }
+        
+        // Check own properties for other TypedArray properties
+        Value result = get_own_property(key);
+        if (!result.is_undefined()) {
+            return result;
+        }
+    }
+    
     // For Array objects, handle array methods
     if (this->get_type() == ObjectType::Array) {
         if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" || 
@@ -246,11 +291,6 @@ Value Object::get_property(const std::string& key) const {
     
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
-        // optimized: Cache the successful property access
-        if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-            g_performance_cache->get_inline_cache()->cache_property(
-                const_cast<Object*>(this), key, result);
-        }
         return result;
     }
     
@@ -259,11 +299,6 @@ Value Object::get_property(const std::string& key) const {
     while (current) {
         result = current->get_own_property(key);
         if (!result.is_undefined()) {
-            // optimized: Cache prototype chain property access
-            if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-                g_performance_cache->get_inline_cache()->cache_property(
-                    const_cast<Object*>(this), key, result);
-            }
             return result;
         }
         current = current->get_prototype();
@@ -360,10 +395,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
                 
-                // CRITICAL FIX: Invalidate inline cache after property update
-                if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-                    g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-                }
                 
                 return true;
             }
@@ -375,10 +406,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             }
             (*overflow_properties_)[key] = value;
             
-            // CRITICAL FIX: Invalidate inline cache after overflow property update
-            if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-                g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-            }
             
             return true;
         }
@@ -862,10 +889,6 @@ bool Object::store_in_shape(const std::string& key, const Value& value, Property
         
         update_hash_code();
         
-        // CRITICAL FIX: Invalidate inline cache after new property addition
-        if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-            g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-        }
         
         return true;
     }
@@ -890,10 +913,6 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
     
     update_hash_code();
     
-    // CRITICAL FIX: Invalidate inline cache after overflow property addition
-    if (g_performance_cache && g_performance_cache->is_optimization_enabled()) {
-        g_performance_cache->get_inline_cache()->invalidate_property(this, key);
-    }
     
     return true;
 }

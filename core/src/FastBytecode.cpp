@@ -5,7 +5,6 @@
  */
 
 #include "../include/FastBytecode.h"
-#include "../include/HighPerformance.h"
 #include <iostream>
 #include <regex>
 #include <chrono>
@@ -88,8 +87,8 @@ Value FastBytecodeVM::execute_fast() {
                 
                 auto opt_start = std::chrono::high_resolution_clock::now();
                 
-                // OPTIMIZED GAUSS FORMULA - INSTANT CALCULATION!
-                int64_t sum = HighPerformance::ultimate_sum_optimization(n);
+                // Simple Gauss formula optimization
+                int64_t sum = n * (n + 1) / 2;
                 
                 auto opt_end = std::chrono::high_resolution_clock::now();
                 auto opt_time = std::chrono::duration_cast<std::chrono::nanoseconds>(opt_end - opt_start);

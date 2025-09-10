@@ -33,6 +33,7 @@ debug_*.js
 *.test.js
 demo.js
 example*.js
+.test262/
 
 # OS specific files
 .DS_Store

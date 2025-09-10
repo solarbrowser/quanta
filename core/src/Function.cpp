@@ -7,7 +7,7 @@
 #include "../include/Object.h"
 #include "../include/Context.h"
 #include "../include/Engine.h"
-#include "../include/InlineCache.h"
+#include "../include/CallStack.h"
 #include "../../parser/include/AST.h"
 #include <sstream>
 #include <iostream>
@@ -92,6 +92,11 @@ Function::Function(const std::string& name,
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    // Push function call onto stack trace
+    CallStack& stack = CallStack::instance();
+    Position call_position(1, 1, 0); // TODO: Get actual position from call site
+    CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
+    
     // optimized: Track function execution for hot function detection
     execution_count_++;
     last_call_time_ = std::chrono::high_resolution_clock::now();
@@ -432,8 +437,27 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         ctx.create_binding("__super__", super_constructor_prop);
     }
     
+    // Store initial object state to detect if constructor did anything
+    std::vector<std::string> initial_properties = new_object->get_own_property_keys();
+    size_t initial_prop_count = initial_properties.size();
+    
     // Call function with 'this' bound to new object
     Value result = call(ctx, args, this_value);
+    
+    // Check if constructor did anything (added properties to this)
+    std::vector<std::string> final_properties = new_object->get_own_property_keys();
+    bool constructor_did_work = (final_properties.size() > initial_prop_count);
+    
+    // If constructor didn't do anything and we have a super constructor, call it
+    if (!constructor_did_work && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        Function* super_constructor = super_constructor_prop.as_function();
+        Value super_result = super_constructor->call(ctx, args, this_value);
+        
+        // Update result if super constructor returned something meaningful
+        if (!super_result.is_undefined()) {
+            result = super_result;
+        }
+    }
     
     // If constructor returns an object, use that; otherwise use the new object
     if (result.is_object() && result.as_object() != new_object.get()) {

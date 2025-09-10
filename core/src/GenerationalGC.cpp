@@ -5,9 +5,6 @@
  */
 
 #include "../include/GenerationalGC.h"
-#include "../include/PhotonCore/PhotonCoreQuantum.h"
-#include "../include/PhotonCore/PhotonCoreSonic.h"
-#include "../include/PhotonCore/PhotonCorePerformance.h"
 #include <iostream>
 #include <algorithm>
 #include <cstdlib>

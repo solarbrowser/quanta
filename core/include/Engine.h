@@ -13,10 +13,6 @@
 #include "ModuleLoader.h"
 #include "JIT.h"
 #include "GC.h"
-#include "InlineCache.h"
-#include "ZeroLeakOptimizer.h"
-#include "ArrayOptimizer.h"
-#include "OptimizedAST.h"
 #include <string>
 #include <memory>
 #include <vector>
@@ -67,14 +63,9 @@ private:
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
     
-    // Advanced performance systems
+    // Core systems
     std::unique_ptr<JITCompiler> jit_compiler_;
     std::unique_ptr<GarbageCollector> garbage_collector_;
-    std::unique_ptr<PerformanceCache> performance_cache_;
-    std::unique_ptr<ZeroLeakOptimizer> zero_leak_optimizer_;
-    std::unique_ptr<ArrayOptimizer> array_optimizer_;
-    std::unique_ptr<OptimizedAST> optimized_ast_;
-    std::unique_ptr<FastASTEvaluator> ast_evaluator_;
     
     // Engine state
     bool initialized_;
@@ -158,19 +149,6 @@ public:
     std::string get_performance_stats() const;
     std::string get_memory_stats() const;
     
-    // Performance caching system
-    PerformanceCache* get_performance_cache() const { return performance_cache_.get(); }
-    void enable_performance_optimization(bool enable);
-    void enable_maximum_performance_mode();
-    
-    // Zero-leak optimization system
-    ZeroLeakOptimizer* get_zero_leak_optimizer() const { return zero_leak_optimizer_.get(); }
-    void prepare_for_heavy_operations(ZeroLeakOptimizer::OperationType type, size_t scale);
-    void enable_optimized_performance_mode();
-    
-    // Optimized array optimization system
-    ArrayOptimizer* get_array_optimizer() const { return array_optimizer_.get(); }
-    void enable_optimized_arrays();
     
     // Error handling
     void set_error_handler(std::function<void(const std::string&)> handler);
@@ -202,17 +180,16 @@ private:
     void setup_built_in_objects();
     void setup_built_in_functions();
     void setup_error_types();
-    void setup_minimal_globals();  // Minimal global setup
-    void setup_stellar_globals();  // High-performance global setup
-    // void setup_es6_features(); // Removed due to segfault
+    void setup_minimal_globals();
     
     // Execution helpers
     Result execute_internal(const std::string& source, const std::string& filename);
     
-    // HIGH PERFORMANCE optimization methods
+    void handle_exception(const Value& exception);
+    
+    // Math loop optimization
     bool is_simple_mathematical_loop(ASTNode* ast);
     Result execute_optimized_mathematical_loop(ASTNode* ast);
-    void handle_exception(const Value& exception);
     
     // Memory management helpers
     void initialize_gc();

@@ -1,7 +1,6 @@
 #ifndef QUANTA_SPECIALIZED_NODES_H
 #define QUANTA_SPECIALIZED_NODES_H
 
-#include "OptimizedAST.h"
 #include "Value.h"
 #include "Context.h"
 #include <vector>

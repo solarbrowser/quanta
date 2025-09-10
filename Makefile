@@ -38,21 +38,19 @@ ifeq ($(OS),Windows_NT)
 $(shell if not exist $(subst /,\,$(OBJ_DIR)) mkdir $(subst /,\,$(OBJ_DIR)) >nul 2>&1)
 $(shell if not exist $(subst /,\,$(OBJ_DIR))\core mkdir $(subst /,\,$(OBJ_DIR))\core >nul 2>&1)
 $(shell if not exist $(subst /,\,$(OBJ_DIR))\core\platform mkdir $(subst /,\,$(OBJ_DIR))\core\platform >nul 2>&1)
-$(shell if not exist $(subst /,\,$(OBJ_DIR))\core\PhotonCore mkdir $(subst /,\,$(OBJ_DIR))\core\PhotonCore >nul 2>&1)
 $(shell if not exist $(subst /,\,$(OBJ_DIR))\lexer mkdir $(subst /,\,$(OBJ_DIR))\lexer >nul 2>&1)
 $(shell if not exist $(subst /,\,$(OBJ_DIR))\parser mkdir $(subst /,\,$(OBJ_DIR))\parser >nul 2>&1)
 $(shell if not exist $(subst /,\,$(BIN_DIR)) mkdir $(subst /,\,$(BIN_DIR)) >nul 2>&1)
 else
-$(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/core/PhotonCore $(OBJ_DIR)/lexer $(OBJ_DIR)/parser $(BIN_DIR))
+$(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/lexer $(OBJ_DIR)/parser $(BIN_DIR))
 endif
 
 # Source files (exclude experimental files and problematic files that cause compilation issues)
-EXCLUDED_FILES = $(CORE_SRC)/AdaptiveOptimizer.cpp $(CORE_SRC)/AdvancedDebugger.cpp $(CORE_SRC)/AdvancedJIT.cpp $(CORE_SRC)/SIMD.cpp $(CORE_SRC)/LockFree.cpp $(CORE_SRC)/WebAssembly.cpp $(CORE_SRC)/NativeFFI.cpp $(CORE_SRC)/NUMAMemoryManager.cpp $(CORE_SRC)/CPUOptimization.cpp $(CORE_SRC)/ShapeOptimization.cpp $(CORE_SRC)/RealJIT.cpp
+EXCLUDED_FILES = $(CORE_SRC)/AdaptiveOptimizer.cpp $(CORE_SRC)/AdvancedDebugger.cpp $(CORE_SRC)/AdvancedJIT.cpp $(CORE_SRC)/SIMD.cpp $(CORE_SRC)/LockFree.cpp $(CORE_SRC)/NativeFFI.cpp $(CORE_SRC)/NUMAMemoryManager.cpp $(CORE_SRC)/CPUOptimization.cpp $(CORE_SRC)/ShapeOptimization.cpp $(CORE_SRC)/RealJIT.cpp $(CORE_SRC)/NativeCodeGenerator.cpp $(CORE_SRC)/SpecializedNodes.cpp
 
-# High-performance Optimizations (NEW!) - HIGH PERFORMANCE MODE!
-HIGH_PERF_OPTIMIZATIONS_NEW = $(CORE_SRC)/FastBytecode.cpp $(CORE_SRC)/HighPerformance.cpp $(CORE_SRC)/AdvancedObjectOptimizer.cpp
-HIGH_PERF_OPTIMIZATIONS = $(CORE_SRC)/OptimizedLoop.cpp
-CORE_SOURCES = $(filter-out $(EXCLUDED_FILES), $(wildcard $(CORE_SRC)/*.cpp)) $(wildcard $(CORE_SRC)/PhotonCore/*.cpp) $(CORE_SRC)/platform/NativeAPI.cpp $(CORE_SRC)/platform/APIRouter.cpp $(HIGH_PERF_OPTIMIZATIONS) $(HIGH_PERF_OPTIMIZATIONS_NEW)
+# Core optimization files that still exist
+CORE_OPTIMIZATIONS = $(CORE_SRC)/FastBytecode.cpp
+CORE_SOURCES = $(filter-out $(EXCLUDED_FILES), $(wildcard $(CORE_SRC)/*.cpp)) $(CORE_SRC)/platform/NativeAPI.cpp $(CORE_SRC)/platform/APIRouter.cpp $(CORE_OPTIMIZATIONS)
 ifneq ($(OS),Windows_NT) 
     CORE_SOURCES += $(CORE_SRC)/platform/LinuxNativeAPI.cpp
 endif

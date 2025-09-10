@@ -139,7 +139,30 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression() {
-    return parse_assignment_expression();
+    // Parse comma expressions (lowest precedence)
+    auto left = parse_assignment_expression();
+    if (!left) return nullptr;
+    
+    // Handle comma operator: expr1, expr2, expr3
+    while (match(TokenType::COMMA)) {
+        advance(); // consume ','
+        auto right = parse_assignment_expression();
+        if (!right) {
+            add_error("Expected expression after ','");
+            return nullptr;
+        }
+        
+        // Create comma expression node - evaluates left, discards it, returns right
+        left = std::make_unique<BinaryExpression>(
+            std::move(left), 
+            BinaryExpression::Operator::COMMA,
+            std::move(right), 
+            left->get_start(), 
+            right->get_end()
+        );
+    }
+    
+    return left;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
@@ -302,7 +325,7 @@ std::unique_ptr<ASTNode> Parser::parse_equality_expression() {
 std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
     return parse_binary_expression(
         [this]() { return parse_shift_expression(); },
-        {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF}
+        {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF, TokenType::IN}
     );
 }
 
@@ -543,12 +566,22 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
-                    auto arg = parse_assignment_expression();
-                    if (!arg) {
-                        add_error("Expected argument in function call");
-                        break;
+                    // Check for spread element in function call: func(...args)
+                    if (match(TokenType::ELLIPSIS)) {
+                        auto spread = parse_spread_element();
+                        if (!spread) {
+                            add_error("Invalid spread argument in function call");
+                            break;
+                        }
+                        arguments.push_back(std::move(spread));
+                    } else {
+                        auto arg = parse_assignment_expression();
+                        if (!arg) {
+                            add_error("Expected argument in function call");
+                            break;
+                        }
+                        arguments.push_back(std::move(arg));
                     }
-                    arguments.push_back(std::move(arg));
                 } while (consume_if_match(TokenType::COMMA));
             }
             
@@ -677,7 +710,6 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::YIELD:
             return parse_yield_expression();
         case TokenType::LEFT_BRACE:
-            add_error("DEBUG: LEFT_BRACE case reached, calling parse_object_literal");
             return parse_object_literal();
         case TokenType::LEFT_BRACKET:
             return parse_array_literal();
@@ -1620,6 +1652,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     }
     
     std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;  // Track if any parameter is non-simple
+    
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
@@ -1627,22 +1661,47 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         // Check for rest parameter syntax: ...args
         if (match(TokenType::ELLIPSIS)) {
             is_rest = true;
+            has_non_simple_params = true;  // Rest parameters are non-simple
             advance(); // consume '...'
         }
         
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected parameter name");
+        std::unique_ptr<Identifier> param_name = nullptr;
+        
+        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+            // Array destructuring parameter: [a, b, c]
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '['
+            
+            if (current_token().get_type() != TokenType::IDENTIFIER) {
+                add_error("Expected identifier in destructuring pattern");
+                return nullptr;
+            }
+            
+            // Create identifier for the destructured parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance(); // consume identifier
+            
+            if (current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                add_error("Expected ']' to close destructuring pattern");
+                return nullptr;
+            }
+            advance(); // consume ']'
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Regular identifier parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
-        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-        advance();
         
         // Check for default parameter syntax: param = value
         // Note: Rest parameters cannot have default values
         std::unique_ptr<ASTNode> default_value = nullptr;
         if (!is_rest && match(TokenType::ASSIGN)) {
+            has_non_simple_params = true;  // Default parameters make params non-simple
             advance(); // consume '='
             default_value = parse_assignment_expression();
             if (!default_value) {
@@ -1685,6 +1744,25 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     if (!body) {
         add_error("Expected function body");
         return nullptr;
+    }
+    
+    // ECMAScript validation: Non-simple parameters cannot be used with strict mode
+    if (has_non_simple_params && body) {
+        // Check if function body contains "use strict" directive
+        BlockStatement* block = static_cast<BlockStatement*>(body.get());
+        if (block && !block->get_statements().empty()) {
+            // Check first statement for "use strict" directive
+            auto first_stmt = block->get_statements()[0].get();
+            if (auto expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
+                if (auto literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
+                    std::string value = literal->get_value();
+                    if (value == "use strict") {
+                        add_error("Illegal 'use strict' directive in function with non-simple parameter list");
+                        return nullptr;
+                    }
+                }
+            }
+        }
     }
     
     Position end = get_current_position();
@@ -1927,6 +2005,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
     
     std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;  // Track if any parameter is non-simple
+    
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
@@ -1934,22 +2014,47 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         // Check for rest parameter syntax: ...args
         if (match(TokenType::ELLIPSIS)) {
             is_rest = true;
+            has_non_simple_params = true;  // Rest parameters are non-simple
             advance(); // consume '...'
         }
         
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected parameter name");
+        std::unique_ptr<Identifier> param_name = nullptr;
+        
+        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+            // Array destructuring parameter: [a, b, c]
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '['
+            
+            if (current_token().get_type() != TokenType::IDENTIFIER) {
+                add_error("Expected identifier in destructuring pattern");
+                return nullptr;
+            }
+            
+            // Create identifier for the destructured parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance(); // consume identifier
+            
+            if (current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                add_error("Expected ']' to close destructuring pattern");
+                return nullptr;
+            }
+            advance(); // consume ']'
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Regular identifier parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
-        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-        advance();
         
         // Check for default parameter syntax: param = value
         // Note: Rest parameters cannot have default values
         std::unique_ptr<ASTNode> default_value = nullptr;
         if (!is_rest && match(TokenType::ASSIGN)) {
+            has_non_simple_params = true;  // Default parameters make params non-simple
             advance(); // consume '='
             default_value = parse_assignment_expression();
             if (!default_value) {
@@ -1992,6 +2097,25 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     if (!body) {
         add_error("Expected function body");
         return nullptr;
+    }
+    
+    // ECMAScript validation: Non-simple parameters cannot be used with strict mode
+    if (has_non_simple_params && body) {
+        // Check if function body contains "use strict" directive
+        BlockStatement* block = static_cast<BlockStatement*>(body.get());
+        if (block && !block->get_statements().empty()) {
+            // Check first statement for "use strict" directive
+            auto first_stmt = block->get_statements()[0].get();
+            if (auto expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
+                if (auto literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
+                    std::string value = literal->get_value();
+                    if (value == "use strict") {
+                        add_error("Illegal 'use strict' directive in function with non-simple parameter list");
+                        return nullptr;
+                    }
+                }
+            }
+        }
     }
     
     Position end = get_current_position();
@@ -2172,6 +2296,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     Position start = get_current_position();
     std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;  // Track non-simple parameters
     
     // Parse parameters
     if (match(TokenType::IDENTIFIER)) {
@@ -2190,9 +2315,66 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         advance(); // consume '('
         
         while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
-            if (current_token().get_type() != TokenType::IDENTIFIER) {
-                add_error("Expected parameter name in arrow function");
-                return nullptr;
+            // Handle different parameter types
+            if (current_token().get_type() == TokenType::IDENTIFIER) {
+                // Regular identifier parameter
+            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                // Object destructuring parameter: {x, y}
+                // For now, create a dummy parameter and skip the destructuring pattern
+                has_non_simple_params = true;  // Destructuring makes params non-simple
+                advance(); // consume '{'
+                // Skip until matching '}'
+                int brace_count = 1;
+                while (brace_count > 0 && !at_end()) {
+                    if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        brace_count++;
+                    } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                        brace_count--;
+                    }
+                    advance();
+                }
+                // Create a dummy parameter
+                Position param_start = get_current_position();
+                auto param_name = std::make_unique<Identifier>("__destructured", param_start, param_start);
+                Position param_end = get_current_position();
+                auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
+                params.push_back(std::move(param));
+                
+                // Skip comma if present
+                if (match(TokenType::COMMA)) {
+                    advance();
+                }
+                continue;
+            } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                // Array destructuring parameter: [a, b]
+                has_non_simple_params = true;  // Destructuring makes params non-simple
+                advance(); // consume '['
+                // Skip until matching ']'
+                int bracket_count = 1;
+                while (bracket_count > 0 && !at_end()) {
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        bracket_count++;
+                    } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                        bracket_count--;
+                    }
+                    advance();
+                }
+                // Create a dummy parameter
+                Position param_start = get_current_position();
+                auto param_name = std::make_unique<Identifier>("__destructured", param_start, param_start);
+                Position param_end = get_current_position();
+                auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
+                params.push_back(std::move(param));
+                
+                // Skip comma if present
+                if (match(TokenType::COMMA)) {
+                    advance();
+                }
+                continue;
+            } else {
+                // Unknown parameter type, skip it for compatibility
+                advance();
+                continue;
             }
             
             Position param_start = get_current_position();
@@ -2203,6 +2385,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             // Check for default parameter syntax: param = value
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (match(TokenType::ASSIGN)) {
+                has_non_simple_params = true;  // Default values make params non-simple
                 advance(); // consume '='
                 default_value = parse_assignment_expression();
                 if (!default_value) {
@@ -2246,6 +2429,25 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     if (!body) {
         add_error("Expected arrow function body");
         return nullptr;
+    }
+    
+    // Validate strict mode with non-simple parameters (ECMAScript rule)
+    if (has_non_simple_params && body) {
+        // Check if body is a block statement with "use strict"
+        if (auto block = dynamic_cast<BlockStatement*>(body.get())) {
+            if (!block->get_statements().empty()) {
+                auto first_stmt = block->get_statements()[0].get();
+                if (auto expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
+                    if (auto literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
+                        std::string value = literal->get_value();
+                        if (value == "use strict") {
+                            add_error("Illegal 'use strict' directive in function with non-simple parameter list");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+        }
     }
     
     Position end = get_current_position();
@@ -2782,6 +2984,9 @@ std::unique_ptr<ASTNode> Parser::parse_throw_statement() {
         add_error("Expected expression after 'throw'");
         return nullptr;
     }
+    
+    // Consume optional semicolon (ASI - Automatic Semicolon Insertion)
+    consume_if_match(TokenType::SEMICOLON);
     
     Position end = get_current_position();
     return std::make_unique<ThrowStatement>(std::move(expression), start, end);
@@ -3566,11 +3771,8 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_attribute() {
 }
 
 void Parser::check_for_use_strict_directive() {
-    // Save current position
-    size_t saved_position = current_token_index_;
-    
     // Look for "use strict" directive at the beginning
-    // Skip any leading directives - they must all be string literals
+    // Process any leading directives - they must all be string literals
     while (!at_end() && current_token().get_type() == TokenType::STRING) {
         std::string str_value = current_token().get_value();
         
@@ -3583,18 +3785,17 @@ void Parser::check_for_use_strict_directive() {
             if (match(TokenType::SEMICOLON)) {
                 advance();
             }
-            return;
+            
+            // Continue processing other directives
+            continue;
         }
         
-        // This is some other directive, skip it
+        // This is some other directive, consume it
         advance();
         if (match(TokenType::SEMICOLON)) {
             advance();
         }
     }
-    
-    // If we didn't find "use strict", restore position
-    current_token_index_ = saved_position;
 }
 
 } // namespace Quanta

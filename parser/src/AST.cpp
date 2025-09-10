@@ -22,7 +22,6 @@
 #include "../../core/include/Math.h"
 #include <cstdlib>
 #include "../../core/include/JIT.h"
-#include "../../core/include/ArrayOptimizer.h"
 #include "../../core/include/String.h"
 #include <sstream>
 #include <iostream>
@@ -582,6 +581,12 @@ Value BinaryExpression::evaluate(Context& ctx) {
         return right_->evaluate(ctx);
     }
     
+    // Comma operator: evaluate left, discard result, return right
+    if (operator_ == Operator::COMMA) {
+        // Left side is already evaluated, just evaluate and return right
+        return right_->evaluate(ctx);
+    }
+    
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
@@ -758,6 +763,7 @@ std::string BinaryExpression::operator_to_string(Operator op) {
         case Operator::IN: return "in";
         case Operator::LOGICAL_AND: return "&&";
         case Operator::LOGICAL_OR: return "||";
+        case Operator::COMMA: return ",";
         case Operator::BITWISE_AND: return "&";
         case Operator::BITWISE_OR: return "|";
         case Operator::BITWISE_XOR: return "^";
@@ -794,6 +800,7 @@ BinaryExpression::Operator BinaryExpression::token_type_to_operator(TokenType ty
         case TokenType::IN: return Operator::IN;
         case TokenType::LOGICAL_AND: return Operator::LOGICAL_AND;
         case TokenType::LOGICAL_OR: return Operator::LOGICAL_OR;
+        case TokenType::COMMA: return Operator::COMMA;
         case TokenType::BITWISE_AND: return Operator::BITWISE_AND;
         case TokenType::BITWISE_OR: return Operator::BITWISE_OR;
         case TokenType::BITWISE_XOR: return Operator::BITWISE_XOR;
@@ -806,6 +813,7 @@ BinaryExpression::Operator BinaryExpression::token_type_to_operator(TokenType ty
 
 int BinaryExpression::get_precedence(Operator op) {
     switch (op) {
+        case Operator::COMMA: return 0;  // Lowest precedence
         case Operator::ASSIGN: return 1;
         case Operator::LOGICAL_OR: return 2;
         case Operator::LOGICAL_AND: return 3;
@@ -1679,6 +1687,41 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
 // CallExpression Implementation
 //=============================================================================
 
+// Helper method to process arguments with spread element support
+std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx) {
+    std::vector<Value> arg_values;
+    
+    for (const auto& arg : arguments) {
+        if (arg->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            // Handle spread element: expand the array/iterable
+            SpreadElement* spread = static_cast<SpreadElement*>(arg.get());
+            Value spread_value = spread->get_argument()->evaluate(ctx);
+            if (ctx.has_exception()) return arg_values;
+            
+            // If it's an array-like object, expand its elements
+            if (spread_value.is_object()) {
+                Object* spread_obj = spread_value.as_object();
+                uint32_t spread_length = spread_obj->get_length();
+                
+                for (uint32_t j = 0; j < spread_length; ++j) {
+                    Value item = spread_obj->get_element(j);
+                    arg_values.push_back(item);
+                }
+            } else {
+                // For non-array values, just add the value itself
+                arg_values.push_back(spread_value);
+            }
+        } else {
+            // Regular argument
+            Value arg_value = arg->evaluate(ctx);
+            if (ctx.has_exception()) return arg_values;
+            arg_values.push_back(arg_value);
+        }
+    }
+    
+    return arg_values;
+}
+
 Value CallExpression::evaluate(Context& ctx) {
     // Handle member expressions (obj.method()) directly first
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
@@ -1702,13 +1745,9 @@ Value CallExpression::evaluate(Context& ctx) {
             }
             
             if (parent_constructor.is_function()) {
-                // Evaluate arguments for super() call
-                std::vector<Value> arg_values;
-                for (const auto& arg : arguments_) {
-                    Value arg_value = arg->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    arg_values.push_back(arg_value);
-                }
+                // Evaluate arguments for super() call with spread support
+                std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+                if (ctx.has_exception()) return Value();
                 
                 // Call parent constructor with crash protection and proper 'this' binding
                 try {
@@ -1748,13 +1787,9 @@ Value CallExpression::evaluate(Context& ctx) {
     }
     
     if (callee_value.is_function()) {
-        // Evaluate arguments
-        std::vector<Value> arg_values;
-        for (const auto& arg : arguments_) {
-            Value arg_value = arg->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            arg_values.push_back(arg_value);
-        }
+        // Evaluate arguments with spread support
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
         
         // Call the function
         Function* function = callee_value.as_function();
@@ -1779,13 +1814,9 @@ Value CallExpression::evaluate(Context& ctx) {
             Value super_constructor = ctx.get_binding("__super__");
             
             if (super_constructor.is_function()) {
-                // Evaluate arguments
-                std::vector<Value> arg_values;
-                for (const auto& arg : arguments_) {
-                    Value arg_value = arg->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    arg_values.push_back(arg_value);
-                }
+                // Evaluate arguments with spread support
+                std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+                if (ctx.has_exception()) return Value();
                 // Arguments evaluated, getting 'this'
                 
                 // Get current 'this' value to pass to parent constructor
@@ -1869,12 +1900,8 @@ Value CallExpression::evaluate(Context& ctx) {
             }
             
             // Regular function call
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value arg_value = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(arg_value);
-            }
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
             
             return func->call(ctx, arg_values);
         }
@@ -3046,12 +3073,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             
             if (method_name == "log") {
                 // Evaluate arguments and print them
-                std::vector<Value> arg_values;
-                for (const auto& arg : arguments_) {
-                    Value val = arg->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    arg_values.push_back(val);
-                }
+                std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+                if (ctx.has_exception()) return Value();
                 
                 // Print arguments separated by spaces
                 for (size_t i = 0; i < arg_values.size(); ++i) {
@@ -3389,105 +3412,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             // Call array method and convert result back to string format if needed
             Value result = handle_array_method_call(temp_array.get(), method_name, ctx);
             
-            // ULTRA-FAST ARRAY BYPASS - Redirect to ArrayOptimizer for maximum performance
-            if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
-                Identifier* var_id = static_cast<Identifier*>(member->get_object());
-                std::string var_name = var_id->get_name();
-                
-                // Try ultra-fast array operations first
-                Engine* engine = ctx.get_engine();
-                if (engine && engine->get_array_optimizer()) {
-                    ArrayOptimizer* optimizer = engine->get_array_optimizer();
-                    
-                    // Handle ultra-fast push operations
-                    if (method_name == "push") {
-                        // Initialize ultra-fast array if not exists
-                        if (!optimizer->has_fast_array(var_name)) {
-                            optimizer->initialize_array(var_name);
-                            
-                            // Migrate existing string array data to ultra-fast array
-                            Value existing_val = ctx.get_binding(var_name);
-                            if (existing_val.is_string()) {
-                                std::string str_val = existing_val.as_string()->str();
-                                if (str_val.substr(0, 7) == "ARRAY:[" && str_val.back() == ']') {
-                                    // Parse existing array elements and migrate them
-                                    std::string elements = str_val.substr(7, str_val.length() - 8);
-                                    if (!elements.empty()) {
-                                        std::stringstream ss(elements);
-                                        std::string element;
-                                        while (std::getline(ss, element, ',')) {
-                                            try {
-                                                double value = std::stod(element);
-                                                optimizer->optimized_push(var_name, value);
-                                            } catch (...) {
-                                                // Skip non-numeric elements for now
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // Perform ultra-fast push operation
-                        for (const auto& arg : arguments_) {
-                            Value arg_val = arg->evaluate(ctx);
-                            if (arg_val.is_number()) {
-                                bool success = optimizer->optimized_push(var_name, arg_val.as_number());
-                                if (success) {
-                                    // Update context with new length for compatibility
-                                    size_t new_length = optimizer->optimized_length(var_name);
-                                    
-                                    // Also update the string representation for compatibility
-                                    std::string new_array_str = "ARRAY:[";
-                                    for (size_t i = 0; i < new_length; i++) {
-                                        if (i > 0) new_array_str += ",";
-                                        double value = optimizer->optimized_get(var_name, i);
-                                        // Format number without unnecessary decimals
-                                        if (value == std::floor(value)) {
-                                            new_array_str += std::to_string(static_cast<int>(value));
-                                        } else {
-                                            new_array_str += std::to_string(value);
-                                        }
-                                    }
-                                    new_array_str += "]";
-                                    ctx.set_binding(var_name, Value(new_array_str));
-                                    
-                                    return Value(static_cast<double>(new_length));
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Handle other ultra-fast operations
-                    else if (method_name == "pop" && optimizer->has_fast_array(var_name)) {
-                        double result = optimizer->optimized_pop(var_name);
-                        
-                        // Also update the string representation for compatibility
-                        size_t new_length = optimizer->optimized_length(var_name);
-                        std::string new_array_str = "ARRAY:[";
-                        for (size_t i = 0; i < new_length; i++) {
-                            if (i > 0) new_array_str += ",";
-                            double value = optimizer->optimized_get(var_name, i);
-                            // Format number without unnecessary decimals
-                            if (value == std::floor(value)) {
-                                new_array_str += std::to_string(static_cast<int>(value));
-                            } else {
-                                new_array_str += std::to_string(value);
-                            }
-                        }
-                        new_array_str += "]";
-                        ctx.set_binding(var_name, Value(new_array_str));
-                        
-                        return Value(result);
-                    }
-                    else if (method_name == "length" && optimizer->has_fast_array(var_name)) {
-                        size_t length = optimizer->optimized_length(var_name);
-                        return Value(static_cast<double>(length));
-                    }
-                }
-            }
-            
-            // FALLBACK: For methods that mutate the array (push, reverse, sort, etc.), use original handling
+            // For methods that mutate the array (push, reverse, sort, etc.), use original handling
             if (method_name == "push" || method_name == "unshift" || method_name == "reverse" || 
                 method_name == "sort" || method_name == "splice") {
                 // Convert array back to string format
@@ -3815,31 +3740,9 @@ Value MemberExpression::evaluate(Context& ctx) {
     if (object_value.is_string()) {
         std::string str_value = object_value.to_string();
         
-        // ULTRA-FAST ARRAY BYPASS - Check for ArrayOptimizer first for computed access
+        // Handle array access through computed properties
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && computed_) {
-            // Try ultra-fast array access first if object is an identifier
-            if (object_->get_type() == ASTNode::Type::IDENTIFIER) {
-                Identifier* var_id = static_cast<Identifier*>(object_.get());
-                std::string var_name = var_id->get_name();
-                
-                Engine* engine = ctx.get_engine();
-                if (engine && engine->get_array_optimizer()) {
-                    ArrayOptimizer* optimizer = engine->get_array_optimizer();
-                    
-                    if (optimizer->has_fast_array(var_name)) {
-                        Value prop_value = property_->evaluate(ctx);
-                        if (ctx.has_exception()) return Value();
-                        
-                        if (prop_value.is_number()) {
-                            size_t index = static_cast<size_t>(prop_value.as_number());
-                            double result = optimizer->optimized_get(var_name, index);
-                            return Value(result);
-                        }
-                    }
-                }
-            }
-            
-            // FALLBACK: Original string parsing method
+            // Use standard string parsing method
             Value prop_value = property_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             
@@ -3894,23 +3797,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             std::string prop_name = prop->get_name();
             
             if (prop_name == "length") {
-                // Try ultra-fast array length first if object is an identifier
-                if (object_->get_type() == ASTNode::Type::IDENTIFIER) {
-                    Identifier* var_id = static_cast<Identifier*>(object_.get());
-                    std::string var_name = var_id->get_name();
-                    
-                    Engine* engine = ctx.get_engine();
-                    if (engine && engine->get_array_optimizer()) {
-                        ArrayOptimizer* optimizer = engine->get_array_optimizer();
-                        
-                        if (optimizer->has_fast_array(var_name)) {
-                            size_t length = optimizer->optimized_length(var_name);
-                            return Value(static_cast<double>(length));
-                        }
-                    }
-                }
-                
-                // FALLBACK: Original string parsing method
+                // Use standard string parsing method
                 // Extract array content and count elements
                 size_t start = str_value.find('[');
                 size_t end = str_value.find(']');
@@ -4709,11 +4596,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     }
                 }
                 
-                std::cout << "[DEBUG] MemberExpression accessing property '" << prop_name << "' on object" << std::endl;
-                std::cout << "[DEBUG] Object pointer: " << obj << std::endl;
                 Value result = obj->get_property(prop_name);
-                std::cout << "[DEBUG] Property access result type: " << (int)result.get_type() << std::endl;
-                std::cout << "[DEBUG] Property access result string: " << result.to_string() << std::endl;
                 if (ctx.has_exception()) return Value();
                 return result;
             }
@@ -4751,13 +4634,9 @@ Value NewExpression::evaluate(Context& ctx) {
         return Value();
     }
     
-    // Evaluate arguments
-    std::vector<Value> arg_values;
-    for (const auto& arg : arguments_) {
-        Value arg_value = arg->evaluate(ctx);
-        if (ctx.has_exception()) return Value();
-        arg_values.push_back(arg_value);
-    }
+    // Evaluate arguments with spread support  
+    std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+    if (ctx.has_exception()) return Value();
     
     // Call constructor function
     Function* constructor_fn = constructor_value.as_function();
@@ -5144,7 +5023,8 @@ Value IfStatement::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
     
     // Convert to boolean and choose branch
-    if (test_value.to_boolean()) {
+    bool condition_result = test_value.to_boolean();
+    if (condition_result) {
         Value result = consequent_->evaluate(ctx);
         // Check if a return statement was executed
         if (ctx.has_return_value()) {
@@ -5168,6 +5048,7 @@ Value IfStatement::evaluate(Context& ctx) {
         return result;
     }
     
+    // Important: Make sure context is clean when condition is false and no alternate
     return Value(); // undefined
 }
 

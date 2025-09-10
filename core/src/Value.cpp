@@ -9,6 +9,7 @@
 #include "../include/String.h"
 #include "../include/BigInt.h"
 #include "../include/Symbol.h"
+#include "../include/Error.h"
 #include <sstream>
 #include <cmath>
 #include <limits>
@@ -126,6 +127,11 @@ std::string Value::to_string() const {
             result += "]";
             return result;
         } else {
+            // Check if this is an Error object
+            Error* error_obj = dynamic_cast<Error*>(obj);
+            if (error_obj) {
+                return error_obj->to_string();
+            }
             return "[object Object]";
         }
     }

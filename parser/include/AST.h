@@ -303,6 +303,9 @@ public:
         LOGICAL_AND,    // &&
         LOGICAL_OR,     // ||
         
+        // Sequence
+        COMMA,          // ,
+        
         // Bitwise
         BITWISE_AND,    // &
         BITWISE_OR,     // |

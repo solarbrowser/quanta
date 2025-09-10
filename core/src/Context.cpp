@@ -13,6 +13,10 @@
 #include "Promise.h"
 #include "ProxyReflect.h"
 #include "WebAPIInterface.h"
+#include "ArrayBuffer.h"
+#include "TypedArray.h"
+#include "DataView.h"
+#include "WebAssembly.h"
 #include "WebAPI.h"
 #include "Async.h"
 #include "Iterator.h"
@@ -47,7 +51,7 @@ Context::Context(Engine* engine, Type type)
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false), 
       return_value_(), has_return_value_(false), has_break_(false), has_continue_(false), 
-      strict_mode_(false), engine_(engine), web_api_interface_(nullptr) {
+      strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr) {
     
     if (type == Type::Global) {
         initialize_global_context();
@@ -60,7 +64,8 @@ Context::Context(Engine* engine, Context* parent, Type type)
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), 
       has_break_(false), has_continue_(false), strict_mode_(parent ? parent->strict_mode_ : false), 
-      engine_(engine), web_api_interface_(parent ? parent->web_api_interface_ : nullptr) {
+      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"), 
+      web_api_interface_(parent ? parent->web_api_interface_ : nullptr) {
     
     // Inherit built-ins from parent
     if (parent) {
@@ -171,6 +176,15 @@ void Context::throw_exception(const Value& exception) {
     current_exception_ = exception;
     has_exception_ = true;
     state_ = State::Thrown;
+    
+    // Generate stack trace for Error objects
+    if (exception.is_object()) {
+        Object* obj = exception.as_object();
+        Error* error = dynamic_cast<Error*>(obj);
+        if (error) {
+            error->generate_stack_trace();
+        }
+    }
 }
 
 void Context::clear_exception() {
@@ -1548,6 +1562,47 @@ void Context::initialize_built_ins() {
         });
     register_built_in_object("ReferenceError", reference_error_constructor.release());
     
+    // Test262Error constructor for test262 compatibility
+    auto test262_error_constructor = ObjectFactory::create_native_function("Test262Error",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused parameter warning
+            auto error_obj = std::make_unique<Error>(Error::Type::Error, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("name", Value("Test262Error"));
+            
+            // toString method for Test262Error
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args; // Suppress unused parameter warnings
+                    return Value("Test262Error");
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+            
+            return Value(error_obj.release());
+        });
+    register_built_in_object("Test262Error", test262_error_constructor.release());
+    
+    // Test262 helper functions
+    auto donotevaluate_fn = ObjectFactory::create_native_function("$DONOTEVALUATE",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args; // Suppress unused parameter warnings
+            // This function is used by test262 to indicate that the test should not be evaluated
+            // We can just return undefined for compatibility
+            return Value();
+        });
+    register_built_in_object("$DONOTEVALUATE", donotevaluate_fn.release());
+    
+    auto assert_fn = ObjectFactory::create_native_function("assert",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].to_boolean()) {
+                std::string message = args.size() > 1 ? args[1].to_string() : "Assertion failed";
+                auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
+                ctx.throw_exception(Value(error_obj.release()));
+            }
+            return Value();
+        });
+    register_built_in_object("assert", assert_fn.release());
+    
     
     // RegExp constructor 
     auto regexp_constructor = ObjectFactory::create_native_function("RegExp",
@@ -1886,6 +1941,63 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Promise", promise_constructor.release());
     
+    // ArrayBuffer constructor for binary data support
+    auto arraybuffer_constructor = ObjectFactory::create_native_function("ArrayBuffer",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_type_error("ArrayBuffer constructor requires at least one argument");
+                return Value();
+            }
+            
+            if (!args[0].is_number()) {
+                ctx.throw_type_error("ArrayBuffer size must be a number");
+                return Value();
+            }
+            
+            double length_double = args[0].as_number();
+            if (length_double < 0 || length_double != std::floor(length_double)) {
+                ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
+                return Value();
+            }
+            
+            size_t byte_length = static_cast<size_t>(length_double);
+            
+            try {
+                auto buffer_obj = std::make_unique<ArrayBuffer>(byte_length);
+                // Explicitly set properties after construction (following Error pattern)
+                buffer_obj->set_property("byteLength", Value(static_cast<double>(byte_length)));
+                buffer_obj->set_property("_isArrayBuffer", Value(true));
+                
+                // Set constructor property - get ArrayBuffer constructor from context bindings
+                if (ctx.has_binding("ArrayBuffer")) {
+                    Value arraybuffer_ctor = ctx.get_binding("ArrayBuffer");
+                    if (!arraybuffer_ctor.is_undefined()) {
+                        buffer_obj->set_property("constructor", arraybuffer_ctor);
+                    }
+                }
+                
+                return Value(buffer_obj.release());
+            } catch (const std::exception& e) {
+                ctx.throw_error(std::string("ArrayBuffer allocation failed: ") + e.what());
+                return Value();
+            }
+        });
+    
+    // TODO: Add ArrayBuffer static methods (currently causing segfaults)  
+    // auto arraybuffer_isView = ObjectFactory::create_native_function("isView",
+    //     [](Context& ctx, const std::vector<Value>& args) -> Value {
+    //         return ArrayBuffer::isView(ctx, args);
+    //     });
+    // 
+    // arraybuffer_constructor->set_property("isView", Value(arraybuffer_isView.release()));
+    register_built_in_object("ArrayBuffer", arraybuffer_constructor.release());
+    
+    // TypedArray constructors for binary data views
+    register_typed_array_constructors();
+    
+    // Setup WebAssembly support
+    WebAssemblyAPI::setup_webassembly(*this);
+    
     // Setup Proxy and Reflect using the proper implementation
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
@@ -1902,31 +2014,94 @@ void Context::setup_global_bindings() {
     // Global functions
     auto parseInt_fn = ObjectFactory::create_native_function("parseInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            if (args.empty()) return Value::nan();
             
             std::string str = args[0].to_string();
-            int radix = 10;
-            if (args.size() > 1 && args[1].is_number()) {
-                radix = static_cast<int>(args[1].to_number());
-                if (radix == 0) radix = 10;
-                if (radix < 2 || radix > 36) return Value(std::numeric_limits<double>::quiet_NaN());
+            
+            // Trim leading whitespace
+            size_t start = 0;
+            while (start < str.length() && std::isspace(str[start])) {
+                start++;
             }
             
-            // Simple parseInt implementation
-            char* endptr;
-            double result = std::strtol(str.c_str(), &endptr, radix);
-            return Value(result);
+            if (start >= str.length()) {
+                return Value::nan();
+            }
+            
+            int radix = 10;
+            if (args.size() > 1 && args[1].is_number()) {
+                double r = args[1].to_number();
+                if (r >= 2 && r <= 36) {
+                    radix = static_cast<int>(r);
+                }
+            }
+            
+            // Check if string starts with a valid digit for the given radix
+            char first_char = str[start];
+            bool has_valid_start = false;
+            
+            if (radix == 16) {
+                has_valid_start = std::isdigit(first_char) || 
+                                (first_char >= 'a' && first_char <= 'f') ||
+                                (first_char >= 'A' && first_char <= 'F');
+            } else if (radix == 8) {
+                has_valid_start = (first_char >= '0' && first_char <= '7');
+            } else {
+                has_valid_start = std::isdigit(first_char);
+            }
+            
+            if (!has_valid_start && first_char != '+' && first_char != '-') {
+                return Value::nan();
+            }
+            
+            try {
+                size_t pos;
+                long result = std::stol(str.substr(start), &pos, radix);
+                // Check if we parsed at least one character
+                if (pos == 0) {
+                    return Value::nan();
+                }
+                return Value(static_cast<double>(result));
+            } catch (...) {
+                return Value::nan();
+            }
         });
     lexical_environment_->create_binding("parseInt", Value(parseInt_fn.release()), false);
     
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            if (args.empty()) return Value::nan();
             
             std::string str = args[0].to_string();
-            char* endptr;
-            double result = std::strtod(str.c_str(), &endptr);
-            return Value(result);
+            
+            // Trim leading whitespace
+            size_t start = 0;
+            while (start < str.length() && std::isspace(str[start])) {
+                start++;
+            }
+            
+            if (start >= str.length()) {
+                return Value::nan();
+            }
+            
+            // Check if string starts with a valid character for a float
+            char first_char = str[start];
+            if (!std::isdigit(first_char) && first_char != '.' && 
+                first_char != '+' && first_char != '-') {
+                return Value::nan();
+            }
+            
+            try {
+                size_t pos;
+                double result = std::stod(str.substr(start), &pos);
+                // Check if we parsed at least one character
+                if (pos == 0) {
+                    return Value::nan();
+                }
+                return Value(result);
+            } catch (...) {
+                return Value::nan();
+            }
         });
     lexical_environment_->create_binding("parseFloat", Value(parseFloat_fn.release()), false);
     
@@ -2516,6 +2691,198 @@ void Context::pop_block_scope() {
         lexical_environment_ = lexical_environment_->get_outer();
         delete old_env;
     }
+}
+
+void Context::register_typed_array_constructors() {
+    // Uint8Array constructor
+    auto uint8array_constructor = ObjectFactory::create_native_function("Uint8Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_uint8_array(0).release());
+            }
+            
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_uint8_array(length).release());
+            }
+            
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    return Value(TypedArrayFactory::create_uint8_array_from_buffer(buffer).release());
+                }
+            }
+            
+            ctx.throw_type_error("Uint8Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Uint8Array", uint8array_constructor.release());
+    
+    // Float32Array constructor  
+    auto float32array_constructor = ObjectFactory::create_native_function("Float32Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_float32_array(0).release());
+            }
+            
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_float32_array(length).release());
+            }
+            
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    return Value(TypedArrayFactory::create_float32_array_from_buffer(buffer).release());
+                }
+            }
+            
+            ctx.throw_type_error("Float32Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Float32Array", float32array_constructor.release());
+
+    // Additional TypedArray constructors
+    auto int8array_constructor = ObjectFactory::create_native_function("Int8Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_int8_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_int8_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Int8Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Int8Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Int8Array", int8array_constructor.release());
+
+    auto uint16array_constructor = ObjectFactory::create_native_function("Uint16Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_uint16_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_uint16_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Uint16Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Uint16Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Uint16Array", uint16array_constructor.release());
+
+    auto int16array_constructor = ObjectFactory::create_native_function("Int16Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_int16_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_int16_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Int16Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Int16Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Int16Array", int16array_constructor.release());
+
+    auto uint32array_constructor = ObjectFactory::create_native_function("Uint32Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_uint32_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_uint32_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Uint32Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Uint32Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Uint32Array", uint32array_constructor.release());
+
+    auto int32array_constructor = ObjectFactory::create_native_function("Int32Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_int32_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_int32_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Int32Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Int32Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Int32Array", int32array_constructor.release());
+
+    auto float64array_constructor = ObjectFactory::create_native_function("Float64Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(TypedArrayFactory::create_float64_array(0).release());
+            }
+            if (args[0].is_number()) {
+                size_t length = static_cast<size_t>(args[0].as_number());
+                return Value(TypedArrayFactory::create_float64_array(length).release());
+            }
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+                    return Value(std::make_unique<Float64Array>(shared_buffer).release());
+                }
+            }
+            ctx.throw_type_error("Float64Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Float64Array", float64array_constructor.release());
+
+    // DataView constructor (re-enabled for testing)
+    auto dataview_constructor = ObjectFactory::create_native_function("DataView", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return DataView::constructor(ctx, args);
+        });
+    register_built_in_object("DataView", dataview_constructor.release());
 }
 
 } // namespace Quanta
