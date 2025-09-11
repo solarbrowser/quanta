@@ -289,23 +289,7 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 //=============================================================================
 
 Value BinaryExpression::evaluate(Context& ctx) {
-    // ULTRA-PERFORMANCE: JIT compilation for hot mathematical operations
-    Engine* engine = ctx.get_engine();
-    if (engine && engine->get_jit_compiler()) {
-        JITCompiler* jit = engine->get_jit_compiler();
-        
-        // Prioritize JIT for mathematical operations
-        if ((operator_ == Operator::ADD || operator_ == Operator::SUBTRACT || 
-             operator_ == Operator::MULTIPLY || operator_ == Operator::DIVIDE || 
-             operator_ == Operator::MODULO) && jit->should_compile(this)) {
-            Value jit_result;
-            if (jit->try_execute_compiled(this, ctx, jit_result)) {
-                return jit_result;
-            }
-            // Compile mathematical operations with maximum optimization
-            jit->compile_node(this, JITCompiler::OptimizationLevel::Maximum);
-        }
-    }
+    // JIT compilation removed - was simulation code
     
     // Handle assignment operators specially
     if (operator_ == Operator::ASSIGN || 
@@ -1794,10 +1778,7 @@ Value CallExpression::evaluate(Context& ctx) {
         // Call the function
         Function* function = callee_value.as_function();
         
-        // Record function execution for JIT if engine is available
-        if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-            ctx.get_engine()->get_jit_compiler()->record_function_execution(function);
-        }
+        // JIT function recording removed - was simulation code
         
         return function->call(ctx, arg_values);
     }
@@ -3560,10 +3541,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             // Call the method
             Function* method = method_value.as_function();
             
-            // Record function execution for JIT if engine is available
-            if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-                ctx.get_engine()->get_jit_compiler()->record_function_execution(method);
-            }
+            // JIT function recording removed - was simulation code
             
             return method->call(ctx, arg_values, object_value);
         } else {
@@ -3588,10 +3566,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             // Call the method
             Function* method = method_value.as_function();
             
-            // Record function execution for JIT if engine is available
-            if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-                ctx.get_engine()->get_jit_compiler()->record_function_execution(method);
-            }
+            // JIT function recording removed - was simulation code
             
             return method->call(ctx, arg_values, object_value);
         } else {
@@ -5073,21 +5048,7 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 //=============================================================================
 
 Value ForStatement::evaluate(Context& ctx) {
-    // ULTRA-PERFORMANCE: Check for JIT compilation opportunity
-    Engine* engine = ctx.get_engine();
-    if (engine && engine->get_jit_compiler()) {
-        JITCompiler* jit = engine->get_jit_compiler();
-        
-        // Check if this loop should be JIT compiled
-        if (jit->should_compile(this)) {
-            Value jit_result;
-            if (jit->try_execute_compiled(this, ctx, jit_result)) {
-                return jit_result;
-            }
-            // Compile for next time if execution count is high
-            jit->compile_node(this, JITCompiler::OptimizationLevel::Maximum);
-        }
-    }
+    // JIT compilation removed - was simulation code
     
     // Create a new block scope for the for-loop to handle proper block scoping
     // This prevents variable redeclaration issues with let/const

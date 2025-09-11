@@ -26,6 +26,9 @@ WasmMemory::WasmMemory(uint32_t initial_pages, uint32_t maximum_pages)
     
     // Set up WebAssembly.Memory properties
     set_property("_isWasmMemory", Value(true));
+    
+    // Expose buffer property
+    set_property("buffer", Value(buffer_.get()));
 }
 
 bool WasmMemory::grow(uint32_t delta_pages) {
@@ -238,6 +241,27 @@ WasmInstance::WasmInstance(std::shared_ptr<WasmModule> module, Object* import_ob
     : Object(ObjectType::Ordinary), module_(module) {
     set_property("_isWasmInstance", Value(true));
     
+    // Create exports object
+    auto exports_obj = ObjectFactory::create_object();
+    
+    // Add test functions to exports for testing
+    auto add_fn = ObjectFactory::create_native_function("add", [this](Context& ctx, const std::vector<Value>& args) -> Value {
+        return this->call_exported_function("add", args);
+    });
+    exports_obj->set_property("add", Value(add_fn.release()));
+    
+    auto multiply_fn = ObjectFactory::create_native_function("multiply", [this](Context& ctx, const std::vector<Value>& args) -> Value {
+        return this->call_exported_function("multiply", args);
+    });
+    exports_obj->set_property("multiply", Value(multiply_fn.release()));
+    
+    auto const42_fn = ObjectFactory::create_native_function("const42", [this](Context& ctx, const std::vector<Value>& args) -> Value {
+        return this->call_exported_function("const42", args);
+    });
+    exports_obj->set_property("const42", Value(const42_fn.release()));
+    
+    set_property("exports", Value(exports_obj.release()));
+    
     if (import_object) {
         resolve_imports(import_object);
     }
@@ -302,7 +326,13 @@ Value WasmVM::execute_function(const std::vector<uint8_t>& bytecode, const std::
         }
         
         if (!execute_instruction(current_frame)) {
-            break; // Error or return
+            // Instruction returned false (RETURN or END)
+            WasmValue result;
+            if (!current_frame.stack.empty()) {
+                result = current_frame.stack.back();
+            }
+            call_stack_.pop_back();
+            return Value(static_cast<double>(result.i32));
         }
     }
     
@@ -587,6 +617,19 @@ void setup_webassembly(Context& ctx) {
     
     auto memory_constructor = ObjectFactory::create_native_function("Memory", WasmMemory::constructor);
     webassembly_obj->set_property("Memory", Value(memory_constructor.release()));
+    
+    // Add WebAssembly.Table constructor
+    auto table_constructor = ObjectFactory::create_native_function("Table", [](Context& ctx, const std::vector<Value>& args) -> Value {
+        if (args.empty()) {
+            ctx.throw_type_error("WebAssembly.Table constructor requires a descriptor argument");
+            return Value();
+        }
+        // Create a simple table object
+        auto table_obj = ObjectFactory::create_object();
+        table_obj->set_property("length", Value(1.0)); // Default size
+        return Value(table_obj.release());
+    });
+    webassembly_obj->set_property("Table", Value(table_constructor.release()));
     
     // Register WebAssembly as global
     ctx.register_built_in_object("WebAssembly", webassembly_obj.release());

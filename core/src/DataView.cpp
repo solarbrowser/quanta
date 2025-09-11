@@ -39,8 +39,7 @@ DataView::DataView(std::shared_ptr<ArrayBuffer> buffer)
     byte_offset_ = 0;
     byte_length_ = buffer_->byte_length();
     
-    // Add methods directly to this instance
-    // TEMPORARILY DISABLED setup_methods() to debug crashes
+    // Add methods directly to this instance - DISABLED due to compilation issues
     // setup_methods();
 }
 
@@ -353,7 +352,7 @@ const DataView* as_data_view(const Object* obj) {
 //=============================================================================
 
 void DataView::setup_methods() {
-    // COMPLETELY DISABLED TO DEBUG CRASHES - CAUSES ASTNode/Parameter INCOMPLETE TYPE ISSUES
+    // DISABLED - methods are now registered in Context.cpp prototype
     /*
     // Helper lambda to get DataView from this binding
     auto get_dataview = [](Context& ctx) -> DataView* {
@@ -589,7 +588,17 @@ Value DataView::js_get_uint8(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.getUint8 requires offset argument");
         return Value();
     }
-    return Value(0.0);
+    
+    // Get 'this' binding (the DataView object)
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("getUint8 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    return dataview->get_uint8(offset);
 }
 
 Value DataView::js_get_int16(Context& ctx, const std::vector<Value>& args) {
@@ -597,7 +606,17 @@ Value DataView::js_get_int16(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.getInt16 requires offset argument");
         return Value();
     }
-    return Value(0.0);
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("getInt16 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool little_endian = (args.size() > 1) ? args[1].to_boolean() : false;
+    return dataview->get_int16(offset, little_endian);
 }
 
 Value DataView::js_get_uint16(Context& ctx, const std::vector<Value>& args) {
@@ -621,7 +640,17 @@ Value DataView::js_get_uint32(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.getUint32 requires offset argument");
         return Value();
     }
-    return Value(0.0);
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("getUint32 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool little_endian = (args.size() > 1) ? args[1].to_boolean() : false;
+    return dataview->get_uint32(offset, little_endian);
 }
 
 Value DataView::js_get_float32(Context& ctx, const std::vector<Value>& args) {
@@ -629,7 +658,17 @@ Value DataView::js_get_float32(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.getFloat32 requires offset argument");
         return Value();
     }
-    return Value(0.0);
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("getFloat32 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool little_endian = (args.size() > 1) ? args[1].to_boolean() : false;
+    return dataview->get_float32(offset, little_endian);
 }
 
 Value DataView::js_get_float64(Context& ctx, const std::vector<Value>& args) {
@@ -637,7 +676,17 @@ Value DataView::js_get_float64(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.getFloat64 requires offset argument");
         return Value();
     }
-    return Value(0.0);
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("getFloat64 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool little_endian = (args.size() > 1) ? args[1].to_boolean() : false;
+    return dataview->get_float64(offset, little_endian);
 }
 
 Value DataView::js_set_int8(Context& ctx, const std::vector<Value>& args) {
@@ -653,6 +702,17 @@ Value DataView::js_set_uint8(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setUint8 requires offset and value arguments");
         return Value();
     }
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("setUint8 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    uint8_t value = static_cast<uint8_t>(args[1].to_number());
+    dataview->set_uint8(offset, value);
     return Value();
 }
 
@@ -661,6 +721,18 @@ Value DataView::js_set_int16(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setInt16 requires offset and value arguments");
         return Value();
     }
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("setInt16 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    int16_t value = static_cast<int16_t>(args[1].to_number());
+    bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
+    dataview->set_int16(offset, value, little_endian);
     return Value();
 }
 
@@ -685,6 +757,18 @@ Value DataView::js_set_uint32(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setUint32 requires offset and value arguments");
         return Value();
     }
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("setUint32 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    uint32_t value = static_cast<uint32_t>(args[1].to_number());
+    bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
+    dataview->set_uint32(offset, value, little_endian);
     return Value();
 }
 
@@ -693,6 +777,18 @@ Value DataView::js_set_float32(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setFloat32 requires offset and value arguments");
         return Value();
     }
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("setFloat32 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    float value = static_cast<float>(args[1].to_number());
+    bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
+    dataview->set_float32(offset, value, little_endian);
     return Value();
 }
 
@@ -701,6 +797,18 @@ Value DataView::js_set_float64(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setFloat64 requires offset and value arguments");
         return Value();
     }
+    
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) {
+        ctx.throw_type_error("setFloat64 called on non-DataView object");
+        return Value();
+    }
+    
+    DataView* dataview = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    double value = args[1].to_number();
+    bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
+    dataview->set_float64(offset, value, little_endian);
     return Value();
 }
 

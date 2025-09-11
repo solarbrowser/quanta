@@ -1424,8 +1424,27 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         } else if (method_name == "shift") {
             return array->shift();
         } else if (method_name == "unshift") {
-            for (const Value& arg : args) {
-                array->unshift(arg);
+            if (!args.empty()) {
+                uint32_t length = array->get_length();
+                uint32_t argCount = args.size();
+                
+                // Safety check
+                if (length + argCount >= 1000000) {
+                    return Value(static_cast<double>(array->get_length()));
+                }
+                
+                // Shift existing elements to the right by argCount positions
+                for (uint32_t i = length; i > 0; --i) {
+                    Value element = array->get_element(i - 1);
+                    array->set_element(i + argCount - 1, element);
+                }
+                
+                // Insert new arguments at the beginning
+                for (uint32_t i = 0; i < argCount; ++i) {
+                    array->set_element(i, args[i]);
+                }
+                
+                array->set_length(length + argCount);
             }
             return Value(static_cast<double>(array->get_length()));
         } else if (method_name == "splice") {

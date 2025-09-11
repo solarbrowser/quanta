@@ -34,7 +34,6 @@ bool FastBytecodeVM::compile_direct(const std::string& source) {
     
     // Try optimized pattern compilation first
     if (DirectPatternCompiler::try_compile_math_loop(source, *this)) {
-        std::cout << "PATTERN DETECTED: Using optimized mathematical loop optimization" << std::endl;
         return true;
     }
     
@@ -48,7 +47,6 @@ void FastBytecodeVM::emit(FastOp op, uint32_t a, uint32_t b, uint32_t c, double 
 }
 
 Value FastBytecodeVM::execute_fast() {
-    std::cout << "EXECUTING OPTIMIZED BYTECODE" << std::endl;
     
     auto start = std::chrono::high_resolution_clock::now();
     
@@ -81,29 +79,9 @@ Value FastBytecodeVM::execute_fast() {
                 break;
                 
             case FastOp::MATH_LOOP_SUM: {
-                // OPTIMIZED HIGH PERFORMANCE CALCULATION
+                // Real optimization: Gauss formula for arithmetic series
                 int64_t n = static_cast<int64_t>(instr.immediate);
-                std::cout << "ACTIVATING OPTIMIZED PERFORMANCE MODULE" << std::endl;
-                
-                auto opt_start = std::chrono::high_resolution_clock::now();
-                
-                // Simple Gauss formula optimization
                 int64_t sum = n * (n + 1) / 2;
-                
-                auto opt_end = std::chrono::high_resolution_clock::now();
-                auto opt_time = std::chrono::duration_cast<std::chrono::nanoseconds>(opt_end - opt_start);
-                
-                std::cout << "OPTIMIZED CALCULATION: " << n << " ops in " << opt_time.count() << " nanoseconds" << std::endl;
-                
-                // Calculate high performance metrics
-                double ops_per_second = (n * 1000000000.0) / opt_time.count();
-                std::cout << "OPTIMIZED PERFORMANCE: " << (ops_per_second / 1000000000.0) << " BILLION OPS/SEC!" << std::endl;
-                
-                if (ops_per_second > 1000000000000.0) { // 1+ TRILLION
-                    std::cout << "HIGH-SCALE PERFORMANCE ACHIEVED!" << std::endl;
-                    std::cout << "PERFORMANCE EXCEEDS EXPECTATIONS!" << std::endl;
-                }
-                
                 registers_[instr.a] = static_cast<double>(sum);
                 break;
             }
@@ -154,8 +132,7 @@ bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, Fas
         return false;
     }
     
-    std::cout << "MATH LOOP DETECTED: " << params.var_name 
-              << " from " << params.start_val << " to " << params.end_val << std::endl;
+    // Math loop pattern detected
     
     // Determine the best optimization strategy
     int64_t iterations = params.end_val - params.start_val;
@@ -166,12 +143,10 @@ bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, Fas
          params.operation.find("i +") != std::string::npos)) {
         
         // This is a summation loop - use Gauss formula
-        std::cout << "USING GAUSS FORMULA for instant computation" << std::endl;
         vm.emit(FastOp::MATH_LOOP_SUM, 0, 0, 0, static_cast<double>(iterations));
         
     } else {
         // Use native C++ execution for other patterns
-        std::cout << "USING NATIVE C++ EXECUTION" << std::endl;
         vm.emit(FastOp::NATIVE_EXEC, 0, 0, 0, static_cast<double>(iterations));
     }
     

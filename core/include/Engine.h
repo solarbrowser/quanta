@@ -11,8 +11,8 @@
 #include "Object.h"
 #include "Context.h"
 #include "ModuleLoader.h"
-#include "JIT.h"
 #include "GC.h"
+#include "../../parser/include/AST.h"
 #include <string>
 #include <memory>
 #include <vector>
@@ -64,7 +64,6 @@ private:
     std::unique_ptr<ModuleLoader> module_loader_;
     
     // Core systems
-    std::unique_ptr<JITCompiler> jit_compiler_;
     std::unique_ptr<GarbageCollector> garbage_collector_;
     
     // Engine state
@@ -132,7 +131,6 @@ public:
     std::string get_jit_stats() const;
     
     // JIT Compiler access
-    class JITCompiler* get_jit_compiler() const { return jit_compiler_.get(); }
     
     // Garbage Collection
     void enable_gc(bool enable);

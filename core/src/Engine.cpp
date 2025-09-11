@@ -39,7 +39,7 @@ namespace Quanta {
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
     // Initialize JIT compiler
-    jit_compiler_ = std::make_unique<JITCompiler>();
+    // JIT compiler removed (was simulation)
     
     // Initialize garbage collector
     garbage_collector_ = std::make_unique<GarbageCollector>();
@@ -798,10 +798,7 @@ std::string Engine::get_gc_stats() const {
 }
 
 std::string Engine::get_jit_stats() const {
-    if (jit_compiler_) {
-        return "JIT Stats: Compilation active";
-    }
-    return "JIT Stats: Not available";
+    return "JIT Stats: Simulation code removed";
 }
 
 } // namespace Quanta

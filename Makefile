@@ -46,7 +46,7 @@ $(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/
 endif
 
 # Source files (exclude experimental files and problematic files that cause compilation issues)
-EXCLUDED_FILES = $(CORE_SRC)/AdaptiveOptimizer.cpp $(CORE_SRC)/AdvancedDebugger.cpp $(CORE_SRC)/AdvancedJIT.cpp $(CORE_SRC)/SIMD.cpp $(CORE_SRC)/LockFree.cpp $(CORE_SRC)/NativeFFI.cpp $(CORE_SRC)/NUMAMemoryManager.cpp $(CORE_SRC)/CPUOptimization.cpp $(CORE_SRC)/ShapeOptimization.cpp $(CORE_SRC)/RealJIT.cpp $(CORE_SRC)/NativeCodeGenerator.cpp $(CORE_SRC)/SpecializedNodes.cpp
+EXCLUDED_FILES = $(CORE_SRC)/AdaptiveOptimizer.cpp $(CORE_SRC)/AdvancedDebugger.cpp $(CORE_SRC)/AdvancedJIT.cpp $(CORE_SRC)/SIMD.cpp $(CORE_SRC)/LockFree.cpp $(CORE_SRC)/NativeFFI.cpp $(CORE_SRC)/NUMAMemoryManager.cpp $(CORE_SRC)/CPUOptimization.cpp $(CORE_SRC)/ShapeOptimization.cpp $(CORE_SRC)/RealJIT.cpp $(CORE_SRC)/NativeCodeGenerator.cpp $(CORE_SRC)/SpecializedNodes.cpp $(CORE_SRC)/JIT.cpp $(CORE_SRC)/UltimatePatternDetector.cpp
 
 # Core optimization files that still exist
 CORE_OPTIMIZATIONS = $(CORE_SRC)/FastBytecode.cpp
