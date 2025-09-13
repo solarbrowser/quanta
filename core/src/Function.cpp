@@ -142,40 +142,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // Create new execution context for function with proper closure context management
     Context* parent_context = nullptr;
     
-    // Use closure_context_ if it exists and is from the same engine, otherwise use current context
+    // CLOSURE FIX: Always prefer closure_context_ if it exists for proper closure behavior
     if (closure_context_ && closure_context_->get_engine() == ctx.get_engine()) {
         parent_context = closure_context_;
     } else {
         // Closure context is invalid, null, or from different engine - use current context
         parent_context = &ctx;
-        
-        // Don't update closure_context_ to preserve original closure semantics when possible
-    }
-    
-    // CLOSURE FIX: Preserve local context for proper closure behavior
-    // Only use global context if no valid parent context exists
-    if (!parent_context) {
-        Context* global_ctx = ctx.get_engine()->get_global_context();
-        if (global_ctx) {
-            parent_context = global_ctx;
-        }
     }
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
-    
-    // CLOSURE FIX: Use captured closure variables stored in function properties
-    // But maintain persistent state between calls by using the function object as storage
-    auto property_names = this->get_own_property_keys();
-    // std::cout << "DEBUG: Function::call - found " << property_names.size() << " properties" << std::endl;
-    for (const auto& prop_name : property_names) {
-        if (prop_name.substr(0, 10) == "__closure_") {
-            std::string var_name = prop_name.substr(10); // Remove "__closure_" prefix
-            Value captured_value = this->get_property(prop_name);
-            // std::cout << "DEBUG: Loading closure variable '" << var_name << "' = " << captured_value.to_string() << std::endl;
-            
-            // Create binding that references the function's property for persistence
-            function_context_ptr->create_binding(var_name, captured_value, true); // Make closure bindings mutable!
-        }
-    }
     Context& function_context = *function_context_ptr;
     
     // GLOBAL VARIABLE ACCESS FIX: Function context should now inherit from global context
@@ -256,35 +230,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (body_) {
         Value result = body_->evaluate(function_context);
         
-        // CLOSURE FIX: Write closure variable changes back to function properties for persistence
-        // std::cout << "DEBUG: Write-back phase starting" << std::endl;
-        auto property_names_after = this->get_own_property_keys();
-        for (const auto& prop_name : property_names_after) {
-            if (prop_name.substr(0, 10) == "__closure_") {
-                std::string var_name = prop_name.substr(10); // Remove "__closure_" prefix
-                if (function_context.has_binding(var_name)) {
-                    Value updated_value = function_context.get_binding(var_name);
-                    Value old_value = this->get_property(prop_name);
-                    // std::cout << "DEBUG: Write-back '" << var_name << "' from " << old_value.to_string() << " to " << updated_value.to_string() << std::endl;
-                    this->set_property(prop_name, updated_value); // Write back to function property
-                } else {
-                    // std::cout << "DEBUG: No binding found for closure variable '" << var_name << "'" << std::endl;
-                }
-            }
-        }
-        
         // Handle return statements or exceptions
-        // CLOSURE FIX: Write back closure variable changes to function properties for persistence
-        for (const auto& prop_name : property_names) {
-            if (prop_name.substr(0, 10) == "__closure_") {
-                std::string var_name = prop_name.substr(10); // Remove "__closure_" prefix
-                if (function_context.has_binding(var_name)) {
-                    Value updated_value = function_context.get_binding(var_name);
-                    // std::cout << "DEBUG: Writing back closure variable '" << var_name << "' = " << updated_value.to_string() << std::endl;
-                    this->set_property(prop_name, updated_value);
-                }
-            }
-        }
         
         if (function_context.has_return_value()) {
             return function_context.get_return_value();

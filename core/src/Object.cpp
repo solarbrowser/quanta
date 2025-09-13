@@ -764,7 +764,10 @@ void Object::forEach(Function* callback, Context& ctx) {
         if (!element.is_undefined()) {
             // Call callback(element, index, array)
             std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-            callback->call(ctx, args);
+            
+            // CLOSURE FIX: Let the callback execute with its proper closure environment
+            // Create a minimal context for exception handling but let callback use its closure
+            Value result = callback->call(ctx, args, Value());
             if (ctx.has_exception()) return;
         }
     }
