@@ -152,9 +152,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // Don't update closure_context_ to preserve original closure semantics when possible
     }
     
-    // GLOBAL VARIABLE ACCESS FIX: Ensure parent context is global context for global functions
-    // If the closure context is the global context, use it; otherwise fall back to global context
-    if (parent_context && parent_context->get_type() != Context::Type::Global) {
+    // CLOSURE FIX: Preserve local context for proper closure behavior
+    // Only use global context if no valid parent context exists
+    if (!parent_context) {
         Context* global_ctx = ctx.get_engine()->get_global_context();
         if (global_ctx) {
             parent_context = global_ctx;

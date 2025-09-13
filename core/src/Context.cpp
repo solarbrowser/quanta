@@ -1107,6 +1107,28 @@ void Context::initialize_built_ins() {
         });
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()));
     
+    // Number.parseFloat - same as global parseFloat
+    auto numberParseFloat_fn = ObjectFactory::create_native_function("parseFloat",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+            
+            std::string str = args[0].to_string();
+            if (str.empty()) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+            
+            try {
+                size_t processed = 0;
+                double result = std::stod(str, &processed);
+                return Value(result);
+            } catch (...) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+        });
+    number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()));
+    
     register_built_in_object("Number", number_constructor.release());
     
     // Boolean constructor - callable as function
@@ -1561,6 +1583,26 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     register_built_in_object("ReferenceError", reference_error_constructor.release());
+    
+    auto syntax_error_constructor = ObjectFactory::create_native_function("SyntaxError",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+            
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+            
+            return Value(error_obj.release());
+        });
+    register_built_in_object("SyntaxError", syntax_error_constructor.release());
     
     // Test262Error constructor for test262 compatibility
     auto test262_error_constructor = ObjectFactory::create_native_function("Test262Error",

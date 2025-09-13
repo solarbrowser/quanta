@@ -3216,7 +3216,7 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
     Position start = current_token().get_start();
     advance(); // consume 'export'
     
-    if (match(TokenType::IDENTIFIER) && current_token().get_value() == "default") {
+    if (match(TokenType::DEFAULT)) {
         // export default expression
         advance(); // consume 'default'
         
