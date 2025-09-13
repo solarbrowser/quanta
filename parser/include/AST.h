@@ -1438,12 +1438,23 @@ public:
           module_source_(module_source), default_alias_(default_alias),
           is_namespace_import_(false), is_default_import_(is_default) {}
 
+    // Constructor for mixed import: import defaultThing, { namedThing } from "module"
+    ImportStatement(const std::string& default_alias, 
+                   std::vector<std::unique_ptr<ImportSpecifier>> specifiers,
+                   const std::string& module_source,
+                   const Position& start, const Position& end)
+        : ASTNode(Type::IMPORT_STATEMENT, start, end),
+          specifiers_(std::move(specifiers)), module_source_(module_source), 
+          default_alias_(default_alias),
+          is_namespace_import_(false), is_default_import_(true) {}
+
     const std::vector<std::unique_ptr<ImportSpecifier>>& get_specifiers() const { return specifiers_; }
     const std::string& get_module_source() const { return module_source_; }
     const std::string& get_namespace_alias() const { return namespace_alias_; }
     const std::string& get_default_alias() const { return default_alias_; }
     bool is_namespace_import() const { return is_namespace_import_; }
     bool is_default_import() const { return is_default_import_; }
+    bool is_mixed_import() const { return is_default_import_ && !specifiers_.empty(); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

@@ -1508,32 +1508,41 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
                     }
                     
                     break; // Rest element consumes all remaining elements
-                } else if (var_name.length() >= 9 && var_name.substr(0, 9) == "__nested_") {
-                    // NESTED DESTRUCTURING FIX: Handle nested array destructuring
+                } else if (var_name.length() >= 14 && var_name.substr(0, 14) == "__nested_vars:") {
+                    // NESTED DESTRUCTURING FIX: Handle nested array destructuring with actual variable names
                     Value nested_array = array_obj->get_element(static_cast<uint32_t>(i));
                     if (nested_array.is_object()) {
                         Object* nested_obj = nested_array.as_object();
-                        // For now, just create simple bindings for nested elements
-                        // This is a simplified implementation - we'd need to recursively parse the pattern
-                        // For [a, [b, c]] = [1, [2, 3]], we extract b=2, c=3
-                        if (nested_obj->get_length() >= 1) {
-                            Value nested_element_0 = nested_obj->get_element(0);
-                            // Create binding for first nested element (b)
-                            std::string nested_var_name = "b"; // Hardcoded for now - should parse from pattern
-                            if (!ctx.has_binding(nested_var_name)) {
-                                ctx.create_binding(nested_var_name, nested_element_0, true);
+                        
+                        // Extract the variable names from the identifier
+                        std::string vars_string = var_name.substr(14); // Remove "__nested_vars:" prefix
+                        
+                        // Parse comma-separated variable names
+                        std::vector<std::string> nested_var_names;
+                        std::string current_var = "";
+                        for (char c : vars_string) {
+                            if (c == ',') {
+                                if (!current_var.empty()) {
+                                    nested_var_names.push_back(current_var);
+                                    current_var = "";
+                                }
                             } else {
-                                ctx.set_binding(nested_var_name, nested_element_0);
+                                current_var += c;
                             }
                         }
-                        if (nested_obj->get_length() >= 2) {
-                            Value nested_element_1 = nested_obj->get_element(1);
-                            // Create binding for second nested element (c)
-                            std::string nested_var_name = "c"; // Hardcoded for now - should parse from pattern
+                        if (!current_var.empty()) {
+                            nested_var_names.push_back(current_var);
+                        }
+                        
+                        // Create bindings for each nested variable
+                        for (size_t j = 0; j < nested_var_names.size() && j < nested_obj->get_length(); j++) {
+                            Value nested_element = nested_obj->get_element(static_cast<uint32_t>(j));
+                            const std::string& nested_var_name = nested_var_names[j];
+                            
                             if (!ctx.has_binding(nested_var_name)) {
-                                ctx.create_binding(nested_var_name, nested_element_1, true);
+                                ctx.create_binding(nested_var_name, nested_element, true);
                             } else {
-                                ctx.set_binding(nested_var_name, nested_element_1);
+                                ctx.set_binding(nested_var_name, nested_element);
                             }
                         }
                     }
@@ -7477,8 +7486,8 @@ Value ImportStatement::evaluate(Context& ctx) {
     try {
         std::cout << "ImportStatement::evaluate() - is_namespace_import_: " << is_namespace_import_ << ", is_default_import_: " << is_default_import_ << ", specifiers count: " << specifiers_.size() << std::endl;
         
-        // For named imports: import { name1, name2 } from "module"
-        if (!is_namespace_import_ && !is_default_import_) {
+        // For named imports: import { name1, name2 } from "module" OR mixed imports
+        if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
             for (const auto& specifier : specifiers_) {
                 std::string imported_name = specifier->get_imported_name();
                 std::string local_name = specifier->get_local_name();
@@ -7638,19 +7647,43 @@ Value ExportStatement::evaluate(Context& ctx) {
         // We don't need to do anything special here
     }
     
-    // Handle named exports (export { name1, name2 })
+    // Handle named exports (export { name1, name2 }) and re-exports
     for (const auto& specifier : specifiers_) {
         std::string local_name = specifier->get_local_name();
         std::string export_name = specifier->get_exported_name();
+        Value export_value;
         
-        // Get the actual value of the local variable
-        if (ctx.has_binding(local_name)) {
-            Value local_value = ctx.get_binding(local_name);
-            exports_obj->set_property(export_name, local_value);
+        if (is_re_export_ && !source_module_.empty()) {
+            // Re-export: import from source module first
+            Engine* engine = ctx.get_engine();
+            if (engine) {
+                ModuleLoader* module_loader = engine->get_module_loader();
+                if (module_loader) {
+                    try {
+                        export_value = module_loader->import_from_module(
+                            source_module_, local_name, ""
+                        );
+                    } catch (...) {
+                        export_value = Value(); // undefined if import fails
+                    }
+                }
+            }
+            
+            if (export_value.is_undefined()) {
+                ctx.throw_exception(Value("ReferenceError: Cannot re-export '" + local_name + "' from '" + source_module_ + "'"));
+                return Value();
+            }
         } else {
-            ctx.throw_exception(Value("ReferenceError: " + local_name + " is not defined"));
-            return Value();
+            // Regular export: get the actual value of the local variable
+            if (ctx.has_binding(local_name)) {
+                export_value = ctx.get_binding(local_name);
+            } else {
+                ctx.throw_exception(Value("ReferenceError: " + local_name + " is not defined"));
+                return Value();
+            }
         }
+        
+        exports_obj->set_property(export_name, export_value);
     }
     
     return Value();

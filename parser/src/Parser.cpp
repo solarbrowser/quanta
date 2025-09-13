@@ -3187,10 +3187,60 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     }
     
     if (match(TokenType::IDENTIFIER)) {
-        // import name from "module" (default import)
+        // import name from "module" (default import) OR import defaultThing, { namedThing } from "module" (mixed import)
         std::string default_alias = current_token().get_value();
         advance();
         
+        // Check if this is a mixed import (default + named)
+        if (match(TokenType::COMMA)) {
+            advance(); // consume ','
+            
+            if (!match(TokenType::LEFT_BRACE)) {
+                add_error("Expected '{' after ',' in mixed import statement");
+                return nullptr;
+            }
+            advance(); // consume '{'
+            
+            // Parse named imports
+            std::vector<std::unique_ptr<ImportSpecifier>> specifiers;
+            while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+                auto specifier = parse_import_specifier();
+                if (specifier) {
+                    specifiers.push_back(std::move(specifier));
+                }
+                
+                if (match(TokenType::COMMA)) {
+                    advance();
+                } else if (!match(TokenType::RIGHT_BRACE)) {
+                    add_error("Expected ',' or '}' in import specifiers");
+                    break;
+                }
+            }
+            
+            if (!match(TokenType::RIGHT_BRACE)) {
+                add_error("Expected '}' after import specifiers");
+                return nullptr;
+            }
+            advance(); // consume '}'
+            
+            if (current_token().get_type() != TokenType::FROM) {
+                add_error("Expected 'from' in mixed import statement");
+                return nullptr;
+            }
+            advance(); // consume 'from'
+            
+            if (current_token().get_type() != TokenType::STRING) {
+                add_error("Expected string literal after 'from'");
+                return nullptr;
+            }
+            std::string module_source = current_token().get_value();
+            
+            Position end = get_current_position();
+            // Create a mixed import statement with both default and named imports
+            return std::make_unique<ImportStatement>(default_alias, std::move(specifiers), module_source, start, end);
+        }
+        
+        // Regular default import
         if (current_token().get_type() != TokenType::FROM) {
             add_error("Expected 'from' in import statement");
             return nullptr;
@@ -3401,26 +3451,36 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
                 }
             } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
                 // NESTED DESTRUCTURING FIX: Handle nested array destructuring [a, [b, c]]
-                // For now, create a placeholder identifier that represents the nested pattern
-                // The actual nested destructuring will be handled during evaluation
+                advance(); // consume opening '['
+                
+                // Parse nested identifiers and store them with special prefix
+                std::string nested_vars = "";
+                while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
+                    if (current_token().get_type() == TokenType::IDENTIFIER) {
+                        if (!nested_vars.empty()) nested_vars += ",";
+                        nested_vars += current_token().get_value();
+                        advance();
+                    } else if (current_token().get_type() == TokenType::COMMA) {
+                        advance(); // consume comma
+                    } else {
+                        // Skip unsupported tokens
+                        advance();
+                    }
+                }
+                
+                if (!consume(TokenType::RIGHT_BRACKET)) {
+                    add_error("Expected ']' in nested destructuring");
+                    return nullptr;
+                }
+                
+                
+                // Create a special identifier that contains the nested variable names
                 auto nested_placeholder = std::make_unique<Identifier>(
-                    "__nested_" + std::to_string(targets.size()), // Unique placeholder name
+                    "__nested_vars:" + nested_vars, // Store the actual variable names
                     current_token().get_start(),
                     current_token().get_end()
                 );
                 targets.push_back(std::move(nested_placeholder));
-                
-                // Skip the nested array pattern for now - just find matching bracket
-                int bracket_depth = 1;
-                advance(); // consume opening '['
-                while (bracket_depth > 0 && !at_end()) {
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        bracket_depth++;
-                    } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                        bracket_depth--;
-                    }
-                    advance();
-                }
             } else if (current_token().get_type() == TokenType::COMMA) {
                 // Handle skipping elements: [a, , c]
                 // Create a placeholder identifier for skipped element
