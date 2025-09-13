@@ -1336,13 +1336,13 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         }
                     }
                 } else {
-                    std::cout << "[DEBUG] Real object assignment: prop=" << prop_name << ", value=" << right_value.to_string() << std::endl;
+                    // std::cout << "[DEBUG] Real object assignment: prop=" << prop_name << ", value=" << right_value.to_string() << std::endl;
                     if (obj) {
-                        std::cout << "[DEBUG] obj is valid" << std::endl;
+                        // std::cout << "[DEBUG] obj is valid" << std::endl;
                         obj->set_property(prop_name, right_value);
-                        std::cout << "[DEBUG] set_property called" << std::endl;
+                        // std::cout << "[DEBUG] set_property called" << std::endl;
                     } else {
-                        std::cout << "[DEBUG] obj is NULL!" << std::endl;
+                        // std::cout << "[DEBUG] obj is NULL!" << std::endl;
                     }
                 }
                 break;
@@ -7484,7 +7484,7 @@ Value ImportStatement::evaluate(Context& ctx) {
     }
     
     try {
-        std::cout << "ImportStatement::evaluate() - is_namespace_import_: " << is_namespace_import_ << ", is_default_import_: " << is_default_import_ << ", specifiers count: " << specifiers_.size() << std::endl;
+        // std::cout << "ImportStatement::evaluate() - is_namespace_import_: " << is_namespace_import_ << ", is_default_import_: " << is_default_import_ << ", specifiers count: " << specifiers_.size() << std::endl;
         
         // For named imports: import { name1, name2 } from "module" OR mixed imports
         if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
@@ -7497,11 +7497,11 @@ Value ImportStatement::evaluate(Context& ctx) {
                     module_source_, imported_name, ""
                 );
                 
-                std::cout << "ImportStatement: Binding '" << local_name << "' = " << (imported_value.is_function() ? "function" : (imported_value.is_undefined() ? "undefined" : "other")) << std::endl;
-                
+                // std::cout << "ImportStatement: Binding '" << local_name << "' = " << (imported_value.is_function() ? "function" : (imported_value.is_undefined() ? "undefined" : "other")) << std::endl;
+
                 // Create binding in current context
                 bool binding_success = ctx.create_binding(local_name, imported_value);
-                std::cout << "ImportStatement: create_binding('" << local_name << "') " << (binding_success ? "succeeded" : "failed") << std::endl;
+                // std::cout << "ImportStatement: create_binding('" << local_name << "') " << (binding_success ? "succeeded" : "failed") << std::endl;
             }
         }
         

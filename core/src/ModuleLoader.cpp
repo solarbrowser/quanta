@@ -162,16 +162,16 @@ void ModuleLoader::add_search_path(const std::string& path) {
 }
 
 Value ModuleLoader::import_from_module(const std::string& module_id, const std::string& import_name, const std::string& from_path) {
-    std::cout << "import_from_module called: module='" << module_id << "', import='" << import_name << "', from='" << from_path << "'" << std::endl;
-    
+    // std::cout << "import_from_module called: module='" << module_id << "', import='" << import_name << "', from='" << from_path << "'" << std::endl;
+
     Module* module = load_module(module_id, from_path);
     if (!module) {
-        std::cout << "import_from_module: load_module failed" << std::endl;
+        // std::cout << "import_from_module: load_module failed" << std::endl;
         return Value(); // undefined
     }
-    
+
     Value result = module->get_export(import_name);
-    std::cout << "import_from_module: get_export('" << import_name << "') returned " << (result.is_function() ? "function" : (result.is_undefined() ? "undefined" : "other")) << std::endl;
+    // std::cout << "import_from_module: get_export('" << import_name << "') returned " << (result.is_function() ? "function" : (result.is_undefined() ? "undefined" : "other")) << std::endl;
     return result;
 }
 
@@ -250,15 +250,15 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             auto exports_obj = exports_value.as_object();
             
             auto keys = exports_obj->get_own_property_keys();
-            std::cout << "ModuleLoader: Extracting " << keys.size() << " exports: ";
-            for (const auto& key : keys) {
-                std::cout << "'" << key << "' ";
-            }
-            std::cout << std::endl;
-            
+            // std::cout << "ModuleLoader: Extracting " << keys.size() << " exports: ";
+            // for (const auto& key : keys) {
+            //     std::cout << "'" << key << "' ";
+            // }
+            // std::cout << std::endl;
+
             for (const auto& key : keys) {
                 Value prop_value = exports_obj->get_property(key);
-                std::cout << "ModuleLoader: Adding export '" << key << "' (type: " << (prop_value.is_function() ? "function" : "other") << ")" << std::endl;
+                // std::cout << "ModuleLoader: Adding export '" << key << "' (type: " << (prop_value.is_function() ? "function" : "other") << ")" << std::endl;
                 module->add_export(key, prop_value);
             }
         }
