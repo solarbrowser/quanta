@@ -36,25 +36,47 @@ bool RegExp::test(const std::string& str) {
 Value RegExp::exec(const std::string& str) {
     try {
         std::smatch match;
-        if (std::regex_search(str, match, regex_)) {
+
+        // For global flag, start search from lastIndex
+        std::string::const_iterator start = str.begin();
+        if (global_ && last_index_ > 0 && last_index_ < str.length()) {
+            start = str.begin() + last_index_;
+        } else if (global_ && last_index_ >= str.length()) {
+            // Reset lastIndex if beyond string
+            last_index_ = 0;
+            return Value(); // null
+        }
+
+        if (std::regex_search(start, str.end(), match, regex_)) {
+            // Calculate actual position in original string
+            size_t actual_position = (start - str.begin()) + match.position();
+
+            // Update lastIndex for global flag
+            if (global_) {
+                last_index_ = actual_position + match.length();
+            }
+
             // Create array-like object with match results
             auto result = new Object();
             result->set_property("0", Value(match[0].str()));
-            result->set_property("index", Value(static_cast<double>(match.position())));
+            result->set_property("index", Value(static_cast<double>(actual_position)));
             result->set_property("input", Value(str));
             result->set_property("length", Value(static_cast<double>(match.size())));
-            
+
             // Add captured groups
             for (size_t i = 1; i < match.size(); ++i) {
                 result->set_property(std::to_string(i), Value(match[i].str()));
             }
-            
+
             return Value(result);
+        } else if (global_) {
+            // Reset lastIndex when no more matches
+            last_index_ = 0;
         }
     } catch (const std::regex_error& e) {
         // Return null on error
     }
-    
+
     return Value(); // null
 }
 

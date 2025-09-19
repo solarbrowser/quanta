@@ -119,12 +119,15 @@ public:
     std::unique_ptr<ASTNode> parse_function_expression();
     std::unique_ptr<ASTNode> parse_async_function_expression();
     std::unique_ptr<ASTNode> parse_arrow_function();
+    std::unique_ptr<ASTNode> parse_async_arrow_function(Position start);
     std::unique_ptr<ASTNode> parse_yield_expression();
     bool try_parse_arrow_function_params();
     std::unique_ptr<ASTNode> parse_object_literal();
     std::unique_ptr<ASTNode> parse_array_literal();
     std::unique_ptr<ASTNode> parse_destructuring_pattern();
     std::unique_ptr<ASTNode> parse_spread_element();
+    std::string extract_nested_variable_names(ASTNode* node);
+    void extract_variable_names_recursive(ASTNode* node, std::vector<std::string>& names);
     
     // Literal parsing
     std::unique_ptr<ASTNode> parse_number_literal();

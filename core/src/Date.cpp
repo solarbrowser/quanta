@@ -212,7 +212,7 @@ Value Date::toString(Context& ctx, const std::vector<Value>& args) {
 
 Value Date::toISOString(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args;
-    Date date;
+    Date date; // For now, use current time - this needs proper 'this' binding
     std::tm utc_time = date.getUTCTime();
     
     std::ostringstream oss;
@@ -293,6 +293,52 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
     js_date_obj->set_property("_timestamp", Value(static_cast<double>(date_impl->getTimestamp())));
     
     return Value(js_date_obj.release());
+}
+
+// Legacy methods (Annex B)
+Value Date::getYear(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args; // Suppress unused warnings
+
+    // getYear returns year - 1900 (legacy behavior)
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* local_tm = std::localtime(&tt);
+
+    return Value(static_cast<double>(local_tm->tm_year)); // tm_year is already year - 1900
+}
+
+Value Date::setYear(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; // Suppress unused warning
+
+    if (args.empty()) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    double year_value = args[0].to_number();
+    if (std::isnan(year_value) || std::isinf(year_value)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    int year = static_cast<int>(year_value);
+
+    // setYear behavior: if year is 0-99, add 1900; otherwise use as-is
+    if (year >= 0 && year <= 99) {
+        year += 1900;
+    }
+
+    // For now, return the set year as timestamp
+    // This is a simplified implementation
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* local_tm = std::localtime(&tt);
+
+    local_tm->tm_year = year - 1900;
+    std::time_t new_time = std::mktime(local_tm);
+
+    auto new_timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::from_time_t(new_time).time_since_epoch()).count();
+
+    return Value(static_cast<double>(new_timestamp));
 }
 
 } // namespace Quanta

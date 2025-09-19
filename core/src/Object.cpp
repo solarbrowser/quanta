@@ -401,9 +401,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         }
         
         if (overflow_properties_) {
-            if (key == "count") {
-                // std::cout << "[DEBUG] Updating in overflow_properties_" << std::endl;
-            }
             (*overflow_properties_)[key] = value;
             
             

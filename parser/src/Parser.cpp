@@ -1650,43 +1650,73 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         add_error("Expected '(' after function name");
         return nullptr;
     }
-    
+
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;  // Track if any parameter is non-simple
-    
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
-        
+
         // Check for rest parameter syntax: ...args
         if (match(TokenType::ELLIPSIS)) {
             is_rest = true;
             has_non_simple_params = true;  // Rest parameters are non-simple
             advance(); // consume '...'
         }
-        
+
         std::unique_ptr<Identifier> param_name = nullptr;
-        
+
         if (current_token().get_type() == TokenType::LEFT_BRACKET) {
             // Array destructuring parameter: [a, b, c]
             has_non_simple_params = true;  // Destructuring makes params non-simple
             advance(); // consume '['
-            
-            if (current_token().get_type() != TokenType::IDENTIFIER) {
-                add_error("Expected identifier in destructuring pattern");
-                return nullptr;
+
+            // Skip through the array destructuring pattern
+            std::string destructuring_name = "__array_destructuring_";
+            int bracket_count = 1;
+            while (bracket_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                    bracket_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                    bracket_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__array_destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
             }
-            
+
             // Create identifier for the destructured parameter
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-            advance(); // consume identifier
-            
-            if (current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                add_error("Expected ']' to close destructuring pattern");
-                return nullptr;
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Object destructuring parameter: {a, b, c}
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '{'
+
+            // Skip through the destructuring pattern
+            std::string destructuring_name = "__destructuring_";
+            int brace_count = 1;
+            while (brace_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                    brace_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                    brace_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
             }
-            advance(); // consume ']'
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // Regular identifier parameter
             param_name = std::make_unique<Identifier>(current_token().get_value(),
@@ -2128,14 +2158,21 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::ASYNC)) {
         add_error("Expected 'async'");
         return nullptr;
     }
-    
-    if (!consume(TokenType::FUNCTION)) {
-        add_error("Expected 'function' after 'async'");
+
+    // Check if next token is 'function' (async function) or '(' (async arrow function)
+    if (match(TokenType::FUNCTION)) {
+        advance(); // consume 'function'
+        // Continue with regular async function parsing
+    } else if (match(TokenType::LEFT_PAREN)) {
+        // This is an async arrow function: async () => {}
+        return parse_async_arrow_function(start);
+    } else {
+        add_error("Expected 'function' or '(' after 'async'");
         return nullptr;
     }
     
@@ -2152,34 +2189,112 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         add_error("Expected '(' after async function name");
         return nullptr;
     }
-    
+
     std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;  // Track if any parameter is non-simple
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected parameter name");
+        Position param_start = current_token().get_start();
+        bool is_rest = false;
+
+        // Check for rest parameter syntax: ...args
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            has_non_simple_params = true;  // Rest parameters are non-simple
+            advance(); // consume '...'
+        }
+
+        std::unique_ptr<Identifier> param_name = nullptr;
+
+        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+            // Array destructuring parameter: [a, b, c]
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '['
+
+            // Skip through the array destructuring pattern
+            std::string destructuring_name = "__array_destructuring_";
+            int bracket_count = 1;
+            while (bracket_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                    bracket_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                    bracket_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__array_destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Object destructuring parameter: {a, b, c}
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '{'
+
+            // Skip through the destructuring pattern
+            std::string destructuring_name = "__destructuring_";
+            int brace_count = 1;
+            while (brace_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                    brace_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                    brace_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Regular identifier parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
-        Position param_start = get_current_position();
-        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-        advance();
-        
+
         // Check for default parameter syntax: param = value
+        // Note: Rest parameters cannot have default values
         std::unique_ptr<ASTNode> default_value = nullptr;
-        if (match(TokenType::ASSIGN)) {
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            has_non_simple_params = true;  // Default parameters make params non-simple
             advance(); // consume '='
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 return nullptr;
             }
+        } else if (is_rest && match(TokenType::ASSIGN)) {
+            add_error("Rest parameter cannot have default value");
+            return nullptr;
         }
-        
+
         Position param_end = get_current_position();
-        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), false, param_start, param_end);
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
         params.push_back(std::move(param));
-        
+
+        // Rest parameter must be last
+        if (is_rest) {
+            if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
+
         if (match(TokenType::COMMA)) {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
@@ -2230,40 +2345,118 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     auto id = std::make_unique<Identifier>(current_token().get_value(),
                                         current_token().get_start(), current_token().get_end());
     advance();
-    
+
     // Parse parameters
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after async function name");
         return nullptr;
     }
-    
+
     std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;  // Track if any parameter is non-simple
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected parameter name");
+        Position param_start = current_token().get_start();
+        bool is_rest = false;
+
+        // Check for rest parameter syntax: ...args
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            has_non_simple_params = true;  // Rest parameters are non-simple
+            advance(); // consume '...'
+        }
+
+        std::unique_ptr<Identifier> param_name = nullptr;
+
+        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+            // Array destructuring parameter: [a, b, c]
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '['
+
+            // Skip through the array destructuring pattern
+            std::string destructuring_name = "__array_destructuring_";
+            int bracket_count = 1;
+            while (bracket_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                    bracket_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                    bracket_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__array_destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Object destructuring parameter: {a, b, c}
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '{'
+
+            // Skip through the destructuring pattern
+            std::string destructuring_name = "__destructuring_";
+            int brace_count = 1;
+            while (brace_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                    brace_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                    brace_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Regular identifier parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
-        Position param_start = get_current_position();
-        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-        advance();
-        
+
         // Check for default parameter syntax: param = value
+        // Note: Rest parameters cannot have default values
         std::unique_ptr<ASTNode> default_value = nullptr;
-        if (match(TokenType::ASSIGN)) {
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            has_non_simple_params = true;  // Default parameters make params non-simple
             advance(); // consume '='
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
                 return nullptr;
             }
+        } else if (is_rest && match(TokenType::ASSIGN)) {
+            add_error("Rest parameter cannot have default value");
+            return nullptr;
         }
-        
+
         Position param_end = get_current_position();
-        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), false, param_start, param_end);
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
         params.push_back(std::move(param));
-        
+
+        // Rest parameter must be last
+        if (is_rest) {
+            if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
+
         if (match(TokenType::COMMA)) {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
@@ -2682,21 +2875,82 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             std::vector<std::unique_ptr<Parameter>> params;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
-                    if (!match(TokenType::IDENTIFIER)) {
-                        add_error("Expected parameter name");
+                    Position param_start = current_token().get_start();
+                    bool is_rest = false;
+
+                    // Check for rest parameter syntax: ...args
+                    if (match(TokenType::ELLIPSIS)) {
+                        is_rest = true;
+                        advance(); // consume '...'
+                    }
+
+                    std::unique_ptr<Identifier> param_name = nullptr;
+
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array destructuring parameter: [a, b, c]
+                        advance(); // consume '['
+
+                        // Skip through the array destructuring pattern
+                        std::string destructuring_name = "__array_destructuring_";
+                        int bracket_count = 1;
+                        while (bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                bracket_count--;
+                            } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                                // Collect first identifier for parameter name
+                                if (destructuring_name == "__array_destructuring_") {
+                                    destructuring_name += current_token().get_value();
+                                }
+                            }
+                            advance();
+                        }
+
+                        // Create identifier for the destructured parameter
+                        Position param_pos = get_current_position();
+                        param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object destructuring parameter: {a, b, c}
+                        advance(); // consume '{'
+
+                        // Skip through the destructuring pattern
+                        std::string destructuring_name = "__destructuring_";
+                        int brace_count = 1;
+                        while (brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                brace_count--;
+                            } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                                // Collect first identifier for parameter name
+                                if (destructuring_name == "__destructuring_") {
+                                    destructuring_name += current_token().get_value();
+                                }
+                            }
+                            advance();
+                        }
+
+                        // Create identifier for the destructured parameter
+                        Position param_pos = get_current_position();
+                        param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+                    } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+                        // Regular identifier parameter
+                        param_name = std::make_unique<Identifier>(
+                            current_token().get_value(),
+                            current_token().get_start(),
+                            current_token().get_end()
+                        );
+                        advance();
+                    } else {
+                        add_error("Expected parameter name or destructuring pattern");
                         return nullptr;
                     }
-                    auto param_name = std::make_unique<Identifier>(
-                        current_token().get_value(),
-                        current_token().get_start(),
-                        current_token().get_end()
-                    );
-                    advance();
-                    
-                    // Create parameter with proper constructor arguments
-                    auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_name->get_start(), param_name->get_end());
+
+                    Position param_end = get_current_position();
+                    auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, is_rest, param_start, param_end);
                     params.push_back(std::move(param));
-                    
+
                     if (match(TokenType::COMMA)) {
                         advance();
                     } else {
@@ -3567,24 +3821,61 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
                     advance(); // consume ':'
                     
                     // Handle nested destructuring: {a: {b}} or renaming: {a: b}
-                    if (match(TokenType::LEFT_BRACE) || match(TokenType::LEFT_BRACKET)) {
-                        // This is nested destructuring - for now, skip and handle it in evaluation
-                        // We'll implement proper nested parsing later
-                        int brace_count = 0;
-                        int bracket_count = 0;
-                        while (!at_end() && (!match(TokenType::COMMA) || brace_count > 0 || bracket_count > 0)) {
-                            if (match(TokenType::LEFT_BRACE)) {
-                                brace_count++;
-                            } else if (match(TokenType::RIGHT_BRACE)) {
-                                brace_count--;
-                                if (brace_count < 0) break; // End of main destructuring
-                            } else if (match(TokenType::LEFT_BRACKET)) {
-                                bracket_count++;
-                            } else if (match(TokenType::RIGHT_BRACKET)) {
-                                bracket_count--;
-                            }
-                            advance();
+                    if (match(TokenType::LEFT_BRACE)) {
+                        // Parse nested object destructuring: {outer: {inner}}
+                        auto nested = parse_destructuring_pattern();
+                        if (!nested) {
+                            add_error("Invalid nested object destructuring");
+                            return nullptr;
                         }
+
+                        // Extract variable names from nested destructuring
+                        std::string nested_vars = extract_nested_variable_names(nested.get());
+
+                        // Get the original property name before replacing the target
+                        std::string original_property_name = targets.back()->get_name();
+
+                        // Create placeholder identifier containing all nested variable names
+                        auto nested_id = std::make_unique<Identifier>(
+                            "__nested:" + nested_vars,
+                            nested->get_start(),
+                            nested->get_end()
+                        );
+
+                        // Replace the last target with nested identifier
+                        targets.pop_back();
+                        targets.push_back(std::move(nested_id));
+
+                        // Store the property mapping: original property -> nested variable identifier
+                        property_mappings.emplace_back(original_property_name, "__nested:" + nested_vars);
+
+                    } else if (match(TokenType::LEFT_BRACKET)) {
+                        // Parse nested array destructuring: {prop: [a, b]}
+                        auto nested = parse_destructuring_pattern();
+                        if (!nested) {
+                            add_error("Invalid nested array destructuring");
+                            return nullptr;
+                        }
+
+                        // Extract variable names from nested destructuring
+                        std::string nested_vars = extract_nested_variable_names(nested.get());
+
+                        // Get the original property name before replacing the target
+                        std::string original_property_name = targets.back()->get_name();
+
+                        // Create placeholder identifier
+                        auto nested_id = std::make_unique<Identifier>(
+                            "__nested_array:" + nested_vars,
+                            nested->get_start(),
+                            nested->get_end()
+                        );
+
+                        // Replace the last target
+                        targets.pop_back();
+                        targets.push_back(std::move(nested_id));
+
+                        // Store the property mapping: original property -> nested array identifier
+                        property_mappings.emplace_back(original_property_name, "__nested_array:" + nested_vars);
                     } else if (match(TokenType::IDENTIFIER)) {
                         // Property renaming: {oldName: newName}
                         std::string new_name = current_token().get_value();
@@ -3876,6 +4167,165 @@ void Parser::check_for_use_strict_directive() {
         advance();
         if (match(TokenType::SEMICOLON)) {
             advance();
+        }
+    }
+}
+
+// Parse async arrow function: async (params) => { body }
+std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
+    std::vector<std::unique_ptr<Parameter>> params;
+    bool has_non_simple_params = false;
+
+    // Parameters must be in parentheses for async arrow functions
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' for async arrow function parameters");
+        return nullptr;
+    }
+
+    // Parse parameters (similar to regular arrow function)
+    while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
+        Position param_start = current_token().get_start();
+        bool is_rest = false;
+
+        // Check for rest parameter: ...param
+        if (match(TokenType::ELLIPSIS)) {
+            is_rest = true;
+            has_non_simple_params = true;
+            advance();
+        }
+
+        // Parse parameter name
+        std::unique_ptr<Identifier> param_name = nullptr;
+        if (current_token().get_type() == TokenType::IDENTIFIER) {
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name");
+            return nullptr;
+        }
+
+        // Check for default parameter: param = value
+        std::unique_ptr<ASTNode> default_value = nullptr;
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            has_non_simple_params = true;
+            advance(); // consume '='
+            default_value = parse_assignment_expression();
+            if (!default_value) {
+                add_error("Invalid default parameter value");
+                return nullptr;
+            }
+        }
+
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+        params.push_back(std::move(param));
+
+        // Rest parameter must be last
+        if (is_rest) {
+            if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                return nullptr;
+            }
+            break;
+        }
+
+        // Check for comma between parameters
+        if (match(TokenType::COMMA)) {
+            advance();
+        } else if (!match(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ',' or ')' in parameter list");
+            return nullptr;
+        }
+    }
+
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after parameters");
+        return nullptr;
+    }
+
+    // Expect arrow: =>
+    if (!consume(TokenType::ARROW)) {
+        add_error("Expected '=>' for async arrow function");
+        return nullptr;
+    }
+
+    // Parse function body
+    std::unique_ptr<ASTNode> body = nullptr;
+    if (match(TokenType::LEFT_BRACE)) {
+        // Block body: async () => { statements }
+        body = parse_block_statement();
+    } else {
+        // Expression body: async () => expression
+        auto expr = parse_assignment_expression();
+        if (!expr) {
+            add_error("Expected function body");
+            return nullptr;
+        }
+
+        // Wrap expression in return statement for async arrow functions
+        Position ret_start = expr->get_start();
+        Position ret_end = expr->get_end();
+        auto return_stmt = std::make_unique<ReturnStatement>(std::move(expr), ret_start, ret_end);
+
+        // Create block statement containing the return
+        std::vector<std::unique_ptr<ASTNode>> statements;
+        statements.push_back(std::move(return_stmt));
+        body = std::make_unique<BlockStatement>(std::move(statements), ret_start, ret_end);
+    }
+
+    if (!body) {
+        add_error("Expected async arrow function body");
+        return nullptr;
+    }
+
+    Position end = get_current_position();
+
+    // Create async arrow function expression
+    // Note: We use AsyncFunctionExpression with null identifier for arrow functions
+    return std::make_unique<AsyncFunctionExpression>(
+        nullptr, // No identifier for arrow functions
+        std::move(params),
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, end
+    );
+}
+
+// Extract variable names from nested destructuring patterns
+std::string Parser::extract_nested_variable_names(ASTNode* node) {
+    if (!node) return "";
+
+    std::vector<std::string> var_names;
+    extract_variable_names_recursive(node, var_names);
+
+    // Join variable names with commas
+    std::string result;
+    for (size_t i = 0; i < var_names.size(); ++i) {
+        if (i > 0) result += ",";
+        result += var_names[i];
+    }
+
+    return result;
+}
+
+void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::string>& names) {
+    if (!node) return;
+
+    if (node->get_type() == ASTNode::Type::IDENTIFIER) {
+        auto* id = static_cast<Identifier*>(node);
+        names.push_back(id->get_name());
+    }
+    else if (node->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        auto* obj = static_cast<ObjectLiteral*>(node);
+        for (const auto& prop : obj->get_properties()) {
+            // In destructuring {a: {b}}, we want the variable names from the value side
+            extract_variable_names_recursive(prop->value.get(), names);
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        auto* arr = static_cast<ArrayLiteral*>(node);
+        for (const auto& elem : arr->get_elements()) {
+            extract_variable_names_recursive(elem.get(), names);
         }
     }
 }

@@ -1,3 +1,9 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
 #include "core/include/Engine.h"
 #include "core/include/Async.h"
 #include "core/include/Generator.h"
@@ -76,30 +82,40 @@ public:
         }
     }
     
-    // Execute file as ES6 module
-    bool execute_as_module(const std::string& filename) {
+    // Execute file as ES6 module (silent mode for test262 compatibility)
+    bool execute_as_module(const std::string& filename, bool silent = false) {
         try {
-            std::cout << CYAN << "Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
-            
+            if (!silent) {
+                std::cout << CYAN << "Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
+            }
+
             // Use the module loader to load and execute the file
             ModuleLoader* module_loader = engine_->get_module_loader();
             if (!module_loader) {
-                std::cout << RED << "Error: ModuleLoader not available" << RESET << std::endl;
+                if (!silent) {
+                    std::cout << RED << "Error: ModuleLoader not available" << RESET << std::endl;
+                }
                 return false;
             }
-            
+
             // Load the module (this will execute it)
             Module* module = module_loader->load_module(filename, "");
             if (module) {
-                std::cout << GREEN << "Module loaded successfully!" << RESET << std::endl;
+                if (!silent) {
+                    std::cout << GREEN << "Module loaded successfully!" << RESET << std::endl;
+                }
                 return true;
             } else {
-                std::cout << RED << "Module loading failed!" << RESET << std::endl;
+                if (!silent) {
+                    std::cout << RED << "Module loading failed!" << RESET << std::endl;
+                }
                 return false;
             }
-            
+
         } catch (const std::exception& e) {
-            std::cout << RED << "Module execution error: " << e.what() << RESET << std::endl;
+            if (!silent) {
+                std::cout << RED << "Module execution error: " << e.what() << RESET << std::endl;
+            }
             return false;
         }
     }
@@ -166,7 +182,7 @@ public:
         }
     }
     
-    bool evaluate_expression(const std::string& input, bool show_prompt = true) {
+    bool evaluate_expression(const std::string& input, bool show_prompt = true, bool show_result = true) {
         try {
             auto start = std::chrono::high_resolution_clock::now();
             
@@ -180,12 +196,15 @@ public:
                 return false;
             }
             
-            // Only show result if it's not undefined
-            if (!result.value.is_undefined()) {
+            // Only show result if it's not undefined and result display is enabled
+            // For file execution (show_result=false), never show expression results
+            // Only show result if it's not undefined and result display is enabled
+            // For file execution (show_result=false), never show expression results
+            if (show_result && !result.value.is_undefined()) {
                 std::cout << GREEN << result.value.to_string() << RESET << std::endl;
             }
             
-            // debug only, for seeing execution time
+            // Optional: Show execution time
             //std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
             
             return true;
@@ -312,11 +331,11 @@ int main(int argc, char* argv[]) {
             // Auto-detect ES6 module syntax and choose execution method
             bool success = false;
             if (console.has_es6_module_syntax(content)) {
-                // Execute as ES6 module
-                success = console.execute_as_module(filename);
+                // Execute as ES6 module (silent for test262)
+                success = console.execute_as_module(filename, true);
             } else {
                 // Execute as regular script
-                success = console.evaluate_expression(content, true);
+                success = console.evaluate_expression(content, false, false);
             }
             
             // Process any pending async tasks

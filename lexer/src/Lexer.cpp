@@ -1006,7 +1006,7 @@ bool Lexer::can_be_regex_literal() const {
     
     // Look backwards to find the last non-whitespace character
     size_t pos = position_ - 1;
-    while (pos > 0 && is_whitespace(source_[pos])) {
+    while (pos > 0 && (is_whitespace(source_[pos]) || is_line_terminator(source_[pos]))) {
         pos--;
     }
     

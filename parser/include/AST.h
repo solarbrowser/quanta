@@ -508,6 +508,7 @@ public:
     
 private:
     bool handle_complex_object_destructuring(Object* obj, Context& ctx);
+    void handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
 };
 
 /**

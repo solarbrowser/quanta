@@ -129,13 +129,40 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
             ctx.set_this_binding(this_obj);
         }
+
+        // PRIMITIVE WRAPPER: Also bind 'this' for primitive values in context
+        Value old_this_value = Value();
+        bool had_this_binding = false;
+        try {
+            old_this_value = ctx.get_binding("this");
+            had_this_binding = true;
+        } catch (...) {
+            // No existing 'this' binding
+        }
+
+        // Set 'this' binding for primitive values (especially strings)
+        if (!this_value.is_undefined() && !this_value.is_null()) {
+            ctx.set_binding("this", this_value);
+        }
         
         // Call native C++ function
         Value result = native_fn_(ctx, args);
-        
+
         // Restore old 'this' binding
         ctx.set_this_binding(old_this);
-        
+
+        // Restore old primitive 'this' binding
+        if (had_this_binding) {
+            ctx.set_binding("this", old_this_value);
+        } else {
+            // Remove the 'this' binding if it didn't exist before
+            try {
+                ctx.delete_binding("this");
+            } catch (...) {
+                // Ignore if deletion fails
+            }
+        }
+
         return result;
     }
     
@@ -151,7 +178,17 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
-    
+
+    // CLOSURE FIX: Restore captured closure variables to function context
+    auto prop_keys = this->get_own_property_keys();
+    for (const auto& key : prop_keys) {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+            std::string var_name = key.substr(10); // Remove "__closure_" prefix
+            Value closure_value = this->get_property(key);
+            function_context.create_binding(var_name, closure_value, true);
+        }
+    }
+
     // GLOBAL VARIABLE ACCESS FIX: Function context should now inherit from global context
     
     // Bind parameters to arguments with default value support
@@ -229,7 +266,41 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // Execute function body
     if (body_) {
         Value result = body_->evaluate(function_context);
-        
+
+        // CLOSURE WRITE-BACK: Update captured closure variables that were modified
+        auto prop_keys = this->get_own_property_keys();
+        for (const auto& key : prop_keys) {
+            if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+                std::string var_name = key.substr(10); // Remove "__closure_" prefix
+
+                // Check if the closure variable was modified in the function context
+                if (function_context.has_binding(var_name)) {
+                    Value current_value = function_context.get_binding(var_name);
+                    Value original_value = this->get_property(key);
+
+                    // If the value changed, update the captured property
+                    // Use simple comparison - if values are different types or values, update
+                    bool values_different = false;
+                    if (current_value.get_type() != original_value.get_type()) {
+                        values_different = true;
+                    } else if (current_value.is_number() && original_value.is_number()) {
+                        values_different = (current_value.as_number() != original_value.as_number());
+                    } else if (current_value.is_string() && original_value.is_string()) {
+                        values_different = (current_value.as_string() != original_value.as_string());
+                    } else if (current_value.is_boolean() && original_value.is_boolean()) {
+                        values_different = (current_value.as_boolean() != original_value.as_boolean());
+                    } else {
+                        // For other types, assume they're different if we got here
+                        values_different = true;
+                    }
+
+                    if (values_different) {
+                        this->set_property(key, current_value);
+                    }
+                }
+            }
+        }
+
         // Handle return statements or exceptions
         
         if (function_context.has_return_value()) {

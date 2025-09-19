@@ -58,7 +58,11 @@ public:
     static Value setMinutes(Context& ctx, const std::vector<Value>& args);
     static Value setSeconds(Context& ctx, const std::vector<Value>& args);
     static Value setMilliseconds(Context& ctx, const std::vector<Value>& args);
-    
+
+    // Legacy methods (Annex B)
+    static Value getYear(Context& ctx, const std::vector<Value>& args);
+    static Value setYear(Context& ctx, const std::vector<Value>& args);
+
     // String methods
     static Value toString(Context& ctx, const std::vector<Value>& args);
     static Value toISOString(Context& ctx, const std::vector<Value>& args);
