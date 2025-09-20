@@ -1593,18 +1593,61 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
     for (const auto& mapping : property_mappings_) {
         Value prop_value = obj->get_property(mapping.property_name);
 
-        // Create binding if it doesn't exist, otherwise set it
-        bool binding_created = false;
-        if (!ctx.has_binding(mapping.variable_name)) {
-            binding_created = ctx.create_binding(mapping.variable_name, prop_value, true);
-        } else {
-            ctx.set_binding(mapping.variable_name, prop_value);
-            binding_created = true;
-        }
+        // Check if this is a nested destructuring mapping
+        if (mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") {
 
-        // If binding failed, this might be the issue
-        if (!binding_created) {
-            // Binding creation failed - this might be why variables are undefined
+            // Extract variable names from the nested pattern
+            std::string vars_string = mapping.variable_name.substr(9); // Remove "__nested:" prefix
+
+            // Parse comma-separated variable names (ENHANCED for nested patterns)
+            std::vector<std::string> nested_var_names;
+            std::string current_var = "";
+            int nested_depth = 0;
+
+            for (size_t i = 0; i < vars_string.length(); ++i) {
+                char c = vars_string[i];
+
+                // Check if we're starting a nested pattern
+                if (i + 9 <= vars_string.length() &&
+                    vars_string.substr(i, 9) == "__nested:") {
+                    nested_depth++;
+                    current_var += "__nested:";
+                    i += 8; // Skip the next 8 characters (we'll increment by 1 in the loop)
+                } else if (c == ',' && nested_depth == 0) {
+                    // Only split on commas when we're not inside a nested pattern
+                    if (!current_var.empty()) {
+                        nested_var_names.push_back(current_var);
+                        current_var = "";
+                    }
+                } else {
+                    current_var += c;
+                    // Reset nested depth only at the end of the string if we were in a nested pattern
+                    if (nested_depth > 0 && i == vars_string.length() - 1) {
+                        nested_depth = 0; // Reset only at the end
+                    }
+                }
+            }
+            if (!current_var.empty()) {
+                nested_var_names.push_back(current_var);
+            }
+
+            // Handle nested destructuring
+            if (prop_value.is_object()) {
+                Object* nested_obj = prop_value.as_object();
+                handle_nested_object_destructuring(nested_obj, nested_var_names, ctx);
+            }
+        } else {
+            // Normal property mapping
+            bool binding_created = false;
+            if (!ctx.has_binding(mapping.variable_name)) {
+                binding_created = ctx.create_binding(mapping.variable_name, prop_value, true);
+            } else {
+                ctx.set_binding(mapping.variable_name, prop_value);
+                binding_created = true;
+            }
+
+            if (!binding_created) {
+            }
         }
     }
     
@@ -1618,7 +1661,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
     
     for (const auto& target : targets_) {
         std::string prop_name = target->get_name();
-        
+
         // Handle object rest pattern: {...rest}
         if (prop_name.length() >= 3 && prop_name.substr(0, 3) == "...") {
             std::string rest_name = prop_name.substr(3); // Remove "..." prefix
@@ -1654,24 +1697,40 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 break;
             }
         }
-        
+
         if (!has_mapping) {
             // NESTED DESTRUCTURING FIX: Handle nested object destructuring
             if (prop_name.length() >= 10 && prop_name.substr(0, 10) == "__nested:") {
+
                 // Extract the variable names from the identifier
                 std::string vars_string = prop_name.substr(10); // Remove "__nested:" prefix
 
-                // Parse comma-separated variable names
+                // Parse comma-separated variable names (ENHANCED for nested patterns)
                 std::vector<std::string> nested_var_names;
                 std::string current_var = "";
-                for (char c : vars_string) {
-                    if (c == ',') {
+                int nested_depth = 0;
+
+                for (size_t i = 0; i < vars_string.length(); ++i) {
+                    char c = vars_string[i];
+
+                    // Check if we're starting a nested pattern
+                    if (i + 9 <= vars_string.length() &&
+                        vars_string.substr(i, 9) == "__nested:") {
+                        nested_depth++;
+                        current_var += "__nested:";
+                        i += 8; // Skip the next 8 characters (we'll increment by 1 in the loop)
+                    } else if (c == ',' && nested_depth == 0) {
+                        // Only split on commas when we're not inside a nested pattern
                         if (!current_var.empty()) {
                             nested_var_names.push_back(current_var);
                             current_var = "";
                         }
                     } else {
                         current_var += c;
+                        // Reset nested depth only at the end of the string if we were in a nested pattern
+                        if (nested_depth > 0 && i == vars_string.length() - 1) {
+                            nested_depth = 0; // Reset only at the end
+                        }
                     }
                 }
                 if (!current_var.empty()) {
@@ -1716,19 +1775,69 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 }
 
 void DestructuringAssignment::handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx) {
-    // For nested destructuring like {outer: {inner}}, we need to extract properties from nested_obj
-    // The var_names contains the final variable names we want to bind
-    // For {a: {b}}, nested_obj is the object stored in property 'a', and we want to extract property 'b' from it
+    // INFINITE DEPTH ENHANCEMENT: Handle recursive nested destructuring patterns
+    // Can now handle infinite depth like {a: {b: {c: {d: ...}}}}
 
     for (const std::string& var_name : var_names) {
-        // For each variable name, try to get the property with that name from the nested object
-        Value prop_value = nested_obj->get_property(var_name);
 
-        // Create binding for the variable
-        if (!ctx.has_binding(var_name)) {
-            ctx.create_binding(var_name, prop_value, true);
+        // Check if this variable is itself a nested pattern
+        if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
+            // Extract the deeper variable names from the nested pattern
+            std::string deeper_vars_string = var_name.substr(9); // Remove "__nested:" prefix
+
+            // Parse comma-separated variable names for the deeper level
+            // ENHANCED: Handle nested __nested: patterns properly
+            std::vector<std::string> deeper_var_names;
+            std::string current_var = "";
+            int nested_depth = 0;
+
+            for (size_t i = 0; i < deeper_vars_string.length(); ++i) {
+                char c = deeper_vars_string[i];
+
+                // Check if we're starting a nested pattern
+                if (i + 9 <= deeper_vars_string.length() &&
+                    deeper_vars_string.substr(i, 9) == "__nested:") {
+                    nested_depth++;
+                    current_var += "__nested:";
+                    i += 8; // Skip the next 8 characters (we'll increment by 1 in the loop)
+                } else if (c == ',' && nested_depth == 0) {
+                    // Only split on commas when we're not inside a nested pattern
+                    if (!current_var.empty()) {
+                        deeper_var_names.push_back(current_var);
+                        current_var = "";
+                    }
+                } else {
+                    current_var += c;
+                    // Reset nested depth only at the end of the string if we were in a nested pattern
+                    if (nested_depth > 0 && i == deeper_vars_string.length() - 1) {
+                        nested_depth = 0; // Reset only at the end
+                    }
+                }
+            }
+            if (!current_var.empty()) {
+                deeper_var_names.push_back(current_var);
+            }
+
+            // For recursive nested patterns, find the first object property to recurse into
+            for (const auto& property_name : nested_obj->get_own_property_keys()) {
+                Value property_value = nested_obj->get_property(property_name);
+                if (property_value.is_object()) {
+                    Object* deeper_obj = property_value.as_object();
+                    // RECURSIVE CALL for infinite depth!
+                    handle_nested_object_destructuring(deeper_obj, deeper_var_names, ctx);
+                    break; // Process only the first object property for this pattern
+                }
+            }
         } else {
-            ctx.set_binding(var_name, prop_value);
+            // Regular variable - extract property from current nested object
+            Value prop_value = nested_obj->get_property(var_name);
+
+            // Create binding for the variable
+            if (!ctx.has_binding(var_name)) {
+                ctx.create_binding(var_name, prop_value, true);
+            } else {
+                ctx.set_binding(var_name, prop_value);
+            }
         }
     }
 }

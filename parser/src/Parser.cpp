@@ -4293,7 +4293,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
 // Extract variable names from nested destructuring patterns
 std::string Parser::extract_nested_variable_names(ASTNode* node) {
-    if (!node) return "";
+    if (!node) {
+        return "";
+    }
 
     std::vector<std::string> var_names;
     extract_variable_names_recursive(node, var_names);
@@ -4314,6 +4316,13 @@ void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::st
     if (node->get_type() == ASTNode::Type::IDENTIFIER) {
         auto* id = static_cast<Identifier*>(node);
         names.push_back(id->get_name());
+    }
+    else if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+        // Handle nested destructuring assignment - extract variable names from targets
+        auto* destructuring = static_cast<DestructuringAssignment*>(node);
+        for (const auto& target : destructuring->get_targets()) {
+            extract_variable_names_recursive(target.get(), names);
+        }
     }
     else if (node->get_type() == ASTNode::Type::OBJECT_LITERAL) {
         auto* obj = static_cast<ObjectLiteral*>(node);

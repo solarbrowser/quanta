@@ -300,19 +300,39 @@ int main(int argc, char* argv[]) {
         
         QuantaConsole console;
         
-        // Find the first non-flag argument (JavaScript file to execute)
+        // Check for -c flag for direct code execution
+        bool execute_code = false;
+        std::string code_to_execute;
         std::string filename;
+
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
-            // Skip known Node.js/V8 flags that test262 might pass
-            if (arg.find("--") == 0) {
-                // Skip flags like --expose-gc, --harmony, etc.
+
+            if (arg == "-c" && i + 1 < argc) {
+                // -c flag: execute the next argument as code
+                execute_code = true;
+                code_to_execute = argv[i + 1];
+                i++; // Skip the next argument since we consumed it
                 continue;
+            } else if (arg.find("--") == 0) {
+                // Skip known Node.js/V8 flags that test262 might pass
+                continue;
+            } else if (filename.empty()) {
+                // First non-flag argument is the filename
+                filename = arg;
             }
-            filename = arg;
-            break;
         }
         
+        // If -c flag provided, execute the code directly
+        if (execute_code) {
+            bool success = console.evaluate_expression(code_to_execute, false, true);
+
+            // Process any pending async tasks
+            EventLoop::instance().process_microtasks();
+
+            return success ? 0 : 1;
+        }
+
         // If file argument provided, execute it instead of interactive mode
         if (!filename.empty()) {
             // Show banner for file execution too
