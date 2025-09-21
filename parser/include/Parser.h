@@ -124,9 +124,10 @@ public:
     bool try_parse_arrow_function_params();
     std::unique_ptr<ASTNode> parse_object_literal();
     std::unique_ptr<ASTNode> parse_array_literal();
-    std::unique_ptr<ASTNode> parse_destructuring_pattern();
+    std::unique_ptr<ASTNode> parse_destructuring_pattern(int depth = 0);
     std::unique_ptr<ASTNode> parse_spread_element();
     std::string extract_nested_variable_names(ASTNode* node);
+    std::string generate_proper_nested_pattern(ASTNode* node, int depth);
     void extract_variable_names_recursive(ASTNode* node, std::vector<std::string>& names);
     
     // Literal parsing

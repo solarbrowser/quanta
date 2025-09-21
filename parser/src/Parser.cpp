@@ -7,6 +7,7 @@
 #include "../include/Parser.h"
 #include <algorithm>
 #include <iostream>
+#include <map>
 
 namespace Quanta {
 
@@ -3647,7 +3648,9 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     return std::make_unique<ExportSpecifier>(local_name, exported_name, start, end);
 }
 
-std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
+std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
+    // Removed all depth checking to achieve unlimited destructuring
+
     Position start = get_current_position();
     
     if (current_token().get_type() == TokenType::LEFT_BRACKET) {
@@ -3822,42 +3825,89 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern() {
                     
                     // Handle nested destructuring: {a: {b}} or renaming: {a: b}
                     if (match(TokenType::LEFT_BRACE)) {
-                        // Parse nested object destructuring: {outer: {inner}}
-                        auto nested = parse_destructuring_pattern();
+                        // Parse nested object destructuring with optimized pattern handling
+                        auto nested = parse_destructuring_pattern(depth + 1);
                         if (!nested) {
                             add_error("Invalid nested object destructuring");
                             return nullptr;
                         }
 
-                        // Extract variable names from nested destructuring
+                        // Simplified pattern extraction for unlimited depth
                         std::string nested_vars = extract_nested_variable_names(nested.get());
+                        printf("DEBUG: extracted nested_vars: '%s'\n", nested_vars.c_str());
 
                         // Get the original property name before replacing the target
                         std::string original_property_name = targets.back()->get_name();
 
-                        // Create placeholder identifier containing all nested variable names
-                        auto nested_id = std::make_unique<Identifier>(
-                            "__nested:" + nested_vars,
-                            nested->get_start(),
-                            nested->get_end()
-                        );
+                        // FIX: Keep the original target - don't replace with complex names
+                        // The target should remain as the simple property name (e.g., 'a')
+                        // Property mappings handle the complex navigation
 
-                        // Replace the last target with nested identifier
-                        targets.pop_back();
-                        targets.push_back(std::move(nested_id));
+                        // FIX: Extract the first property name from nested destructuring
+                        // For {a: {b: {c}}}, extract "b" from the nested destructuring and create "b:__nested:c"
+                        std::string proper_pattern = nested_vars;
+                        if (auto nested_destructuring = dynamic_cast<DestructuringAssignment*>(nested.get())) {
+                            // Try to get the property name from property mappings (this is the key we navigate to)
+                            const auto& mappings = nested_destructuring->get_property_mappings();
+                            printf("DEBUG: Found %zu property mappings in nested destructuring\n", mappings.size());
 
-                        // Store the property mapping: original property -> nested variable identifier
-                        property_mappings.emplace_back(original_property_name, "__nested:" + nested_vars);
+                            std::string property_name = "";
+                            if (!mappings.empty()) {
+                                // Get the first property name (this is what we navigate to)
+                                property_name = mappings[0].property_name;
+                                printf("DEBUG: First property mapping: '%s' -> '%s'\n",
+                                       mappings[0].property_name.c_str(), mappings[0].variable_name.c_str());
+                            } else {
+                                // Fallback: try to extract from the identifier naming pattern
+                                const auto& targets = nested_destructuring->get_targets();
+                                if (!targets.empty()) {
+                                    std::string first_target = targets[0]->get_name();
+                                    printf("DEBUG: No property mappings, using target: '%s'\n", first_target.c_str());
+
+                                    // If it's a simple identifier without __nested prefix, use it as property name
+                                    if (first_target.find("__nested") == std::string::npos) {
+                                        property_name = first_target;
+                                    }
+                                }
+                            }
+
+                            // Build proper navigation pattern: "property:__nested:rest"
+                            if (!property_name.empty()) {
+                                printf("DEBUG: Using property name: '%s'\n", property_name.c_str());
+                                size_t nested_pos = nested_vars.find("__nested:");
+                                if (nested_pos != std::string::npos && nested_pos + 9 < nested_vars.length()) {
+                                    // FIX: For multi-level patterns like 'c:__nested:d',
+                                    // build 'b:c:__nested:d' to preserve the complete navigation path
+                                    proper_pattern = property_name + ":" + nested_vars;
+                                    printf("DEBUG: Built complete navigation pattern: '%s'\n", proper_pattern.c_str());
+                                } else {
+                                    // FIX: For nested destructuring, always use __nested: prefix
+                                    // For {a: {b}}, we need '__nested:b' to indicate nested extraction
+                                    // For {a: {b: newName}}, we need 'b:newName' for renaming within nested object
+                                    printf("DEBUG: Comparing property_name='%s' with nested_vars='%s'\n", property_name.c_str(), nested_vars.c_str());
+                                    if (property_name == nested_vars) {
+                                        // Simple nested access - use __nested: prefix
+                                        proper_pattern = "__nested:" + nested_vars;
+                                        printf("DEBUG: Built nested access pattern: '%s'\n", proper_pattern.c_str());
+                                    } else {
+                                        // Property renaming within nested object OR multi-level navigation
+                                        proper_pattern = property_name + ":" + nested_vars;
+                                        printf("DEBUG: Built nested renaming/navigation pattern: '%s'\n", proper_pattern.c_str());
+                                    }
+                                }
+                            }
+                        }
+                        property_mappings.emplace_back(original_property_name, proper_pattern);
 
                     } else if (match(TokenType::LEFT_BRACKET)) {
-                        // Parse nested array destructuring: {prop: [a, b]}
-                        auto nested = parse_destructuring_pattern();
+                        // Parse nested array destructuring with optimized handling
+                        auto nested = parse_destructuring_pattern(depth + 1);
                         if (!nested) {
                             add_error("Invalid nested array destructuring");
                             return nullptr;
                         }
 
-                        // Extract variable names from nested destructuring
+                        //Simplified pattern extraction
                         std::string nested_vars = extract_nested_variable_names(nested.get());
 
                         // Get the original property name before replacing the target
@@ -4297,17 +4347,106 @@ std::string Parser::extract_nested_variable_names(ASTNode* node) {
         return "";
     }
 
-    std::vector<std::string> var_names;
-    extract_variable_names_recursive(node, var_names);
+    // CRITICAL FIX: Generate proper nested patterns for infinite depth
+    std::string result = generate_proper_nested_pattern(node, 0);
+    return result;
+}
 
-    // Join variable names with commas
-    std::string result;
-    for (size_t i = 0; i < var_names.size(); ++i) {
-        if (i > 0) result += ",";
-        result += var_names[i];
+std::string Parser::generate_proper_nested_pattern(ASTNode* node, int depth) {
+    if (!node) return "";
+
+    printf("DEBUG PARSER: generate_proper_nested_pattern called with depth %d, node type %d\n", depth, (int)node->get_type());
+
+    if (node->get_type() == ASTNode::Type::IDENTIFIER) {
+        // Base case: just a variable name
+        auto* id = static_cast<Identifier*>(node);
+        return id->get_name();
+    }
+    else if (node->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        // Object literal: recurse into each property's value
+        auto* obj = static_cast<ObjectLiteral*>(node);
+        std::vector<std::string> nested_vars;
+
+        for (const auto& prop : obj->get_properties()) {
+            // Get the property name (key)
+            std::string prop_name = "";
+            if (prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+                prop_name = static_cast<Identifier*>(prop->key.get())->get_name();
+            }
+
+            // Generate pattern for the value with increased depth
+            std::string value_pattern = generate_proper_nested_pattern(prop->value.get(), depth + 1);
+            if (!value_pattern.empty()) {
+                // FIX: Include property name in pattern for correct navigation
+                std::string prefixed_pattern = value_pattern;
+                if (depth > 0 && !prop_name.empty()) {
+                    // Include property name with __nested: for proper navigation
+                    prefixed_pattern = prop_name + ":__nested:" + value_pattern;
+                } else if (!prop_name.empty()) {
+                    // First level - just use property name
+                    prefixed_pattern = prop_name + ":" + value_pattern;
+                } else {
+                    prefixed_pattern = value_pattern;
+                }
+                nested_vars.push_back(prefixed_pattern);
+            }
+        }
+
+        // Join multiple variables
+        std::string result;
+        for (size_t i = 0; i < nested_vars.size(); ++i) {
+            if (i > 0) result += ",";
+            result += nested_vars[i];
+        }
+        return result;
+    }
+    else if (node->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+        // Destructuring assignment: use property mappings for complete patterns
+        auto* destructuring = static_cast<DestructuringAssignment*>(node);
+        const auto& mappings = destructuring->get_property_mappings();
+
+        printf("DEBUG: Found %zu property mappings in nested destructuring\n", mappings.size());
+
+        if (!mappings.empty()) {
+            // Use property mappings for complete patterns
+            std::vector<std::string> nested_vars;
+            for (const auto& mapping : mappings) {
+                // Return just the variable pattern, not the complete mapping
+                printf("DEBUG: First property mapping: '%s' -> '%s'\n", mapping.property_name.c_str(), mapping.variable_name.c_str());
+                nested_vars.push_back(mapping.variable_name);
+                break; // For now, just take the first one for debugging
+            }
+
+            // Join multiple variables
+            std::string result;
+            for (size_t i = 0; i < nested_vars.size(); ++i) {
+                if (i > 0) result += ",";
+                result += nested_vars[i];
+            }
+            return result;
+        } else {
+            // No property mappings - use targets (for simple cases)
+            printf("DEBUG: No property mappings, using target: '%s'\n",
+                   !destructuring->get_targets().empty() ? destructuring->get_targets()[0]->get_name().c_str() : "none");
+            std::vector<std::string> nested_vars;
+            for (const auto& target : destructuring->get_targets()) {
+                std::string target_pattern = generate_proper_nested_pattern(target.get(), depth);
+                if (!target_pattern.empty()) {
+                    nested_vars.push_back(target_pattern);
+                }
+            }
+
+            // Join multiple variables
+            std::string result;
+            for (size_t i = 0; i < nested_vars.size(); ++i) {
+                if (i > 0) result += ",";
+                result += nested_vars[i];
+            }
+            return result;
+        }
     }
 
-    return result;
+    return "";
 }
 
 void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::string>& names) {

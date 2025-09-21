@@ -509,6 +509,11 @@ public:
 private:
     bool handle_complex_object_destructuring(Object* obj, Context& ctx);
     void handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
+    void handle_nested_object_destructuring_with_source(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source_destructuring);
+    void handle_nested_object_destructuring_with_mappings(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
+    void handle_nested_object_destructuring_smart(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, DestructuringAssignment* source);
+    void handle_nested_object_destructuring_enhanced(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx, const std::string& property_key);
+    void handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx);
 };
 
 /**

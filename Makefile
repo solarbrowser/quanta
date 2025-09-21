@@ -18,11 +18,15 @@ CXXFLAGS += -pthread
 DEBUG_FLAGS = -g -DDEBUG -O0
 INCLUDES = -Icore/include -Ilexer/include -Iparser/include
 
-# Platform-specific libraries
+# Platform-specific libraries and stack size
 ifeq ($(OS),Windows_NT)
     LIBS = -lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32
+    # Increase stack size to 64MB for deep recursion support
+    STACK_FLAGS = -Wl,--stack,67108864
 else
     LIBS =
+    # Linux stack size flag
+    STACK_FLAGS = -Wl,-z,stack-size=16777216
 endif
 
 # Directories
@@ -84,7 +88,7 @@ $(LIBQUANTA): $(ALL_OBJECTS)
 # Main console executable
 $(BIN_DIR)/quanta: $(CONSOLE_MAIN) $(LIBQUANTA)
 	@echo "[BUILD] Building Quanta JavaScript console..."
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS)
 	@echo "[OK] Quanta console built: $@"
 
 # Object file compilation
