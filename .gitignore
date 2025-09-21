@@ -34,6 +34,7 @@ debug_*.js
 demo.js
 example*.js
 .tests/test262/
+.js
 
 # other
 .eshostrc

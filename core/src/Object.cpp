@@ -303,7 +303,7 @@ Value Object::get_property(const std::string& key) const {
         }
         current = current->get_prototype();
     }
-    
+
     return Value(); // undefined
 }
 

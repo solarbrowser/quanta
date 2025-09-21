@@ -2587,7 +2587,12 @@ Value CallExpression::evaluate(Context& ctx) {
         if (identifier->get_name() == "super") {
             // Handle super() constructor call directly with corruption protection
             Value parent_constructor = ctx.get_binding("__super__");
-            
+
+            // INHERITANCE FIX: If __super__ not found, try __super_constructor__
+            if (parent_constructor.is_undefined()) {
+                parent_constructor = ctx.get_binding("__super_constructor__");
+            }
+
             // Check if we have a valid super constructor binding
             
             // Handle NaN-boxing corruption cases safely
@@ -2615,10 +2620,14 @@ Value CallExpression::evaluate(Context& ctx) {
                     if (this_obj) {
                         // Call parent constructor with current 'this' bound
                         Value this_value(this_obj);
-                        return parent_func->call(ctx, arg_values, this_value);
+                        parent_func->call(ctx, arg_values, this_value);
+                        // super() should return undefined and let child constructor continue
+                        return Value();
                     } else {
                         // If no 'this' binding, call normally
-                        return parent_func->call(ctx, arg_values);
+                        parent_func->call(ctx, arg_values);
+                        // super() should return undefined and let child constructor continue
+                        return Value();
                     }
                 } catch (...) {
                     // Silently handle any exceptions during super() call
@@ -6931,7 +6940,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         // Set up prototype chain for inheritance
                         Object* super_prototype = super_fn->get_prototype();
                         if (super_prototype && proto_ptr) {
-                            proto_ptr->set_property("__proto__", Value(super_prototype));
+                            // INHERITANCE FIX: Set prototype chain, not __proto__ property
+                            proto_ptr->set_prototype(super_prototype);
                         }
                     }
                 }
