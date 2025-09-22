@@ -428,10 +428,16 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 }
             }
             
-            // Check if it's an object or string representation
+            // Check if it's an object, function (which is also an object), or string representation
+            Object* obj = nullptr;
             if (object_value.is_object()) {
-                Object* obj = object_value.as_object();
-                
+                obj = object_value.as_object();
+            } else if (object_value.is_function()) {
+                // Functions are objects in JavaScript and can have properties
+                obj = object_value.as_function();
+            }
+
+            if (obj) {
                 // Get the property key
                 std::string key;
                 if (member->is_computed()) {
@@ -1119,7 +1125,7 @@ std::string UnaryExpression::operator_to_string(Operator op) {
 //=============================================================================
 
 Value AssignmentExpression::evaluate(Context& ctx) {
-    
+
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) {
         return Value();
@@ -1171,6 +1177,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     
     // Handle member expression assignment (e.g., obj.prop = value, this.prop = value)
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        std::cout << "DEBUG: Processing member expression assignment" << std::endl;
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
         
         // Evaluate the object
@@ -1236,12 +1243,21 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
         
-        // Check if it's a real object or string representation of object
+        // Check if it's a real object, function (which is also an object), or string representation of object
         Object* obj = nullptr;
         bool is_string_object = false;
-        
+
+        std::cout << "DEBUG: object_value type check - is_object(): " << object_value.is_object() << std::endl;
+        std::cout << "DEBUG: object_value type check - is_function(): " << object_value.is_function() << std::endl;
+        std::cout << "DEBUG: object_value type check - is_string(): " << object_value.is_string() << std::endl;
+        std::cout << "DEBUG: object_value toString(): " << object_value.to_string() << std::endl;
+
         if (object_value.is_object()) {
             obj = object_value.as_object();
+        } else if (object_value.is_function()) {
+            // Functions are objects in JavaScript and can have properties
+            std::cout << "DEBUG: Detected function for property assignment" << std::endl;
+            obj = object_value.as_function();
         } else if (object_value.is_string()) {
             // Check if it's a string representation of an object
             std::string str_val = object_value.to_string();
