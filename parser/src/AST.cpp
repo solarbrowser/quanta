@@ -2616,16 +2616,25 @@ Value CallExpression::evaluate(Context& ctx) {
                     
                     // Get current 'this' binding from context
                     Object* this_obj = ctx.get_this_binding();
-                    
+
                     if (this_obj) {
                         // Call parent constructor with current 'this' bound
                         Value this_value(this_obj);
                         parent_func->call(ctx, arg_values, this_value);
+                        // SUPER() FIX: Clear any return value set by parent constructor
+                        // to allow child constructor to continue executing
+                        ctx.clear_return_value();
                         // super() should return undefined and let child constructor continue
                         return Value();
                     } else {
                         // If no 'this' binding, call normally
                         parent_func->call(ctx, arg_values);
+                        // SUPER() FIX: Clear any return value AND exception set by parent constructor
+                        // to allow child constructor to continue executing
+                        ctx.clear_return_value();
+                        if (ctx.has_exception()) {
+                            ctx.clear_exception();
+                        }
                         // super() should return undefined and let child constructor continue
                         return Value();
                     }

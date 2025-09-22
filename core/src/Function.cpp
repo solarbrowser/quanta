@@ -179,6 +179,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
 
+    // Set up 'this' binding for JavaScript function
+    if (this_value.is_object() || this_value.is_function()) {
+        Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+        function_context.set_this_binding(this_obj);
+    }
+
     // CLOSURE FIX: Restore captured closure variables to function context
     auto prop_keys = this->get_own_property_keys();
     for (const auto& key : prop_keys) {
