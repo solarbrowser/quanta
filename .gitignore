@@ -33,7 +33,7 @@ debug_*.js
 *.test.js
 demo.js
 example*.js
-.tests/test262/
+.test262/
 .js
 
 # other
