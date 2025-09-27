@@ -275,14 +275,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
         // CLOSURE WRITE-BACK: Update captured closure variables that were modified
         auto prop_keys = this->get_own_property_keys();
+        std::cout << "DEBUG CLOSURE: Function " << get_name() << " has " << prop_keys.size() << " properties" << std::endl;
         for (const auto& key : prop_keys) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
                 std::string var_name = key.substr(10); // Remove "__closure_" prefix
+                std::cout << "DEBUG CLOSURE: Found closure variable: " << var_name << std::endl;
 
                 // Check if the closure variable was modified in the function context
                 if (function_context.has_binding(var_name)) {
                     Value current_value = function_context.get_binding(var_name);
                     Value original_value = this->get_property(key);
+                    std::cout << "DEBUG CLOSURE: " << var_name << " original: " << original_value.to_string()
+                              << " current: " << current_value.to_string() << std::endl;
 
                     // If the value changed, update the captured property
                     // Use simple comparison - if values are different types or values, update
@@ -301,7 +305,16 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     }
 
                     if (values_different) {
+                        std::cout << "DEBUG CLOSURE: Writing back " << var_name << " = " << current_value.to_string() << std::endl;
                         this->set_property(key, current_value);
+
+                        // CRITICAL FIX: Also update the original closure context
+                        if (closure_context_) {
+                            std::cout << "DEBUG CLOSURE: Updating closure context " << var_name << std::endl;
+                            closure_context_->set_binding(var_name, current_value);
+                        }
+                    } else {
+                        std::cout << "DEBUG CLOSURE: No change for " << var_name << std::endl;
                     }
                 }
             }

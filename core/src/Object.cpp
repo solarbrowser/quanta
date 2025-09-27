@@ -1400,25 +1400,44 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             // Return the array itself
             return Value(array);
         } else if (method_name == "sort") {
-            // Simple string sort (default JavaScript behavior)
             uint32_t length = array->get_length();
             std::vector<Value> elements;
-            
+
             // Collect all elements
             for (uint32_t i = 0; i < length; i++) {
                 elements.push_back(array->get_element(i));
             }
-            
-            // Sort by string representation
-            std::sort(elements.begin(), elements.end(), [](const Value& a, const Value& b) {
-                return a.to_string() < b.to_string();
-            });
-            
+
+            // Check if a compare function was provided
+            Function* compareFn = nullptr;
+            if (args.size() > 0 && args[0].is_function()) {
+                compareFn = args[0].as_function();
+                std::cout << "DEBUG SORT: Using compare function" << std::endl;
+            } else {
+                std::cout << "DEBUG SORT: Using default string sort" << std::endl;
+            }
+
+            // Sort elements
+            if (compareFn) {
+                // Sort using the compare function
+                std::sort(elements.begin(), elements.end(), [&](const Value& a, const Value& b) {
+                    std::vector<Value> comp_args = {a, b};
+                    Value result = compareFn->call(ctx, comp_args);
+                    if (ctx.has_exception()) return false;
+                    return result.to_number() < 0;
+                });
+            } else {
+                // Default string comparison
+                std::sort(elements.begin(), elements.end(), [](const Value& a, const Value& b) {
+                    return a.to_string() < b.to_string();
+                });
+            }
+
             // Put them back
             for (uint32_t i = 0; i < length; i++) {
                 array->set_element(i, elements[i]);
             }
-            
+
             // Return the array itself
             return Value(array);
         } else if (method_name == "shift") {

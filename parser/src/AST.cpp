@@ -3283,11 +3283,21 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         
         Function* compareFn = nullptr;
         if (arguments_.size() > 0) {
+            std::cout << "DEBUG SORT: Has " << arguments_.size() << " arguments" << std::endl;
             Value compare_val = arguments_[0]->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
+            if (ctx.has_exception()) {
+                std::cout << "DEBUG SORT: Exception during argument evaluation" << std::endl;
+                return Value();
+            }
+            std::cout << "DEBUG SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
             if (compare_val.is_function()) {
                 compareFn = compare_val.as_function();
+                std::cout << "DEBUG SORT: compareFn set successfully" << std::endl;
+            } else {
+                std::cout << "DEBUG SORT: compare_val is not a function" << std::endl;
             }
+        } else {
+            std::cout << "DEBUG SORT: No arguments provided" << std::endl;
         }
         
         // Simple bubble sort for now (can be optimized later)
@@ -8058,28 +8068,51 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     array->set_property("reverse", Value(reverse_fn.release()));
     
     // Create sort function
-    auto sort_fn = ObjectFactory::create_native_function("sort", 
+    auto sort_fn = ObjectFactory::create_native_function("sort",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; // Suppress unused warning
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value("TypeError: Array.prototype.sort called on non-object"));
                 return Value();
             }
-            
+
             uint32_t length = this_obj->get_length();
-            
-            // Simple bubble sort for now (could be optimized later)
-            for (uint32_t i = 0; i < length; i++) {
+            if (length <= 1) return Value(this_obj);
+
+            // Check for compare function
+            Function* compareFn = nullptr;
+            if (args.size() > 0) {
+                std::cout << "DEBUG ARRAYLIT SORT: Has " << args.size() << " arguments" << std::endl;
+                Value compare_val = args[0];
+                std::cout << "DEBUG ARRAYLIT SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
+                if (compare_val.is_function()) {
+                    compareFn = compare_val.as_function();
+                    std::cout << "DEBUG ARRAYLIT SORT: compareFn set successfully" << std::endl;
+                } else {
+                    std::cout << "DEBUG ARRAYLIT SORT: compare_val is not a function" << std::endl;
+                }
+            } else {
+                std::cout << "DEBUG ARRAYLIT SORT: No arguments provided" << std::endl;
+            }
+
+            // Simple bubble sort
+            for (uint32_t i = 0; i < length - 1; i++) {
                 for (uint32_t j = 0; j < length - 1 - i; j++) {
                     Value a = this_obj->get_element(j);
                     Value b = this_obj->get_element(j + 1);
-                    
-                    // Convert to strings for comparison (default sort behavior)
-                    std::string str_a = a.to_string();
-                    std::string str_b = b.to_string();
-                    
-                    if (str_a > str_b) {
+
+                    bool should_swap = false;
+                    if (compareFn) {
+                        std::vector<Value> comp_args = {a, b};
+                        Value result = compareFn->call(ctx, comp_args);
+                        if (ctx.has_exception()) return Value();
+                        should_swap = result.to_number() > 0;
+                    } else {
+                        // Default string comparison
+                        should_swap = a.to_string() > b.to_string();
+                    }
+
+                    if (should_swap) {
                         this_obj->set_element(j, b);
                         this_obj->set_element(j + 1, a);
                     }

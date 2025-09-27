@@ -945,11 +945,33 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Function", function_constructor.release());
     
-    // String constructor - callable as function
+    // String constructor - callable as function or constructor
     auto string_constructor = ObjectFactory::create_native_function("String",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value("");
-            return Value(args[0].to_string());
+            std::string str_value = args.empty() ? "" : args[0].to_string();
+
+            // Check if called as constructor (with 'new')
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                // Called as constructor - set up the String object
+                this_obj->set_property("value", Value(str_value));
+                this_obj->set_property("length", Value(static_cast<double>(str_value.length())));
+
+                // Add toString method to the object
+                auto toString_fn = ObjectFactory::create_native_function("toString",
+                    [](Context& ctx, const std::vector<Value>& args) -> Value {
+                        (void)args; // Suppress unused warning
+                        Object* this_binding = ctx.get_this_binding();
+                        if (this_binding && this_binding->has_property("value")) {
+                            return this_binding->get_property("value");
+                        }
+                        return Value("");
+                    });
+                this_obj->set_property("toString", Value(toString_fn.release()));
+            }
+
+            // Always return the string value (construct() will use the object if called as constructor)
+            return Value(str_value);
         });
     
     // Create String.prototype with methods
