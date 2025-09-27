@@ -3726,7 +3726,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         if (arguments_.size() > 0) {
             Value count_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             int count = static_cast<int>(count_val.to_number());
             if (count < 0) {
                 // RangeError: Invalid count value
@@ -3734,9 +3734,9 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
                 return Value();
             }
             if (count == 0) {
-                return Value("");
+                return Value(std::string(""));
             }
-            
+
             std::string result;
             result.reserve(str.length() * count);
             for (int i = 0; i < count; i++) {
@@ -3744,7 +3744,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
             }
             return Value(result);
         }
-        return Value(""); // No arguments means repeat 0 times
+        return Value(std::string("")); // No arguments means repeat 0 times
         
     } else if (method_name == "includes") {
         // Check if string contains substring
@@ -3924,7 +3924,17 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
             return Value(str.substr(end_pos - search_str.length(), search_str.length()) == search_str);
         }
         return Value(false);
-        
+
+    } else if (method_name == "concat") {
+        // Concatenate strings
+        std::string result = str;
+        for (const auto& arg : arguments_) {
+            Value arg_val = arg->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            result += arg_val.to_string();
+        }
+        return Value(result);
+
     } else {
         // Method not implemented - return undefined for unknown methods
         return Value();
@@ -5081,11 +5091,20 @@ Value MemberExpression::evaluate(Context& ctx) {
             auto repeat_fn = ObjectFactory::create_native_function("repeat",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; // Suppress unused warning
-                    if (args.empty()) return Value("");
+                    if (args.empty()) {
+                        return Value(std::string(""));
+                    }
                     int count = static_cast<int>(args[0].to_number());
-                    if (count <= 0) return Value("");
-                    
+                    if (count < 0) {
+                        ctx.throw_range_error("Invalid count value");
+                        return Value();
+                    }
+                    if (count == 0) {
+                        return Value(std::string(""));
+                    }
+
                     std::string result;
+                    result.reserve(str_value.length() * count);
                     for (int i = 0; i < count; ++i) {
                         result += str_value;
                     }
@@ -5108,7 +5127,20 @@ Value MemberExpression::evaluate(Context& ctx) {
                 });
             return Value(trim_fn.release());
         }
-        
+
+        if (prop_name == "concat") {
+            auto concat_fn = ObjectFactory::create_native_function("concat",
+                [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    std::string result = str_value;
+                    for (const auto& arg : args) {
+                        result += arg.to_string();
+                    }
+                    return Value(result);
+                });
+            return Value(concat_fn.release());
+        }
+
         if (prop_name == "padStart") {
             auto pad_start_fn = ObjectFactory::create_native_function("padStart",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
