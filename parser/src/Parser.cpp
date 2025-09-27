@@ -487,7 +487,8 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             advance(); // consume '.'
             
             // Allow both identifiers and keywords as property names
-            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR) {
+            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
+                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF) {
                 add_error("Expected property name after '.'");
                 return expr;
             }
