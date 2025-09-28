@@ -6507,6 +6507,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
             } else if (left_->get_type() == Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(left_.get());
                 var_name = id->get_name();
+            } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                // Handle destructuring patterns - we'll assign directly to the pattern
+                // For now, use a placeholder variable name and handle assignment differently
+                var_name = "__destructuring_temp__";
             }
             
             if (var_name.empty()) {

@@ -1340,20 +1340,37 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             }
             advance(); // consume var/let/const
             
-            // Parse identifier
+            // For for...of with destructuring, we need to handle it specially
+            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                // Array destructuring pattern - parse it and create a special init node
+                auto destructuring = parse_destructuring_pattern();
+                if (!destructuring) {
+                    add_error("Failed to parse destructuring pattern");
+                    return nullptr;
+                }
+
+                // Create a variable declaration with the destructuring pattern
+                Position decl_end = get_current_position();
+                init = std::move(destructuring);
+
+                // Skip the normal VariableDeclarator creation and jump to for...of check
+                goto check_for_of;
+            }
+
+            // Parse regular identifier
             if (current_token().get_type() != TokenType::IDENTIFIER) {
                 add_error("Expected identifier in variable declaration");
                 return nullptr;
             }
-            
+
             std::string var_name = current_token().get_value();
             Position var_start = current_token().get_start();
             Position var_end = current_token().get_end();
             advance(); // consume identifier
-            
+
             // Create a variable declarator - check for initializer
             auto identifier = std::make_unique<Identifier>(var_name, var_start, var_end);
-            
+
             // Check for initializer (= expression) for regular for loops
             std::unique_ptr<ASTNode> initializer = nullptr;
             if (current_token().get_type() == TokenType::ASSIGN) {
@@ -1364,9 +1381,9 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     return nullptr;
                 }
             }
-            
+
             auto declarator = std::make_unique<VariableDeclarator>(
-                std::move(identifier), 
+                std::move(identifier),
                 std::move(initializer), // include initializer if present
                 kind,
                 var_start,
@@ -1427,7 +1444,8 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         Position end = get_current_position();
         return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end);
     }
-    
+
+check_for_of:
     // Check for for...of syntax
     if (current_token().get_type() == TokenType::OF) {
         advance(); // consume 'of'

@@ -2259,13 +2259,14 @@ void Context::initialize_built_ins() {
             Value value = args.empty() ? Value() : args[0];
             auto promise = std::make_unique<Promise>(&ctx);
             promise->fulfill(value);
-            
+
             // Add instance methods to this promise
             add_promise_methods(promise.get());
-            
-            // Mark as Promise for instanceof
+
+            // Mark as Promise for instanceof and store resolved value
             promise->set_property("_isPromise", Value(true));
-            
+            promise->set_property("_promiseValue", value);
+
             return Value(promise.release());
         });
     promise_constructor->set_property("resolve", Value(promise_resolve_static.release()));
@@ -2286,7 +2287,108 @@ void Context::initialize_built_ins() {
             return Value(promise.release());
         });
     promise_constructor->set_property("reject", Value(promise_reject_static.release()));
-    
+
+    // Add Promise.all static method
+    auto promise_all_static = ObjectFactory::create_native_function("all",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_exception(Value("Promise.all expects an iterable"));
+                return Value();
+            }
+
+            Object* iterable = args[0].as_object();
+            if (!iterable->is_array()) {
+                ctx.throw_exception(Value("Promise.all expects an array"));
+                return Value();
+            }
+
+            uint32_t length = iterable->get_length();
+            std::vector<Value> results(length);
+            uint32_t resolved_count = 0;
+
+            auto result_promise = std::make_unique<Promise>(&ctx);
+            add_promise_methods(result_promise.get());
+            result_promise->set_property("_isPromise", Value(true));
+
+            if (length == 0) {
+                // Empty array resolves immediately with empty array
+                auto empty_array = ObjectFactory::create_array(0);
+                result_promise->fulfill(Value(empty_array.release()));
+                return Value(result_promise.release());
+            }
+
+            // For now, simplified: just return array of resolved values
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+                if (element.is_object()) {
+                    Object* obj = element.as_object();
+                    if (obj && obj->has_property("_isPromise")) {
+                        // This is a promise - get its value if fulfilled
+                        if (obj->has_property("_promiseValue")) {
+                            results[i] = obj->get_property("_promiseValue");
+                        } else {
+                            results[i] = element; // Use the promise object itself
+                        }
+                    } else {
+                        results[i] = element;
+                    }
+                } else {
+                    results[i] = element;
+                }
+            }
+
+            // Create result array
+            auto result_array = ObjectFactory::create_array(length);
+            for (uint32_t i = 0; i < length; i++) {
+                result_array->set_element(i, results[i]);
+            }
+
+            result_promise->fulfill(Value(result_array.release()));
+            return Value(result_promise.release());
+        });
+    promise_constructor->set_property("all", Value(promise_all_static.release()));
+
+    // Add Promise.race static method
+    auto promise_race_static = ObjectFactory::create_native_function("race",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_exception(Value("Promise.race expects an iterable"));
+                return Value();
+            }
+
+            Object* iterable = args[0].as_object();
+            if (!iterable->is_array()) {
+                ctx.throw_exception(Value("Promise.race expects an array"));
+                return Value();
+            }
+
+            uint32_t length = iterable->get_length();
+            auto result_promise = std::make_unique<Promise>(&ctx);
+            add_promise_methods(result_promise.get());
+            result_promise->set_property("_isPromise", Value(true));
+
+            if (length == 0) {
+                // Empty array never resolves
+                return Value(result_promise.release());
+            }
+
+            // For simplified implementation, return first element
+            Value first_element = iterable->get_element(0);
+            if (first_element.is_object()) {
+                Object* obj = first_element.as_object();
+                if (obj && obj->has_property("_isPromise") && obj->has_property("_promiseValue")) {
+                    result_promise->fulfill(obj->get_property("_promiseValue"));
+                } else {
+                    result_promise->fulfill(first_element);
+                }
+            } else {
+                result_promise->fulfill(first_element);
+            }
+
+            return Value(result_promise.release());
+        });
+    promise_constructor->set_property("race", Value(promise_race_static.release()));
+
     register_built_in_object("Promise", promise_constructor.release());
     
     // ArrayBuffer constructor for binary data support
