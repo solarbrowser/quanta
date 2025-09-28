@@ -6530,14 +6530,44 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 
                 Value element = obj->get_element(i);
                 
-                // Set loop variable in the current context - simplified approach to avoid memory leaks
-                // For for-of loops, just update the variable value each iteration instead of creating new bindings
-                if (loop_ctx->has_binding(var_name)) {
-                    // Update existing binding
-                    loop_ctx->set_binding(var_name, element);
+                // Set loop variable - handle both simple variables and destructuring
+                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                    // Handle destructuring assignment
+                    DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
+
+                    // Create a temporary literal based on the element value type
+                    std::unique_ptr<ASTNode> temp_literal;
+                    Position dummy_pos(0, 0);
+
+                    if (element.is_string()) {
+                        temp_literal = std::make_unique<StringLiteral>(element.to_string(), dummy_pos, dummy_pos);
+                    } else if (element.is_number()) {
+                        temp_literal = std::make_unique<NumberLiteral>(element.to_number(), dummy_pos, dummy_pos);
+                    } else if (element.is_boolean()) {
+                        temp_literal = std::make_unique<BooleanLiteral>(element.to_boolean(), dummy_pos, dummy_pos);
+                    } else if (element.is_null()) {
+                        temp_literal = std::make_unique<NullLiteral>(dummy_pos, dummy_pos);
+                    } else if (element.is_undefined()) {
+                        temp_literal = std::make_unique<UndefinedLiteral>(dummy_pos, dummy_pos);
+                    } else {
+                        // For objects/arrays, create a simple assignment
+                        // Create a temporary variable to hold the value
+                        std::string temp_var = "__temp_destructure_" + std::to_string(i);
+                        loop_ctx->create_binding(temp_var, element, true);
+                        temp_literal = std::make_unique<Identifier>(temp_var, dummy_pos, dummy_pos);
+                    }
+
+                    destructuring->set_source(std::move(temp_literal));
+                    destructuring->evaluate(*loop_ctx);
                 } else {
-                    // Create the binding once at first iteration
-                    loop_ctx->create_binding(var_name, element, true); // Always mutable for loop variables
+                    // Handle simple variable assignment
+                    if (loop_ctx->has_binding(var_name)) {
+                        // Update existing binding
+                        loop_ctx->set_binding(var_name, element);
+                    } else {
+                        // Create the binding once at first iteration
+                        loop_ctx->create_binding(var_name, element, true); // Always mutable for loop variables
+                    }
                 }
                 
                 // Execute loop body

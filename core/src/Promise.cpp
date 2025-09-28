@@ -30,16 +30,13 @@ void Promise::reject(const Value& reason) {
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
-    // Create new promise with safer initialization
+    // Create new promise with safer initialization using ObjectFactory
     Promise* new_promise = nullptr;
     try {
-        new_promise = new Promise(context_);  // Pass context in constructor
-        
-        // Set up methods immediately after creation
-        setup_promise_methods(new_promise);
+        auto promise_obj = ObjectFactory::create_promise(context_);
+        new_promise = static_cast<Promise*>(promise_obj.release());
     } catch (...) {
         // If setup fails, clean up and return nullptr
-        delete new_promise;
         return nullptr;
     }
     
@@ -112,21 +109,24 @@ Promise* Promise::finally_method(Function* on_finally) {
 }
 
 Promise* Promise::resolve(const Value& value) {
-    // Don't pass nullptr context - causes segfaults
-    auto* promise = new Promise();  // Use default constructor
+    // Use ObjectFactory for proper memory management
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->fulfill(value);
     return promise;
 }
 
 Promise* Promise::reject_static(const Value& reason) {
-    // Don't pass nullptr context - causes segfaults
-    auto* promise = new Promise();  // Use default constructor
+    // Use ObjectFactory for proper memory management
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->reject(reason);
     return promise;
 }
 
 Promise* Promise::all(const std::vector<Promise*>& promises) {
-    auto* result_promise = new Promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* result_promise = static_cast<Promise*>(promise_obj.release());
     
     if (promises.empty()) {
         result_promise->fulfill(Value("empty_array"));
@@ -139,7 +139,8 @@ Promise* Promise::all(const std::vector<Promise*>& promises) {
 }
 
 Promise* Promise::race(const std::vector<Promise*>& promises) {
-    auto* result_promise = new Promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* result_promise = static_cast<Promise*>(promise_obj.release());
     
     if (promises.empty()) {
         // Never resolves if empty
@@ -190,8 +191,9 @@ void Promise::execute_handlers() {
 // ES2025: Promise.withResolvers()
 Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args; // Suppress unused parameter warnings
-    
-    auto* promise = new Promise(nullptr);
+
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* promise = static_cast<Promise*>(promise_obj.release());
     auto result_obj = ObjectFactory::create_object();
     
     // Create resolve function
@@ -228,7 +230,8 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     }
     
     Function* callback = args[0].as_function();
-    auto* promise = new Promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto* promise = static_cast<Promise*>(promise_obj.release());
     
     try {
         // Execute the callback immediately
@@ -264,7 +267,8 @@ void Promise::setup_promise_methods(Promise* promise) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // In a full implementation, 'this' would be passed as the promise object
             // For now, create a simple resolved promise to avoid segfaults
-            Promise* new_promise = new Promise(&ctx);
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             if (args.size() > 0 && args[0].is_function()) {
                 // Execute callback immediately with resolved value
                 Function* callback = args[0].as_function();
@@ -286,7 +290,8 @@ void Promise::setup_promise_methods(Promise* promise) {
     auto catch_method = ObjectFactory::create_native_function("catch",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // Simplified implementation that avoids pointer capture
-            Promise* new_promise = new Promise(&ctx);
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value("catch_resolved"));
             return Value(new_promise);
         });
@@ -296,7 +301,8 @@ void Promise::setup_promise_methods(Promise* promise) {
     auto finally_method = ObjectFactory::create_native_function("finally",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // Simplified implementation that avoids pointer capture
-            Promise* new_promise = new Promise(&ctx);
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value("finally_resolved"));
             return Value(new_promise);
         });

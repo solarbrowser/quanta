@@ -10,6 +10,7 @@
 #include "Error.h"
 #include "ArrayBuffer.h"
 #include "TypedArray.h"
+#include "Promise.h"
 #include "../../parser/include/AST.h"
 #include <algorithm>
 #include <sstream>
@@ -1412,9 +1413,6 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             Function* compareFn = nullptr;
             if (args.size() > 0 && args[0].is_function()) {
                 compareFn = args[0].as_function();
-                std::cout << "DEBUG SORT: Using compare function" << std::endl;
-            } else {
-                std::cout << "DEBUG SORT: Using default string sort" << std::endl;
             }
 
             // Sort elements
@@ -1620,10 +1618,20 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
 std::unique_ptr<Object> create_error(const std::string& message) {
     // Use proper Error class instead of generic Object with Error type
     auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
-    
+
     // Error class handles name and message internally, only set _isError for compatibility
     error_obj->set_property("_isError", Value(true));
     return std::unique_ptr<Object>(error_obj.release());
+}
+
+std::unique_ptr<Object> create_promise(Context* ctx) {
+    // Create Promise using proper memory management
+    auto promise_obj = std::make_unique<Promise>(ctx);
+
+    // Set up Promise methods immediately
+    Promise::setup_promise_methods(promise_obj.get());
+
+    return std::unique_ptr<Object>(promise_obj.release());
 }
 
 } // namespace ObjectFactory

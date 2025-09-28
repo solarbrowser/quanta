@@ -1167,6 +1167,17 @@ void Context::initialize_built_ins() {
         });
     string_prototype->set_property("replaceAll", Value(replaceAll_fn.release()));
 
+    // Add String.concat static method
+    auto string_concat_static = ObjectFactory::create_native_function("concat",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string result = "";
+            for (const auto& arg : args) {
+                result += arg.to_string();
+            }
+            return Value(result);
+        });
+    string_constructor->set_property("concat", Value(string_concat_static.release()));
+
     // Set up bidirectional constructor/prototype relationship
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()));

@@ -75,11 +75,11 @@ public:
     bool is_fulfilled() const { return state_ == PromiseState::FULFILLED; }
     bool is_rejected() const { return state_ == PromiseState::REJECTED; }
     
-private:
-    void execute_handlers();
-    
     // Setup JavaScript methods (.then, .catch, .finally) on a promise instance
     static void setup_promise_methods(Promise* promise);
+
+private:
+    void execute_handlers();
 };
 
 } // namespace Quanta

@@ -468,6 +468,7 @@ namespace ObjectFactory {
     std::unique_ptr<Object> create_number(double value);
     std::unique_ptr<Object> create_boolean(bool value);
     std::unique_ptr<Object> create_error(const std::string& message);
+    std::unique_ptr<Object> create_promise(Context* ctx = nullptr);
 }
 
 } // namespace Quanta
