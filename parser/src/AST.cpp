@@ -7611,10 +7611,22 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             if (ctx.has_exception()) return Value();
             key = key_value.to_string();
         } else {
-            // For regular properties, the key should be an identifier
+            // For regular properties, the key can be an identifier, string, or number
             if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(prop->key.get());
                 key = id->get_name();
+            } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
+                StringLiteral* str = static_cast<StringLiteral*>(prop->key.get());
+                key = str->get_value();
+            } else if (prop->key->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                NumberLiteral* num = static_cast<NumberLiteral*>(prop->key.get());
+                double value = num->get_value();
+                // Convert to integer string if it's a whole number
+                if (value == std::floor(value)) {
+                    key = std::to_string(static_cast<long long>(value));
+                } else {
+                    key = std::to_string(value);
+                }
             } else {
                 ctx.throw_exception(Value("Invalid property key in object literal"));
                 return Value();
