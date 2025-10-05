@@ -231,7 +231,7 @@ Value JSON::Parser::parse_array() {
     advance(); // consume '['
     skip_whitespace();
     
-    auto arr = std::make_unique<Object>(Object::ObjectType::Array);
+    auto arr = ObjectFactory::create_array(0);
     uint32_t index = 0;
     
     if (current_char() == ']') {

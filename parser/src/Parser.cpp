@@ -488,7 +488,8 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             
             // Allow both identifiers and keywords as property names
             if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
-                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF) {
+                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
+                current_token().get_type() != TokenType::DELETE) {
                 add_error("Expected property name after '.'");
                 return expr;
             }
@@ -547,13 +548,20 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 );
             } else {
                 // obj?.property
-                if (!match(TokenType::IDENTIFIER)) {
+                if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
+                    current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
+                    current_token().get_type() != TokenType::DELETE) {
                     add_error("Expected property name after '?.'");
                     return expr;
                 }
-                
-                auto property = parse_identifier();
-                if (!property) return expr;
+
+                // Create property identifier from current token (identifier or keyword)
+                const Token& token = current_token();
+                std::string name = token.get_value();
+                Position prop_start = token.get_start();
+                Position prop_end = token.get_end();
+                advance();
+                auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
                 
                 Position end = property->get_end();
                 expr = std::make_unique<OptionalChainingExpression>(
@@ -609,14 +617,22 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
         
         if (match(TokenType::DOT)) {
             advance(); // consume '.'
-            
-            if (!match(TokenType::IDENTIFIER)) {
+
+            // Allow both identifiers and keywords as property names
+            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
+                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
+                current_token().get_type() != TokenType::DELETE) {
                 add_error("Expected property name after '.'");
                 return expr;
             }
-            
-            auto property = parse_identifier();
-            if (!property) return expr;
+
+            // Create property identifier from current token (identifier or keyword)
+            const Token& token = current_token();
+            std::string name = token.get_value();
+            Position prop_start = token.get_start();
+            Position prop_end = token.get_end();
+            advance();
+            auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
             
             Position end = property->get_end();
             expr = std::make_unique<MemberExpression>(
@@ -1392,6 +1408,37 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             
             std::vector<std::unique_ptr<VariableDeclarator>> declarations;
             declarations.push_back(std::move(declarator));
+
+            // Handle multiple variable declarations separated by commas
+            while (match(TokenType::COMMA)) {
+                advance(); // consume ','
+
+                auto next_identifier = parse_identifier();
+                if (!next_identifier) {
+                    add_error("Expected identifier after ',' in variable declaration");
+                    return nullptr;
+                }
+
+                std::unique_ptr<ASTNode> next_initializer = nullptr;
+                if (match(TokenType::ASSIGN)) {
+                    advance(); // consume '='
+                    next_initializer = parse_assignment_expression();
+                    if (!next_initializer) {
+                        add_error("Expected expression after '=' in variable declaration");
+                        return nullptr;
+                    }
+                }
+
+                Position next_var_end = get_current_position();
+                auto next_declarator = std::make_unique<VariableDeclarator>(
+                    std::unique_ptr<Identifier>(static_cast<Identifier*>(next_identifier.release())),
+                    std::move(next_initializer),
+                    kind,
+                    var_start,
+                    next_var_end
+                );
+                declarations.push_back(std::move(next_declarator));
+            }
             
             Position decl_end = get_current_position();
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
@@ -2854,7 +2901,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             is_async = true;
             advance(); // consume 'async'
         }
-        
+
         // Parse property key
         std::unique_ptr<ASTNode> key;
         bool computed = false;

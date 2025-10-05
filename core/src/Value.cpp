@@ -614,7 +614,17 @@ bool Value::instanceof_check(const Value& constructor) const {
     if (ctor_name == "Promise") {
         return obj->has_property("_isPromise");
     }
-    
+
+    // Map instanceof
+    if (ctor_name == "Map") {
+        return obj->get_type() == Object::ObjectType::Map;
+    }
+
+    // Set instanceof
+    if (ctor_name == "Set") {
+        return obj->get_type() == Object::ObjectType::Set;
+    }
+
     // Object instanceof (everything is an object)
     if (ctor_name == "Object") {
         return true;

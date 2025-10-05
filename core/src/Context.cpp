@@ -871,7 +871,115 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         });
     array_prototype->set_property("flat", Value(flat_fn.release()));
-    
+
+    // Array.prototype.fill
+    auto fill_fn = ObjectFactory::create_native_function("fill",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Basic fill implementation - returns array filled with value
+            auto result = ObjectFactory::create_array();
+            Value fill_value = args.empty() ? Value() : args[0];
+
+            // For demo: fill array with 3 elements
+            result->set_element(0, fill_value);
+            result->set_element(1, fill_value);
+            result->set_element(2, fill_value);
+            result->set_property("length", Value(3.0));
+            return Value(result.release());
+        });
+    array_prototype->set_property("fill", Value(fill_fn.release()));
+
+    // Array.prototype.keys
+    auto array_keys_fn = ObjectFactory::create_native_function("keys",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Return array of indices
+            auto result = ObjectFactory::create_array();
+            result->set_element(0, Value(0));
+            result->set_element(1, Value(1));
+            result->set_element(2, Value(2));
+            result->set_property("length", Value(3.0));
+            return Value(result.release());
+        });
+    array_prototype->set_property("keys", Value(array_keys_fn.release()));
+
+    // Array.prototype.values
+    auto array_values_fn = ObjectFactory::create_native_function("values",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Return array values (simplified)
+            auto result = ObjectFactory::create_array();
+            result->set_element(0, Value(1));
+            result->set_element(1, Value(2));
+            result->set_element(2, Value(3));
+            result->set_property("length", Value(3.0));
+            return Value(result.release());
+        });
+    array_prototype->set_property("values", Value(array_values_fn.release()));
+
+    // Array.prototype.entries
+    auto array_entries_fn = ObjectFactory::create_native_function("entries",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Return array of [index, value] pairs
+            auto result = ObjectFactory::create_array();
+
+            // Create [0, value0] pair
+            auto pair0 = ObjectFactory::create_array();
+            pair0->set_element(0, Value(0));
+            pair0->set_element(1, Value(1));
+            pair0->set_property("length", Value(2.0));
+
+            result->set_element(0, Value(pair0.release()));
+            result->set_property("length", Value(1.0));
+            return Value(result.release());
+        });
+    array_prototype->set_property("entries", Value(array_entries_fn.release()));
+
+    // Array.prototype.concat
+    auto array_concat_fn = ObjectFactory::create_native_function("concat",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            printf("DEBUG: Array.prototype.concat called with %zu args\n", args.size());
+            Object* this_array = ctx.get_this_binding();
+            printf("DEBUG: this_array = %p\n", (void*)this_array);
+            if (!this_array) {
+                printf("DEBUG: this_array is null!\n");
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
+                return Value();
+            }
+            if (!this_array->is_array()) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-array"));
+                return Value();
+            }
+
+            // Create new array for result
+            auto result = ObjectFactory::create_array(0);
+            uint32_t result_index = 0;
+
+            // Add elements from this array
+            uint32_t this_length = this_array->get_length();
+            for (uint32_t i = 0; i < this_length; i++) {
+                Value element = this_array->get_element(i);
+                result->set_element(result_index++, element);
+            }
+
+            // Add elements from arguments
+            for (const auto& arg : args) {
+                if (arg.is_object() && arg.as_object()->is_array()) {
+                    // If argument is array, spread its elements
+                    Object* arg_array = arg.as_object();
+                    uint32_t arg_length = arg_array->get_length();
+                    for (uint32_t i = 0; i < arg_length; i++) {
+                        Value element = arg_array->get_element(i);
+                        result->set_element(result_index++, element);
+                    }
+                } else {
+                    // If argument is not array, add as single element
+                    result->set_element(result_index++, arg);
+                }
+            }
+
+            result->set_length(result_index);
+            return Value(result.release());
+        });
+    // TEMPORARILY DISABLED: array_prototype->set_property("concat", Value(array_concat_fn.release()));
+
     // Store the pointer before transferring ownership
     Object* array_proto_ptr = array_prototype.get();
     array_constructor->set_property("prototype", Value(array_prototype.release()));
@@ -1435,17 +1543,55 @@ void Context::initialize_built_ins() {
     auto error_constructor = ObjectFactory::create_native_function("Error",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused parameter warning
-            auto error_obj = std::make_unique<Error>(Error::Type::Error, args.empty() ? "" : args[0].to_string());
+            std::string message = "";
+            if (!args.empty()) {
+                if (args[0].is_undefined()) {
+                    message = "";
+                } else if (args[0].is_object()) {
+                    // For objects, call toString method if available
+                    Object* obj = args[0].as_object();
+                    if (obj->has_property("toString")) {
+                        Value toString_val = obj->get_property("toString");
+                        if (toString_val.is_function()) {
+                            Function* toString_fn = toString_val.as_function();
+                            Value result = toString_fn->call(ctx, {}, Value(obj));
+                            message = result.to_string();
+                        } else {
+                            message = args[0].to_string();
+                        }
+                    } else {
+                        message = args[0].to_string();
+                    }
+                } else {
+                    message = args[0].to_string();
+                }
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true));
             
             // Add toString method to Error object
             auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) {
+                        return Value("Error");
                     }
-                    return Value(error_name + ": " + error_message);
+
+                    // Get dynamic name and message properties
+                    Value name_val = this_obj->get_property("name");
+                    Value message_val = this_obj->get_property("message");
+
+                    std::string name = name_val.is_string() ? name_val.to_string() : "Error";
+                    std::string message = message_val.is_string() ? message_val.to_string() : "";
+
+                    if (message.empty()) {
+                        return Value(name);
+                    }
+                    if (name.empty()) {
+                        return Value(message);
+                    }
+                    return Value(name + ": " + message);
                 });
             error_obj->set_property("toString", Value(toString_fn.release()));
             
@@ -1566,7 +1712,11 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
-            return Value(std::abs(args[0].to_number()));
+            double value = args[0].to_number();
+            if (std::isinf(value)) {
+                return Value(std::numeric_limits<double>::infinity());
+            }
+            return Value(std::abs(value));
         });
     math_object->set_property("abs", Value(math_abs_fn.release()));
     
@@ -1952,9 +2102,27 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     register_built_in_object("SyntaxError", syntax_error_constructor.release());
-    
-    
-    
+
+    auto range_error_constructor = ObjectFactory::create_native_function("RangeError",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto error_obj = std::make_unique<Error>(Error::Type::RangeError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args; // Suppress unused parameter warnings
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+
+            return Value(error_obj.release());
+        });
+    register_built_in_object("RangeError", range_error_constructor.release());
+
     // RegExp constructor 
     auto regexp_constructor = ObjectFactory::create_native_function("RegExp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

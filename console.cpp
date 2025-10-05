@@ -182,17 +182,33 @@ public:
         }
     }
     
-    bool evaluate_expression(const std::string& input, bool show_prompt = true, bool show_result = true) {
+    bool evaluate_expression(const std::string& input, bool show_prompt = true, bool show_result = true, const std::string& filename = "<console>") {
         try {
             auto start = std::chrono::high_resolution_clock::now();
-            
-            auto result = engine_->execute(input, "<console>");
-            
+
+            auto result = engine_->execute(input, filename);
+
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-            
+
             if (!result.success) {
-                std::cout << RED << result.error_message << RESET << std::endl;
+                // Display Node.js-style error message with file path and line number
+                std::cout << RED;
+
+                // Show the filename and location if available
+                if (filename != "<console>" && (result.line_number > 0 || result.column_number > 0)) {
+                    std::cout << filename;
+                    if (result.line_number > 0) {
+                        std::cout << ":" << result.line_number;
+                        if (result.column_number > 0) {
+                            std::cout << ":" << result.column_number;
+                        }
+                    }
+                    std::cout << "\n";
+                }
+
+                // Show the error message
+                std::cout << result.error_message << RESET << std::endl;
                 return false;
             }
             
@@ -355,7 +371,7 @@ int main(int argc, char* argv[]) {
                 success = console.execute_as_module(filename, true);
             } else {
                 // Execute as regular script
-                success = console.evaluate_expression(content, false, false);
+                success = console.evaluate_expression(content, false, false, filename);
             }
             
             // Process any pending async tasks

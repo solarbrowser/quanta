@@ -1498,7 +1498,7 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
                     std::string rest_name = var_name.substr(3); // Remove "..." prefix
                     
                     // Create new array for rest elements
-                    auto rest_array = std::make_unique<Object>(Object::ObjectType::Array);
+                    auto rest_array = ObjectFactory::create_array(0);
                     uint32_t rest_index = 0;
                     
                     // Collect remaining elements from current position
@@ -1617,12 +1617,13 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         }
         Value prop_value = obj->get_property(mapping.property_name);
 
-        // Check if this is a nested destructuring mapping (either starts with __nested: or contains :__nested:)
+        // Check if this is a nested destructuring mapping (starts with __nested:, contains :__nested:, or is a renaming pattern like property:variable)
         if ((mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") ||
-            mapping.variable_name.find(":__nested:") != std::string::npos) {
+            mapping.variable_name.find(":__nested:") != std::string::npos ||
+            mapping.variable_name.find(':') != std::string::npos) {
             printf("DEBUG: Found nested destructuring mapping!\n");
 
-            // FIX: Handle both __nested:pattern and property:__nested:pattern
+            // FIX: Handle all types of patterns
             if (mapping.variable_name.find(":__nested:") != std::string::npos) {
                 // Pattern like "b:__nested:c" - use infinite depth handler with complete pattern
                 printf("DEBUG: Using infinite depth handler for complete pattern: '%s'\n", mapping.variable_name.c_str());
@@ -1633,6 +1634,18 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                     handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
                 } else {
                     printf("DEBUG: Property '%s' is not an object, cannot handle infinite depth\n", mapping.property_name.c_str());
+                }
+                continue; // Skip the rest of the processing for this mapping
+            } else if (mapping.variable_name.find(':') != std::string::npos &&
+                      mapping.variable_name.find("__nested:") == std::string::npos) {
+                // Simple renaming pattern like "name:myName" - handle with infinite depth handler
+                printf("DEBUG: Using infinite depth handler for simple renaming pattern: '%s'\n", mapping.variable_name.c_str());
+
+                if (prop_value.is_object()) {
+                    Object* nested_obj = prop_value.as_object();
+                    handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
+                } else {
+                    printf("DEBUG: Property '%s' is not an object, cannot handle simple renaming\n", mapping.property_name.c_str());
                 }
                 continue; // Skip the rest of the processing for this mapping
             }
@@ -2894,7 +2907,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
             
             if (callback.is_function()) {
                 Function* callback_fn = callback.as_function();
-                auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+                auto result_array = ObjectFactory::create_array(0);
                 
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; ++i) {
@@ -2933,7 +2946,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
             
             if (callback.is_function()) {
                 Function* callback_fn = callback.as_function();
-                auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+                auto result_array = ObjectFactory::create_array(0);
                 uint32_t result_index = 0;
                 
                 uint32_t length = array->get_length();
@@ -3061,7 +3074,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
             if (end > static_cast<int32_t>(length)) end = length;
         }
         
-        auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+        auto result_array = ObjectFactory::create_array(0);
         uint32_t result_index = 0;
         
         for (int32_t i = start; i < end; ++i) {
@@ -3082,20 +3095,20 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         
     } else if (method_name == "concat") {
         // Array.concat() - concatenate arrays and elements
-        auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+        auto result_array = ObjectFactory::create_array(0);
         uint32_t result_index = 0;
-        
+
         // Copy all elements from the original array
         uint32_t length = array->get_length();
         for (uint32_t i = 0; i < length; ++i) {
             result_array->set_element(result_index++, array->get_element(i));
         }
-        
+
         // Add all arguments
         for (const auto& arg : arguments_) {
             Value arg_value = arg->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             if (arg_value.is_object() && arg_value.as_object()->is_array()) {
                 // Concatenate array elements
                 Object* arg_array = arg_value.as_object();
@@ -3108,17 +3121,10 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 result_array->set_element(result_index++, arg_value);
             }
         }
-        
-        // Convert result array to ARRAY: string format
-        std::string array_data = "ARRAY:[";
-        uint32_t result_length = result_array->get_length();
-        for (uint32_t i = 0; i < result_length; i++) {
-            if (i > 0) array_data += ",";
-            Value element = result_array->get_element(i);
-            array_data += element.to_string();
-        }
-        array_data += "]";
-        return Value(array_data);
+
+        // Set the final length and return the array object
+        result_array->set_length(result_index);
+        return Value(result_array.release());
         
     } else if (method_name == "lastIndexOf") {
         // Array.lastIndexOf() - find last index of element
@@ -3226,7 +3232,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         }
         
         // Create result array with deleted elements
-        auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+        auto result_array = ObjectFactory::create_array(0);
         for (uint32_t i = 0; i < delete_count; ++i) {
             result_array->set_element(i, array->get_element(static_cast<uint32_t>(start) + i));
         }
@@ -3642,7 +3648,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         
     } else if (method_name == "split") {
         // Split string into array
-        auto result_array = std::make_unique<Object>(Object::ObjectType::Array);
+        auto result_array = ObjectFactory::create_array(0);
         
         if (arguments_.size() == 0) {
             // No separator, return array with single element
@@ -4266,7 +4272,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         // Check if it's an ARRAY: string format for array methods
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:") {
             // Create a temporary array object from the string format
-            auto temp_array = std::make_unique<Object>(Object::ObjectType::Array);
+            auto temp_array = ObjectFactory::create_array(0);
             
             // Parse the array elements from string format "ARRAY:[elem1,elem2,elem3]"
             size_t start = str_value.find('[');
@@ -5356,9 +5362,9 @@ Value MemberExpression::evaluate(Context& ctx) {
     else if (object_value.is_string()) {
         std::string str_val = object_value.to_string();
         
-        // Check for ARRAY format first - MUST return early to prevent string indexing
+        // Check for ARRAY format first
         if (str_val.length() >= 6 && str_val.substr(0, 6) == "ARRAY:") {
-            return Value("[object Array]");
+            // Handle array property access instead of early return
             if (computed_) {
                 Value prop_value = property_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
@@ -7742,8 +7748,8 @@ std::unique_ptr<ASTNode> ObjectLiteral::clone() const {
 Value ArrayLiteral::evaluate(Context& ctx) {
     // Array evaluation
     
-    // Simplified approach: create array directly without complex ObjectFactory
-    auto array = std::make_unique<Object>(Object::ObjectType::Array);
+    // Create array using ObjectFactory to ensure proper prototype inheritance
+    auto array = ObjectFactory::create_array(0);
     if (!array) {
         return Value("[]");  // Return string representation as fallback
     }
@@ -7928,7 +7934,72 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             return Value(-1.0); // Not found
         });
     array->set_property("indexOf", Value(indexOf_fn.release()));
-    
+
+    // Add concat function
+    auto concat_fn = ObjectFactory::create_native_function("concat",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            printf("CONCAT CALLED!\n");
+            fflush(stdout);
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
+                return Value();
+            }
+            if (!this_obj->is_array()) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-array"));
+                return Value();
+            }
+
+            // Create new array for result
+            auto result = ObjectFactory::create_array(0);
+            uint32_t result_index = 0;
+
+            // Add elements from this array
+            uint32_t this_length = this_obj->get_length();
+            for (uint32_t i = 0; i < this_length; i++) {
+                Value element = this_obj->get_element(i);
+                result->set_element(result_index++, element);
+            }
+
+            // Add elements from arguments
+            for (const auto& arg : args) {
+                if (arg.is_object() && arg.as_object()->is_array()) {
+                    // If argument is array, spread its elements
+                    Object* arg_array = arg.as_object();
+                    uint32_t arg_length = arg_array->get_length();
+                    for (uint32_t i = 0; i < arg_length; i++) {
+                        Value element = arg_array->get_element(i);
+                        result->set_element(result_index++, element);
+                    }
+                } else {
+                    // If argument is not array, add as single element
+                    result->set_element(result_index++, arg);
+                }
+            }
+
+            result->set_length(result_index);
+
+            // Add array methods to result array (copy from this object)
+            if (this_obj->has_property("push")) {
+                result->set_property("push", this_obj->get_property("push"));
+            }
+            if (this_obj->has_property("pop")) {
+                result->set_property("pop", this_obj->get_property("pop"));
+            }
+            if (this_obj->has_property("concat")) {
+                result->set_property("concat", this_obj->get_property("concat"));
+            }
+            if (this_obj->has_property("join")) {
+                result->set_property("join", this_obj->get_property("join"));
+            }
+            if (this_obj->has_property("indexOf")) {
+                result->set_property("indexOf", this_obj->get_property("indexOf"));
+            }
+
+            return Value(result.release());
+        });
+    array->set_property("concat", Value(concat_fn.release()));
+
     // Add slice and splice as placeholders for now (more complex implementations)
     array->set_property("slice", ValueFactory::function_placeholder("slice"));
     array->set_property("splice", ValueFactory::function_placeholder("splice"));

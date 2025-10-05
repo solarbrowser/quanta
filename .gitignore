@@ -36,6 +36,7 @@ example*.js
 test262/
 tests/
 .js
+neo/
 
 # other
 .eshostrc

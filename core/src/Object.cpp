@@ -1200,13 +1200,24 @@ std::unique_ptr<Object> get_pooled_array() {
     if (!array_pool_.empty()) {
         auto array = std::move(array_pool_.back());
         array_pool_.pop_back();
-        
+
+        // Set Array.prototype as prototype if available
+        Object* array_proto = get_array_prototype();
+        if (array_proto) {
+            array->set_prototype(array_proto);
+        }
+
         // Simply return the existing array - no dangerous reset needed
         return array;
     }
     
-    // Pool empty, create new array
-    return std::make_unique<Object>(Object::ObjectType::Array);
+    // Pool empty, create new array with proper prototype
+    auto array = std::make_unique<Object>(Object::ObjectType::Array);
+    Object* array_proto = get_array_prototype();
+    if (array_proto) {
+        array->set_prototype(array_proto);
+    }
+    return array;
 }
 
 // Return object to pool (for future use)
@@ -1606,8 +1617,38 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             
             result->set_length(result_index);
             return Value(result.release());
+        } else if (method_name == "concat") {
+            // Array.concat() - concatenate arrays and elements
+            auto result = ObjectFactory::create_array(0);
+            uint32_t result_index = 0;
+
+            // Add elements from this array
+            uint32_t this_length = array->get_length();
+            for (uint32_t i = 0; i < this_length; i++) {
+                Value element = array->get_element(i);
+                result->set_element(result_index++, element);
+            }
+
+            // Add elements from arguments
+            for (const auto& arg : args) {
+                if (arg.is_object() && arg.as_object()->is_array()) {
+                    // If argument is array, spread its elements
+                    Object* arg_array = arg.as_object();
+                    uint32_t arg_length = arg_array->get_length();
+                    for (uint32_t i = 0; i < arg_length; i++) {
+                        Value element = arg_array->get_element(i);
+                        result->set_element(result_index++, element);
+                    }
+                } else {
+                    // If argument is not array, add as single element
+                    result->set_element(result_index++, arg);
+                }
+            }
+
+            result->set_length(result_index);
+            return Value(result.release());
         }
-        
+
         ctx.throw_exception(Value("Invalid array method call"));
         return Value();
     };
