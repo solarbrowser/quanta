@@ -1714,7 +1714,8 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             double value = args[0].to_number();
             if (std::isinf(value)) {
-                return Value(std::numeric_limits<double>::infinity());
+                // Math.abs of any infinity should return positive infinity
+                return Value::positive_infinity();
             }
             return Value(std::abs(value));
         });

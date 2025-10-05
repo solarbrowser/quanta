@@ -84,8 +84,12 @@ Value Math::abs(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
-    
+
     double value = safe_to_number(args[0]);
+    if (std::isinf(value)) {
+        // Math.abs of any infinity should return positive infinity
+        return Value::positive_infinity();
+    }
     return Value(std::abs(value));
 }
 

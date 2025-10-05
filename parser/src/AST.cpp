@@ -7938,8 +7938,6 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     // Add concat function
     auto concat_fn = ObjectFactory::create_native_function("concat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            printf("CONCAT CALLED!\n");
-            fflush(stdout);
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));

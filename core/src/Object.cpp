@@ -279,7 +279,7 @@ Value Object::get_property(const std::string& key) const {
     if (this->get_type() == ObjectType::Array) {
         if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" || 
             key == "indexOf" || key == "slice" || key == "splice" || key == "push" || 
-            key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "groupBy" ||
+            key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "toString" || key == "groupBy" ||
             key == "reverse" || key == "sort" || key == "find" || key == "includes" || 
             key == "some" || key == "every" || key == "findIndex") {
             // Return a native function that will call the appropriate array method
@@ -1647,6 +1647,15 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
 
             result->set_length(result_index);
             return Value(result.release());
+        } else if (method_name == "toString") {
+            // Array.toString() - same as join(",")
+            std::ostringstream result;
+            uint32_t length = array->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                if (i > 0) result << ",";
+                result << array->get_element(i).to_string();
+            }
+            return Value(result.str());
         }
 
         ctx.throw_exception(Value("Invalid array method call"));
