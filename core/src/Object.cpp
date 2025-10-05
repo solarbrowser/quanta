@@ -1391,7 +1391,13 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             uint32_t length = array->get_length();
             for (uint32_t i = 0; i < length; i++) {
                 if (i > 0) result << separator;
-                result << array->get_element(i).to_string();
+                Value element = array->get_element(i);
+                // JavaScript Array.join converts null and undefined to empty string
+                if (element.is_null() || element.is_undefined()) {
+                    result << "";
+                } else {
+                    result << element.to_string();
+                }
             }
             return Value(result.str());
         } else if (method_name == "groupBy") {

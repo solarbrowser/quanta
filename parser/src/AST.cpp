@@ -5300,7 +5300,38 @@ Value MemberExpression::evaluate(Context& ctx) {
                 });
             return Value(to_fixed_fn.release());
         }
-        
+
+        if (prop_name == "toPrecision") {
+            auto to_precision_fn = ObjectFactory::create_native_function("toPrecision",
+                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    int precision = args.empty() ? 6 : static_cast<int>(args[0].to_number());
+                    if (precision < 1 || precision > 100) {
+                        // JavaScript throws RangeError for invalid precision
+                        return Value("RangeError: toPrecision() argument must be between 1 and 100");
+                    }
+                    std::ostringstream oss;
+                    oss << std::setprecision(precision) << num_value;
+                    return Value(oss.str());
+                });
+            return Value(to_precision_fn.release());
+        }
+
+        if (prop_name == "toExponential") {
+            auto to_exponential_fn = ObjectFactory::create_native_function("toExponential",
+                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; // Suppress unused warning
+                    int digits = args.empty() ? 6 : static_cast<int>(args[0].to_number());
+                    if (digits < 0 || digits > 100) {
+                        return Value("RangeError: toExponential() argument must be between 0 and 100");
+                    }
+                    std::ostringstream oss;
+                    oss << std::scientific << std::setprecision(digits) << num_value;
+                    return Value(oss.str());
+                });
+            return Value(to_exponential_fn.release());
+        }
+
         if (prop_name == "toLocaleString") {
             auto to_locale_string_fn = ObjectFactory::create_native_function("toLocaleString",
                 [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
