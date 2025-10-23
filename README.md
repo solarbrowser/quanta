@@ -2,6 +2,9 @@
 
 A high-performance, production-ready JavaScript engine written in C++ for Solar Project with high ES6+ compatibility and advanced optimization features.
 
+
+# ⚠️ DEVELOPING STAGE IS GOING TO CONTINUE ON 7 NOVEMBER ⚠️
+
 ## ECMAScript Compatibility
 
 **[████████████--------] %60**
