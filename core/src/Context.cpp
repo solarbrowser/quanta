@@ -2755,7 +2755,34 @@ void Context::setup_global_bindings() {
             return Value(std::isfinite(num));
         });
     lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
-    
+
+    // Global eval function
+    auto eval_fn = ObjectFactory::create_native_function("eval",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(); // undefined
+
+            std::string code = args[0].to_string();
+            if (code.empty()) return Value(); // undefined
+
+            // Simple eval implementation - parse and execute the code
+            Engine* engine = ctx.get_engine();
+            if (!engine) return Value(); // undefined
+
+            try {
+                auto result = engine->evaluate(code);
+                if (result.success) {
+                    return result.value;
+                } else {
+                    ctx.throw_exception(Value("SyntaxError: " + result.error_message));
+                    return Value();
+                }
+            } catch (...) {
+                ctx.throw_exception(Value("SyntaxError: Invalid code in eval"));
+                return Value();
+            }
+        });
+    lexical_environment_->create_binding("eval", Value(eval_fn.release()), false);
+
     // Global constants
     lexical_environment_->create_binding("undefined", Value(), false);
     lexical_environment_->create_binding("null", Value::null(), false);

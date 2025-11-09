@@ -374,7 +374,63 @@ Value Object::get_own_property(const std::string& key) const {
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
-    
+
+    // Special handling for array length property
+    if (header_.type == ObjectType::Array && key == "length") {
+        // Convert value to number (handle strings, booleans, etc.)
+        double length_double = value.to_number();
+
+        // Validate length value
+        if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
+            // Should throw RangeError, but for now just return false
+            return false;
+        }
+
+        uint32_t new_length = static_cast<uint32_t>(length_double);
+
+        // Truncate or extend elements array
+        uint32_t old_length = static_cast<uint32_t>(elements_.size());
+
+        if (new_length < old_length) {
+            // Truncate: remove elements beyond new length
+            elements_.resize(new_length);
+            // Also remove any property keys that are array indices >= new_length
+            if (overflow_properties_) {
+                auto it = overflow_properties_->begin();
+                while (it != overflow_properties_->end()) {
+                    uint32_t idx;
+                    if (is_array_index(it->first, &idx) && idx >= new_length) {
+                        it = overflow_properties_->erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+            }
+        } else if (new_length > old_length) {
+            // Extend: resize elements array (new elements will be undefined by default)
+            elements_.resize(new_length);
+        }
+
+        // Store the new length as a property
+        Value length_value(static_cast<double>(new_length));
+
+        // Check if length property exists and update it
+        if (header_.shape && header_.shape->has_property("length")) {
+            auto info = header_.shape->get_property_info("length");
+            if (info.offset < properties_.size()) {
+                properties_[info.offset] = length_value;
+                return true;
+            }
+        }
+
+        // If not in shape, add to overflow properties
+        if (!overflow_properties_) {
+            overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
+        }
+        (*overflow_properties_)["length"] = length_value;
+        return true;
+    }
+
     // Check for array index
     uint32_t index;
     if (is_array_index(key, &index)) {
@@ -1261,21 +1317,22 @@ std::unique_ptr<Object> create_object(Object* prototype) {
 std::unique_ptr<Object> create_array(uint32_t length) {
     // Try to create array in lower memory range for NaN-boxing compatibility
     std::unique_ptr<Object> array;
-    
+
     // Create array directly - MSYS2 pointers fit in NaN-boxing payload space
     array = std::make_unique<Object>(Object::ObjectType::Array);
-    
+
     if (!array) {
         return nullptr;
     }
-    
+
+    // Set the length using the existing method
     array->set_length(length);
-    
+
     // Set Array.prototype as prototype if available
     if (array_prototype_object) {
         array->set_prototype(array_prototype_object);
     }
-    
+
     return array;
 }
 
