@@ -123,27 +123,45 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
     
     // If iterable argument provided, populate map
     if (!args.empty() && args[0].is_object()) {
-        // Use iteration protocol to initialize map from iterable
-        auto iterator = IterableUtils::get_iterator(args[0], ctx);
-        if (iterator) {
-            while (true) {
-                auto result = iterator->next();
-                if (result.done) {
-                    break;
-                }
-                
-                // Each iteration value should be a [key, value] pair
-                if (result.value.is_object() && result.value.as_object()->is_array()) {
-                    Object* pair = result.value.as_object();
+        Object* iterable = args[0].as_object();
+
+        // Special case: Handle arrays directly (more reliable than iterator protocol)
+        if (iterable->is_array()) {
+            uint32_t length = iterable->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                Value entry = iterable->get_element(i);
+                if (entry.is_object() && entry.as_object()->is_array()) {
+                    Object* pair = entry.as_object();
                     if (pair->get_length() >= 2) {
                         Value key = pair->get_element(0);
                         Value value = pair->get_element(1);
                         map->set(key, value);
                     }
-                } else {
-                    // Invalid entry format - ignore or throw error
-                    ctx.throw_exception(Value("Iterator value is not a [key, value] pair"));
-                    break;
+                }
+            }
+        } else {
+            // Use iteration protocol for other iterables
+            auto iterator = IterableUtils::get_iterator(args[0], ctx);
+            if (iterator) {
+                while (true) {
+                    auto result = iterator->next();
+                    if (result.done) {
+                        break;
+                    }
+
+                    // Each iteration value should be a [key, value] pair
+                    if (result.value.is_object() && result.value.as_object()->is_array()) {
+                        Object* pair = result.value.as_object();
+                        if (pair->get_length() >= 2) {
+                            Value key = pair->get_element(0);
+                            Value value = pair->get_element(1);
+                            map->set(key, value);
+                        }
+                    } else {
+                        // Invalid entry format - ignore or throw error
+                        ctx.throw_exception(Value("Iterator value is not a [key, value] pair"));
+                        break;
+                    }
                 }
             }
         }

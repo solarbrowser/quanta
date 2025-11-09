@@ -631,18 +631,50 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].as_object();
             std::string prop_name = args[1].to_string();
 
-            if (!obj->has_own_property(prop_name)) {
-                return Value(); // undefined
+            // Get the actual property descriptor
+            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+
+            // Check if property exists with a descriptor
+            if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) {
+                // Property might exist as regular property without descriptor
+                if (!obj->has_own_property(prop_name)) {
+                    return Value(); // undefined
+                }
+
+                // Create default data descriptor for regular properties
+                auto descriptor = ObjectFactory::create_object();
+                Value prop_value = obj->get_property(prop_name);
+                descriptor->set_property("value", prop_value);
+                descriptor->set_property("writable", Value(true));
+                descriptor->set_property("enumerable", Value(true));
+                descriptor->set_property("configurable", Value(true));
+                return Value(descriptor.release());
             }
 
-            // Create descriptor object
+            // Create descriptor object from actual PropertyDescriptor
             auto descriptor = ObjectFactory::create_object();
-            Value prop_value = obj->get_property(prop_name);
 
-            descriptor->set_property("value", prop_value);
-            descriptor->set_property("writable", Value(true));
-            descriptor->set_property("enumerable", Value(true));
-            descriptor->set_property("configurable", Value(true));
+            if (desc.is_data_descriptor()) {
+                // Data descriptor
+                descriptor->set_property("value", desc.get_value());
+                descriptor->set_property("writable", Value(desc.is_writable()));
+                descriptor->set_property("enumerable", Value(desc.is_enumerable()));
+                descriptor->set_property("configurable", Value(desc.is_configurable()));
+            } else if (desc.is_accessor_descriptor()) {
+                // Accessor descriptor
+                if (desc.has_getter()) {
+                    descriptor->set_property("get", Value(desc.get_getter()));
+                } else {
+                    descriptor->set_property("get", Value()); // undefined
+                }
+                if (desc.has_setter()) {
+                    descriptor->set_property("set", Value(desc.get_setter()));
+                } else {
+                    descriptor->set_property("set", Value()); // undefined
+                }
+                descriptor->set_property("enumerable", Value(desc.is_enumerable()));
+                descriptor->set_property("configurable", Value(desc.is_configurable()));
+            }
 
             return Value(descriptor.release());
         });
@@ -1650,8 +1682,23 @@ void Context::initialize_built_ins() {
     // Add ES2025 Error static methods
     auto error_isError = ObjectFactory::create_native_function("isError", Error::isError);
     error_constructor->set_property("isError", Value(error_isError.release()));
-    
+
+    // Create Error.prototype
+    auto error_prototype = ObjectFactory::create_object();
+    error_prototype->set_property("name", Value("Error"));
+    error_prototype->set_property("message", Value(""));
+    error_prototype->set_property("constructor", Value(error_constructor.get()));
+
+    // Set constructor.prototype
+    error_constructor->set_property("prototype", Value(error_prototype.get()));
+
+    // Store reference to Error.prototype for other error types to inherit from
+    Object* error_prototype_ptr = error_prototype.get();
+
     register_built_in_object("Error", error_constructor.release());
+
+    // Store the error prototype reference (after error_prototype is released by register)
+    error_prototype.release();
     
     // JSON object
     auto json_object = ObjectFactory::create_object();
@@ -2097,7 +2144,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, args.empty() ? "" : args[0].to_string());
             error_obj->set_property("_isError", Value(true));
-            
+
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2108,9 +2155,18 @@ void Context::initialize_built_ins() {
                     return Value(error_name + ": " + error_message);
                 });
             error_obj->set_property("toString", Value(toString_fn.release()));
-            
+
             return Value(error_obj.release());
         });
+
+    // Create TypeError.prototype that inherits from Error.prototype
+    auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    type_error_prototype->set_property("name", Value("TypeError"));
+    type_error_prototype->set_property("constructor", Value(type_error_constructor.get()));
+
+    // Set constructor.prototype
+    type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
+
     register_built_in_object("TypeError", type_error_constructor.release());
     
     auto reference_error_constructor = ObjectFactory::create_native_function("ReferenceError",
@@ -2171,6 +2227,15 @@ void Context::initialize_built_ins() {
 
             return Value(error_obj.release());
         });
+
+    // Create RangeError.prototype that inherits from Error.prototype
+    auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    range_error_prototype->set_property("name", Value("RangeError"));
+    range_error_prototype->set_property("constructor", Value(range_error_constructor.get()));
+
+    // Set constructor.prototype
+    range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
+
     register_built_in_object("RangeError", range_error_constructor.release());
 
     // RegExp constructor 
