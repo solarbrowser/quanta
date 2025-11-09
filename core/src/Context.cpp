@@ -530,7 +530,7 @@ void Context::initialize_built_ins() {
                 return Value(new_obj.release());
             }
             
-            // For Object.create(obj), use obj as prototype 
+            // For Object.create(obj), use obj as prototype
             if (args[0].is_object()) {
                 Object* prototype = args[0].as_object();
                 auto new_obj = ObjectFactory::create_object(prototype);
@@ -538,6 +538,8 @@ void Context::initialize_built_ins() {
                     ctx.throw_exception(Value("Error: Failed to create object with prototype"));
                     return Value();
                 }
+                // Also set __proto__ property for JavaScript access
+                new_obj->set_property("__proto__", args[0]);
                 return Value(new_obj.release());
             }
             

@@ -454,8 +454,12 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     Value this_value(new_object.get());
     
     // Set up prototype chain
-    if (prototype_) {
-        new_object->set_prototype(prototype_);
+    Value constructor_prototype = get_property("prototype");
+    if (constructor_prototype.is_object()) {
+        Object* proto_obj = constructor_prototype.as_object();
+        new_object->set_prototype(proto_obj);
+        // Also set __proto__ property for JavaScript access
+        new_object->set_property("__proto__", constructor_prototype);
     }
     
     // Set up super constructor binding for inheritance
