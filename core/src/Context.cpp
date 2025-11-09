@@ -3027,7 +3027,55 @@ void Context::setup_global_bindings() {
             return Value(result);
         });
     lexical_environment_->create_binding("escape", Value(escape_fn.release()), false);
-    
+
+    // unescape() - Legacy global function (Annex B)
+    auto unescape_fn = ObjectFactory::create_native_function("unescape",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused warning
+
+            if (args.empty()) {
+                return Value(std::string("undefined"));
+            }
+
+            std::string input = args[0].to_string();
+            std::string result;
+
+            for (size_t i = 0; i < input.length(); ++i) {
+                if (input[i] == '%' && i + 2 < input.length()) {
+                    // Parse %XX hex sequence
+                    char hex1 = input[i + 1];
+                    char hex2 = input[i + 2];
+
+                    // Convert hex chars to numbers
+                    auto hex_to_num = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        return -1; // Invalid hex
+                    };
+
+                    int val1 = hex_to_num(hex1);
+                    int val2 = hex_to_num(hex2);
+
+                    if (val1 >= 0 && val2 >= 0) {
+                        // Valid hex sequence - convert to character
+                        char decoded = static_cast<char>((val1 << 4) | val2);
+                        result += decoded;
+                        i += 2; // Skip the hex digits
+                    } else {
+                        // Invalid hex sequence - keep as is
+                        result += input[i];
+                    }
+                } else {
+                    // Not a % sequence or incomplete - keep as is
+                    result += input[i];
+                }
+            }
+
+            return Value(result);
+        });
+    lexical_environment_->create_binding("unescape", Value(unescape_fn.release()), false);
+
     // Create console object with log, error, warn methods
     auto console_obj = ObjectFactory::create_object();
     auto console_log_fn = ObjectFactory::create_native_function("log", WebAPI::console_log);

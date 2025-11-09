@@ -819,8 +819,21 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             elements.emplace_back(template_str.substr(pos, expr_start - pos));
         }
         
-        // Find the closing }
-        size_t expr_end = template_str.find("}", expr_start + 2);
+        // Find the closing } with proper brace counting
+        size_t expr_end = std::string::npos;
+        int brace_count = 1;
+        for (size_t i = expr_start + 2; i < template_str.length(); ++i) {
+            if (template_str[i] == '{') {
+                brace_count++;
+            } else if (template_str[i] == '}') {
+                brace_count--;
+                if (brace_count == 0) {
+                    expr_end = i;
+                    break;
+                }
+            }
+        }
+
         if (expr_end == std::string::npos) {
             add_error("Unterminated expression in template literal");
             return nullptr;

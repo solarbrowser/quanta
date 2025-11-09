@@ -107,8 +107,8 @@ private:
     static constexpr uint64_t TAG_SYMBOL    = 0x0005000000000000ULL;  // 0x5 → 0x7FC1
     static constexpr uint64_t TAG_BIGINT    = 0x0006000000000000ULL;  // 0x6 → 0x7FC2
     static constexpr uint64_t TAG_OBJECT    = 0x0007000000000000ULL;  // 0x7 → 0x7FC3
-    static constexpr uint64_t TAG_FUNCTION  = 0x0008000000000000ULL;  // 0x8 → 0x7FC4
-    static constexpr uint64_t TAG_NAN       = 0x0009000000000000ULL;  // 0x9 → 0x7FC5 - Dedicated NaN tag
+    static constexpr uint64_t TAG_FUNCTION  = 0x0009000000000000ULL;  // 0x9 → 0x7FC5
+    static constexpr uint64_t TAG_NAN       = 0x0008000000000000ULL;  // 0x8 → 0x7FC4 - Dedicated NaN tag
     static constexpr uint64_t TAG_NEG_INF   = 0x000A000000000000ULL;  // 0xA → 0x7FC6 - Dedicated -Infinity tag
     static constexpr uint64_t TAG_POS_INF   = 0x000B000000000000ULL;  // 0xB → 0x7FC7 - Dedicated +Infinity tag
 
@@ -151,8 +151,16 @@ public:
     // Boolean constructors
     explicit Value(bool b) : bits_(QUIET_NAN | (b ? TAG_TRUE : TAG_FALSE)) {}
     
-    // Number constructor - direct double storage
-    explicit Value(double d) : number_(d) {}
+    // Number constructor - direct double storage with NaN handling
+    explicit Value(double d) {
+        if (std::isnan(d)) {
+            bits_ = QUIET_NAN | TAG_NAN;
+        } else if (std::isinf(d)) {
+            bits_ = QUIET_NAN | (d > 0 ? TAG_POS_INF : TAG_NEG_INF);
+        } else {
+            number_ = d;
+        }
+    }
     explicit Value(int32_t i) : number_(static_cast<double>(i)) {}
     explicit Value(uint32_t i) : number_(static_cast<double>(i)) {}
     explicit Value(int64_t i) : number_(static_cast<double>(i)) {}

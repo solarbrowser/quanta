@@ -111,6 +111,8 @@ std::string Value::to_string() const {
                         result += std::to_string(element.as_number());
                     } else if (element.is_boolean()) {
                         result += element.as_boolean() ? "true" : "false";
+                    } else if (element.is_string()) {
+                        result += "\"" + element.as_string()->str() + "\"";
                     } else {
                         result += "...";  // Avoid complex nested conversions
                     }
@@ -157,6 +159,12 @@ double Value::to_number() const {
     }
     if (is_bigint()) {
         return as_bigint()->to_double();
+    }
+    if (is_function()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if (is_object()) {
+        return std::numeric_limits<double>::quiet_NaN();
     }
     return std::numeric_limits<double>::quiet_NaN();
 }
@@ -572,20 +580,19 @@ bool Value::instanceof_check(const Value& constructor) const {
     }
     Object* ctor_prototype = prototype_prop.as_object();
     
-    // Walk the prototype chain
+    // Walk the prototype chain using internal prototype
     Object* current = obj;
     while (current != nullptr) {
-        // Get the prototype of the current object
-        Value proto = current->get_property("__proto__");
-        if (!proto.is_object()) {
+        // Get the internal prototype of the current object
+        Object* current_proto = current->get_prototype();
+        if (current_proto == nullptr) {
             break;
         }
-        
-        Object* current_proto = proto.as_object();
+
         if (current_proto == ctor_prototype) {
             return true;
         }
-        
+
         current = current_proto;
     }
     
