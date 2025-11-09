@@ -4618,6 +4618,23 @@ Value MemberExpression::evaluate(Context& ctx) {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
+
+            // Check if this property has a getter (accessor descriptor)
+            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                Object* getter = desc.get_getter();
+                if (getter) {
+                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    if (getter_fn) {
+                        // Call the getter with the object as 'this'
+                        std::vector<Value> args; // Getters take no arguments
+                        return getter_fn->call(ctx, args, object_value);
+                    }
+                }
+                return Value(); // Return undefined if getter is not callable
+            }
+
+            // Regular property access
             return obj->get_property(prop_name);
         }
     }
@@ -4628,6 +4645,22 @@ Value MemberExpression::evaluate(Context& ctx) {
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
         std::string prop_name = prop_value.to_string();
+
+        // Check if this property has a getter (accessor descriptor)
+        PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+        if (desc.is_accessor_descriptor() && desc.has_getter()) {
+            Object* getter = desc.get_getter();
+            if (getter) {
+                Function* getter_fn = dynamic_cast<Function*>(getter);
+                if (getter_fn) {
+                    // Call the getter with the object as 'this'
+                    std::vector<Value> args; // Getters take no arguments
+                    return getter_fn->call(ctx, args, object_value);
+                }
+            }
+            return Value(); // Return undefined if getter is not callable
+        }
+
         return obj->get_property(prop_name);
     }
     
@@ -8453,54 +8486,73 @@ Value SwitchStatement::evaluate(Context& ctx) {
     // Evaluate the discriminant (the value to switch on)
     Value discriminant_value = discriminant_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
-    bool found_match = false;
-    Value result;
-    
-    // Look for matching case or default
-    for (const auto& case_node : cases_) {
-        CaseClause* case_clause = static_cast<CaseClause*>(case_node.get());
-        
-        // Check if this case matches
-        bool should_execute = false;
-        
+
+    // First pass: Find matching case (not including default)
+    int matching_case_index = -1;
+    int default_case_index = -1;
+
+    for (size_t i = 0; i < cases_.size(); i++) {
+        CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
+
         if (case_clause->is_default()) {
-            // Default case - execute if no previous match found
-            should_execute = !found_match;
+            default_case_index = static_cast<int>(i);
         } else {
             // Regular case - check for equality
             Value test_value = case_clause->get_test()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             // Use strict equality for switch cases
-            should_execute = discriminant_value.strict_equals(test_value);
-        }
-        
-        if (should_execute || found_match) {
-            found_match = true;
-            
-            // Execute all statements in this case
-            for (const auto& stmt : case_clause->get_consequent()) {
-                result = stmt->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                
-                // Check for break statement
-                if (ctx.has_break()) {
-                    ctx.clear_break_continue();
-                    return result;
-                }
-                
-                // Handle return statements
-                if (ctx.has_return_value()) {
-                    return ctx.get_return_value();
-                }
+            if (discriminant_value.strict_equals(test_value)) {
+                matching_case_index = static_cast<int>(i);
+                break; // Found exact match, stop looking
             }
-            
-            // Continue to next case (fall-through behavior)
         }
     }
-    
-    return found_match ? result : Value();
+
+    // Determine starting point for execution
+    int start_index = -1;
+    if (matching_case_index >= 0) {
+        // Found a matching case
+        start_index = matching_case_index;
+    } else if (default_case_index >= 0) {
+        // No matching case, but default exists
+        start_index = default_case_index;
+    }
+
+    // If no match and no default, return undefined
+    if (start_index < 0) {
+        return Value();
+    }
+
+    // Second pass: Execute from matching case with fall-through
+    bool executing = false;
+    Value result;
+
+    for (size_t i = static_cast<size_t>(start_index); i < cases_.size(); i++) {
+        CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
+        executing = true;
+
+        // Execute all statements in this case
+        for (const auto& stmt : case_clause->get_consequent()) {
+            result = stmt->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+
+            // Check for break statement
+            if (ctx.has_break()) {
+                ctx.clear_break_continue();
+                return result;
+            }
+
+            // Handle return statements
+            if (ctx.has_return_value()) {
+                return ctx.get_return_value();
+            }
+        }
+
+        // Continue to next case (fall-through behavior)
+    }
+
+    return result;
 }
 
 std::string SwitchStatement::to_string() const {

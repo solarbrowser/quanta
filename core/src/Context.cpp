@@ -664,12 +664,61 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].as_object();
             std::string prop_name = args[1].to_string();
 
-            // For simplicity, just set the value property for now
+            // Handle property descriptor properly
             if (args[2].is_object()) {
                 Object* desc = args[2].as_object();
+
+                // Create property descriptor
+                PropertyDescriptor prop_desc;
+
+                // Handle getter (accessor descriptor)
+                if (desc->has_own_property("get")) {
+                    Value getter = desc->get_property("get");
+                    if (getter.is_function()) {
+                        prop_desc.set_getter(getter.as_object());
+                    }
+                }
+
+                // Handle setter (accessor descriptor)
+                if (desc->has_own_property("set")) {
+                    Value setter = desc->get_property("set");
+                    if (setter.is_function()) {
+                        prop_desc.set_setter(setter.as_object());
+                    }
+                }
+
+                // Handle value (data descriptor)
                 if (desc->has_own_property("value")) {
                     Value value = desc->get_property("value");
-                    obj->set_property(prop_name, value);
+                    prop_desc.set_value(value);
+                }
+
+                // Handle writable attribute
+                if (desc->has_own_property("writable")) {
+                    prop_desc.set_writable(desc->get_property("writable").to_boolean());
+                } else {
+                    prop_desc.set_writable(true); // Default to true
+                }
+
+                // Handle enumerable attribute
+                if (desc->has_own_property("enumerable")) {
+                    prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
+                } else {
+                    prop_desc.set_enumerable(false); // Default to false
+                }
+
+                // Handle configurable attribute
+                if (desc->has_own_property("configurable")) {
+                    prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
+                } else {
+                    prop_desc.set_configurable(false); // Default to false
+                }
+
+                // Set the property descriptor
+                bool success = obj->set_property_descriptor(prop_name, prop_desc);
+                if (!success) {
+                    ctx.throw_exception(Value("TypeError: Cannot define property"));
+                    return Value();
                 }
             }
 

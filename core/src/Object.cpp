@@ -1086,6 +1086,45 @@ void PropertyDescriptor::set_value(const Value& value) {
     if (type_ == Generic) type_ = Data;
 }
 
+void PropertyDescriptor::set_getter(Object* getter) {
+    getter_ = getter;
+    has_getter_ = true;
+    if (type_ == Generic) type_ = Accessor;
+}
+
+void PropertyDescriptor::set_setter(Object* setter) {
+    setter_ = setter;
+    has_setter_ = true;
+    if (type_ == Generic) type_ = Accessor;
+}
+
+void PropertyDescriptor::set_writable(bool writable) {
+    if (writable) {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ | PropertyAttributes::Writable);
+    } else {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Writable);
+    }
+    has_writable_ = true;
+}
+
+void PropertyDescriptor::set_enumerable(bool enumerable) {
+    if (enumerable) {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ | PropertyAttributes::Enumerable);
+    } else {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Enumerable);
+    }
+    has_enumerable_ = true;
+}
+
+void PropertyDescriptor::set_configurable(bool configurable) {
+    if (configurable) {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ | PropertyAttributes::Configurable);
+    } else {
+        attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Configurable);
+    }
+    has_configurable_ = true;
+}
+
 //=============================================================================
 // Shape Implementation
 //=============================================================================
