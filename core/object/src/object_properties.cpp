@@ -12,8 +12,6 @@
 
 namespace Quanta {
 
-// EXTRACTED FROM Object.cpp - Property management implementation
-
 bool ObjectProperties::has_property(const Object* object, const std::string& key) {
     if (!object) return false;
 

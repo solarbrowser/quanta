@@ -6,5 +6,5 @@
 
 #pragma once
 
-// Include the actual header from the professional structure
+// Include the actual header from the structure
 #include "include/context_core.h"
