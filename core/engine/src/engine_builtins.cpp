@@ -15,7 +15,9 @@
 
 namespace Quanta {
 
-// Main setup methods
+// EXTRACTED FROM Engine.cpp - Built-in functions setup (lines 461-609)
+
+// Main setup methods (originally lines 453-459, 461-609, 611-613)
 void EngineBuiltins::setup_built_in_functions(Engine& engine) {
     // Register eval() function (originally lines 462-492)
     register_global_function(engine, "eval", [&engine](const std::vector<Value>& args) -> Value {

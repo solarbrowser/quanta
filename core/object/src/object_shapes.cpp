@@ -11,7 +11,9 @@
 
 namespace Quanta {
 
-// Static member initialization
+// EXTRACTED FROM Object.cpp - Shape system implementation (lines 1130-1220)
+
+// Static member initialization (originally lines 22-24)
 std::unordered_map<std::pair<Shape*, std::string>, Shape*, Object::ShapeTransitionHash> Object::shape_transition_cache_;
 std::unordered_map<std::string, std::string> Object::interned_keys_;
 uint32_t Shape::next_shape_id_ = 1;
