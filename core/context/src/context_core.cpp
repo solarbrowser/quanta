@@ -11,12 +11,10 @@
 
 namespace Quanta {
 
-// EXTRACTED FROM Context.cpp - Context core functionality
-
-// Static member initialization (originally line 43)
+// Static member initialization
 uint32_t Context::next_context_id_ = 1;
 
-// Constructor implementation (originally lines 49-59)
+// Constructor implementation
 void ContextCore::construct_context(Context* ctx, Engine* engine, Context::Type type) {
     ctx->type_ = type;
     ctx->state_ = Context::State::Running;
@@ -40,7 +38,7 @@ void ContextCore::construct_context(Context* ctx, Engine* engine, Context::Type 
     }
 }
 
-// Constructor with parent (originally lines 61-75)
+// Constructor with parent
 void ContextCore::construct_context_with_parent(Context* ctx, Engine* engine, Context* parent, Context::Type type) {
     construct_context(ctx, engine, type);
 
@@ -54,7 +52,7 @@ void ContextCore::construct_context_with_parent(Context* ctx, Engine* engine, Co
     }
 }
 
-// Basic context operations (originally lines 82-140)
+// Basic context operations
 void ContextCore::set_global_object(Context& ctx, Object* global) {
     ctx.global_object_ = global;
 }
