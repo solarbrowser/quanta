@@ -23,12 +23,16 @@ class StackFrame;
 class Environment;
 class Error;
 class WebAPIInterface;
+class ContextCore;
+class ContextBindings;
 
 /**
  * JavaScript execution context
  * Manages scope, variable bindings, and execution state
  */
 class Context {
+    friend class ContextCore;
+    friend class ContextBindings;
 public:
     // Context types for different execution modes
     enum class Type {
