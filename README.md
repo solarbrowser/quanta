@@ -66,7 +66,7 @@ The engine has been completely restructured with a modular architecture. Compreh
 
 #### Build Instructions
 
-**Unix Systems (Linux/macOS)**
+**Unix like Systems (Linux/macOS)**
 ```bash
 # Clean build with parallel compilation
 make clean && make -j4
