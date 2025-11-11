@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="docs/images/quanta.png" alt="Quanta Logo" width="200"/>
+  <img src="docs/images/quanta_transparent.png" alt="Quanta Logo" width="200"/>
 
   # Quanta
 
@@ -13,7 +13,6 @@
 - [What is Quanta](#what-is-quanta)
 - [ECMAScript Compatibility](#ecmascript-compatibility)
 - [For Developers](#for-developers)
-- [Project Structure](#project-structure)
 - [Planned Release Date](#planned-release-date)
 - [Contributing](#contributing)
 - [License](#license)
@@ -107,54 +106,6 @@ For Windows development, MSYS2 is required for compilation. Native Windows build
 
 # Interactive REPL
 ./build/bin/quanta
-```
-
----
-
-## Project Structure
-
-### Modular Architecture
-
-```
-quanta/
-├── core/                          # Core JavaScript Engine (Modular)
-│   ├── builtin/                   # Built-in functions and objects
-│   ├── collections/               # Map, Set, WeakMap, WeakSet
-│   ├── compiler/                  # JIT compilation and bytecode
-│   ├── context/                   # Execution context management
-│   ├── datatypes/                 # DataView and typed arrays
-│   ├── engine/                    # Core engine modules
-│   ├── gc/                        # Garbage collection
-│   ├── global/                    # Global functions
-│   ├── include/                   # Public headers
-│   ├── memory/                    # Memory management
-│   ├── object/                    # Object system and shapes
-│   ├── platform/                  # Platform-specific APIs
-│   ├── runtime/                   # Runtime support
-│   ├── utils/                     # Utility modules
-│   └── value/                     # Value system and operations
-│
-├── parser/                        # JavaScript Parser
-│   ├── include/                   # Parser headers
-│   └── src/                       # AST and parser implementation
-│
-├── lexer/                         # JavaScript Lexer
-│   ├── include/                   # Lexer headers
-│   └── src/                       # Tokenization implementation
-│
-├── build/                         # Build Output
-│   ├── bin/                       # Executables
-│   ├── obj/                       # Modular object files
-│   └── libquanta.a                # Static library
-│
-├── docs/                          # Documentation
-│   └── images/                    # Documentation images
-│
-├── Makefile                       # Build system
-├── console.cpp                    # REPL interface
-├── LICENSE                        # License file
-├── .gitignore                     # Git ignore rules
-└── README.md                      # This documentation
 ```
 
 ---

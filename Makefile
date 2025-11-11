@@ -49,12 +49,8 @@ else
 $(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/lexer $(OBJ_DIR)/parser $(BIN_DIR))
 endif
 
-# Source files (exclude experimental files and problematic files that cause compilation issues)
-EXCLUDED_FILES = $(CORE_SRC)/AdaptiveOptimizer.cpp $(CORE_SRC)/AdvancedDebugger.cpp $(CORE_SRC)/AdvancedJIT.cpp $(CORE_SRC)/SIMD.cpp $(CORE_SRC)/LockFree.cpp $(CORE_SRC)/NativeFFI.cpp $(CORE_SRC)/NUMAMemoryManager.cpp $(CORE_SRC)/CPUOptimization.cpp $(CORE_SRC)/ShapeOptimization.cpp $(CORE_SRC)/RealJIT.cpp $(CORE_SRC)/NativeCodeGenerator.cpp $(CORE_SRC)/SpecializedNodes.cpp $(CORE_SRC)/JIT.cpp $(CORE_SRC)/UltimatePatternDetector.cpp
-
-# Core optimization files that still exist
-CORE_OPTIMIZATIONS = $(CORE_SRC)/FastBytecode.cpp
-CORE_SOURCES = $(filter-out $(EXCLUDED_FILES), $(wildcard $(CORE_SRC)/*.cpp)) $(CORE_SRC)/platform/NativeAPI.cpp $(CORE_SRC)/platform/APIRouter.cpp $(CORE_OPTIMIZATIONS)
+# Core source files
+CORE_SOURCES = $(wildcard $(CORE_SRC)/*.cpp) $(CORE_SRC)/platform/NativeAPI.cpp $(CORE_SRC)/platform/APIRouter.cpp
 ifneq ($(OS),Windows_NT) 
     CORE_SOURCES += $(CORE_SRC)/platform/LinuxNativeAPI.cpp
 endif
