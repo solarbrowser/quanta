@@ -160,6 +160,12 @@ double Value::to_number() const {
     if (is_bigint()) {
         return as_bigint()->to_double();
     }
+    if (is_symbol()) {
+        // ECMAScript: Symbol to number conversion should throw TypeError
+        // Since we can't throw from this method, return a special NaN marker
+        // Caller should check is_symbol() before calling to_number()
+        return std::numeric_limits<double>::quiet_NaN();
+    }
     if (is_function()) {
         return std::numeric_limits<double>::quiet_NaN();
     }
@@ -238,6 +244,36 @@ bool Value::strict_equals(const Value& other) const {
     if (is_object() && other.is_object()) return as_object() == other.as_object();
     if (is_function() && other.is_function()) return as_function() == other.as_function();
     return false;
+}
+
+bool Value::same_value(const Value& other) const {
+    // SameValue comparison (Object.is semantics)
+    // 1. If Type(x) is different from Type(y), return false
+    if (get_type() != other.get_type()) {
+        return false;
+    }
+
+    // 2. If Type(x) is Number, then
+    if (is_number()) {
+        double nx = to_number();
+        double ny = other.to_number();
+
+        // If x is NaN and y is NaN, return true (different from strict equality)
+        if (std::isnan(nx) && std::isnan(ny)) {
+            return true;
+        }
+
+        // If x is +0 and y is -0, return false (different from strict equality)
+        if (nx == 0.0 && ny == 0.0) {
+            return std::signbit(nx) == std::signbit(ny);
+        }
+
+        // Otherwise use normal equality
+        return nx == ny;
+    }
+
+    // 3. For other types, use strict equality
+    return strict_equals(other);
 }
 
 bool Value::loose_equals(const Value& other) const {

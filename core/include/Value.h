@@ -304,6 +304,7 @@ public:
     // Comparison operations
     bool strict_equals(const Value& other) const;
     bool loose_equals(const Value& other) const;
+    bool same_value(const Value& other) const; // Object.is / SameValue semantics
     int compare(const Value& other) const;
     bool instanceof_check(const Value& constructor) const;
     

@@ -3456,26 +3456,53 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         }
         
     } else if (method_name == "includes") {
-        // Array.includes() - check if array contains element
+        // Array.includes() - ES2016 SameValueZero comparison
         if (arguments_.size() > 0) {
             Value search_value = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
-            uint32_t start_pos = 0;
+
+            // Handle optional fromIndex parameter
+            int64_t from_index = 0;
             if (arguments_.size() > 1) {
                 Value start_val = arguments_[1]->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                int32_t start_int = static_cast<int32_t>(start_val.to_number());
-                if (start_int < 0) {
-                    start_int = std::max(0, static_cast<int32_t>(array->get_length()) + start_int);
+
+                // Check if fromIndex is a Symbol (should throw TypeError)
+                if (start_val.is_symbol()) {
+                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    return Value();
                 }
-                start_pos = static_cast<uint32_t>(start_int);
+
+                from_index = static_cast<int64_t>(start_val.to_number());
             }
-            
+
             uint32_t length = array->get_length();
-            for (uint32_t i = start_pos; i < length; ++i) {
+
+            // Handle negative fromIndex
+            if (from_index < 0) {
+                from_index = static_cast<int64_t>(length) + from_index;
+                if (from_index < 0) from_index = 0;
+            }
+
+            // Search from fromIndex to end using SameValueZero comparison
+            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; ++i) {
                 Value element = array->get_element(i);
-                if (element.strict_equals(search_value)) {
+
+                // SameValueZero comparison (like Object.is but +0 === -0)
+                if (search_value.is_number() && element.is_number()) {
+                    double search_num = search_value.to_number();
+                    double element_num = element.to_number();
+
+                    // Special handling for NaN (SameValueZero: NaN === NaN is true)
+                    if (std::isnan(search_num) && std::isnan(element_num)) {
+                        return Value(true);
+                    }
+
+                    // For +0/-0, they are considered equal in SameValueZero
+                    if (search_num == element_num) {
+                        return Value(true);
+                    }
+                } else if (element.strict_equals(search_value)) {
                     return Value(true);
                 }
             }
@@ -5105,9 +5132,38 @@ Value MemberExpression::evaluate(Context& ctx) {
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; // Suppress unused warning
                     if (args.empty()) return Value(false);
+
+                    // Check if searchString is a Symbol (should throw TypeError)
+                    if (args[0].is_symbol()) {
+                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        return Value();
+                    }
+
                     std::string search = args[0].to_string();
-                    bool result = (str_value.substr(0, search.length()) == search);
-                    return Value(result);
+                    // Handle optional position parameter (ES2015 spec)
+                    int start = 0;
+                    if (args.size() > 1) {
+                        // Check if position is a Symbol (should throw TypeError)
+                        if (args[1].is_symbol()) {
+                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            return Value();
+                        }
+                        start = static_cast<int>(args[1].to_number());
+                    }
+                    if (start < 0) start = 0;
+                    size_t position = static_cast<size_t>(start);
+
+                    // If position is beyond string length, search can only succeed for empty string
+                    if (position >= str_value.length()) {
+                        return Value(search.empty());
+                    }
+
+                    // Check if substring at position matches search string
+                    if (position + search.length() > str_value.length()) {
+                        return Value(false);
+                    }
+
+                    return Value(str_value.substr(position, search.length()) == search);
                 });
             return Value(starts_with_fn.release());
         }
@@ -5117,10 +5173,32 @@ Value MemberExpression::evaluate(Context& ctx) {
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; // Suppress unused warning
                     if (args.empty()) return Value(false);
+
+                    // Check if searchString is a Symbol (should throw TypeError)
+                    if (args[0].is_symbol()) {
+                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        return Value();
+                    }
+
                     std::string search = args[0].to_string();
-                    if (search.length() > str_value.length()) return Value(false);
-                    bool result = (str_value.substr(str_value.length() - search.length()) == search);
-                    return Value(result);
+                    // Handle optional length parameter (ES2015 spec)
+                    size_t length = str_value.length();
+                    if (args.size() > 1) {
+                        // Check if length is a Symbol (should throw TypeError)
+                        if (args[1].is_symbol()) {
+                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            return Value();
+                        }
+                        if (!std::isnan(args[1].to_number())) {
+                            length = static_cast<size_t>(std::max(0.0, args[1].to_number()));
+                        }
+                    }
+
+                    if (length > str_value.length()) length = str_value.length();
+                    if (search.length() > length) return Value(false);
+
+                    size_t start = length - search.length();
+                    return Value(str_value.substr(start, search.length()) == search);
                 });
             return Value(ends_with_fn.release());
         }
@@ -5130,8 +5208,36 @@ Value MemberExpression::evaluate(Context& ctx) {
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; // Suppress unused warning
                     if (args.empty()) return Value(false);
+
+                    // Check if searchString is a Symbol (should throw TypeError)
+                    if (args[0].is_symbol()) {
+                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        return Value();
+                    }
+
                     std::string search = args[0].to_string();
-                    return Value(str_value.find(search) != std::string::npos);
+
+                    // Handle optional position parameter (ES2015 spec)
+                    int start = 0;
+                    if (args.size() > 1) {
+                        // Check if position is a Symbol (should throw TypeError)
+                        if (args[1].is_symbol()) {
+                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            return Value();
+                        }
+                        start = static_cast<int>(args[1].to_number());
+                    }
+                    if (start < 0) start = 0;
+                    size_t position = static_cast<size_t>(start);
+
+                    // If position is beyond string length, search can only succeed for empty string
+                    if (position >= str_value.length()) {
+                        return Value(search.empty());
+                    }
+
+                    // Use find with position parameter
+                    size_t found = str_value.find(search, position);
+                    return Value(found != std::string::npos);
                 });
             return Value(includes_fn.release());
         }
@@ -5583,9 +5689,15 @@ Value MemberExpression::evaluate(Context& ctx) {
                         (void)ctx;
                         if (args.empty()) return Value(false);
                         std::string search = args[0].to_string();
-                        if (search.length() > str_value.length()) return Value(false);
-                        bool result = (str_value.substr(str_value.length() - search.length()) == search);
-                        return Value(result);
+                        // Handle optional length parameter (ES2015 spec)
+                        size_t length = args.size() > 1 && !std::isnan(args[1].to_number()) ?
+                            static_cast<size_t>(std::max(0.0, args[1].to_number())) : str_value.length();
+
+                        if (length > str_value.length()) length = str_value.length();
+                        if (search.length() > length) return Value(false);
+
+                        size_t start = length - search.length();
+                        return Value(str_value.substr(start, search.length()) == search);
                     });
                 return Value(ends_with_fn.release());
             }
@@ -8214,10 +8326,43 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             
             Value search_element = args[0];
             uint32_t length = this_obj->get_length();
-            
-            for (uint32_t i = 0; i < length; i++) {
+
+            // Handle optional fromIndex parameter
+            int64_t from_index = 0;
+            if (args.size() > 1) {
+                // Check if fromIndex is a Symbol (should throw TypeError)
+                if (args[1].is_symbol()) {
+                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    return Value();
+                }
+                from_index = static_cast<int64_t>(args[1].to_number());
+            }
+
+            // Handle negative fromIndex
+            if (from_index < 0) {
+                from_index = static_cast<int64_t>(length) + from_index;
+                if (from_index < 0) from_index = 0;
+            }
+
+            // Search from fromIndex to end using SameValueZero comparison
+            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
                 Value element = this_obj->get_element(i);
-                if (element.strict_equals(search_element)) {
+
+                // Use SameValueZero comparison (like Object.is but +0 === -0)
+                if (search_element.is_number() && element.is_number()) {
+                    double search_num = search_element.to_number();
+                    double element_num = element.to_number();
+
+                    // Special handling for NaN (SameValueZero: NaN === NaN is true)
+                    if (std::isnan(search_num) && std::isnan(element_num)) {
+                        return Value(true);
+                    }
+
+                    // For +0/-0, they are considered equal in SameValueZero
+                    if (search_num == element_num) {
+                        return Value(true);
+                    }
+                } else if (element.strict_equals(search_element)) {
                     return Value(true);
                 }
             }

@@ -9,14 +9,22 @@
 
 namespace Quanta {
 
-Date::Date() : time_point_(std::chrono::system_clock::now()) {}
+Date::Date() : time_point_(std::chrono::system_clock::now()), is_invalid_(false) {}
 
-Date::Date(int64_t timestamp) 
-    : time_point_(std::chrono::system_clock::from_time_t(timestamp / 1000)) {
-    // JavaScript timestamps are in milliseconds, C++ uses seconds
+Date::Date(int64_t timestamp) {
+    // Check if timestamp represents invalid date
+    if (timestamp == LLONG_MIN) {
+        is_invalid_ = true;
+        time_point_ = std::chrono::system_clock::now(); // Dummy value
+    } else {
+        is_invalid_ = false;
+        time_point_ = std::chrono::system_clock::from_time_t(timestamp / 1000);
+    }
 }
 
 Date::Date(int year, int month, int day, int hour, int minute, int second, int millisecond) {
+    is_invalid_ = false; // Valid dates by default
+
     std::tm tm = {};
     tm.tm_year = year - 1900; // tm_year is years since 1900
     tm.tm_mon = month - 1;    // tm_mon is 0-11
@@ -24,10 +32,10 @@ Date::Date(int year, int month, int day, int hour, int minute, int second, int m
     tm.tm_hour = hour;
     tm.tm_min = minute;
     tm.tm_sec = second;
-    
+
     std::time_t time = std::mktime(&tm);
     time_point_ = std::chrono::system_clock::from_time_t(time);
-    
+
     // Add milliseconds
     time_point_ += std::chrono::milliseconds(millisecond);
 }
@@ -232,9 +240,12 @@ Value Date::toJSON(Context& ctx, const std::vector<Value>& args) {
 }
 
 // Utility methods
-int64_t Date::getTimestamp() const {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        time_point_.time_since_epoch()).count();
+double Date::getTimestamp() const {
+    if (is_invalid_) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        time_point_.time_since_epoch()).count());
 }
 
 std::time_t Date::getTimeT() const {
@@ -263,12 +274,13 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
         date_impl = std::make_unique<Date>();
     } else if (args.size() == 1) {
         // new Date(timestamp) or new Date(string)
-        if (args[0].is_number()) {
-            int64_t timestamp = static_cast<int64_t>(args[0].to_number());
-            date_impl = std::make_unique<Date>(timestamp);
+        // Always convert to number first - objects will become NaN
+        double timestamp = args[0].to_number();
+        if (std::isnan(timestamp) || std::isinf(timestamp)) {
+            // Create invalid date with special timestamp
+            date_impl = std::make_unique<Date>(LLONG_MIN); // Special value for invalid dates
         } else {
-            // Parse string - for now, just return current time
-            date_impl = std::make_unique<Date>();
+            date_impl = std::make_unique<Date>(static_cast<int64_t>(timestamp));
         }
     } else {
         // new Date(year, month, day, ...)
@@ -290,19 +302,39 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
     js_date_obj->set_property("_isDate", Value(true));
     
     // Store the timestamp as a property that can be accessed by instance methods
-    js_date_obj->set_property("_timestamp", Value(static_cast<double>(date_impl->getTimestamp())));
+    js_date_obj->set_property("_timestamp", Value(date_impl->getTimestamp()));
     
     return Value(js_date_obj.release());
 }
 
 // Legacy methods (Annex B)
 Value Date::getYear(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Suppress unused warnings
+    (void)args; // Suppress unused warnings
 
-    // getYear returns year - 1900 (legacy behavior)
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    // Check if this is a valid Date object
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    if (!date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // Get stored timestamp
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+
+    // If timestamp is NaN, return NaN
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    // Convert timestamp to time_t and get year
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000); // Convert ms to seconds
     std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
 
     return Value(static_cast<double>(local_tm->tm_year)); // tm_year is already year - 1900
 }

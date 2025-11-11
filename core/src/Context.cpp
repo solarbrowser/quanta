@@ -473,6 +473,27 @@ void Context::initialize_built_ins() {
             return Value(result_array.release());
         });
     object_constructor->set_property("entries", Value(entries_fn.release()));
+
+    // Object.is(value1, value2) - SameValue comparison
+    auto is_fn = ObjectFactory::create_native_function("is",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; // Suppress unused warning
+
+            // Object.is implements SameValue comparison (ES2015+)
+            Value x = args.size() > 0 ? args[0] : Value();
+            Value y = args.size() > 1 ? args[1] : Value();
+
+            // Use the centralized SameValue implementation
+            return Value(x.same_value(y));
+        });
+
+    // Set the correct length property for Object.is with proper descriptor (should be 2)
+    PropertyDescriptor is_length_desc(Value(2.0), PropertyAttributes::None);
+    is_length_desc.set_configurable(false);
+    is_length_desc.set_enumerable(false);
+    is_length_desc.set_writable(false);
+    is_fn->set_property_descriptor("length", is_length_desc);
+    object_constructor->set_property("is", Value(is_fn.release()));
     
     // Object.fromEntries(iterable) - creates object from [key, value] pairs
     auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries", 
@@ -932,13 +953,62 @@ void Context::initialize_built_ins() {
         });
     array_prototype->set_property("find", Value(find_fn.release()));
     
-    // Array.prototype.includes
+    // Array.prototype.includes (ES2016) - SameValueZero comparison
     auto includes_fn = ObjectFactory::create_native_function("includes",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Simplified implementation for testing
+            // Get 'this' binding (should be the array)
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.includes called on non-object"));
+                return Value();
+            }
+
             if (args.empty()) return Value(false);
-            // For testing, return true if searching for 2
-            return Value(args[0].is_number() && args[0].to_number() == 2);
+
+            Value search_element = args[0];
+            uint32_t length = this_obj->get_length();
+
+            // Handle optional fromIndex parameter
+            int64_t from_index = 0;
+            if (args.size() > 1) {
+                // Check if fromIndex is a Symbol (should throw TypeError)
+                if (args[1].is_symbol()) {
+                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    return Value();
+                }
+                from_index = static_cast<int64_t>(args[1].to_number());
+            }
+
+            // Handle negative fromIndex
+            if (from_index < 0) {
+                from_index = static_cast<int64_t>(length) + from_index;
+                if (from_index < 0) from_index = 0;
+            }
+
+            // Search from fromIndex to end
+            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
+                Value element = this_obj->get_element(i);
+
+                // Use SameValueZero comparison (like Object.is but +0 === -0)
+                if (search_element.is_number() && element.is_number()) {
+                    double search_num = search_element.to_number();
+                    double element_num = element.to_number();
+
+                    // Special handling for NaN (SameValueZero: NaN === NaN is true)
+                    if (std::isnan(search_num) && std::isnan(element_num)) {
+                        return Value(true);
+                    }
+
+                    // For +0/-0, they are considered equal in SameValueZero
+                    if (search_num == element_num) {
+                        return Value(true);
+                    }
+                } else if (element.strict_equals(search_element)) {
+                    return Value(true);
+                }
+            }
+
+            return Value(false);
         });
     array_prototype->set_property("includes", Value(includes_fn.release()));
     
@@ -1227,6 +1297,118 @@ void Context::initialize_built_ins() {
             return Value(str + padding);
         });
     string_prototype->set_property("padEnd", Value(padEnd_fn.release()));
+
+    // Add String.prototype.includes (ES2015)
+    auto str_includes_fn = ObjectFactory::create_native_function("includes",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get 'this' binding (should be the string)
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.empty()) return Value(false);
+
+            // Check if searchString is a Symbol (should throw TypeError)
+            if (args[0].is_symbol()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                return Value();
+            }
+
+            std::string search_string = args[0].to_string();
+            size_t position = 0;
+            if (args.size() > 1) {
+                // Check if position is a Symbol (should throw TypeError)
+                if (args[1].is_symbol()) {
+                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    return Value();
+                }
+                position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
+            }
+
+            if (position >= str.length()) {
+                return Value(search_string.empty());
+            }
+
+            // Use find with position instead of substr for efficiency and correctness
+            size_t found = str.find(search_string, position);
+            return Value(found != std::string::npos);
+        });
+    // Set includes method length with proper descriptor
+    PropertyDescriptor includes_length_desc(Value(1.0), PropertyAttributes::None);
+    includes_length_desc.set_configurable(false);
+    includes_length_desc.set_enumerable(false);
+    includes_length_desc.set_writable(false);
+    str_includes_fn->set_property_descriptor("length", includes_length_desc);
+    string_prototype->set_property("includes", Value(str_includes_fn.release()));
+
+    // Add String.prototype.startsWith (ES2015)
+    auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.empty()) return Value(false);
+
+            // Check if searchString is a Symbol (should throw TypeError)
+            if (args[0].is_symbol()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                return Value();
+            }
+
+            std::string search_string = args[0].to_string();
+            size_t position = 0;
+            if (args.size() > 1) {
+                // Check if position is a Symbol (should throw TypeError)
+                if (args[1].is_symbol()) {
+                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    return Value();
+                }
+                position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
+            }
+
+            if (position >= str.length()) {
+                return Value(search_string.empty());
+            }
+
+            return Value(str.substr(position, search_string.length()) == search_string);
+        });
+    // Set startsWith method length with proper descriptor
+    PropertyDescriptor startsWith_length_desc(Value(1.0), PropertyAttributes::None);
+    startsWith_length_desc.set_configurable(false);
+    startsWith_length_desc.set_enumerable(false);
+    startsWith_length_desc.set_writable(false);
+    startsWith_fn->set_property_descriptor("length", startsWith_length_desc);
+    string_prototype->set_property("startsWith", Value(startsWith_fn.release()));
+
+    // Add String.prototype.endsWith (ES2015)
+    auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.empty()) return Value(false);
+
+            // Check if searchString is a Symbol (should throw TypeError)
+            if (args[0].is_symbol()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                return Value();
+            }
+
+            std::string search_string = args[0].to_string();
+            size_t length = args.size() > 1 ?
+                static_cast<size_t>(std::max(0.0, args[1].to_number())) : str.length();
+
+            if (length > str.length()) length = str.length();
+            if (search_string.length() > length) return Value(false);
+
+            return Value(str.substr(length - search_string.length(), search_string.length()) == search_string);
+        });
+    // Set endsWith method length with proper descriptor
+    PropertyDescriptor endsWith_length_desc(Value(1.0), PropertyAttributes::None);
+    endsWith_length_desc.set_configurable(false);
+    endsWith_length_desc.set_enumerable(false);
+    endsWith_length_desc.set_writable(false);
+    endsWith_fn->set_property_descriptor("length", endsWith_length_desc);
+    string_prototype->set_property("endsWith", Value(endsWith_fn.release()));
     
     // Add String.prototype.match
     auto match_fn = ObjectFactory::create_native_function("match",
@@ -1375,6 +1557,49 @@ void Context::initialize_built_ins() {
     proto_ptr->set_property("constructor", Value(string_constructor.get()));
 
     register_built_in_object("String", string_constructor.release());
+
+    // AFTER registration, get the global String and add methods to its prototype
+    Value global_string = global_object_->get_property("String");
+    if (global_string.is_function()) {
+        Object* global_string_obj = global_string.as_function();
+        Value prototype_val = global_string_obj->get_property("prototype");
+        if (prototype_val.is_object()) {
+            Object* global_prototype = prototype_val.as_object();
+
+            // Re-add includes method to the actual global prototype
+            auto global_includes_fn = ObjectFactory::create_native_function("includes",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value this_value = ctx.get_binding("this");
+                    std::string str = this_value.to_string();
+                    if (args.empty()) return Value(false);
+                    if (args[0].is_symbol()) {
+                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        return Value();
+                    }
+                    std::string search_string = args[0].to_string();
+                    size_t position = 0;
+                    if (args.size() > 1) {
+                        if (args[1].is_symbol()) {
+                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            return Value();
+                        }
+                        position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
+                    }
+                    if (position >= str.length()) {
+                        return Value(search_string.empty());
+                    }
+                    size_t found = str.find(search_string, position);
+                    return Value(found != std::string::npos);
+                });
+            PropertyDescriptor global_includes_length_desc(Value(1.0), PropertyAttributes::None);
+            global_includes_length_desc.set_configurable(false);
+            global_includes_length_desc.set_enumerable(false);
+            global_includes_length_desc.set_writable(false);
+            global_includes_fn->set_property_descriptor("length", global_includes_length_desc);
+            global_prototype->set_property("includes", Value(global_includes_fn.release()));
+
+        }
+    }
     
     // BigInt constructor - callable as function
     auto bigint_constructor = ObjectFactory::create_native_function("BigInt",
@@ -2122,9 +2347,13 @@ void Context::initialize_built_ins() {
     // Legacy methods (Annex B)
     date_prototype->set_property("getYear", Value(getYear_fn.release()));
     date_prototype->set_property("setYear", Value(setYear_fn.release()));
-    
-    // Set Date.prototype on the constructor
-    date_constructor_fn->set_property("prototype", Value(date_prototype.release()));
+
+    // toGMTString is deprecated alias for toString (Annex B)
+    auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toString);
+    date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()));
+
+    // Set Date.prototype on the constructor (keep reference for proper binding)
+    date_constructor_fn->set_property("prototype", Value(date_prototype.get()));
     
     register_built_in_object("Date", date_constructor_fn.get());
     
@@ -2140,6 +2369,7 @@ void Context::initialize_built_ins() {
     }
     
     date_constructor_fn.release(); // Release after manual binding
+    date_prototype.release(); // Release prototype after binding
     
     // Additional Error types (Error is already defined above)
     auto type_error_constructor = ObjectFactory::create_native_function("TypeError",
@@ -2871,6 +3101,7 @@ void Context::setup_global_bindings() {
             return Value(std::isfinite(num));
         });
     lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
+
 
     // Global eval function
     auto eval_fn = ObjectFactory::create_native_function("eval",

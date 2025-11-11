@@ -23,6 +23,7 @@ namespace Quanta {
 class Date {
 private:
     std::chrono::system_clock::time_point time_point_;
+    bool is_invalid_;  // True if date is invalid (NaN timestamp)
     
 public:
     // Constructors
@@ -69,7 +70,7 @@ public:
     static Value toJSON(Context& ctx, const std::vector<Value>& args);
     
     // Utility methods
-    int64_t getTimestamp() const;
+    double getTimestamp() const;  // Returns NaN for invalid dates
     std::time_t getTimeT() const;
     std::tm getLocalTime() const;
     std::tm getUTCTime() const;

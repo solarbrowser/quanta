@@ -119,6 +119,12 @@ Value Object::get_property(const std::string& key) const {
             return Value(func->get_name());
         }
         if (key == "length") {
+            // ALWAYS check descriptor first for length property
+            PropertyDescriptor desc = get_property_descriptor(key);
+            if (desc.has_value() && desc.is_data_descriptor()) {
+                return desc.get_value();
+            }
+            // Fallback to function arity only if no descriptor
             return Value(static_cast<double>(func->get_arity()));
         }
         if (key == "prototype") {
@@ -637,14 +643,14 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     if (!descriptors_) {
         descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
     }
-    
+
     (*descriptors_)[key] = desc;
-    
+
     // Store the value if it's a data descriptor
     if (desc.is_data_descriptor()) {
         set_property(key, desc.get_value(), desc.get_attributes());
     }
-    
+
     return true;
 }
 
@@ -1647,7 +1653,22 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value element = array->get_element(i);
-                    if (element.strict_equals(search_element)) {
+
+                    // Use SameValueZero comparison (like Object.is but +0 === -0)
+                    if (search_element.is_number() && element.is_number()) {
+                        double search_num = search_element.to_number();
+                        double element_num = element.to_number();
+
+                        // Special handling for NaN (SameValueZero: NaN === NaN is true)
+                        if (std::isnan(search_num) && std::isnan(element_num)) {
+                            return Value(true);
+                        }
+
+                        // For +0/-0, they are considered equal in SameValueZero
+                        if (search_num == element_num) {
+                            return Value(true);
+                        }
+                    } else if (element.strict_equals(search_element)) {
                         return Value(true);
                     }
                 }

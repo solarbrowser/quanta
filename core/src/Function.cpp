@@ -87,7 +87,13 @@ Function::Function(const std::string& name,
     
     // Add standard function properties for native functions
     this->set_property("name", Value(name_));
-    this->set_property("length", Value(0.0));  // Native functions default to 0
+
+    // Set length property with proper descriptor (non-configurable, non-enumerable, non-writable)
+    PropertyDescriptor length_desc(Value(0.0), PropertyAttributes::None);
+    length_desc.set_configurable(false);
+    length_desc.set_enumerable(false);
+    length_desc.set_writable(false);
+    this->set_property_descriptor("length", length_desc);
     
 }
 
@@ -335,6 +341,12 @@ Value Function::get_property(const std::string& key) const {
         return Value(name_);
     }
     if (key == "length") {
+        // ALWAYS check descriptor first for length property
+        PropertyDescriptor desc = get_property_descriptor(key);
+        if (desc.has_value() && desc.is_data_descriptor()) {
+            return desc.get_value();
+        }
+        // Fallback to function arity only if no descriptor
         return Value(static_cast<double>(parameters_.size()));
     }
     if (key == "prototype") {
