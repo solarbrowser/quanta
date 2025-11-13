@@ -654,12 +654,99 @@ Value BinaryExpression::evaluate(Context& ctx) {
     
     // Generic path for non-number operations
     switch (operator_) {
-        case Operator::ADD:
-            return left_value.add(right_value);
+        case Operator::ADD: {
+            // Handle object valueOf() coercion for addition operator
+            Value left_coerced = left_value;
+            Value right_coerced = right_value;
+
+            // Try to coerce objects with valueOf() method
+            if (left_value.is_object() && !left_value.is_string()) {
+                Object* obj = left_value.as_object();
+                if (obj && obj->has_property("valueOf")) {
+                    Value valueOf_method = obj->get_property("valueOf");
+                    if (valueOf_method.is_function()) {
+                        try {
+                            Function* valueOf_fn = valueOf_method.as_function();
+                            Value coerced = valueOf_fn->call(ctx, {}, left_value);
+                            if (!coerced.is_object()) {  // valueOf returned a primitive
+                                left_coerced = coerced;
+                            }
+                        } catch (...) {
+                            // valueOf failed, use original value
+                        }
+                    }
+                }
+            }
+
+            if (right_value.is_object() && !right_value.is_string()) {
+                Object* obj = right_value.as_object();
+                if (obj && obj->has_property("valueOf")) {
+                    Value valueOf_method = obj->get_property("valueOf");
+                    if (valueOf_method.is_function()) {
+                        try {
+                            Function* valueOf_fn = valueOf_method.as_function();
+                            Value coerced = valueOf_fn->call(ctx, {}, right_value);
+                            if (!coerced.is_object()) {  // valueOf returned a primitive
+                                right_coerced = coerced;
+                            }
+                        } catch (...) {
+                            // valueOf failed, use original value
+                        }
+                    }
+                }
+            }
+
+            return left_coerced.add(right_coerced);
+        }
         case Operator::SUBTRACT:
-            return left_value.subtract(right_value);
-        case Operator::MULTIPLY:
-            return left_value.multiply(right_value);
+        case Operator::MULTIPLY: {
+            // Handle object valueOf() coercion for arithmetic operators
+            Value left_coerced = left_value;
+            Value right_coerced = right_value;
+
+            // Try to coerce objects with valueOf() method
+            if (left_value.is_object() && !left_value.is_string()) {
+                Object* obj = left_value.as_object();
+                if (obj && obj->has_property("valueOf")) {
+                    Value valueOf_method = obj->get_property("valueOf");
+                    if (valueOf_method.is_function()) {
+                        try {
+                            Function* valueOf_fn = valueOf_method.as_function();
+                            Value coerced = valueOf_fn->call(ctx, {}, left_value);
+                            if (!coerced.is_object()) {  // valueOf returned a primitive
+                                left_coerced = coerced;
+                            }
+                        } catch (...) {
+                            // valueOf failed, use original value
+                        }
+                    }
+                }
+            }
+
+            if (right_value.is_object() && !right_value.is_string()) {
+                Object* obj = right_value.as_object();
+                if (obj && obj->has_property("valueOf")) {
+                    Value valueOf_method = obj->get_property("valueOf");
+                    if (valueOf_method.is_function()) {
+                        try {
+                            Function* valueOf_fn = valueOf_method.as_function();
+                            Value coerced = valueOf_fn->call(ctx, {}, right_value);
+                            if (!coerced.is_object()) {  // valueOf returned a primitive
+                                right_coerced = coerced;
+                            }
+                        } catch (...) {
+                            // valueOf failed, use original value
+                        }
+                    }
+                }
+            }
+
+            if (operator_ == Operator::SUBTRACT) {
+                return left_coerced.subtract(right_coerced);
+            } else {  // MULTIPLY
+                return left_coerced.multiply(right_coerced);
+            }
+        }
         case Operator::DIVIDE:
             return left_value.divide(right_value);
         case Operator::MODULO:
@@ -2693,10 +2780,13 @@ Value CallExpression::evaluate(Context& ctx) {
         
         // Call the function
         Function* function = callee_value.as_function();
-        
+
         // JIT function recording removed - was simulation code
-        
-        return function->call(ctx, arg_values);
+
+        // In non-strict mode, functions called without explicit 'this' should use global object
+        Value this_value = ctx.get_global_object() ? Value(ctx.get_global_object()) : Value();
+
+        return function->call(ctx, arg_values, this_value);
     }
     
     // Removed duplicate member expression handling - now handled above in handle_member_expression_call()
@@ -6463,8 +6553,8 @@ Value ForInStatement::evaluate(Context& ctx) {
             return Value();
         }
         
-        // Get object's own property keys
-        auto keys = obj->get_own_property_keys();
+        // Get object's enumerable property keys (for...in only iterates over enumerable properties)
+        auto keys = obj->get_enumerable_keys();
         
         // Safety limit for properties
         if (keys.size() > 50) {
@@ -7968,30 +8058,8 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     // Update the array length
     array->set_length(array_index);
     
-    // Add push function implementation
-    auto push_fn = ObjectFactory::create_native_function("push", 
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; // Suppress unused warning
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.push called on non-object"));
-                return Value();
-            }
-            
-            uint32_t initial_length = this_obj->get_length();
-            
-            // Push all arguments to the array
-            for (const auto& arg : args) {
-                this_obj->push(arg);
-            }
-            
-            uint32_t final_length = this_obj->get_length();
-            
-            // Return new length
-            return Value(static_cast<double>(final_length));
-        });
-    array->set_property("push", Value(push_fn.release()));
-    
+    // NOTE: push method now defined in Array.prototype (Context.cpp), not on individual instances
+
     // Add pop function
     auto pop_fn = ObjectFactory::create_native_function("pop", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -8005,7 +8073,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             
             return this_obj->pop();
         });
-    array->set_property("pop", Value(pop_fn.release()));
+    // Set pop method as non-enumerable
+    PropertyDescriptor pop_desc(Value(pop_fn.release()), PropertyAttributes::None);
+    pop_desc.set_enumerable(false);
+    pop_desc.set_configurable(true);
+    pop_desc.set_writable(true);
+    array->set_property_descriptor("pop", pop_desc);
     
     // Add shift function
     auto shift_fn = ObjectFactory::create_native_function("shift", 
@@ -8020,7 +8093,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             
             return this_obj->shift();
         });
-    array->set_property("shift", Value(shift_fn.release()));
+    // Set shift method as non-enumerable
+    PropertyDescriptor shift_desc(Value(shift_fn.release()), PropertyAttributes::None);
+    shift_desc.set_enumerable(false);
+    shift_desc.set_configurable(true);
+    shift_desc.set_writable(true);
+    array->set_property_descriptor("shift", shift_desc);
     
     // Add unshift function
     auto unshift_fn = ObjectFactory::create_native_function("unshift", 
@@ -8040,7 +8118,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             // Return new length
             return Value(static_cast<double>(this_obj->get_length()));
         });
-    array->set_property("unshift", Value(unshift_fn.release()));
+    // Set unshift method as non-enumerable
+    PropertyDescriptor unshift_desc(Value(unshift_fn.release()), PropertyAttributes::None);
+    unshift_desc.set_enumerable(false);
+    unshift_desc.set_configurable(true);
+    unshift_desc.set_writable(true);
+    array->set_property_descriptor("unshift", unshift_desc);
     
     // Add join function
     auto join_fn = ObjectFactory::create_native_function("join", 
@@ -8071,7 +8154,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             
             return Value(result);
         });
-    array->set_property("join", Value(join_fn.release()));
+    // Set join method as non-enumerable
+    PropertyDescriptor join_desc(Value(join_fn.release()), PropertyAttributes::None);
+    join_desc.set_enumerable(false);
+    join_desc.set_configurable(true);
+    join_desc.set_writable(true);
+    array->set_property_descriptor("join", join_desc);
     
     // Add indexOf function
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf", 
@@ -8109,7 +8197,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             
             return Value(-1.0); // Not found
         });
-    array->set_property("indexOf", Value(indexOf_fn.release()));
+    // Set indexOf method as non-enumerable
+    PropertyDescriptor indexOf_desc(Value(indexOf_fn.release()), PropertyAttributes::None);
+    indexOf_desc.set_enumerable(false);
+    indexOf_desc.set_configurable(true);
+    indexOf_desc.set_writable(true);
+    array->set_property_descriptor("indexOf", indexOf_desc);
 
     // Add concat function
     auto concat_fn = ObjectFactory::create_native_function("concat",
@@ -8153,30 +8246,66 @@ Value ArrayLiteral::evaluate(Context& ctx) {
 
             result->set_length(result_index);
 
-            // Add array methods to result array (copy from this object)
+            // Add array methods to result array (copy from this object) as non-enumerable
             if (this_obj->has_property("push")) {
-                result->set_property("push", this_obj->get_property("push"));
+                PropertyDescriptor push_desc(this_obj->get_property("push"), PropertyAttributes::None);
+                push_desc.set_enumerable(false);
+                push_desc.set_configurable(true);
+                push_desc.set_writable(true);
+                result->set_property_descriptor("push", push_desc);
             }
             if (this_obj->has_property("pop")) {
-                result->set_property("pop", this_obj->get_property("pop"));
+                PropertyDescriptor pop_desc(this_obj->get_property("pop"), PropertyAttributes::None);
+                pop_desc.set_enumerable(false);
+                pop_desc.set_configurable(true);
+                pop_desc.set_writable(true);
+                result->set_property_descriptor("pop", pop_desc);
             }
             if (this_obj->has_property("concat")) {
-                result->set_property("concat", this_obj->get_property("concat"));
+                PropertyDescriptor concat_desc(this_obj->get_property("concat"), PropertyAttributes::None);
+                concat_desc.set_enumerable(false);
+                concat_desc.set_configurable(true);
+                concat_desc.set_writable(true);
+                result->set_property_descriptor("concat", concat_desc);
             }
             if (this_obj->has_property("join")) {
-                result->set_property("join", this_obj->get_property("join"));
+                PropertyDescriptor join_desc(this_obj->get_property("join"), PropertyAttributes::None);
+                join_desc.set_enumerable(false);
+                join_desc.set_configurable(true);
+                join_desc.set_writable(true);
+                result->set_property_descriptor("join", join_desc);
             }
             if (this_obj->has_property("indexOf")) {
-                result->set_property("indexOf", this_obj->get_property("indexOf"));
+                PropertyDescriptor indexOf_desc(this_obj->get_property("indexOf"), PropertyAttributes::None);
+                indexOf_desc.set_enumerable(false);
+                indexOf_desc.set_configurable(true);
+                indexOf_desc.set_writable(true);
+                result->set_property_descriptor("indexOf", indexOf_desc);
             }
 
             return Value(result.release());
         });
-    array->set_property("concat", Value(concat_fn.release()));
+    // Set concat method as non-enumerable
+    PropertyDescriptor concat_desc(Value(concat_fn.release()), PropertyAttributes::None);
+    concat_desc.set_enumerable(false);
+    concat_desc.set_configurable(true);
+    concat_desc.set_writable(true);
+    array->set_property_descriptor("concat", concat_desc);
 
     // Add slice and splice as placeholders for now (more complex implementations)
-    array->set_property("slice", ValueFactory::function_placeholder("slice"));
-    array->set_property("splice", ValueFactory::function_placeholder("splice"));
+    // Set slice method as non-enumerable
+    PropertyDescriptor slice_desc(ValueFactory::function_placeholder("slice"), PropertyAttributes::None);
+    slice_desc.set_enumerable(false);
+    slice_desc.set_configurable(true);
+    slice_desc.set_writable(true);
+    array->set_property_descriptor("slice", slice_desc);
+
+    // Set splice method as non-enumerable
+    PropertyDescriptor splice_desc(ValueFactory::function_placeholder("splice"), PropertyAttributes::None);
+    splice_desc.set_enumerable(false);
+    splice_desc.set_configurable(true);
+    splice_desc.set_writable(true);
+    array->set_property_descriptor("splice", splice_desc);
     
     // Add the new array methods as real functions
     // Create map function
@@ -8210,7 +8339,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             auto result = this_obj->map(callback, ctx);
             return result ? Value(result.release()) : Value();
         });
-    array->set_property("map", Value(map_fn.release()));
+    // Set map method as non-enumerable
+    PropertyDescriptor map_desc(Value(map_fn.release()), PropertyAttributes::None);
+    map_desc.set_enumerable(false);
+    map_desc.set_configurable(true);
+    map_desc.set_writable(true);
+    array->set_property_descriptor("map", map_desc);
     
     // Create filter function
     auto filter_fn = ObjectFactory::create_native_function("filter", 
@@ -8243,7 +8377,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             auto result = this_obj->filter(callback, ctx);
             return result ? Value(result.release()) : Value();
         });
-    array->set_property("filter", Value(filter_fn.release()));
+    // Set filter method as non-enumerable
+    PropertyDescriptor filter_desc(Value(filter_fn.release()), PropertyAttributes::None);
+    filter_desc.set_enumerable(false);
+    filter_desc.set_configurable(true);
+    filter_desc.set_writable(true);
+    array->set_property_descriptor("filter", filter_desc);
     
     // Create reduce function
     auto reduce_fn = ObjectFactory::create_native_function("reduce", 
@@ -8276,7 +8415,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             Value initial_value = args.size() > 1 ? args[1] : Value();
             return this_obj->reduce(callback, initial_value, ctx);
         });
-    array->set_property("reduce", Value(reduce_fn.release()));
+    // Set reduce method as non-enumerable
+    PropertyDescriptor reduce_desc(Value(reduce_fn.release()), PropertyAttributes::None);
+    reduce_desc.set_enumerable(false);
+    reduce_desc.set_configurable(true);
+    reduce_desc.set_writable(true);
+    array->set_property_descriptor("reduce", reduce_desc);
     
     // Create forEach function
     auto forEach_fn = ObjectFactory::create_native_function("forEach", 
@@ -8309,7 +8453,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             this_obj->forEach(callback, ctx);
             return Value(); // undefined
         });
-    array->set_property("forEach", Value(forEach_fn.release()));
+    // Set forEach method as non-enumerable
+    PropertyDescriptor forEach_desc(Value(forEach_fn.release()), PropertyAttributes::None);
+    forEach_desc.set_enumerable(false);
+    forEach_desc.set_configurable(true);
+    forEach_desc.set_writable(true);
+    array->set_property_descriptor("forEach", forEach_desc);
     
     // Create includes function
     auto includes_fn = ObjectFactory::create_native_function("includes", 
@@ -8368,7 +8517,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             }
             return Value(false);
         });
-    array->set_property("includes", Value(includes_fn.release()));
+    // Set includes method as non-enumerable
+    PropertyDescriptor includes_desc(Value(includes_fn.release()), PropertyAttributes::None);
+    includes_desc.set_enumerable(false);
+    includes_desc.set_configurable(true);
+    includes_desc.set_writable(true);
+    array->set_property_descriptor("includes", includes_desc);
     
     // Create reverse function
     auto reverse_fn = ObjectFactory::create_native_function("reverse", 
@@ -8389,7 +8543,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             }
             return Value(this_obj); // return the same array
         });
-    array->set_property("reverse", Value(reverse_fn.release()));
+    // Set reverse method as non-enumerable
+    PropertyDescriptor reverse_desc(Value(reverse_fn.release()), PropertyAttributes::None);
+    reverse_desc.set_enumerable(false);
+    reverse_desc.set_configurable(true);
+    reverse_desc.set_writable(true);
+    array->set_property_descriptor("reverse", reverse_desc);
     
     // Create sort function
     auto sort_fn = ObjectFactory::create_native_function("sort",
@@ -8444,7 +8603,12 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             }
             return Value(this_obj); // return the same array
         });
-    array->set_property("sort", Value(sort_fn.release()));
+    // Set sort method as non-enumerable
+    PropertyDescriptor sort_desc(Value(sort_fn.release()), PropertyAttributes::None);
+    sort_desc.set_enumerable(false);
+    sort_desc.set_configurable(true);
+    sort_desc.set_writable(true);
+    array->set_property_descriptor("sort", sort_desc);
     
     // Set the array length and return
     array->set_length(array_index);

@@ -84,58 +84,9 @@ std::string Value::to_string() const {
         if (!obj) {
             return "null";
         }
-        
-        // Double-check if this is actually an array
-        if (obj->is_array()) {
-            // Safe array display - avoid potential recursion and memory issues
-            std::string result = "[";
-            
-            try {
-                uint32_t length = obj->get_length();
-                
-                // Limit array length to prevent memory issues
-                uint32_t display_length = std::min(length, static_cast<uint32_t>(10));
-                
-                for (uint32_t i = 0; i < display_length; i++) {
-                    if (i > 0) result += ", ";
-                    
-                    // Get element safely
-                    Value element = obj->get_element(i);
-                    
-                    // Safe string conversion - avoid recursion
-                    if (element.is_undefined()) {
-                        result += "undefined";
-                    } else if (element.is_null()) {
-                        result += "null";
-                    } else if (element.is_number()) {
-                        result += std::to_string(element.as_number());
-                    } else if (element.is_boolean()) {
-                        result += element.as_boolean() ? "true" : "false";
-                    } else if (element.is_string()) {
-                        result += "\"" + element.as_string()->str() + "\"";
-                    } else {
-                        result += "...";  // Avoid complex nested conversions
-                    }
-                }
-                
-                if (length > display_length) {
-                    result += ", ...";
-                }
-                
-            } catch (...) {
-                result += "error";
-            }
-            
-            result += "]";
-            return result;
-        } else {
-            // Check if this is an Error object
-            Error* error_obj = dynamic_cast<Error*>(obj);
-            if (error_obj) {
-                return error_obj->to_string();
-            }
-            return "[object Object]";
-        }
+
+        // Use the object's toString() method for proper JavaScript behavior
+        return obj->to_string();
     }
     if (is_function()) {
         return "[function Function]";
@@ -170,6 +121,20 @@ double Value::to_number() const {
         return std::numeric_limits<double>::quiet_NaN();
     }
     if (is_object()) {
+        // For now, just handle arrays with array-specific logic
+        Object* obj = as_object();
+        if (obj && obj->is_array()) {
+            uint32_t length = obj->get_length();
+            if (length == 0) {
+                return 0.0;  // Empty array converts to 0
+            } else if (length == 1) {
+                // Single element array converts to the element's number value
+                Value element = obj->get_element(0);
+                if (!element.is_object()) {  // Avoid infinite recursion
+                    return element.to_number();
+                }
+            }
+        }
         return std::numeric_limits<double>::quiet_NaN();
     }
     return std::numeric_limits<double>::quiet_NaN();
@@ -579,7 +544,23 @@ int Value::compare(const Value& other) const {
         if (*as_bigint() > *other.as_bigint()) return 1;
         return 0;
     }
-    // For simplicity, convert to strings for comparison
+
+    // JavaScript comparison: if one operand is a number, convert both to numbers
+    // Or if both are strings but at least one can be converted to a number
+    if (is_number() || other.is_number()) {
+        double left = to_number();
+        double right = other.to_number();
+        if (std::isnan(left) || std::isnan(right)) {
+            // NaN comparisons always return false in JavaScript
+            // For our compare function, we'll treat NaN as "incomparable"
+            return 0;
+        }
+        if (left < right) return -1;
+        if (left > right) return 1;
+        return 0;
+    }
+
+    // Both are strings or non-numeric types - do string comparison
     std::string left_str = to_string();
     std::string right_str = other.to_string();
     if (left_str < right_str) return -1;

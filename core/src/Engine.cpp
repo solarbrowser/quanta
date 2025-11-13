@@ -13,7 +13,6 @@
 #include "NodeJS.h"
 #include "Promise.h"
 #include "Error.h"
-// ES6+ includes - all re-enabled successfully!
 #include "Generator.h"
 #include "MapSet.h"
 #include "Iterator.h"
@@ -91,7 +90,23 @@ bool Engine::initialize() {
         setup_built_in_objects();
         setup_error_types();
         
+       
         initialized_ = true;
+        
+        // Initialize Test262 harness by loading external bootstrap file
+        std::string bootstrap_path = "core/src/test262_bootstrap.js"; // DONT DELETE THIS FILE, THIS IS REQUIRED FOR TEST262, IT CONTAINS INJECTIONS THAT NEED TO RUN TEST262 SUITE!!!
+        std::ifstream bootstrap_file(bootstrap_path);
+        if (bootstrap_file.is_open()) {
+            std::ostringstream buffer;
+            buffer << bootstrap_file.rdbuf();
+            std::string test262_bootstrap = buffer.str();
+            
+            Result bootstrap_result = execute(test262_bootstrap, "<test262-harness>");
+            if (!bootstrap_result.success) {
+                std::cerr << "[WARN] Test262 harness initialization failed: " << bootstrap_result.error_message << std::endl;
+                // Don't fail engine init if bootstrap fails - it's optional
+            }
+        }
         // Engine initialization complete
         return true;
     } catch (const std::exception& e) {

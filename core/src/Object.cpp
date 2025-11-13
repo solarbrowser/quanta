@@ -88,22 +88,30 @@ bool Object::has_property(const std::string& key) const {
 }
 
 bool Object::has_own_property(const std::string& key) const {
+    // Check descriptors map first (for property descriptors like array methods)
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) {
+            return true;
+        }
+    }
+
     // Check for array index
     uint32_t index;
     if (is_array_index(key, &index)) {
         return index < elements_.size() && !elements_[index].is_undefined();
     }
-    
+
     // Check shape - add null check to prevent crashes
     if (header_.shape && header_.shape->has_property(key)) {
         return true;
     }
-    
+
     // Check overflow
     if (overflow_properties_) {
         return overflow_properties_->find(key) != overflow_properties_->end();
     }
-    
+
     return false;
 }
 
@@ -1020,15 +1028,14 @@ void Object::update_hash_code() {
 
 std::string Object::to_string() const {
     if (header_.type == ObjectType::Array) {
+        // Array.toString() should be the same as join(",") - no brackets
         std::ostringstream oss;
-        oss << "[";
         for (uint32_t i = 0; i < elements_.size(); ++i) {
             if (i > 0) oss << ",";
             if (!elements_[i].is_undefined()) {
                 oss << elements_[i].to_string();
             }
         }
-        oss << "]";
         return oss.str();
     }
     

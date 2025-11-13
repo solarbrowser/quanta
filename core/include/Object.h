@@ -407,6 +407,10 @@ public:
              
     Function(const std::string& name,
              std::function<Value(Context&, const std::vector<Value>&)> native_fn);
+
+    Function(const std::string& name,
+             std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+             uint32_t arity);
     
     virtual ~Function() = default;
 
@@ -436,6 +440,10 @@ public:
     
     // Debugging
     std::string to_string() const;
+
+private:
+    // Variable hoisting helper
+    void scan_for_var_declarations(class ASTNode* node, Context& ctx);
 };
 
 // Object factory functions
@@ -463,6 +471,9 @@ namespace ObjectFactory {
                                                  class Context* closure_context);
     std::unique_ptr<Function> create_native_function(const std::string& name,
                                                      std::function<Value(Context&, const std::vector<Value>&)> fn);
+    std::unique_ptr<Function> create_native_function(const std::string& name,
+                                                     std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                     uint32_t arity);
     std::unique_ptr<Function> create_array_method(const std::string& method_name);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);

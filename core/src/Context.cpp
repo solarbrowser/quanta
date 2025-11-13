@@ -937,8 +937,8 @@ void Context::initialize_built_ins() {
         });
     array_constructor->set_property("of", Value(of_fn.release()));
     
-    // Create Array.prototype and add methods
-    auto array_prototype = ObjectFactory::create_object();
+    // Create Array.prototype as an Array object (not regular Object)
+    auto array_prototype = ObjectFactory::create_array();
     
     // Array.prototype.find
     auto find_fn = ObjectFactory::create_native_function("find",
@@ -1084,6 +1084,36 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         });
     array_prototype->set_property("entries", Value(array_entries_fn.release()));
+
+    // Array.prototype.push - core array method
+    auto array_push_fn = ObjectFactory::create_native_function("push",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.push called on non-object"));
+                return Value();
+            }
+
+            // Push all arguments to the array
+            for (const auto& arg : args) {
+                this_obj->push(arg);
+            }
+
+            // Return new length
+            return Value(static_cast<double>(this_obj->get_length()));
+        }, 1); // Arity = 1 according to ECMAScript spec
+
+    // Set push method length property
+    PropertyDescriptor push_length_desc(Value(1.0), PropertyAttributes::None);
+    push_length_desc.set_configurable(false);
+    push_length_desc.set_enumerable(false);
+    push_length_desc.set_writable(false);
+    array_push_fn->set_property_descriptor("length", push_length_desc);
+
+    // DEBUG: Set push method with regular property (for debugging)
+    printf("DEBUG: Setting Array.prototype.push...\n");
+    bool success = array_prototype->set_property("push", Value(array_push_fn.release()));
+    printf("DEBUG: Set push result: %s\n", success ? "SUCCESS" : "FAILED");
 
     // Array.prototype.concat
     auto array_concat_fn = ObjectFactory::create_native_function("concat",

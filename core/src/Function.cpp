@@ -74,9 +74,32 @@ Function::Function(const std::string& name,
     Object::set_property("prototype", Value(prototype_), PropertyAttributes::Default);
 }
 
+// Backward compatibility constructor
 Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), 
+    : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
+      prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+    // Create default prototype object for native functions too
+    auto proto = ObjectFactory::create_object();
+    prototype_ = proto.release();
+
+    // Add standard function properties for native functions
+    this->set_property("name", Value(name_));
+
+    // Set length property with proper descriptor (non-configurable, non-enumerable, non-writable)
+    PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::None);
+    length_desc.set_configurable(false);
+    length_desc.set_enumerable(false);
+    length_desc.set_writable(false);
+    this->set_property_descriptor("length", length_desc);
+
+}
+
+// New constructor with arity
+Function::Function(const std::string& name,
+                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+                   uint32_t arity)
+    : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
       prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     // Create default prototype object for native functions too
     auto proto = ObjectFactory::create_object();
@@ -89,7 +112,7 @@ Function::Function(const std::string& name,
     this->set_property("name", Value(name_));
 
     // Set length property with proper descriptor (non-configurable, non-enumerable, non-writable)
-    PropertyDescriptor length_desc(Value(0.0), PropertyAttributes::None);
+    PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::None);
     length_desc.set_configurable(false);
     length_desc.set_enumerable(false);
     length_desc.set_writable(false);
@@ -277,6 +300,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     // Execute function body
     if (body_) {
+        // VARIABLE HOISTING: Pre-declare all var variables with undefined
+        // This is required for proper JavaScript semantics
+        if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            // If body is a BlockStatement, we can scan for var declarations
+            scan_for_var_declarations(body_.get(), function_context);
+        }
+
         Value result = body_->evaluate(function_context);
 
         // CLOSURE WRITE-BACK: Update captured closure variables that were modified
@@ -548,11 +578,68 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
     return std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
 }
 
+// Backward compatibility overload
 std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn) {
-    return std::make_unique<Function>(name, fn);
+    return std::make_unique<Function>(name, fn, 0);
+}
+
+// New overload with arity
+std::unique_ptr<Function> create_native_function(const std::string& name,
+                                                 std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                 uint32_t arity) {
+    return std::make_unique<Function>(name, fn, arity);
 }
 
 } // namespace ObjectFactory
+
+void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
+    if (!node) return;
+
+    if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(node);
+
+        // Only hoist var declarations, not let/const
+        for (const auto& declarator : var_decl->get_declarations()) {
+            if (declarator->get_kind() == VariableDeclarator::Kind::VAR) {
+                const std::string& name = declarator->get_id()->get_name();
+
+                // Create binding with undefined value if it doesn't already exist
+                if (!ctx.has_binding(name)) {
+                    ctx.create_var_binding(name, Value(), true); // undefined, mutable
+                }
+            }
+        }
+    }
+
+    // Recursively scan child nodes for nested var declarations
+    // Note: This is a simplified version - a full implementation would need
+    // to handle all possible AST node types that can contain statements
+    if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        BlockStatement* block = static_cast<BlockStatement*>(node);
+        for (const auto& stmt : block->get_statements()) {
+            scan_for_var_declarations(stmt.get(), ctx);
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::IF_STATEMENT) {
+        IfStatement* if_stmt = static_cast<IfStatement*>(node);
+        scan_for_var_declarations(if_stmt->get_consequent(), ctx);
+        if (if_stmt->get_alternate()) {
+            scan_for_var_declarations(if_stmt->get_alternate(), ctx);
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+        ForStatement* for_stmt = static_cast<ForStatement*>(node);
+        if (for_stmt->get_init()) {
+            scan_for_var_declarations(for_stmt->get_init(), ctx);
+        }
+        scan_for_var_declarations(for_stmt->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::WHILE_STATEMENT) {
+        WhileStatement* while_stmt = static_cast<WhileStatement*>(node);
+        scan_for_var_declarations(while_stmt->get_body(), ctx);
+    }
+    // Add more node types as needed for complete hoisting coverage
+}
 
 } // namespace Quanta
