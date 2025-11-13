@@ -38,20 +38,25 @@ Quanta is a modern JavaScript engine designed for the **Solar Project** with a f
 
 ## ECMAScript Compatibility
 
-**Status: Unknown - Testing Required**
+Quanta has been tested against the official **Test262** ECMAScript test suite (51,216 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
 
-Tests have not been run with the latest modular architecture. After comprehensive testing is completed, detailed compatibility information and results will be updated here and available at [browser.solar/quanta](https://browser.solar/quanta).
+### Test262 Compliance Results
+**Last Test Date:** November 13, 2025 | **Engine Version:** q111325c86
 
-### Current Known Support
-- **Core JavaScript** - Variables, functions, objects, arrays
-- **Math Operations** - Full Math object implementation
-- **String Methods** - Complete string manipulation API
-- **Array Methods** - map, filter, reduce, forEach, and more
-- **Control Flow** - Loops, conditionals, error handling
-- **Complex Operations** - Nested data structures, functional patterns
+| Metric | Count | % of Total | % of Executed |
+|--------|-------|------------|---------------|
+| **Total Tests** | 51,216 | 100% | - |
+| **Tests Run** | 35,697 | 69.7% | 100% |
+| **Passed** | 5,745 | 11.2% | **16.1%** |
+| **Failed** | 29,952 | 58.5% | 83.9% |
+| **⏭Skipped** | 15,519 | 30.3% | - |
 
-### Testing Status
-The engine has been completely restructured with a modular architecture. Comprehensive ECMAScript compatibility testing is planned to determine exact compliance levels with ES6+ specifications.
+**[View Detailed & Other Test Results →](docs/documents/test262-results.md)**
+
+### Performance Metrics
+- **Test Execution Speed:** 25 tests/second
+- **Total Test Duration:** 34 minutes (2,050 seconds)
+- **Memory Efficient:** Process cleanup after each test execution
 
 ---
 
