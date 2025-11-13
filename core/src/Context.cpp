@@ -1110,19 +1110,14 @@ void Context::initialize_built_ins() {
     push_length_desc.set_writable(false);
     array_push_fn->set_property_descriptor("length", push_length_desc);
 
-    // DEBUG: Set push method with regular property (for debugging)
-    printf("DEBUG: Setting Array.prototype.push...\n");
-    bool success = array_prototype->set_property("push", Value(array_push_fn.release()));
-    printf("DEBUG: Set push result: %s\n", success ? "SUCCESS" : "FAILED");
+    // Set push method
+    array_prototype->set_property("push", Value(array_push_fn.release()));
 
     // Array.prototype.concat
     auto array_concat_fn = ObjectFactory::create_native_function("concat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            printf("DEBUG: Array.prototype.concat called with %zu args\n", args.size());
             Object* this_array = ctx.get_this_binding();
-            printf("DEBUG: this_array = %p\n", (void*)this_array);
             if (!this_array) {
-                printf("DEBUG: this_array is null!\n");
                 ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
                 return Value();
             }

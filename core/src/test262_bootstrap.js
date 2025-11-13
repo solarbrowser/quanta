@@ -218,6 +218,34 @@ function Test262Error(message) {
     };
     
 // =============================================================================
+// isConstructor - Test if a value can be used as a constructor
+// =============================================================================
+
+function isConstructor(obj) {
+    if (obj === null || obj === undefined) {
+        return false;
+    }
+    
+    // Check if it's a function
+    if (typeof obj !== 'function') {
+        return false;
+    }
+    
+    // Try to use it as a constructor
+    try {
+        // Use Reflect.construct if available, otherwise use new
+        if (typeof Reflect !== 'undefined' && Reflect.construct) {
+            Reflect.construct(function() {}, [], obj);
+        } else {
+            new obj();
+        }
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// =============================================================================
 // Register all functions in global scope
 // =============================================================================
 
