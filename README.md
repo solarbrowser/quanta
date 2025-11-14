@@ -9,9 +9,6 @@
   <span>
     <img src="https://img.shields.io/github/stars/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
     <img src="https://img.shields.io/github/forks/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
-    <img src="https://img.shields.io/badge/License-MPL%202.0-1b1f23?style=for-the-badge&logo=mozilla&color=ff4f5e" />
-    ![Commit Activity](https://img.shields.io/github/commit-activity/m/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=2f81f7)
-    ![Last Commit](https://img.shields.io/github/last-commit/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=2f81f7)
     ![Issues](https://img.shields.io/github/issues/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=6e40c9)
     ![PRs](https://img.shields.io/github/issues-pr/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=6e40c9)
   </span>
