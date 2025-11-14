@@ -84,13 +84,12 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
 
     // Add standard function properties for native functions
-    this->set_property("name", Value(name_));
+    // Set name property with proper descriptor (non-enumerable, non-writable, configurable)
+    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
+    this->set_property_descriptor("name", name_desc);
 
-    // Set length property with proper descriptor (non-configurable, non-enumerable, non-writable)
-    PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::None);
-    length_desc.set_configurable(false);
-    length_desc.set_enumerable(false);
-    length_desc.set_writable(false);
+    // Set length property with proper descriptor (configurable, non-enumerable, non-writable)
+    PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
 }
@@ -109,13 +108,12 @@ Function::Function(const std::string& name,
     this->set_property("prototype", Value(prototype_));
     
     // Add standard function properties for native functions
-    this->set_property("name", Value(name_));
+    // Set name property with proper descriptor (non-enumerable, non-writable, configurable)
+    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
+    this->set_property_descriptor("name", name_desc);
 
-    // Set length property with proper descriptor (non-configurable, non-enumerable, non-writable)
-    PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::None);
-    length_desc.set_configurable(false);
-    length_desc.set_enumerable(false);
-    length_desc.set_writable(false);
+    // Set length property with proper descriptor (configurable, non-enumerable, non-writable)
+    PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
     
 }

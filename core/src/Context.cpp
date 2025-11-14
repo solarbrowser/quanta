@@ -647,11 +647,12 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            if (!args[0].is_object()) {
+            // Accept both objects and functions (functions are objects)
+            if (!args[0].is_object() && !args[0].is_function()) {
                 return Value();
             }
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
             std::string prop_name = args[1].to_string();
 
             // Get the actual property descriptor
@@ -2547,6 +2548,106 @@ void Context::initialize_built_ins() {
     range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
 
     register_built_in_object("RangeError", range_error_constructor.release());
+
+    // URIError constructor
+    auto uri_error_constructor = ObjectFactory::create_native_function("URIError",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto error_obj = std::make_unique<Error>(Error::Type::URIError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+
+            return Value(error_obj.release());
+        });
+
+    // Create URIError.prototype that inherits from Error.prototype
+    auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    uri_error_prototype->set_property("name", Value("URIError"));
+    uri_error_prototype->set_property("constructor", Value(uri_error_constructor.get()));
+
+    // Set constructor.prototype
+    uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()));
+
+    register_built_in_object("URIError", uri_error_constructor.release());
+
+    // EvalError constructor
+    auto eval_error_constructor = ObjectFactory::create_native_function("EvalError",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto error_obj = std::make_unique<Error>(Error::Type::EvalError, args.empty() ? "" : args[0].to_string());
+            error_obj->set_property("_isError", Value(true));
+
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+
+            return Value(error_obj.release());
+        });
+
+    // Create EvalError.prototype that inherits from Error.prototype
+    auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    eval_error_prototype->set_property("name", Value("EvalError"));
+    eval_error_prototype->set_property("constructor", Value(eval_error_constructor.get()));
+
+    // Set constructor.prototype
+    eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()));
+
+    register_built_in_object("EvalError", eval_error_constructor.release());
+
+    // AggregateError constructor (ES2021) - takes 2 arguments
+    auto aggregate_error_constructor = ObjectFactory::create_native_function("AggregateError",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = args.size() > 1 ? args[1].to_string() : "";
+            auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
+            error_obj->set_property("_isError", Value(true));
+
+            // Handle the errors array (first argument)
+            if (args.size() > 0 && args[0].is_object()) {
+                error_obj->set_property("errors", args[0]);
+            } else {
+                // Create an empty array if no errors provided
+                auto empty_array = ObjectFactory::create_array();
+                error_obj->set_property("errors", Value(empty_array.release()));
+            }
+
+            // Add toString method
+            auto toString_fn = ObjectFactory::create_native_function("toString",
+                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    if (error_message.empty()) {
+                        return Value(error_name);
+                    }
+                    return Value(error_name + ": " + error_message);
+                });
+            error_obj->set_property("toString", Value(toString_fn.release()));
+
+            return Value(error_obj.release());
+        }, 2); // AggregateError takes 2 arguments: errors and message
+
+    // Create AggregateError.prototype that inherits from Error.prototype
+    auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    aggregate_error_prototype->set_property("name", Value("AggregateError"));
+    aggregate_error_prototype->set_property("constructor", Value(aggregate_error_constructor.get()));
+
+    // Set constructor.prototype
+    aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()));
+
+    register_built_in_object("AggregateError", aggregate_error_constructor.release());
 
     // RegExp constructor 
     auto regexp_constructor = ObjectFactory::create_native_function("RegExp",

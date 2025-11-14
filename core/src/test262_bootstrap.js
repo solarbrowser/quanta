@@ -74,7 +74,8 @@ function Test262Error(message) {
     // =============================================================================
     
     function verifyProperty(obj, name, desc) {
-        if (typeof obj !== "object" || obj === null) {
+        // Accept both objects and functions (functions are objects in JS)
+        if ((typeof obj !== "object" && typeof obj !== "function") || obj === null) {
             throw new Test262Error("obj must be an object");
         }
         
