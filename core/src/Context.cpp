@@ -2567,10 +2567,20 @@ void Context::initialize_built_ins() {
     date_prototype.release(); // Release prototype after binding
     
     // Additional Error types (Error is already defined above)
+    // Create TypeError.prototype first
+    auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    type_error_prototype->set_property("name", Value("TypeError"));
+    Object* type_error_proto_ptr = type_error_prototype.get();
+
     auto type_error_constructor = ObjectFactory::create_native_function("TypeError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::TypeError, args.empty() ? "" : args[0].to_string());
+        [type_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(type_error_proto_ptr);
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2586,9 +2596,6 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    // Create TypeError.prototype that inherits from Error.prototype
-    auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    type_error_prototype->set_property("name", Value("TypeError"));
     type_error_prototype->set_property("constructor", Value(type_error_constructor.get()));
 
     // Set constructor.prototype
@@ -2601,10 +2608,20 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("TypeError", type_error_constructor.release());
     
+    // Create ReferenceError.prototype first
+    auto reference_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    reference_error_prototype->set_property("name", Value("ReferenceError"));
+    Object* reference_error_proto_ptr = reference_error_prototype.get();
+
     auto reference_error_constructor = ObjectFactory::create_native_function("ReferenceError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, args.empty() ? "" : args[0].to_string());
+        [reference_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(reference_error_proto_ptr);
             
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2620,6 +2637,9 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     
+    reference_error_prototype->set_property("constructor", Value(reference_error_constructor.get()));
+    reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()));
+
     // Set ReferenceError's prototype to Error
     if (error_ctor) {
         reference_error_constructor->set_prototype(error_ctor);
@@ -2627,10 +2647,20 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("ReferenceError", reference_error_constructor.release());
     
+    // Create SyntaxError.prototype first
+    auto syntax_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    syntax_error_prototype->set_property("name", Value("SyntaxError"));
+    Object* syntax_error_proto_ptr = syntax_error_prototype.get();
+
     auto syntax_error_constructor = ObjectFactory::create_native_function("SyntaxError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, args.empty() ? "" : args[0].to_string());
+        [syntax_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(syntax_error_proto_ptr);
             
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2646,6 +2676,9 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     
+    syntax_error_prototype->set_property("constructor", Value(syntax_error_constructor.get()));
+    syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()));
+
     // Set SyntaxError's prototype to Error
     if (error_ctor) {
         syntax_error_constructor->set_prototype(error_ctor);
@@ -2653,15 +2686,25 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("SyntaxError", syntax_error_constructor.release());
 
+    // Create RangeError.prototype first
+    auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    range_error_prototype->set_property("name", Value("RangeError"));
+    Object* range_error_proto_ptr = range_error_prototype.get();
+
     auto range_error_constructor = ObjectFactory::create_native_function("RangeError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::RangeError, args.empty() ? "" : args[0].to_string());
+        [range_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(range_error_proto_ptr);
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args; // Suppress unused parameter warnings
+                    (void)ctx; (void)args;
                     if (error_message.empty()) {
                         return Value(error_name);
                     }
@@ -2672,9 +2715,6 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    // Create RangeError.prototype that inherits from Error.prototype
-    auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    range_error_prototype->set_property("name", Value("RangeError"));
     range_error_prototype->set_property("constructor", Value(range_error_constructor.get()));
 
     // Set constructor.prototype
@@ -2687,11 +2727,20 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("RangeError", range_error_constructor.release());
 
-    // URIError constructor
+    // Create URIError.prototype first
+    auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    uri_error_prototype->set_property("name", Value("URIError"));
+    Object* uri_error_proto_ptr = uri_error_prototype.get();
+
     auto uri_error_constructor = ObjectFactory::create_native_function("URIError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::URIError, args.empty() ? "" : args[0].to_string());
+        [uri_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(uri_error_proto_ptr);
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2707,9 +2756,6 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    // Create URIError.prototype that inherits from Error.prototype
-    auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    uri_error_prototype->set_property("name", Value("URIError"));
     uri_error_prototype->set_property("constructor", Value(uri_error_constructor.get()));
 
     // Set constructor.prototype
@@ -2722,11 +2768,20 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("URIError", uri_error_constructor.release());
 
-    // EvalError constructor
+    // Create EvalError.prototype first
+    auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    eval_error_prototype->set_property("name", Value("EvalError"));
+    Object* eval_error_proto_ptr = eval_error_prototype.get();
+
     auto eval_error_constructor = ObjectFactory::create_native_function("EvalError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto error_obj = std::make_unique<Error>(Error::Type::EvalError, args.empty() ? "" : args[0].to_string());
+        [eval_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = "";
+            if (!args.empty() && !args[0].is_undefined()) {
+                message = args[0].to_string();
+            }
+            auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(eval_error_proto_ptr);
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2742,9 +2797,6 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    // Create EvalError.prototype that inherits from Error.prototype
-    auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    eval_error_prototype->set_property("name", Value("EvalError"));
     eval_error_prototype->set_property("constructor", Value(eval_error_constructor.get()));
 
     // Set constructor.prototype

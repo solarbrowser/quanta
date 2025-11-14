@@ -1,6 +1,53 @@
 # Test262 Compliance Test Results
 
+## Navigation
+- [November 14, 2025 - Object.prototype & Error Fixes](#november-14-2025---objectprototype--error-fixes)
+- [November 13, 2025 - Initial Test262 Run](#november-13-2025---initial-test262-run)
+
+---
+
 ## Test History
+
+### November 14, 2025 - Object.prototype & Error Fixes
+**Engine Version:** q111425c100  
+**Test262 Commit:** Latest (November 2025)  
+**Test Duration:** 2,120 seconds (35 minutes, 20 seconds)  
+**Test Speed:** ~24.2 tests/second
+
+#### Overall Results
+
+| Metric | Count | % of Total Tests | % of Run Tests |
+|--------|-------|------------------|----------------|
+| **Total Tests in Suite** | 51,216 | 100.0% | - |
+| **Tests Executed** | 35,697 | 69.7% | 100.0% |
+| **Passed** | 6,604 | 12.9% | **18.5%** |
+| **Failed** | 29,093 | 56.8% | 81.5% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+#### Key Improvements
+**+859 tests passed** compared to previous run (5,745 → 6,604)
+
+**Major Fixes Implemented:**
+1. **Object.prototype Support** - All objects now properly inherit from Object.prototype
+   - Fixed `hasOwnProperty` implementation to use `ctx.get_this_binding()`
+   - Added `set_object_prototype()` and `get_object_prototype()` to ObjectFactory
+   - Updated `get_pooled_object()` to set Object.prototype on all new objects
+
+2. **Error Constructor Instance Prototypes** - All error types now set prototypes on instances
+   - Fixed: AggregateError, TypeError, ReferenceError, SyntaxError, RangeError, URIError, EvalError
+   - Each error instance now has correct prototype chain
+
+3. **Error Message Property Spec Compliance** - Message property only set when defined
+   - Checks `!args[0].is_undefined()` before setting message
+   - Modified `Error::initialize_properties()` to skip empty messages
+   - Applied to all error constructors
+
+4. **New Error Types Added**
+   - AggregateError (ES2021) with proper arity (2)
+   - URIError 
+   - EvalError
+
+---
 
 ### November 13, 2025 - Initial Test262 Run
 **Engine Version:** q111325c86 
@@ -83,5 +130,26 @@ Intentionally skipped test categories:
   - `$262` object (createRealm, detachArrayBuffer, gc, etc.)
   - `Test262Error` constructor
   - `isConstructor` (added November 13, 2025)
+
+---
+
+## Progress Summary
+
+### Overall Test262 Progress
+
+| Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
+|------|----------------|--------------|---------------------|---------|
+| Nov 14, 2025 | q111425c100 | 6,604 | 18.5% | **+859** ✅ |
+| Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
+
+### Key Milestones
+- ✅ **November 14, 2025:** Object.prototype infrastructure complete (+859 tests)
+- ✅ **November 13, 2025:** Initial Test262 baseline established (5,745 tests)
+
+### Next Focus Areas
+1. **Property Descriptors** - Further improvements for ~8,000 remaining tests
+2. **NewTarget Handling** - Error constructors without `new` keyword
+3. **Advanced Error Features** - Error cause property (ES2022)
+4. **Proxy/Reflect APIs** - Edge cases and complex scenarios
 
 ---

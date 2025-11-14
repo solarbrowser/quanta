@@ -49,14 +49,14 @@ Quanta is a modern JavaScript engine designed for the **Solar Project** with a f
 Quanta has been tested against the official **Test262** ECMAScript test suite (51,216 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
 
 ### Test262 Compliance Results
-**Last Test Date:** November 13, 2025 | **Engine Version:** q111325c86
+**Last Test Date:** November 14, 2025 | **Engine Version:** q111425c100
 
 | Metric | Count | % of Total | % of Executed |
 |--------|-------|------------|---------------|
 | **Total Tests** | 51,216 | 100% | - |
 | **Tests Run** | 35,697 | 69.7% | 100% |
-| **Passed** | 5,745 | 11.2% | **16.1%** |
-| **Failed** | 29,952 | 58.5% | 83.9% |
+| **Passed** | 6,604 | 12.9% | **18.5%** |
+| **Failed** | 29,093 | 56.8% | 81.5% |
 | **Skipped** | 15,519 | 30.3% | - |
 
 **[View Detailed & Other Test Results →](docs/documents/test262-results.md)**
@@ -137,7 +137,7 @@ For Windows development, MSYS2 is required for compilation. Native Windows build
 - [x] Core JavaScript functionality
 - [x] Build system optimization
 - [x] Comprehensive testing framework
-- [X] (most of) Modern JavaScript features (ES6+)
+- [X] (little bit of) Modern JavaScript features (ES6+)
 - [ ] ECMAScript compliance verification
 - [ ] Performance benchmarking
 - [ ] Production deployment
