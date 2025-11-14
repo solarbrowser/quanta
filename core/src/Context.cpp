@@ -620,6 +620,115 @@ void Context::initialize_built_ins() {
         });
     object_constructor->set_property("assign", Value(assign_fn.release()));
 
+    // Object.getPrototypeOf
+    auto getPrototypeOf_fn = ObjectFactory::create_native_function("getPrototypeOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_exception(Value("TypeError: Object.getPrototypeOf requires an argument"));
+                return Value();
+            }
+
+            Value obj_val = args[0];
+            
+            // Handle null and undefined
+            if (obj_val.is_null() || obj_val.is_undefined()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+
+            // Get the object (works for both objects and functions)
+            Object* obj = nullptr;
+            if (obj_val.is_object()) {
+                obj = obj_val.as_object();
+            } else if (obj_val.is_function()) {
+                obj = obj_val.as_function();
+            } else {
+                // For primitives, return the prototype of their wrapper
+                if (obj_val.is_string()) {
+                    // Return String.prototype
+                    Value string_ctor = ctx.get_binding("String");
+                    if (string_ctor.is_function()) {
+                        Function* str_fn = string_ctor.as_function();
+                        Value proto = str_fn->get_property("prototype");
+                        return proto;
+                    }
+                } else if (obj_val.is_number()) {
+                    Value number_ctor = ctx.get_binding("Number");
+                    if (number_ctor.is_function()) {
+                        Function* num_fn = number_ctor.as_function();
+                        Value proto = num_fn->get_property("prototype");
+                        return proto;
+                    }
+                } else if (obj_val.is_boolean()) {
+                    Value boolean_ctor = ctx.get_binding("Boolean");
+                    if (boolean_ctor.is_function()) {
+                        Function* bool_fn = boolean_ctor.as_function();
+                        Value proto = bool_fn->get_property("prototype");
+                        return proto;
+                    }
+                }
+                return Value::null();
+            }
+
+            // Get the prototype
+            Object* proto = obj->get_prototype();
+            if (proto) {
+                // Check if prototype is actually a Function
+                Function* func_proto = dynamic_cast<Function*>(proto);
+                if (func_proto) {
+                    return Value(func_proto);
+                }
+                return Value(proto);
+            }
+            
+            return Value::null();
+        });
+    object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()));
+
+    // Object.setPrototypeOf
+    auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) {
+                ctx.throw_exception(Value("TypeError: Object.setPrototypeOf requires 2 arguments"));
+                return Value();
+            }
+
+            Value obj_val = args[0];
+            Value proto_val = args[1];
+
+            // Handle null and undefined for object
+            if (obj_val.is_null() || obj_val.is_undefined()) {
+                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                return Value();
+            }
+
+            // Get the object
+            Object* obj = nullptr;
+            if (obj_val.is_object()) {
+                obj = obj_val.as_object();
+            } else if (obj_val.is_function()) {
+                obj = obj_val.as_function();
+            } else {
+                ctx.throw_exception(Value("TypeError: Object.setPrototypeOf called on non-object"));
+                return Value();
+            }
+
+            // Set the prototype
+            if (proto_val.is_null()) {
+                obj->set_prototype(nullptr);
+            } else if (proto_val.is_object()) {
+                obj->set_prototype(proto_val.as_object());
+            } else if (proto_val.is_function()) {
+                obj->set_prototype(proto_val.as_function());
+            } else {
+                ctx.throw_exception(Value("TypeError: Object prototype may only be an Object or null"));
+                return Value();
+            }
+
+            return obj_val;
+        });
+    object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()));
+
     // Object.hasOwnProperty (static method)
     auto hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2001,6 +2110,9 @@ void Context::initialize_built_ins() {
     // Store reference to Error.prototype for other error types to inherit from
     Object* error_prototype_ptr = error_prototype.get();
 
+    // Store Error constructor pointer before releasing for other error constructors to inherit
+    Function* error_ctor = error_constructor.get();
+
     register_built_in_object("Error", error_constructor.release());
 
     // Store the error prototype reference (after error_prototype is released by register)
@@ -2478,6 +2590,11 @@ void Context::initialize_built_ins() {
     // Set constructor.prototype
     type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
 
+    // Set TypeError's prototype to Error (TypeError inherits from Error)
+    if (error_ctor) {
+        type_error_constructor->set_prototype(error_ctor);
+    }
+
     register_built_in_object("TypeError", type_error_constructor.release());
     
     auto reference_error_constructor = ObjectFactory::create_native_function("ReferenceError",
@@ -2498,6 +2615,12 @@ void Context::initialize_built_ins() {
             
             return Value(error_obj.release());
         });
+    
+    // Set ReferenceError's prototype to Error
+    if (error_ctor) {
+        reference_error_constructor->set_prototype(error_ctor);
+    }
+    
     register_built_in_object("ReferenceError", reference_error_constructor.release());
     
     auto syntax_error_constructor = ObjectFactory::create_native_function("SyntaxError",
@@ -2518,6 +2641,12 @@ void Context::initialize_built_ins() {
             
             return Value(error_obj.release());
         });
+    
+    // Set SyntaxError's prototype to Error
+    if (error_ctor) {
+        syntax_error_constructor->set_prototype(error_ctor);
+    }
+    
     register_built_in_object("SyntaxError", syntax_error_constructor.release());
 
     auto range_error_constructor = ObjectFactory::create_native_function("RangeError",
@@ -2546,6 +2675,11 @@ void Context::initialize_built_ins() {
 
     // Set constructor.prototype
     range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
+
+    // Set RangeError's prototype to Error
+    if (error_ctor) {
+        range_error_constructor->set_prototype(error_ctor);
+    }
 
     register_built_in_object("RangeError", range_error_constructor.release());
 
@@ -2577,6 +2711,11 @@ void Context::initialize_built_ins() {
     // Set constructor.prototype
     uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()));
 
+    // Set URIError's prototype to Error
+    if (error_ctor) {
+        uri_error_constructor->set_prototype(error_ctor);
+    }
+
     register_built_in_object("URIError", uri_error_constructor.release());
 
     // EvalError constructor
@@ -2606,6 +2745,11 @@ void Context::initialize_built_ins() {
 
     // Set constructor.prototype
     eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()));
+
+    // Set EvalError's prototype to Error
+    if (error_ctor) {
+        eval_error_constructor->set_prototype(error_ctor);
+    }
 
     register_built_in_object("EvalError", eval_error_constructor.release());
 
@@ -2646,6 +2790,11 @@ void Context::initialize_built_ins() {
 
     // Set constructor.prototype
     aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()));
+
+    // Set AggregateError's prototype to Error
+    if (error_ctor) {
+        aggregate_error_constructor->set_prototype(error_ctor);
+    }
 
     register_built_in_object("AggregateError", aggregate_error_constructor.release());
 

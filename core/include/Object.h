@@ -119,7 +119,7 @@ public:
     virtual bool is_wasm_instance() const { return false; }
 
     // Prototype chain
-    Object* get_prototype() const { return header_.prototype; }
+    virtual Object* get_prototype() const { return header_.prototype; }
     void set_prototype(Object* prototype);
     bool has_prototype(Object* prototype) const;
     
@@ -434,8 +434,8 @@ public:
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::None) override;
     
-    // Prototype management
-    Object* get_prototype() const { return prototype_; }
+    // Prototype management (override to use prototype_ instead of header_.prototype)
+    Object* get_prototype() const override { return prototype_; }
     void set_prototype(Object* proto) { prototype_ = proto; }
     static Function* create_function_prototype();
     
