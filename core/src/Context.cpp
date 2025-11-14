@@ -810,6 +810,57 @@ void Context::initialize_built_ins() {
     // Create Object.prototype
     auto object_prototype = ObjectFactory::create_object();
 
+    // Object.prototype.toString - ES6 compliant implementation
+    auto proto_toString_fn = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            
+            // 1. If this is undefined, return "[object Undefined]"
+            if (!this_obj) {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_undefined()) {
+                    return Value("[object Undefined]");
+                }
+                if (this_val.is_null()) {
+                    return Value("[object Null]");
+                }
+            }
+            
+            // 2. Determine the built-in tag
+            std::string builtinTag;
+            
+            if (!this_obj) {
+                builtinTag = "Object";
+            } else if (this_obj->is_array()) {
+                builtinTag = "Array";
+            } else if (this_obj->is_function()) {
+                builtinTag = "Function";
+            } else if (this_obj->has_property("message") && this_obj->has_property("name")) {
+                // Error objects
+                Value name = this_obj->get_property("name");
+                if (name.is_string()) {
+                    builtinTag = "Error";
+                } else {
+                    builtinTag = "Object";
+                }
+            } else if (this_obj->has_property("source") && this_obj->has_property("flags")) {
+                // RegExp
+                builtinTag = "RegExp";
+            } else if (this_obj->has_property("getTime")) {
+                // Date
+                builtinTag = "Date";
+            } else {
+                builtinTag = "Object";
+            }
+            
+            // 3. Check for @@toStringTag symbol (Symbol.toStringTag)
+            // TODO: When Symbol support is complete, check for Symbol.toStringTag property
+            
+            // 4. Return "[object " + tag + "]"
+            return Value("[object " + builtinTag + "]");
+        });
+    
     // Object.prototype.hasOwnProperty - working implementation
     auto proto_hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -827,9 +878,11 @@ void Context::initialize_built_ins() {
             return Value(true);
         });
 
+    // Set all Object.prototype methods
+    object_prototype->set_property("toString", Value(proto_toString_fn.release()));
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()));
 
-    // Set Object.prototype
+    // Store pointer before transferring ownership
     object_constructor->set_property("prototype", Value(object_prototype.release()));
 
     // HACK: Add hasOwnProperty to all new objects in global environment

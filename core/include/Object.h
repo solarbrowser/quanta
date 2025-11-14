@@ -432,6 +432,7 @@ public:
     
     // Property override to ensure function properties work
     Value get_property(const std::string& key) const override;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::None) override;
     
     // Prototype management
     Object* get_prototype() const { return prototype_; }

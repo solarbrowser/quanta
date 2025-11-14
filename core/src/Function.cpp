@@ -490,6 +490,23 @@ Value Function::get_property(const std::string& key) const {
     return Value(); // undefined
 }
 
+// Override set_property to handle "prototype" specially
+bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    // Special handling for "prototype" property
+    if (key == "prototype") {
+        if (value.is_object()) {
+            prototype_ = value.as_object();
+            return true;
+        }
+        // If setting to non-object, clear prototype
+        prototype_ = nullptr;
+        return true;
+    }
+    
+    // For all other properties, use parent class implementation
+    return Object::set_property(key, value, attrs);
+}
+
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Create new object instance
     auto new_object = ObjectFactory::create_object();
