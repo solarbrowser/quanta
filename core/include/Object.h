@@ -460,6 +460,8 @@ namespace ObjectFactory {
     std::unique_ptr<Object> create_function();
     
     // Array prototype management
+    void set_object_prototype(Object* prototype);
+    Object* get_object_prototype();
     void set_array_prototype(Object* prototype);
     Object* get_array_prototype();
     std::unique_ptr<Function> create_js_function(const std::string& name,

@@ -1294,11 +1294,22 @@ std::unique_ptr<Object> get_pooled_object() {
         // Reset object state safely without destructor call
         obj->clear_properties();
         
+        // Set Object.prototype as prototype if available
+        Object* obj_proto = get_object_prototype();
+        if (obj_proto) {
+            obj->set_prototype(obj_proto);
+        }
+        
         return obj;
     }
     
-    // Pool empty, create new object
-    return std::make_unique<Object>(Object::ObjectType::Ordinary);
+    // Pool empty, create new object with proper prototype
+    auto obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
+    Object* obj_proto = get_object_prototype();
+    if (obj_proto) {
+        obj->set_prototype(obj_proto);
+    }
+    return obj;
 }
 
 // Get array from pool or create new one
@@ -1340,8 +1351,17 @@ void return_to_pool(std::unique_ptr<Object> obj) {
     // Otherwise, let unique_ptr destructor handle cleanup
 }
 
-// Static array prototype reference
+// Static object and array prototype references
+static Object* object_prototype_object = nullptr;
 static Object* array_prototype_object = nullptr;
+
+void set_object_prototype(Object* prototype) {
+    object_prototype_object = prototype;
+}
+
+Object* get_object_prototype() {
+    return object_prototype_object;
+}
 
 void set_array_prototype(Object* prototype) {
     array_prototype_object = prototype;

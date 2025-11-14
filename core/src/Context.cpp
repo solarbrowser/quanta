@@ -975,17 +975,19 @@ void Context::initialize_built_ins() {
     auto proto_hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // This is called as obj.hasOwnProperty(prop)
-            // We need to get the calling object somehow
-            // For now, simplified approach - check global objects
             if (args.empty()) {
                 return Value(false);
             }
 
-            std::string prop_name = args[0].to_string();
+            // Get the calling object through this binding
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: hasOwnProperty called on null or undefined"));
+                return Value(false);
+            }
 
-            // Simple implementation: always return true for basic properties
-            // This is not correct but will make tests pass for now
-            return Value(true);
+            std::string prop_name = args[0].to_string();
+            return Value(this_obj->has_own_property(prop_name));
         });
 
     // Set all Object.prototype methods
@@ -993,6 +995,8 @@ void Context::initialize_built_ins() {
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()));
 
     // Store pointer before transferring ownership
+    Object* object_proto_ptr = object_prototype.get();
+    ObjectFactory::set_object_prototype(object_proto_ptr);
     object_constructor->set_property("prototype", Value(object_prototype.release()));
 
     // HACK: Add hasOwnProperty to all new objects in global environment
@@ -2753,12 +2757,26 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("EvalError", eval_error_constructor.release());
 
+    // Create AggregateError.prototype that inherits from Error.prototype
+    auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
+    aggregate_error_prototype->set_property("name", Value("AggregateError"));
+    
+    // Store pointer before it's moved
+    Object* agg_error_proto_ptr = aggregate_error_prototype.get();
+
     // AggregateError constructor (ES2021) - takes 2 arguments
     auto aggregate_error_constructor = ObjectFactory::create_native_function("AggregateError",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string message = args.size() > 1 ? args[1].to_string() : "";
+        [agg_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Only convert message to string if it's provided and not undefined
+            std::string message = "";
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                message = args[1].to_string();
+            }
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true));
+            
+            // Set the prototype to AggregateError.prototype
+            error_obj->set_prototype(agg_error_proto_ptr);
 
             // Handle the errors array (first argument)
             if (args.size() > 0 && args[0].is_object()) {
@@ -2783,9 +2801,6 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         }, 2); // AggregateError takes 2 arguments: errors and message
 
-    // Create AggregateError.prototype that inherits from Error.prototype
-    auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    aggregate_error_prototype->set_property("name", Value("AggregateError"));
     aggregate_error_prototype->set_property("constructor", Value(aggregate_error_constructor.get()));
 
     // Set constructor.prototype

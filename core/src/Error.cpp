@@ -38,7 +38,11 @@ void Error::set_error_name() {
 void Error::initialize_properties() {
     // Set standard Error properties
     set_property("name", Value(name_));
-    set_property("message", Value(message_));
+    
+    // Only set message property if message is not empty
+    if (!message_.empty()) {
+        set_property("message", Value(message_));
+    }
     
     if (!stack_trace_.empty()) {
         set_property("stack", Value(stack_trace_));
