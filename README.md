@@ -4,7 +4,6 @@
   # Quanta
 
   *A high-performance, modular JavaScript engine written in C++*
- 
  <br><br>
   <span>
     <img src="https://img.shields.io/github/stars/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
