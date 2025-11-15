@@ -1373,8 +1373,8 @@ void Context::initialize_built_ins() {
             return Value(ObjectFactory::create_function().release());
         });
     
-    // Add Function.prototype methods that will be inherited by all functions
-    // These will be added to the prototype, but for now add them as static methods
+    // Create Function.prototype
+    auto function_prototype = ObjectFactory::create_object();
     
     // Function.prototype.call
     auto call_fn = ObjectFactory::create_native_function("call",
@@ -1382,7 +1382,7 @@ void Context::initialize_built_ins() {
             // Get the function that call was invoked on
             Object* function_obj = ctx.get_this_binding();
             if (!function_obj || !function_obj->is_function()) {
-                ctx.throw_exception(Value("Function.call called on non-function"));
+                ctx.throw_type_error("Function.prototype.call called on non-function");
                 return Value();
             }
             
@@ -1397,7 +1397,7 @@ void Context::initialize_built_ins() {
             
             return func->call(ctx, call_args, this_arg);
         });
-    function_constructor->set_property("call", Value(call_fn.release()));
+    function_prototype->set_property("call", Value(call_fn.release()));
     
     // Function.prototype.apply
     auto apply_fn = ObjectFactory::create_native_function("apply",
@@ -1405,7 +1405,7 @@ void Context::initialize_built_ins() {
             // Get the function that apply was invoked on
             Object* function_obj = ctx.get_this_binding();
             if (!function_obj || !function_obj->is_function()) {
-                ctx.throw_exception(Value("Function.apply called on non-function"));
+                ctx.throw_type_error("Function.prototype.apply called on non-function");
                 return Value();
             }
             
@@ -1414,19 +1414,58 @@ void Context::initialize_built_ins() {
             
             // Prepare arguments from array
             std::vector<Value> call_args;
-            if (args.size() > 1 && args[1].is_object()) {
-                Object* args_array = args[1].as_object();
-                if (args_array->is_array()) {
-                    uint32_t length = args_array->get_length();
-                    for (uint32_t i = 0; i < length; i++) {
-                        call_args.push_back(args_array->get_element(i));
+            if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
+                if (args[1].is_object()) {
+                    Object* args_array = args[1].as_object();
+                    if (args_array->is_array()) {
+                        uint32_t length = args_array->get_length();
+                        for (uint32_t i = 0; i < length; i++) {
+                            call_args.push_back(args_array->get_element(i));
+                        }
                     }
                 }
             }
             
             return func->call(ctx, call_args, this_arg);
         });
-    function_constructor->set_property("apply", Value(apply_fn.release()));
+    function_prototype->set_property("apply", Value(apply_fn.release()));
+    
+    // Function.prototype.bind
+    auto bind_fn = ObjectFactory::create_native_function("bind",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get the function that bind was invoked on
+            Object* function_obj = ctx.get_this_binding();
+            if (!function_obj || !function_obj->is_function()) {
+                ctx.throw_type_error("Function.prototype.bind called on non-function");
+                return Value();
+            }
+            
+            Function* target_func = static_cast<Function*>(function_obj);
+            Value bound_this = args.size() > 0 ? args[0] : Value();
+            
+            // Capture bound arguments (everything after thisArg)
+            std::vector<Value> bound_args;
+            for (size_t i = 1; i < args.size(); i++) {
+                bound_args.push_back(args[i]);
+            }
+            
+            // Create a new bound function
+            auto bound_function = ObjectFactory::create_native_function("bound",
+                [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
+                    // Combine bound args with call-time args
+                    std::vector<Value> final_args = bound_args;
+                    final_args.insert(final_args.end(), call_args.begin(), call_args.end());
+                    
+                    // Call the target function with bound this and combined args
+                    return target_func->call(ctx, final_args, bound_this);
+                });
+            
+            return Value(bound_function.release());
+        });
+    function_prototype->set_property("bind", Value(bind_fn.release()));
+    
+    // Set Function.prototype as the prototype
+    function_constructor->set_property("prototype", Value(function_prototype.release()));
     
     register_built_in_object("Function", function_constructor.release());
     
