@@ -4537,6 +4537,117 @@ void Context::register_typed_array_constructors() {
         });
     global_object_->set_property("$DONE", Value(done_function.release()));
 
+    // verifyProperty helper for Test262 (simplified version)
+    auto verifyProperty_function = ObjectFactory::create_native_function("verifyProperty",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 3) {
+                ctx.throw_exception(Value("Test262Error: verifyProperty requires at least 3 arguments"));
+                return Value();
+            }
+            
+            if (!args[0].is_object()) {
+                ctx.throw_exception(Value("Test262Error: First argument must be an object"));
+                return Value();
+            }
+            
+            Object* obj = args[0].as_object();
+            std::string prop_name = args[1].to_string();
+            
+            // If desc is undefined, verify property doesn't exist
+            if (args[2].is_undefined()) {
+                if (obj->has_own_property(prop_name)) {
+                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' should be undefined"));
+                }
+                return Value(true);
+            }
+            
+            if (!args[2].is_object()) {
+                ctx.throw_exception(Value("Test262Error: Descriptor must be an object or undefined"));
+                return Value();
+            }
+            
+            Object* desc = args[2].as_object();
+            
+            // Get actual property descriptor
+            PropertyDescriptor actual_desc = obj->get_property_descriptor(prop_name);
+            
+            // Check if property exists
+            if (!obj->has_own_property(prop_name)) {
+                ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' not found"));
+                return Value();
+            }
+            
+            // Verify value if specified
+            if (desc->has_property("value")) {
+                Value expected_value = desc->get_property("value");
+                Value actual_value;
+                
+                if (actual_desc.is_data_descriptor()) {
+                    actual_value = actual_desc.get_value();
+                } else {
+                    actual_value = obj->get_property(prop_name);
+                }
+                
+                // Use Object.is style comparison
+                bool same = false;
+                if (expected_value.is_number() && actual_value.is_number()) {
+                    double ev = expected_value.to_number();
+                    double av = actual_value.to_number();
+                    if (std::isnan(ev) && std::isnan(av)) {
+                        same = true;
+                    } else if (ev == 0.0 && av == 0.0) {
+                        same = (std::signbit(ev) == std::signbit(av));
+                    } else {
+                        same = (ev == av);
+                    }
+                } else {
+                    same = (expected_value.to_string() == actual_value.to_string() && 
+                           expected_value.get_type() == actual_value.get_type());
+                }
+                
+                if (!same) {
+                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' value mismatch"));
+                    return Value();
+                }
+            }
+            
+            // Verify writable if specified
+            if (desc->has_property("writable")) {
+                bool expected_writable = desc->get_property("writable").to_boolean();
+                bool actual_writable = actual_desc.is_data_descriptor() ? actual_desc.is_writable() : true;
+                
+                if (expected_writable != actual_writable) {
+                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' writable mismatch"));
+                    return Value();
+                }
+            }
+            
+            // Verify enumerable if specified
+            if (desc->has_property("enumerable")) {
+                bool expected_enumerable = desc->get_property("enumerable").to_boolean();
+                bool actual_enumerable = actual_desc.is_enumerable();
+                
+                if (expected_enumerable != actual_enumerable) {
+                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' enumerable mismatch"));
+                    return Value();
+                }
+            }
+            
+            // Verify configurable if specified
+            if (desc->has_property("configurable")) {
+                bool expected_configurable = desc->get_property("configurable").to_boolean();
+                bool actual_configurable = actual_desc.is_configurable();
+                
+                if (expected_configurable != actual_configurable) {
+                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' configurable mismatch"));
+                    return Value();
+                }
+            }
+            
+            return Value(true);
+        });
+    global_object_->set_property("verifyProperty", Value(verifyProperty_function.release()));
+
     // asyncTest helper for Test262
     auto asyncTest_function = ObjectFactory::create_native_function("asyncTest",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
