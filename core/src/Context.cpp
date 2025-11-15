@@ -990,9 +990,38 @@ void Context::initialize_built_ins() {
             return Value(this_obj->has_own_property(prop_name));
         });
 
+    // Object.prototype.isPrototypeOf
+    auto proto_isPrototypeOf_fn = ObjectFactory::create_native_function("isPrototypeOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get 'this' - the potential prototype
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                return Value(false);
+            }
+
+            // Get the object to check
+            if (args.empty() || !args[0].is_object()) {
+                return Value(false);
+            }
+
+            Object* obj = args[0].as_object();
+            
+            // Walk up the prototype chain
+            Object* current = obj->get_prototype();
+            while (current) {
+                if (current == this_obj) {
+                    return Value(true);
+                }
+                current = current->get_prototype();
+            }
+            
+            return Value(false);
+        });
+
     // Set all Object.prototype methods
     object_prototype->set_property("toString", Value(proto_toString_fn.release()));
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()));
+    object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()));
 
     // Store pointer before transferring ownership
     Object* object_proto_ptr = object_prototype.get();
@@ -1106,6 +1135,9 @@ void Context::initialize_built_ins() {
     
     // Create Array.prototype as an Array object (not regular Object)
     auto array_prototype = ObjectFactory::create_array();
+    
+    // Set Array.prototype's prototype to Object.prototype
+    array_prototype->set_prototype(object_proto_ptr);
     
     // Array.prototype.find
     auto find_fn = ObjectFactory::create_native_function("find",
@@ -2040,8 +2072,14 @@ void Context::initialize_built_ins() {
     register_built_in_object("Boolean", boolean_constructor.release());
     
     // Error constructor (with ES2025 static methods)
+    // First create Error.prototype
+    auto error_prototype = ObjectFactory::create_object();
+    error_prototype->set_property("name", Value("Error"));
+    error_prototype->set_property("message", Value(""));
+    Object* error_prototype_ptr = error_prototype.get();
+    
     auto error_constructor = ObjectFactory::create_native_function("Error",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused parameter warning
             std::string message = "";
             if (!args.empty()) {
@@ -2068,6 +2106,18 @@ void Context::initialize_built_ins() {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true));
+            error_obj->set_prototype(error_prototype_ptr);
+            
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    // ES2022: cause should be writable, non-enumerable, configurable
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
             
             // Add toString method to Error object
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2102,17 +2152,11 @@ void Context::initialize_built_ins() {
     auto error_isError = ObjectFactory::create_native_function("isError", Error::isError);
     error_constructor->set_property("isError", Value(error_isError.release()));
 
-    // Create Error.prototype
-    auto error_prototype = ObjectFactory::create_object();
-    error_prototype->set_property("name", Value("Error"));
-    error_prototype->set_property("message", Value(""));
+    // Set constructor property on prototype
     error_prototype->set_property("constructor", Value(error_constructor.get()));
 
     // Set constructor.prototype
-    error_constructor->set_property("prototype", Value(error_prototype.get()));
-
-    // Store reference to Error.prototype for other error types to inherit from
-    Object* error_prototype_ptr = error_prototype.get();
+    error_constructor->set_property("prototype", Value(error_prototype_ptr));
 
     // Store Error constructor pointer before releasing for other error constructors to inherit
     Function* error_ctor = error_constructor.get();
@@ -2582,6 +2626,16 @@ void Context::initialize_built_ins() {
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(type_error_proto_ptr);
 
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
+
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2623,6 +2677,16 @@ void Context::initialize_built_ins() {
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(reference_error_proto_ptr);
             
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
+            
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2662,6 +2726,16 @@ void Context::initialize_built_ins() {
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(syntax_error_proto_ptr);
             
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
+            
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2700,6 +2774,16 @@ void Context::initialize_built_ins() {
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(range_error_proto_ptr);
+
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2742,6 +2826,16 @@ void Context::initialize_built_ins() {
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(uri_error_proto_ptr);
 
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
+
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
                 [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2782,6 +2876,16 @@ void Context::initialize_built_ins() {
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true));
             error_obj->set_prototype(eval_error_proto_ptr);
+
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 1 && args[1].is_object()) {
+                Object* options = args[1].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
+            }
 
             // Add toString method
             auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2837,6 +2941,16 @@ void Context::initialize_built_ins() {
                 // Create an empty array if no errors provided
                 auto empty_array = ObjectFactory::create_array();
                 error_obj->set_property("errors", Value(empty_array.release()));
+            }
+
+            // Handle options parameter (ES2022 error cause)
+            if (args.size() > 2 && args[2].is_object()) {
+                Object* options = args[2].as_object();
+                if (options->has_property("cause")) {
+                    Value cause = options->get_property("cause");
+                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    error_obj->set_property_descriptor("cause", cause_desc);
+                }
             }
 
             // Add toString method
@@ -4406,6 +4520,93 @@ void Context::register_typed_array_constructors() {
         });
     
     register_built_in_object("DataView", dataview_constructor.release());
+
+    // Test262 async test helpers
+    // $DONE function for async tests
+    auto done_function = ObjectFactory::create_native_function("$DONE",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // In a real test harness, this would signal test completion
+            // For now, we just log or throw if there's an error
+            if (!args.empty() && !args[0].is_undefined()) {
+                // Test failed with an error
+                std::string error_msg = args[0].to_string();
+                ctx.throw_exception(Value("Test failed: " + error_msg));
+            }
+            // Test passed - do nothing (test harness handles this)
+            return Value();
+        });
+    global_object_->set_property("$DONE", Value(done_function.release()));
+
+    // asyncTest helper for Test262
+    auto asyncTest_function = ObjectFactory::create_native_function("asyncTest",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Check if $DONE is available
+            if (!ctx.has_binding("$DONE")) {
+                ctx.throw_exception(Value("Test262Error: asyncTest called without async flag"));
+                return Value();
+            }
+            
+            if (args.empty() || !args[0].is_function()) {
+                Value done_val = ctx.get_binding("$DONE");
+                if (done_val.is_function()) {
+                    Function* done_fn = done_val.as_function();
+                    done_fn->call(ctx, {Value("Test262Error: asyncTest called with non-function argument")}, Value());
+                }
+                return Value();
+            }
+            
+            Function* testFunc = args[0].as_function();
+            Value done_val = ctx.get_binding("$DONE");
+            Function* done_fn = done_val.is_function() ? done_val.as_function() : nullptr;
+            
+            try {
+                // Call the test function (should return a Promise)
+                Value result = testFunc->call(ctx, {}, Value());
+                
+                // If it's a promise-like object with .then
+                if (result.is_object()) {
+                    Object* promise_obj = result.as_object();
+                    if (promise_obj->has_property("then")) {
+                        Value then_val = promise_obj->get_property("then");
+                        if (then_val.is_function()) {
+                            Function* then_fn = then_val.as_function();
+                            
+                            // Create success callback
+                            auto onSuccess = ObjectFactory::create_native_function("onSuccess",
+                                [done_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+                                    (void)args;
+                                    if (done_fn) {
+                                        done_fn->call(ctx, {}, Value());
+                                    }
+                                    return Value();
+                                });
+                            
+                            // Create error callback
+                            auto onError = ObjectFactory::create_native_function("onError",
+                                [done_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+                                    if (done_fn) {
+                                        Value error = args.empty() ? Value() : args[0];
+                                        done_fn->call(ctx, {error}, Value());
+                                    }
+                                    return Value();
+                                });
+                            
+                            // Call promise.then(onSuccess, onError)
+                            then_fn->call(ctx, {Value(onSuccess.release()), Value(onError.release())}, result);
+                        }
+                    }
+                }
+            } catch (...) {
+                // Synchronous error
+                if (done_fn) {
+                    done_fn->call(ctx, {Value("Synchronous error in asyncTest")}, Value());
+                }
+            }
+            
+            return Value();
+        });
+    global_object_->set_property("asyncTest", Value(asyncTest_function.release()));
 }
 
 } // namespace Quanta
+
