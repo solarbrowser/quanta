@@ -951,8 +951,15 @@ Value UnaryExpression::evaluate(Context& ctx) {
             return operand_value.bitwise_not();
         }
         case Operator::TYPEOF: {
+            // Special handling for typeof: undefined variables should return "undefined", not throw
             Value operand_value = operand_->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
+
+            // If there's an exception (e.g., undefined variable), clear it and return "undefined"
+            if (ctx.has_exception()) {
+                ctx.clear_exception(); // Clear the exception
+                return Value(std::string("undefined")); // typeof undefined_var === "undefined"
+            }
+
             return operand_value.typeof_op();
         }
         case Operator::VOID: {

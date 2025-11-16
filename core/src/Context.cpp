@@ -1068,7 +1068,7 @@ void Context::initialize_built_ins() {
                 array->set_property("length", Value(static_cast<double>(args.size())));
                 return Value(array.release());
             }
-        });
+        }, 1);
     
     // Array.isArray
     auto isArray_fn = ObjectFactory::create_native_function("isArray",

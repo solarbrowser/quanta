@@ -85,10 +85,27 @@ Lexer::Lexer(const std::string& source)
     options_.track_positions = true;
     options_.allow_reserved_words = false;
     options_.strict_mode = false;
+    
+    // Skip UTF-8 BOM if present (EF BB BF)
+    if (source_.size() >= 3 && 
+        static_cast<unsigned char>(source_[0]) == 0xEF &&
+        static_cast<unsigned char>(source_[1]) == 0xBB &&
+        static_cast<unsigned char>(source_[2]) == 0xBF) {
+        position_ = 3;
+        current_position_.offset = 3;
+    }
 }
 
 Lexer::Lexer(const std::string& source, const LexerOptions& options)
     : source_(source), position_(0), current_position_(1, 1, 0), options_(options) {
+    // Skip UTF-8 BOM if present (EF BB BF)
+    if (source_.size() >= 3 && 
+        static_cast<unsigned char>(source_[0]) == 0xEF &&
+        static_cast<unsigned char>(source_[1]) == 0xBB &&
+        static_cast<unsigned char>(source_[2]) == 0xBF) {
+        position_ = 3;
+        current_position_.offset = 3;
+    }
 }
 
 TokenSequence Lexer::tokenize() {

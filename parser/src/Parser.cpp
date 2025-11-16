@@ -737,10 +737,12 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_regex_literal();
         case TokenType::LESS_THAN:
             return parse_jsx_element();
-        default:
-            add_error("Unexpected token: " + token.get_value());
+        default: {
+            std::string error_msg = "Unexpected token: '" + token.get_value() + "' (type: " + std::to_string(static_cast<int>(token.get_type())) + ") at line " + std::to_string(token.get_start().line);
+            add_error(error_msg);
             advance(); // CRITICAL: Advance to prevent infinite loops
             return nullptr;
+        }
     }
 }
 
