@@ -7964,8 +7964,36 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             }
         }
         
-        // Set the property on the object
-        object->set_property(key, value);
+        // Set the property on the object based on property type
+        if (prop->type == ObjectLiteral::PropertyType::Getter || prop->type == ObjectLiteral::PropertyType::Setter) {
+            // For getters/setters, use defineProperty with getter/setter descriptor
+            if (!value.is_function()) {
+                ctx.throw_exception(Value("Getter/setter must be a function"));
+                return Value();
+            }
+
+            // Get existing descriptor or create new one
+            PropertyDescriptor desc;
+            if (object->has_own_property(key)) {
+                desc = object->get_property_descriptor(key);
+            }
+
+            // Set getter or setter
+            if (prop->type == ObjectLiteral::PropertyType::Getter) {
+                desc.set_getter(value.as_function());
+                desc.set_enumerable(true);
+                desc.set_configurable(true);
+            } else { // Setter
+                desc.set_setter(value.as_function());
+                desc.set_enumerable(true);
+                desc.set_configurable(true);
+            }
+
+            object->set_property_descriptor(key, desc);
+        } else {
+            // Regular property or method
+            object->set_property(key, value);
+        }
     }
     
     // Return the actual object, not a string representation
@@ -8006,7 +8034,7 @@ std::unique_ptr<ASTNode> ObjectLiteral::clone() const {
             prop->key ? prop->key->clone() : nullptr,
             prop->value ? prop->value->clone() : nullptr,
             prop->computed,
-            prop->method
+            prop->type
         );
         cloned_properties.push_back(std::move(cloned_prop));
     }

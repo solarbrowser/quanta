@@ -2910,9 +2910,23 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
         }
         
-        // Check for async method
+        // Check for getter/setter or async method
+        ObjectLiteral::PropertyType property_type = ObjectLiteral::PropertyType::Value;
         bool is_async = false;
-        if (match(TokenType::ASYNC)) {
+
+        // Check for get/set keywords (contextual keywords, so check as identifiers)
+        if (match(TokenType::IDENTIFIER)) {
+            if (current_token().get_value() == "get") {
+                property_type = ObjectLiteral::PropertyType::Getter;
+                advance(); // consume 'get'
+            } else if (current_token().get_value() == "set") {
+                property_type = ObjectLiteral::PropertyType::Setter;
+                advance(); // consume 'set'
+            } else if (current_token().get_value() == "async") {
+                is_async = true;
+                advance(); // consume 'async'
+            }
+        } else if (match(TokenType::ASYNC)) {
             is_async = true;
             advance(); // consume 'async'
         }
@@ -2948,7 +2962,18 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             return nullptr;
         }
         
-        // Check for method syntax: key() {} or async key() {}
+        // Check for getter/setter or method syntax
+        if (property_type == ObjectLiteral::PropertyType::Getter || property_type == ObjectLiteral::PropertyType::Setter) {
+            // Getter/setter must have function syntax: get/set key() {}
+            if (!match(TokenType::LEFT_PAREN)) {
+                add_error(property_type == ObjectLiteral::PropertyType::Getter ?
+                          "Expected '(' after getter property key" :
+                          "Expected '(' after setter property key");
+                return nullptr;
+            }
+        }
+
+        // Check for method syntax: key() {} or async key() {} or getter/setter syntax
         if (match(TokenType::LEFT_PAREN)) {
             // This is a method (ES6+ syntax)
             advance(); // consume '('
@@ -3082,9 +3107,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             }
             
-            // Create property with method value
+            // Create property with function value (method, getter, or setter)
+            ObjectLiteral::PropertyType final_type = property_type;
+            if (final_type == ObjectLiteral::PropertyType::Value) {
+                final_type = ObjectLiteral::PropertyType::Method; // Convert value to method for function syntax
+            }
             auto property = std::make_unique<ObjectLiteral::Property>(
-                std::move(key), std::move(method_value), computed, true // is_method = true
+                std::move(key), std::move(method_value), computed, final_type
             );
             properties.push_back(std::move(property));
         } else {

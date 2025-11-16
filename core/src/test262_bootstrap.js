@@ -215,9 +215,27 @@ function Test262Error(message) {
             monotonicNow: function() {
                 return Date.now();
             }
+        },
+
+        // ES2023+ features - stubs for Test262 compatibility
+        AbstractModuleSource: function AbstractModuleSource() {
+            throw new TypeError("AbstractModuleSource is not a constructor");
+        },
+
+        ShadowRealm: function ShadowRealm() {
+            throw new TypeError("ShadowRealm is not fully implemented");
         }
     };
-    
+
+    // Set up prototype properties for ES2023+ stubs
+    // Note: length and name properties are automatically set correctly by function declarations
+
+    // Add prototype property to AbstractModuleSource
+    $262.AbstractModuleSource.prototype = {};
+
+    // Add prototype property to ShadowRealm
+    $262.ShadowRealm.prototype = {};
+
 // =============================================================================
 // isConstructor - Test if a value can be used as a constructor
 // =============================================================================

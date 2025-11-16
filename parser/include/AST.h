@@ -1116,14 +1116,25 @@ public:
  */
 class ObjectLiteral : public ASTNode {
 public:
+    enum class PropertyType {
+        Value,    // Regular property: key: value
+        Method,   // Method syntax: key() {}
+        Getter,   // Getter syntax: get key() {}
+        Setter    // Setter syntax: set key() {}
+    };
+
     struct Property {
         std::unique_ptr<ASTNode> key;   // Identifier or computed expression
-        std::unique_ptr<ASTNode> value; // Value expression
+        std::unique_ptr<ASTNode> value; // Value expression or function for getter/setter
         bool computed;                  // true for [expr]: value, false for key: value
-        bool method;                    // true for method() {}, false for regular property
-        
-        Property(std::unique_ptr<ASTNode> k, std::unique_ptr<ASTNode> v, bool c = false, bool m = false)
-            : key(std::move(k)), value(std::move(v)), computed(c), method(m) {}
+        PropertyType type;              // Property type (value, method, getter, setter)
+
+        Property(std::unique_ptr<ASTNode> k, std::unique_ptr<ASTNode> v, bool c = false, PropertyType t = PropertyType::Value)
+            : key(std::move(k)), value(std::move(v)), computed(c), type(t) {}
+
+        // Backward compatibility constructor
+        Property(std::unique_ptr<ASTNode> k, std::unique_ptr<ASTNode> v, bool c, bool m)
+            : key(std::move(k)), value(std::move(v)), computed(c), type(m ? PropertyType::Method : PropertyType::Value) {}
     };
 
 private:
