@@ -392,45 +392,8 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
         Position end = get_current_position();
         return std::make_unique<AwaitExpression>(std::move(argument), start, end);
     }
-    
-    // Handle 'new' expression
-    if (current_token().get_type() == TokenType::NEW) {
-        Position start = current_token().get_start();
-        advance(); // consume 'new'
-        
-        auto constructor = parse_member_expression();
-        if (!constructor) {
-            add_error("Expected constructor expression after 'new'");
-            return nullptr;
-        }
-        
-        std::vector<std::unique_ptr<ASTNode>> arguments;
-        
-        // Parse arguments if parentheses are present
-        if (current_token().get_type() == TokenType::LEFT_PAREN) {
-            advance(); // consume '('
-            
-            if (current_token().get_type() != TokenType::RIGHT_PAREN) {
-                do {
-                    auto arg = parse_assignment_expression();
-                    if (!arg) {
-                        add_error("Expected argument expression");
-                        return nullptr;
-                    }
-                    arguments.push_back(std::move(arg));
-                } while (consume_if_match(TokenType::COMMA));
-            }
-            
-            if (!consume(TokenType::RIGHT_PAREN)) {
-                add_error("Expected ')' after arguments");
-                return nullptr;
-            }
-        }
-        
-        Position end = get_current_position();
-        return std::make_unique<NewExpression>(std::move(constructor), std::move(arguments), start, end);
-    }
-    
+
+
     if (is_unary_operator(current_token().get_type())) {
         TokenType op_token = current_token().get_type();
         Position start = current_token().get_start();
@@ -474,8 +437,48 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_call_expression() {
-    auto expr = parse_primary_expression();
-    if (!expr) return nullptr;
+    std::unique_ptr<ASTNode> expr;
+
+    // Handle 'new' expression at call expression level to allow member access
+    if (current_token().get_type() == TokenType::NEW) {
+        Position start = current_token().get_start();
+        advance(); // consume 'new'
+
+        auto constructor = parse_identifier(); // Use identifier parser to avoid recursion
+        if (!constructor) {
+            add_error("Expected constructor name after 'new'");
+            return nullptr;
+        }
+
+        std::vector<std::unique_ptr<ASTNode>> arguments;
+
+        // Parse arguments if parentheses are present
+        if (current_token().get_type() == TokenType::LEFT_PAREN) {
+            advance(); // consume '('
+
+            if (current_token().get_type() != TokenType::RIGHT_PAREN) {
+                do {
+                    auto arg = parse_assignment_expression();
+                    if (!arg) {
+                        add_error("Expected argument expression");
+                        return nullptr;
+                    }
+                    arguments.push_back(std::move(arg));
+                } while (consume_if_match(TokenType::COMMA));
+            }
+
+            if (!consume(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ')' after arguments");
+                return nullptr;
+            }
+        }
+
+        Position end = get_current_position();
+        expr = std::make_unique<NewExpression>(std::move(constructor), std::move(arguments), start, end);
+    } else {
+        expr = parse_primary_expression();
+        if (!expr) return nullptr;
+    }
     
     // Parse member access and function calls in any order (supports chaining like .then().then())
     while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET) || 
@@ -2917,11 +2920,42 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         // Check for get/set keywords (contextual keywords, so check as identifiers)
         if (match(TokenType::IDENTIFIER)) {
             if (current_token().get_value() == "get") {
-                property_type = ObjectLiteral::PropertyType::Getter;
-                advance(); // consume 'get'
+                // Lookahead to see if this is getter syntax: get key() {} or get [key]() {}
+                // If followed by : then it's a normal property: {get: value}
+                size_t saved_pos = current_token_index_;
+                advance(); // temporarily consume 'get'
+
+                // For getter syntax, we need a property name (identifier, string, number, or computed [])
+                // If get is immediately followed by (, it's a method shorthand get() {}
+                bool is_method_shorthand = match(TokenType::LEFT_PAREN);
+                bool is_getter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER));
+                bool is_normal_property = match(TokenType::COLON);
+
+                // Reset position
+                current_token_index_ = saved_pos;
+
+                if (is_getter_syntax && !is_normal_property) {
+                    property_type = ObjectLiteral::PropertyType::Getter;
+                    advance(); // consume 'get'
+                }
             } else if (current_token().get_value() == "set") {
-                property_type = ObjectLiteral::PropertyType::Setter;
-                advance(); // consume 'set'
+                // Same lookahead for setter
+                size_t saved_pos = current_token_index_;
+                advance(); // temporarily consume 'set'
+
+                // For setter syntax, we need a property name (identifier, string, number, or computed [])
+                // If set is immediately followed by (, it's a method shorthand set() {}
+                bool is_method_shorthand = match(TokenType::LEFT_PAREN);
+                bool is_setter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER));
+                bool is_normal_property = match(TokenType::COLON);
+
+                // Reset position
+                current_token_index_ = saved_pos;
+
+                if (is_setter_syntax && !is_normal_property) {
+                    property_type = ObjectLiteral::PropertyType::Setter;
+                    advance(); // consume 'set'
+                }
             } else if (current_token().get_value() == "async") {
                 is_async = true;
                 advance(); // consume 'async'

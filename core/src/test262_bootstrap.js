@@ -68,7 +68,84 @@ function Test262Error(message) {
             throw new Test262Error(message || ("Expected exception " + errorName + " was not thrown"));
         }
     };
-    
+
+    // =============================================================================
+    // Assert Utility Functions
+    // =============================================================================
+
+    function isPrimitive(value) {
+        return value === null || (typeof value !== "object" && typeof value !== "function");
+    }
+
+    assert._formatIdentityFreeValue = function(value) {
+        switch (value === null ? 'null' : typeof value) {
+            case 'string':
+                return typeof JSON !== "undefined" ? JSON.stringify(value) : '"' + value + '"';
+            case 'bigint':
+                return value + 'n';
+            case 'number':
+                if (value === 0 && 1 / value === -Infinity) return '-0';
+                // falls through
+            case 'boolean':
+            case 'undefined':
+            case 'null':
+                return String(value);
+        }
+    };
+
+    assert._toString = function(value) {
+        var basic = assert._formatIdentityFreeValue(value);
+        if (basic) return basic;
+        try {
+            return String(value);
+        } catch (err) {
+            if (err.name === 'TypeError') {
+                return Object.prototype.toString.call(value);
+            }
+            throw err;
+        }
+    };
+
+    function compareArray(a, b) {
+        if (b.length !== a.length) {
+            return false;
+        }
+        for (var i = 0; i < a.length; i++) {
+            if (!Object.is(b[i], a[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    compareArray.format = function(arrayLike) {
+        var items = [];
+        for (var i = 0; i < arrayLike.length; i++) {
+            items.push(String(arrayLike[i]));
+        }
+        return '[' + items.join(', ') + ']';
+    };
+
+    assert.compareArray = function(actual, expected, message) {
+        message = message === undefined ? '' : message;
+
+        if (typeof message === 'symbol') {
+            message = message.toString();
+        }
+
+        if (isPrimitive(actual)) {
+            assert(false, 'Actual argument [' + actual + '] shouldn\'t be primitive. ' + message);
+        } else if (isPrimitive(expected)) {
+            assert(false, 'Expected argument [' + expected + '] shouldn\'t be primitive. ' + message);
+        }
+
+        var result = compareArray(actual, expected);
+        if (result) return;
+
+        var format = compareArray.format;
+        assert(false, 'Actual ' + format(actual) + ' and expected ' + format(expected) + ' should have the same contents. ' + message);
+    };
+
     // =============================================================================
     // Property Verification Functions
     // =============================================================================

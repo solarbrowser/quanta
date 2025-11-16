@@ -1039,8 +1039,8 @@ std::string Object::to_string() const {
         return oss.str();
     }
     
-    // Check if object has its own toString method
-    Value toString_method = get_own_property("toString");
+    // Check if object has toString method (including prototype chain)
+    Value toString_method = get_property("toString");
     if (toString_method.is_function()) {
         try {
             // Call the toString method
@@ -1050,8 +1050,9 @@ std::string Object::to_string() const {
             // For safety, just use the Error types we know have proper toString
             Value name_prop = get_own_property("name");
             Value message_prop = get_own_property("message");
-            if (name_prop.is_string() && (name_prop.to_string() == "Error" || 
-                name_prop.to_string() == "TypeError" || name_prop.to_string() == "ReferenceError")) {
+            if (name_prop.is_string() && (name_prop.to_string() == "Error" ||
+                name_prop.to_string() == "TypeError" || name_prop.to_string() == "ReferenceError" ||
+                name_prop.to_string() == "Test262Error" || name_prop.to_string() == "SyntaxError")) {
                 std::string name = name_prop.to_string();
                 std::string message = message_prop.is_string() ? message_prop.to_string() : "";
                 if (message.empty()) {
