@@ -33,8 +33,7 @@ Quanta is a modern JavaScript engine designed for the **Solar Project** with a f
 
 ### Core Features
 - **Modular Architecture** - Clean separation of concerns with 15+ focused modules
-- **High Performance** - Optimized execution with advanced compilation techniques
-- **Production Ready** - Comprehensive test coverage with 100% success rate
+- **High Performance (Planned)** - Optimized execution with advanced compilation techniques
 - **Cross Platform** - Windows, Linux, and macOS support
 
 ### JavaScript Support
