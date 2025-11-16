@@ -10,7 +10,7 @@
 ## Test History
 
 ### November 16, 2025 - Lexer & Parser Improvements
-**Engine Version:** q111625c101  
+**Engine Version:** q111625c109
 **Test262 Commit:** Latest (November 2025)  
 **Test Duration:** 2,241.7 seconds (37 minutes, 21 seconds)  
 **Test Speed:** ~22.8 tests/second
