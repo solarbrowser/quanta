@@ -444,10 +444,38 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
         Position start = current_token().get_start();
         advance(); // consume 'new'
 
-        auto constructor = parse_identifier(); // Use identifier parser to avoid recursion
+        // Parse constructor expression (can be identifier or member expression)
+        auto constructor = parse_primary_expression();
         if (!constructor) {
-            add_error("Expected constructor name after 'new'");
+            add_error("Expected constructor expression after 'new'");
             return nullptr;
+        }
+
+        // Handle member access for constructor (e.g., obj.Function)
+        while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET)) {
+            Position ctor_start = constructor->get_start();
+
+            if (match(TokenType::DOT)) {
+                advance(); // consume '.'
+
+                if (!match(TokenType::IDENTIFIER)) {
+                    add_error("Expected property name after '.'");
+                    return nullptr;
+                }
+
+                const Token& token = current_token();
+                std::string name = token.get_value();
+                Position prop_start = token.get_start();
+                Position prop_end = token.get_end();
+                advance();
+                auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
+
+                Position end = property->get_end();
+                constructor = std::make_unique<MemberExpression>(
+                    std::move(constructor), std::move(property), false, ctor_start, end
+                );
+            }
+            // Could add LEFT_BRACKET handling here for computed properties if needed
         }
 
         std::vector<std::unique_ptr<ASTNode>> arguments;

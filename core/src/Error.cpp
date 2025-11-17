@@ -40,8 +40,9 @@ void Error::initialize_properties() {
     set_property("name", Value(name_));
     
     // Only set message property if message is not empty
+    // ECMAScript spec: message property should be non-enumerable
     if (!message_.empty()) {
-        set_property("message", Value(message_));
+        set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
     
     if (!stack_trace_.empty()) {

@@ -235,8 +235,28 @@ function Test262Error(message) {
         global: (function() { return this; })() || globalThis || (typeof global !== 'undefined' ? global : window),
         
         createRealm: function() {
-            // Simplified realm creation
-            return { global: $262.global };
+            // Create a mock realm that shares constructors with current realm
+            // This is simplified - real realm creation requires engine support
+            try {
+                var mockGlobal = {};
+
+                // Copy essential constructors if they exist
+                // Use original Function constructor to avoid new expression issues
+                if (typeof Function !== 'undefined') mockGlobal.Function = Function;
+                if (typeof Object !== 'undefined') mockGlobal.Object = Object;
+                if (typeof Array !== 'undefined') mockGlobal.Array = Array;
+                if (typeof Error !== 'undefined') mockGlobal.Error = Error;
+                if (typeof TypeError !== 'undefined') mockGlobal.TypeError = TypeError;
+                if (typeof ReferenceError !== 'undefined') mockGlobal.ReferenceError = ReferenceError;
+                if (typeof SyntaxError !== 'undefined') mockGlobal.SyntaxError = SyntaxError;
+                if (typeof RangeError !== 'undefined') mockGlobal.RangeError = RangeError;
+                if (typeof AggregateError !== 'undefined') mockGlobal.AggregateError = AggregateError;
+
+                return { global: mockGlobal };
+            } catch (e) {
+                // Fallback to simple implementation
+                return { global: $262.global };
+            }
         },
         
         detachArrayBuffer: function(buffer) {
@@ -304,14 +324,69 @@ function Test262Error(message) {
         }
     };
 
-    // Set up prototype properties for ES2023+ stubs
-    // Note: length and name properties are automatically set correctly by function declarations
+    // Fix property descriptors after object creation
+    try {
+        if ($262.AbstractModuleSource) {
+            Object.defineProperty($262.AbstractModuleSource, 'length', {
+                value: 0,
+                writable: false,
+                enumerable: false,
+                configurable: true
+            });
+            Object.defineProperty($262.AbstractModuleSource, 'name', {
+                value: 'AbstractModuleSource',
+                writable: false,
+                enumerable: false,
+                configurable: true
+            });
+        }
 
-    // Add prototype property to AbstractModuleSource
-    $262.AbstractModuleSource.prototype = {};
+        if ($262.ShadowRealm) {
+            Object.defineProperty($262.ShadowRealm, 'length', {
+                value: 0,
+                writable: false,
+                enumerable: false,
+                configurable: true
+            });
+            Object.defineProperty($262.ShadowRealm, 'name', {
+                value: 'ShadowRealm',
+                writable: false,
+                enumerable: false,
+                configurable: true
+            });
+        }
+    } catch (e) {
+        // If property redefinition fails, continue anyway
+    }
 
-    // Add prototype property to ShadowRealm
-    $262.ShadowRealm.prototype = {};
+    // Add Symbol.toStringTag properties to prototypes
+    try {
+        if (typeof Symbol !== 'undefined' && Symbol.toStringTag) {
+            // AbstractModuleSource.prototype[Symbol.toStringTag]
+            if ($262.AbstractModuleSource && $262.AbstractModuleSource.prototype) {
+                Object.defineProperty($262.AbstractModuleSource.prototype, Symbol.toStringTag, {
+                    get: function() {
+                        return "AbstractModuleSource";
+                    },
+                    enumerable: false,
+                    configurable: true
+                });
+            }
+
+            // ShadowRealm.prototype[Symbol.toStringTag]
+            if ($262.ShadowRealm && $262.ShadowRealm.prototype) {
+                Object.defineProperty($262.ShadowRealm.prototype, Symbol.toStringTag, {
+                    get: function() {
+                        return "ShadowRealm";
+                    },
+                    enumerable: false,
+                    configurable: true
+                });
+            }
+        }
+    } catch (e) {
+        // If Symbol properties fail, continue anyway
+    }
 
 // =============================================================================
 // isConstructor - Test if a value can be used as a constructor

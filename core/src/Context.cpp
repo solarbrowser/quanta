@@ -1284,6 +1284,38 @@ void Context::initialize_built_ins() {
         });
     array_prototype->set_property("entries", Value(array_entries_fn.release()));
 
+    // Array.prototype.toString - returns comma-separated string representation
+    auto array_toString_fn = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.toString called on non-object"));
+                return Value();
+            }
+
+            if (this_obj->is_array()) {
+                // Array.toString() - same as join(",")
+                std::ostringstream result;
+                uint32_t length = this_obj->get_length();
+
+                for (uint32_t i = 0; i < length; i++) {
+                    if (i > 0) {
+                        result << ",";
+                    }
+                    Value element = this_obj->get_element(i);
+                    if (!element.is_null() && !element.is_undefined()) {
+                        result << element.to_string();
+                    }
+                }
+
+                return Value(result.str());
+            } else {
+                // Fallback to Object.prototype.toString for non-arrays
+                return Value("[object Object]");
+            }
+        });
+    array_prototype->set_property("toString", Value(array_toString_fn.release()));
+
     // Array.prototype.push - core array method
     auto array_push_fn = ObjectFactory::create_native_function("push",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1359,12 +1391,23 @@ void Context::initialize_built_ins() {
 
     // Store the pointer before transferring ownership
     Object* array_proto_ptr = array_prototype.get();
+
     array_constructor->set_property("prototype", Value(array_prototype.release()));
-    
+
+
     // Set the array prototype in ObjectFactory so new arrays inherit from it
     ObjectFactory::set_array_prototype(array_proto_ptr);
-    
+
     register_built_in_object("Array", array_constructor.release());
+
+    // Set Array.prototype.constructor to point to the Array function
+    // Get the Array function from global object after it's been registered
+    if (global_object_) {
+        Value array_value = global_object_->get_property("Array");
+        if (array_value.is_function()) {
+            array_proto_ptr->set_property("constructor", array_value);
+        }
+    }
     
     // Function constructor
     auto function_constructor = ObjectFactory::create_native_function("Function",
@@ -1803,6 +1846,95 @@ void Context::initialize_built_ins() {
         });
     string_prototype->set_property("replaceAll", Value(replaceAll_fn.release()));
 
+    // Add basic String.prototype methods
+
+    // String.prototype.charAt
+    auto charAt_fn = ObjectFactory::create_native_function("charAt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            uint32_t index = 0;
+            if (args.size() > 0) {
+                index = static_cast<uint32_t>(args[0].to_number());
+            }
+
+            if (index >= str.length()) {
+                return Value("");  // Return empty string for out of bounds
+            }
+
+            return Value(std::string(1, str[index]));
+        });
+    string_prototype->set_property("charAt", Value(charAt_fn.release()));
+
+    // String.prototype.charCodeAt
+    auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            uint32_t index = 0;
+            if (args.size() > 0) {
+                index = static_cast<uint32_t>(args[0].to_number());
+            }
+
+            if (index >= str.length()) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+
+            return Value(static_cast<double>(static_cast<unsigned char>(str[index])));
+        });
+    string_prototype->set_property("charCodeAt", Value(charCodeAt_fn.release()));
+
+    // String.prototype.indexOf
+    auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.empty()) {
+                return Value(-1.0);
+            }
+
+            std::string search = args[0].to_string();
+            uint32_t start = 0;
+            if (args.size() > 1) {
+                start = static_cast<uint32_t>(std::max(0.0, args[1].to_number()));
+            }
+
+            size_t pos = str.find(search, start);
+            return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
+        });
+    string_prototype->set_property("indexOf", Value(indexOf_fn.release()));
+
+    // String.prototype.toLowerCase
+    auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::transform(str.begin(), str.end(), str.begin(),
+                [](unsigned char c) { return std::tolower(c); });
+
+            return Value(str);
+        });
+    string_prototype->set_property("toLowerCase", Value(toLowerCase_fn.release()));
+
+    // String.prototype.toUpperCase
+    auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::transform(str.begin(), str.end(), str.begin(),
+                [](unsigned char c) { return std::toupper(c); });
+
+            return Value(str);
+        });
+    string_prototype->set_property("toUpperCase", Value(toUpperCase_fn.release()));
+
     // Add String.concat static method
     auto string_concat_static = ObjectFactory::create_native_function("concat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1813,6 +1945,142 @@ void Context::initialize_built_ins() {
             return Value(result);
         });
     string_constructor->set_property("concat", Value(string_concat_static.release()));
+
+    // Add Annex B (legacy) String.prototype methods
+
+    // String.prototype.anchor
+    auto anchor_fn = ObjectFactory::create_native_function("anchor",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::string name = args.size() > 0 ? args[0].to_string() : "";
+            return Value("<a name=\"" + name + "\">" + str + "</a>");
+        }, 1);
+    string_prototype->set_property("anchor", Value(anchor_fn.release()));
+
+    // String.prototype.big
+    auto big_fn = ObjectFactory::create_native_function("big",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<big>" + str + "</big>");
+        }, 0);
+    string_prototype->set_property("big", Value(big_fn.release()));
+
+    // String.prototype.blink
+    auto blink_fn = ObjectFactory::create_native_function("blink",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<blink>" + str + "</blink>");
+        }, 0);
+    string_prototype->set_property("blink", Value(blink_fn.release()));
+
+    // String.prototype.bold
+    auto bold_fn = ObjectFactory::create_native_function("bold",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<b>" + str + "</b>");
+        }, 0);
+    string_prototype->set_property("bold", Value(bold_fn.release()));
+
+    // String.prototype.fixed
+    auto fixed_fn = ObjectFactory::create_native_function("fixed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<tt>" + str + "</tt>");
+        }, 0);
+    string_prototype->set_property("fixed", Value(fixed_fn.release()));
+
+    // String.prototype.fontcolor
+    auto fontcolor_fn = ObjectFactory::create_native_function("fontcolor",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::string color = args.size() > 0 ? args[0].to_string() : "";
+            return Value("<font color=\"" + color + "\">" + str + "</font>");
+        }, 1);
+    string_prototype->set_property("fontcolor", Value(fontcolor_fn.release()));
+
+    // String.prototype.fontsize
+    auto fontsize_fn = ObjectFactory::create_native_function("fontsize",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::string size = args.size() > 0 ? args[0].to_string() : "";
+            return Value("<font size=\"" + size + "\">" + str + "</font>");
+        }, 1);
+    string_prototype->set_property("fontsize", Value(fontsize_fn.release()));
+
+    // String.prototype.italics
+    auto italics_fn = ObjectFactory::create_native_function("italics",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<i>" + str + "</i>");
+        }, 0);
+    string_prototype->set_property("italics", Value(italics_fn.release()));
+
+    // String.prototype.link
+    auto link_fn = ObjectFactory::create_native_function("link",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            std::string url = args.size() > 0 ? args[0].to_string() : "";
+            return Value("<a href=\"" + url + "\">" + str + "</a>");
+        }, 1);
+    string_prototype->set_property("link", Value(link_fn.release()));
+
+    // String.prototype.small
+    auto small_fn = ObjectFactory::create_native_function("small",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<small>" + str + "</small>");
+        }, 0);
+    string_prototype->set_property("small", Value(small_fn.release()));
+
+    // String.prototype.strike
+    auto strike_fn = ObjectFactory::create_native_function("strike",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<strike>" + str + "</strike>");
+        }, 0);
+    string_prototype->set_property("strike", Value(strike_fn.release()));
+
+    // String.prototype.sub
+    auto sub_fn = ObjectFactory::create_native_function("sub",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<sub>" + str + "</sub>");
+        }, 0);
+    string_prototype->set_property("sub", Value(sub_fn.release()));
+
+    // String.prototype.sup
+    auto sup_fn = ObjectFactory::create_native_function("sup",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            return Value("<sup>" + str + "</sup>");
+        }, 0);
+    string_prototype->set_property("sup", Value(sup_fn.release()));
 
     // Set up bidirectional constructor/prototype relationship
     Object* proto_ptr = string_prototype.get();
@@ -2965,7 +3233,36 @@ void Context::initialize_built_ins() {
             // Only convert message to string if it's provided and not undefined
             std::string message = "";
             if (args.size() > 1 && !args[1].is_undefined()) {
-                message = args[1].to_string();
+                // Use proper ToString abstract operation (ES spec)
+                Value msg_value = args[1];
+                if (msg_value.is_object()) {
+                    // For objects, call their toString() method if available
+                    Object* obj = msg_value.as_object();
+                    Value toString_method = obj->get_property("toString");
+                    if (toString_method.is_function()) {
+                        try {
+                            Function* func = toString_method.as_function();
+                            // Call toString() method with proper context and 'this' binding
+                            Value result = func->call(ctx, {}, msg_value);
+                            if (!ctx.has_exception()) {
+                                message = result.to_string();
+                            } else {
+                                // If toString() throws, fall back to default conversion
+                                ctx.clear_exception();
+                                message = msg_value.to_string();
+                            }
+                        } catch (...) {
+                            // If anything goes wrong, fall back to default conversion
+                            message = msg_value.to_string();
+                        }
+                    } else {
+                        // No toString method, use default conversion
+                        message = msg_value.to_string();
+                    }
+                } else {
+                    // For primitives, use standard conversion
+                    message = msg_value.to_string();
+                }
             }
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true));
@@ -3018,7 +3315,47 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("AggregateError", aggregate_error_constructor.release());
 
-    // RegExp constructor 
+    // Create RegExp.prototype
+    auto regexp_prototype = ObjectFactory::create_object();
+
+    // Add RegExp.prototype.compile (Annex B legacy method)
+    auto compile_fn = ObjectFactory::create_native_function("compile",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get 'this' binding - should be a RegExp object
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: RegExp.prototype.compile called on null or undefined"));
+                return Value();
+            }
+
+            // RegExp.prototype.compile changes the RegExp object in-place and returns it
+            // This is a legacy method from early JavaScript
+            std::string pattern = "";
+            std::string flags = "";
+
+            if (args.size() > 0) {
+                pattern = args[0].to_string();
+            }
+            if (args.size() > 1) {
+                flags = args[1].to_string();
+            }
+
+            // Update the RegExp object properties
+            this_obj->set_property("source", Value(pattern));
+            this_obj->set_property("global", Value(flags.find('g') != std::string::npos));
+            this_obj->set_property("ignoreCase", Value(flags.find('i') != std::string::npos));
+            this_obj->set_property("multiline", Value(flags.find('m') != std::string::npos));
+            this_obj->set_property("lastIndex", Value(0.0));
+
+            // Return the modified RegExp object
+            return Value(this_obj);
+        }, 2);
+    regexp_prototype->set_property("compile", Value(compile_fn.release()));
+
+    // Store pointer before it's moved
+    Object* regexp_proto_ptr = regexp_prototype.get();
+
+    // RegExp constructor
     auto regexp_constructor = ObjectFactory::create_native_function("RegExp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string pattern = "";
@@ -3080,6 +3417,11 @@ void Context::initialize_built_ins() {
                 return Value::null();
             }
         });
+
+    // Set up bidirectional constructor/prototype relationship
+    regexp_prototype->set_property("constructor", Value(regexp_constructor.get()));
+    regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
+
     register_built_in_object("RegExp", regexp_constructor.release());
     
     // Helper function to add Promise methods to any Promise instance
@@ -3782,13 +4124,35 @@ void Context::setup_global_bindings() {
     // escape() - Legacy global function (Annex B)
     auto escape_fn = ObjectFactory::create_native_function("escape",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused warning
-
             if (args.empty()) {
                 return Value(std::string("undefined"));
             }
 
-            std::string input = args[0].to_string();
+            // Use proper ToString abstract operation with exception handling
+            std::string input;
+            Value arg = args[0];
+            if (arg.is_object()) {
+                // For objects, call their toString() method if available
+                Object* obj = arg.as_object();
+                Value toString_method = obj->get_property("toString");
+                if (toString_method.is_function()) {
+                    try {
+                        Function* func = toString_method.as_function();
+                        Value result = func->call(ctx, {}, arg);
+                        if (ctx.has_exception()) {
+                            return Value(); // Exception will be propagated
+                        }
+                        input = result.to_string();
+                    } catch (...) {
+                        // Let any exceptions propagate
+                        return Value();
+                    }
+                } else {
+                    input = arg.to_string();
+                }
+            } else {
+                input = arg.to_string();
+            }
             std::string result;
 
             for (char c : input) {
@@ -3807,18 +4171,46 @@ void Context::setup_global_bindings() {
 
             return Value(result);
         });
-    lexical_environment_->create_binding("escape", Value(escape_fn.release()), false);
+    lexical_environment_->create_binding("escape", Value(escape_fn.get()), false);
+    if (global_object_) {
+        // Set escape with proper property attributes: writable, non-enumerable, configurable
+        PropertyDescriptor escape_desc(Value(escape_fn.get()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor("escape", escape_desc);
+    }
+    escape_fn.release(); // Release after manual binding
 
     // unescape() - Legacy global function (Annex B)
     auto unescape_fn = ObjectFactory::create_native_function("unescape",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused warning
-
             if (args.empty()) {
                 return Value(std::string("undefined"));
             }
 
-            std::string input = args[0].to_string();
+            // Use proper ToString abstract operation with exception handling
+            std::string input;
+            Value arg = args[0];
+            if (arg.is_object()) {
+                // For objects, call their toString() method if available
+                Object* obj = arg.as_object();
+                Value toString_method = obj->get_property("toString");
+                if (toString_method.is_function()) {
+                    try {
+                        Function* func = toString_method.as_function();
+                        Value result = func->call(ctx, {}, arg);
+                        if (ctx.has_exception()) {
+                            return Value(); // Exception will be propagated
+                        }
+                        input = result.to_string();
+                    } catch (...) {
+                        // Let any exceptions propagate
+                        return Value();
+                    }
+                } else {
+                    input = arg.to_string();
+                }
+            } else {
+                input = arg.to_string();
+            }
             std::string result;
 
             for (size_t i = 0; i < input.length(); ++i) {
@@ -3855,7 +4247,13 @@ void Context::setup_global_bindings() {
 
             return Value(result);
         });
-    lexical_environment_->create_binding("unescape", Value(unescape_fn.release()), false);
+    lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), false);
+    if (global_object_) {
+        // Set unescape with proper property attributes: writable, non-enumerable, configurable
+        PropertyDescriptor unescape_desc(Value(unescape_fn.get()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor("unescape", unescape_desc);
+    }
+    unescape_fn.release(); // Release after manual binding
 
     // Create console object with log, error, warn methods
     auto console_obj = ObjectFactory::create_object();
