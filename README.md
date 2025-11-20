@@ -49,22 +49,17 @@ Quanta is a modern JavaScript engine designed for the **Solar Project** with a f
 Quanta has been tested against the official **Test262** ECMAScript test suite (51,216 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
 
 ### Test262 Compliance Results
-**Last Test Date:** November 16, 2025 | **Engine Version:** q111625c109
+**Last Test Date:** November 20, 2025 | **Engine Version:** q112025c114
 
 | Metric | Count | % of Total | % of Executed |
 |--------|-------|------------|---------------|
 | **Total Tests** | 51,216 | 100% | - |
 | **Tests Run** | 35,697 | 69.7% | 100% |
-| **Passed** | 6,878 | 13.4% | **19.27%** |
-| **Failed** | 28,819 | 56.3% | 80.73% |
+| **Passed** | 7,917 | 15.5% | **22.18%** |
+| **Failed** | 27,780 | 54.2% | 77.82% |
 | **Skipped** | 15,519 | 30.3% | - |
 
 **[View Detailed & Other Test Results →](docs/documents/test262-results.md)**
-
-### Performance Metrics
-- **Test Execution Speed:** 22.8 tests/second
-- **Total Test Duration:** 37 minutes (2,241 seconds)
-- **Memory Efficient:** Process cleanup after each test execution
 
 ---
 

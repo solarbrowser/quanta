@@ -2890,13 +2890,13 @@ void Context::initialize_built_ins() {
     date_prototype->set_property("toISOString", Value(toISOString_fn.release()));
     date_prototype->set_property("toJSON", Value(toJSON_fn.release()));
 
-    // Legacy methods (Annex B)
-    date_prototype->set_property("getYear", Value(getYear_fn.release()));
-    date_prototype->set_property("setYear", Value(setYear_fn.release()));
+    // Legacy methods (Annex B) - should be non-enumerable
+    date_prototype->set_property("getYear", Value(getYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property("setYear", Value(setYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
-    // toGMTString is deprecated alias for toString (Annex B)
+    // toGMTString is deprecated alias for toString (Annex B) - should be non-enumerable
     auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toString);
-    date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()));
+    date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Set Date.prototype on the constructor (keep reference for proper binding)
     date_constructor_fn->set_property("prototype", Value(date_prototype.get()));
@@ -3350,7 +3350,7 @@ void Context::initialize_built_ins() {
             // Return the modified RegExp object
             return Value(this_obj);
         }, 2);
-    regexp_prototype->set_property("compile", Value(compile_fn.release()));
+    regexp_prototype->set_property("compile", Value(compile_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Store pointer before it's moved
     Object* regexp_proto_ptr = regexp_prototype.get();
@@ -4974,186 +4974,6 @@ void Context::register_typed_array_constructors() {
         });
     global_object_->set_property("$DONE", Value(done_function.release()));
 
-    // verifyProperty helper for Test262 (simplified version)
-    auto verifyProperty_function = ObjectFactory::create_native_function("verifyProperty",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 3) {
-                ctx.throw_exception(Value("Test262Error: verifyProperty requires at least 3 arguments"));
-                return Value();
-            }
-            
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value("Test262Error: First argument must be an object"));
-                return Value();
-            }
-            
-            Object* obj = args[0].as_object();
-            std::string prop_name = args[1].to_string();
-            
-            // If desc is undefined, verify property doesn't exist
-            if (args[2].is_undefined()) {
-                if (obj->has_own_property(prop_name)) {
-                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' should be undefined"));
-                }
-                return Value(true);
-            }
-            
-            if (!args[2].is_object()) {
-                ctx.throw_exception(Value("Test262Error: Descriptor must be an object or undefined"));
-                return Value();
-            }
-            
-            Object* desc = args[2].as_object();
-            
-            // Get actual property descriptor
-            PropertyDescriptor actual_desc = obj->get_property_descriptor(prop_name);
-            
-            // Check if property exists
-            if (!obj->has_own_property(prop_name)) {
-                ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' not found"));
-                return Value();
-            }
-            
-            // Verify value if specified
-            if (desc->has_property("value")) {
-                Value expected_value = desc->get_property("value");
-                Value actual_value;
-                
-                if (actual_desc.is_data_descriptor()) {
-                    actual_value = actual_desc.get_value();
-                } else {
-                    actual_value = obj->get_property(prop_name);
-                }
-                
-                // Use Object.is style comparison
-                bool same = false;
-                if (expected_value.is_number() && actual_value.is_number()) {
-                    double ev = expected_value.to_number();
-                    double av = actual_value.to_number();
-                    if (std::isnan(ev) && std::isnan(av)) {
-                        same = true;
-                    } else if (ev == 0.0 && av == 0.0) {
-                        same = (std::signbit(ev) == std::signbit(av));
-                    } else {
-                        same = (ev == av);
-                    }
-                } else {
-                    same = (expected_value.to_string() == actual_value.to_string() && 
-                           expected_value.get_type() == actual_value.get_type());
-                }
-                
-                if (!same) {
-                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' value mismatch"));
-                    return Value();
-                }
-            }
-            
-            // Verify writable if specified
-            if (desc->has_property("writable")) {
-                bool expected_writable = desc->get_property("writable").to_boolean();
-                bool actual_writable = actual_desc.is_data_descriptor() ? actual_desc.is_writable() : true;
-                
-                if (expected_writable != actual_writable) {
-                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' writable mismatch"));
-                    return Value();
-                }
-            }
-            
-            // Verify enumerable if specified
-            if (desc->has_property("enumerable")) {
-                bool expected_enumerable = desc->get_property("enumerable").to_boolean();
-                bool actual_enumerable = actual_desc.is_enumerable();
-                
-                if (expected_enumerable != actual_enumerable) {
-                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' enumerable mismatch"));
-                    return Value();
-                }
-            }
-            
-            // Verify configurable if specified
-            if (desc->has_property("configurable")) {
-                bool expected_configurable = desc->get_property("configurable").to_boolean();
-                bool actual_configurable = actual_desc.is_configurable();
-                
-                if (expected_configurable != actual_configurable) {
-                    ctx.throw_exception(Value("Test262Error: Property '" + prop_name + "' configurable mismatch"));
-                    return Value();
-                }
-            }
-            
-            return Value(true);
-        });
-    global_object_->set_property("verifyProperty", Value(verifyProperty_function.release()));
-
-    // asyncTest helper for Test262
-    auto asyncTest_function = ObjectFactory::create_native_function("asyncTest",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Check if $DONE is available
-            if (!ctx.has_binding("$DONE")) {
-                ctx.throw_exception(Value("Test262Error: asyncTest called without async flag"));
-                return Value();
-            }
-            
-            if (args.empty() || !args[0].is_function()) {
-                Value done_val = ctx.get_binding("$DONE");
-                if (done_val.is_function()) {
-                    Function* done_fn = done_val.as_function();
-                    done_fn->call(ctx, {Value("Test262Error: asyncTest called with non-function argument")}, Value());
-                }
-                return Value();
-            }
-            
-            Function* testFunc = args[0].as_function();
-            Value done_val = ctx.get_binding("$DONE");
-            Function* done_fn = done_val.is_function() ? done_val.as_function() : nullptr;
-            
-            try {
-                // Call the test function (should return a Promise)
-                Value result = testFunc->call(ctx, {}, Value());
-                
-                // If it's a promise-like object with .then
-                if (result.is_object()) {
-                    Object* promise_obj = result.as_object();
-                    if (promise_obj->has_property("then")) {
-                        Value then_val = promise_obj->get_property("then");
-                        if (then_val.is_function()) {
-                            Function* then_fn = then_val.as_function();
-                            
-                            // Create success callback
-                            auto onSuccess = ObjectFactory::create_native_function("onSuccess",
-                                [done_fn](Context& ctx, const std::vector<Value>& args) -> Value {
-                                    (void)args;
-                                    if (done_fn) {
-                                        done_fn->call(ctx, {}, Value());
-                                    }
-                                    return Value();
-                                });
-                            
-                            // Create error callback
-                            auto onError = ObjectFactory::create_native_function("onError",
-                                [done_fn](Context& ctx, const std::vector<Value>& args) -> Value {
-                                    if (done_fn) {
-                                        Value error = args.empty() ? Value() : args[0];
-                                        done_fn->call(ctx, {error}, Value());
-                                    }
-                                    return Value();
-                                });
-                            
-                            // Call promise.then(onSuccess, onError)
-                            then_fn->call(ctx, {Value(onSuccess.release()), Value(onError.release())}, result);
-                        }
-                    }
-                }
-            } catch (...) {
-                // Synchronous error
-                if (done_fn) {
-                    done_fn->call(ctx, {Value("Synchronous error in asyncTest")}, Value());
-                }
-            }
-            
-            return Value();
-        });
-    global_object_->set_property("asyncTest", Value(asyncTest_function.release()));
 }
 
 } // namespace Quanta

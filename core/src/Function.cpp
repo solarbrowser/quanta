@@ -84,11 +84,11 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
 
     // Add standard function properties for native functions
-    // Set name property with proper descriptor (non-enumerable, non-writable, configurable)
+    // Set name property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
 
-    // Set length property with proper descriptor (configurable, non-enumerable, non-writable)
+    // Set length property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
@@ -108,11 +108,11 @@ Function::Function(const std::string& name,
     this->set_property("prototype", Value(prototype_));
     
     // Add standard function properties for native functions
-    // Set name property with proper descriptor (non-enumerable, non-writable, configurable)
+    // Set name property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
 
-    // Set length property with proper descriptor (configurable, non-enumerable, non-writable)
+    // Set length property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
     

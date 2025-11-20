@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [November 20, 2025 - Major Stability Improvements](#november-20-2025---major-stability-improvements)
 - [November 16, 2025 - Lexer & Parser Improvements](#november-16-2025---lexer--parser-improvements)
 - [November 14, 2025 - Object.prototype & Error Fixes](#november-14-2025---objectprototype--error-fixes)
 - [November 13, 2025 - Initial Test262 Run](#november-13-2025---initial-test262-run)
@@ -9,10 +10,36 @@
 
 ## Test History
 
-### November 16, 2025 - Lexer & Parser Improvements
-**Engine Version:** q111625c109
+### November 20, 2025 - Major Stability Improvements
+**Engine Version:** q112025c114  
 **Test262 Commit:** Latest (November 2025)  
-**Test Duration:** 2,241.7 seconds (37 minutes, 21 seconds)  
+**Test Duration:** 2,270.9 seconds (37 minutes, 50 seconds)  
+**Test Speed:** ~22.6 tests/second
+
+#### Overall Results
+
+| Metric | Count | % of Total Tests | % of Run Tests |
+|--------|-------|------------------|----------------|
+| **Total Tests in Suite** | 51,216 | 100.0% | - |
+| **Tests Executed** | 35,697 | 69.7% | 100.0% |
+| **Passed** | 7,917 | 15.5% | **22.18%** |
+| **Failed** | 27,780 | 54.2% | 77.82% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+#### Key Improvements
+**+1,039 tests passed** compared to previous run (6,878 → 7,917)
+
+**Major Fixes Implemented:**
+1. **Test262 Bootstrap Expansion** - Enhanced harness function support
+2. **Core Engine Stability** - Various bug fixes and improvements
+3. **Parser Enhancements** - Better handling of edge cases
+
+---
+
+### November 16, 2025 - Lexer & Parser Improvements
+**Engine Version:** q111625c102
+**Test262 Commit:** Latest (November 2025)
+**Test Duration:** 2,241.7 seconds (37 minutes, 21 seconds)
 **Test Speed:** ~22.8 tests/second
 
 #### Overall Results
@@ -29,15 +56,20 @@
 **+274 tests passed** compared to previous run (6,604 → 6,878)
 
 **Major Fixes Implemented:**
-1. **UTF-8 BOM Handling** - Lexer now properly handles UTF-8 Byte Order Mark
+1. **New Expression Parser Fix** - Fixed syntax errors for `new Constructor().member` patterns
+   - Moved new expression parsing from `parse_primary_expression()` to `parse_call_expression()` level
+   - Enables proper precedence and member access chaining after constructor calls
+   - Fixed expressions like `new Array().length`, `new Date().getTime()`, etc.
+
+2. **UTF-8 BOM Handling** - Lexer now properly handles UTF-8 Byte Order Mark
    - Skips BOM bytes (EF BB BF) at file start
    - Fixes parsing errors for UTF-8 encoded files
-   
-2. **Enhanced Error Messages** - Parser provides detailed error information
+
+3. **Enhanced Error Messages** - Parser provides detailed error information
    - Includes token type number and line number in error messages
    - Improves debugging capabilities
 
-3. **Test262 Bootstrap Enhancements** - Expanded harness function support
+4. **Test262 Bootstrap Enhancements** - Expanded harness function support
    - Added missing helper functions
    - Improved test compatibility
 
@@ -174,11 +206,13 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
+| Nov 20, 2025 | q112025c102 | 7,917 | 22.18% | **+1,039** 🚀 |
 | Nov 16, 2025 | q111625c101 | 6,878 | 19.27% | **+274** ✅ |
 | Nov 14, 2025 | q111425c100 | 6,604 | 18.5% | **+859** ✅ |
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **November 20, 2025:** Major stability improvements (+1,039 tests) 
 - ✅ **November 16, 2025:** Lexer UTF-8 BOM support & Parser error improvements (+274 tests)
 - ✅ **November 14, 2025:** Object.prototype infrastructure complete (+859 tests)
 - ✅ **November 13, 2025:** Initial Test262 baseline established (5,745 tests)
