@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [November 22, 2025 - Property Descriptor & Engine Improvements](#november-22-2025---property-descriptor--engine-improvements)
 - [November 20, 2025 - Major Stability Improvements](#november-20-2025---major-stability-improvements)
 - [November 16, 2025 - Lexer & Parser Improvements](#november-16-2025---lexer--parser-improvements)
 - [November 14, 2025 - Object.prototype & Error Fixes](#november-14-2025---objectprototype--error-fixes)
@@ -9,6 +10,30 @@
 ---
 
 ## Test History
+
+### November 22, 2025 - Property Descriptor & Engine Improvements
+**Engine Version:** q112225c116
+**Test262 Commit:** Latest (November 2025)
+
+#### Overall Results
+
+| Metric | Count | % of Total Tests | % of Run Tests |
+|--------|-------|------------------|----------------|
+| **Total Tests in Suite** | 51,216 | 100.0% | - |
+| **Tests Executed** | 35,697 | 69.7% | 100.0% |
+| **Passed** | 9,122 | 17.8% | **25.55%** |
+| **Failed** | 26,575 | 51.9% | 74.45% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+#### Key Improvements
+**+1,205 tests passed** compared to previous run (7,917 → 9,122)
+
+**Major Fixes Implemented:**
+1. **Property Descriptor Handling** - Comprehensive improvements
+2. **Engine Core Enhancements** - Various stability fixes
+3. **Test262 Bootstrap Completion** - Full harness support
+
+---
 
 ### November 20, 2025 - Major Stability Improvements
 **Engine Version:** q112025c114  
@@ -206,12 +231,14 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
-| Nov 20, 2025 | q112025c102 | 7,917 | 22.18% | **+1,039** 🚀 |
-| Nov 16, 2025 | q111625c101 | 6,878 | 19.27% | **+274** ✅ |
+| Nov 22, 2025 | q112225c120 | 9,122 | 25.55% | **+1,205** 🚀 |
+| Nov 20, 2025 | q112025c114 | 7,917 | 22.18% | **+1,039** 🚀 |
+| Nov 16, 2025 | q111625c102 | 6,878 | 19.27% | **+274** ✅ |
 | Nov 14, 2025 | q111425c100 | 6,604 | 18.5% | **+859** ✅ |
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **November 22, 2025:** Property descriptor & engine improvements (+1,205 tests)
 - ✅ **November 20, 2025:** Major stability improvements (+1,039 tests) 
 - ✅ **November 16, 2025:** Lexer UTF-8 BOM support & Parser error improvements (+274 tests)
 - ✅ **November 14, 2025:** Object.prototype infrastructure complete (+859 tests)
