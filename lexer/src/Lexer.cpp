@@ -71,7 +71,8 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
     {',', TokenType::COMMA},
     {':', TokenType::COLON},
     // {'?', TokenType::QUESTION}, // Now handled in read_operator for ?. and ?? support
-    {'~', TokenType::BITWISE_NOT}
+    {'~', TokenType::BITWISE_NOT},
+    {'#', TokenType::HASH}
 };
 
 //=============================================================================
@@ -830,15 +831,23 @@ double Lexer::parse_decimal_literal() {
     std::string number_str;
     
     // Parse integer part
-    while (!at_end() && is_digit(current_char())) {
-        number_str += advance();
+    while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
+        if (current_char() == '_') {
+            advance(); // skip underscore (numeric separator)
+        } else {
+            number_str += advance(); // add digit
+        }
     }
     
     // Parse decimal part
     if (!at_end() && current_char() == '.') {
         number_str += advance();
-        while (!at_end() && is_digit(current_char())) {
-            number_str += advance();
+        while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
+            if (current_char() == '_') {
+                advance(); // skip underscore (numeric separator)
+            } else {
+                number_str += advance(); // add digit
+            }
         }
     }
     
@@ -848,8 +857,12 @@ double Lexer::parse_decimal_literal() {
         if (!at_end() && (current_char() == '+' || current_char() == '-')) {
             number_str += advance();
         }
-        while (!at_end() && is_digit(current_char())) {
-            number_str += advance();
+        while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
+            if (current_char() == '_') {
+                advance(); // skip underscore (numeric separator)
+            } else {
+                number_str += advance(); // add digit
+            }
         }
     }
     
@@ -858,7 +871,12 @@ double Lexer::parse_decimal_literal() {
 
 double Lexer::parse_hex_literal() {
     double value = 0.0;
-    while (!at_end() && is_hex_digit(current_char())) {
+    while (!at_end() && (is_hex_digit(current_char()) || current_char() == '_')) {
+        if (current_char() == '_') {
+            advance(); // skip underscore (numeric separator)
+            continue;
+        }
+
         char ch = advance();
         int digit_value;
         if (is_digit(ch)) {
@@ -876,7 +894,10 @@ double Lexer::parse_hex_literal() {
 double Lexer::parse_binary_literal() {
     double value = 0.0;
     while (!at_end()) {
-        if (is_binary_digit(current_char())) {
+        if (current_char() == '_') {
+            advance(); // skip underscore (numeric separator)
+            continue;
+        } else if (is_binary_digit(current_char())) {
             char ch = advance();
             value = value * 2 + (ch - '0');
         } else if (std::isdigit(current_char())) {
@@ -892,7 +913,12 @@ double Lexer::parse_binary_literal() {
 
 double Lexer::parse_octal_literal() {
     double value = 0.0;
-    while (!at_end() && is_octal_digit(current_char())) {
+    while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
+        if (current_char() == '_') {
+            advance(); // skip underscore (numeric separator)
+            continue;
+        }
+
         char ch = advance();
         value = value * 8 + (ch - '0');
     }
@@ -904,7 +930,12 @@ double Lexer::parse_legacy_octal_literal() {
     double value = 0.0;
     advance(); // skip the initial '0'
     
-    while (!at_end() && is_octal_digit(current_char())) {
+    while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
+        if (current_char() == '_') {
+            advance(); // skip underscore (numeric separator)
+            continue;
+        }
+
         char ch = advance();
         value = value * 8 + (ch - '0');
     }

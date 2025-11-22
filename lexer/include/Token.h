@@ -130,6 +130,7 @@ enum class TokenType {
     DOT,                // .
     COLON,              // :
     QUESTION,           // ?
+    HASH,               // #
     
     // ES6+ Operators
     ARROW,              // =>

@@ -209,6 +209,7 @@ public:
 private:
     void initialize_global_context();
     void initialize_built_ins();
+    void setup_test262_helpers();
     void setup_global_bindings();
     void register_typed_array_constructors();
 };

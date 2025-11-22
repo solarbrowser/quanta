@@ -121,6 +121,7 @@ public:
     std::unique_ptr<ASTNode> parse_arrow_function();
     std::unique_ptr<ASTNode> parse_async_arrow_function(Position start);
     std::unique_ptr<ASTNode> parse_yield_expression();
+    std::unique_ptr<ASTNode> parse_import_expression();
     bool try_parse_arrow_function_params();
     std::unique_ptr<ASTNode> parse_object_literal();
     std::unique_ptr<ASTNode> parse_array_literal();
@@ -133,6 +134,7 @@ public:
     // Literal parsing
     std::unique_ptr<ASTNode> parse_number_literal();
     std::unique_ptr<ASTNode> parse_string_literal();
+    std::unique_ptr<ASTNode> parse_private_field();
     std::unique_ptr<ASTNode> parse_this_expression();
     std::unique_ptr<ASTNode> parse_super_expression();
     std::unique_ptr<ASTNode> parse_template_literal();
@@ -190,6 +192,8 @@ private:
     bool is_assignment_operator(TokenType type) const;
     bool is_binary_operator(TokenType type) const;
     bool is_unary_operator(TokenType type) const;
+    bool is_keyword_token(TokenType type) const;
+    bool is_valid_assignment_target(ASTNode* node) const;
 };
 
 /**

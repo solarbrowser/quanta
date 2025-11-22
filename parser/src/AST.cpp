@@ -5934,6 +5934,23 @@ std::unique_ptr<ASTNode> ExpressionStatement::clone() const {
 }
 
 //=============================================================================
+// EmptyStatement Implementation
+//=============================================================================
+
+Value EmptyStatement::evaluate(Context& ctx) {
+    // Empty statements do nothing and return undefined
+    return Value();
+}
+
+std::string EmptyStatement::to_string() const {
+    return ";";
+}
+
+std::unique_ptr<ASTNode> EmptyStatement::clone() const {
+    return std::make_unique<EmptyStatement>(start_, end_);
+}
+
+//=============================================================================
 // Program Implementation
 //=============================================================================
 
@@ -6883,13 +6900,17 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
 std::string ForOfStatement::to_string() const {
     std::ostringstream oss;
-    oss << "for (" << left_->to_string() << " of " << right_->to_string() << ") " << body_->to_string();
+    if (is_await_) {
+        oss << "for await (" << left_->to_string() << " of " << right_->to_string() << ") " << body_->to_string();
+    } else {
+        oss << "for (" << left_->to_string() << " of " << right_->to_string() << ") " << body_->to_string();
+    }
     return oss.str();
 }
 
 std::unique_ptr<ASTNode> ForOfStatement::clone() const {
     return std::make_unique<ForOfStatement>(
-        left_->clone(), right_->clone(), body_->clone(), start_, end_
+        left_->clone(), right_->clone(), body_->clone(), is_await_, start_, end_
     );
 }
 

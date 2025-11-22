@@ -184,13 +184,13 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
     if (!array_ || index_ >= array_->get_length()) {
         return IteratorResult(Value(), true);
     }
-    
+
     Value element = array_->get_element(index_);
-    
+
     switch (kind_) {
         case Kind::Keys:
             return IteratorResult(Value(static_cast<double>(index_++)), false);
-            
+
         case Kind::Values:
             index_++;
             return IteratorResult(element, false);
@@ -498,46 +498,40 @@ void setup_array_iterator_methods(Context& ctx) {
     Object* array_proto = array_prototype.as_object();
     
     // Add keys() method
-    auto keys_fn = ObjectFactory::create_native_function("keys", 
+    auto keys_fn = ObjectFactory::create_native_function("keys",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; // Unused parameter
-            Value this_value = ctx.get_binding("this");
-            if (!this_value.is_object()) {
+            Object* array = ctx.get_this_binding();
+            if (!array) {
                 ctx.throw_exception(Value("Array.prototype.keys called on non-object"));
                 return Value();
             }
-            
-            Object* array = this_value.as_object();
             auto iterator = ArrayIterator::create_keys_iterator(array);
             return Value(iterator.release());
         });
     
     // Add values() method
-    auto values_fn = ObjectFactory::create_native_function("values", 
+    auto values_fn = ObjectFactory::create_native_function("values",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; // Unused parameter
-            Value this_value = ctx.get_binding("this");
-            if (!this_value.is_object()) {
+            Object* array = ctx.get_this_binding();
+            if (!array) {
                 ctx.throw_exception(Value("Array.prototype.values called on non-object"));
                 return Value();
             }
-            
-            Object* array = this_value.as_object();
             auto iterator = ArrayIterator::create_values_iterator(array);
             return Value(iterator.release());
         });
     
     // Add entries() method
-    auto entries_fn = ObjectFactory::create_native_function("entries", 
+    auto entries_fn = ObjectFactory::create_native_function("entries",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; // Unused parameter
-            Value this_value = ctx.get_binding("this");
-            if (!this_value.is_object()) {
+            Object* array = ctx.get_this_binding();
+            if (!array) {
                 ctx.throw_exception(Value("Array.prototype.entries called on non-object"));
                 return Value();
             }
-            
-            Object* array = this_value.as_object();
             auto iterator = ArrayIterator::create_entries_iterator(array);
             return Value(iterator.release());
         });
@@ -552,13 +546,11 @@ void setup_array_iterator_methods(Context& ctx) {
         auto default_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args; // Unused parameter
-                Value this_value = ctx.get_binding("this");
-                if (!this_value.is_object()) {
+                Object* array = ctx.get_this_binding();
+                if (!array) {
                     ctx.throw_exception(Value("Array.prototype[Symbol.iterator] called on non-object"));
                     return Value();
                 }
-                
-                Object* array = this_value.as_object();
                 auto iterator = ArrayIterator::create_values_iterator(array);
                 return Value(iterator.release());
             });

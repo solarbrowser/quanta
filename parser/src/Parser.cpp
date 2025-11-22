@@ -129,11 +129,27 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             return parse_switch_statement();
             
         case TokenType::IMPORT:
-            return parse_import_statement();
+            // Check if this is dynamic import: import() vs static import: import {}
+            if (peek_token().get_type() == TokenType::LEFT_PAREN) {
+                // This is dynamic import: import(...) - treat as expression
+                return parse_expression_statement();
+            } else {
+                // This is static import: import {} from "..." - parse as statement
+                return parse_import_statement();
+            }
             
         case TokenType::EXPORT:
             return parse_export_statement();
-            
+
+        case TokenType::SEMICOLON:
+            // Empty statement
+            {
+                Position start = current_token().get_start();
+                Position end = current_token().get_end();
+                advance(); // consume ';'
+                return std::make_unique<EmptyStatement>(start, end);
+            }
+
         default:
             return parse_expression_statement();
     }
@@ -188,10 +204,16 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     if (!left) return nullptr;
     
     if (is_assignment_operator(current_token().get_type())) {
+        // Validate left-hand side for assignment
+        if (!is_valid_assignment_target(left.get())) {
+            add_error("Invalid left-hand side in assignment");
+            return nullptr;
+        }
+
         TokenType op_token = current_token().get_type();
         Position op_start = current_token().get_start();
         advance();
-        
+
         auto right = parse_assignment_expression();
         if (!right) {
             add_error("Expected expression after assignment operator");
@@ -458,7 +480,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             if (match(TokenType::DOT)) {
                 advance(); // consume '.'
 
-                if (!match(TokenType::IDENTIFIER)) {
+                if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
                     add_error("Expected property name after '.'");
                     return nullptr;
                 }
@@ -518,9 +540,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             advance(); // consume '.'
             
             // Allow both identifiers and keywords as property names
-            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
-                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
-                current_token().get_type() != TokenType::DELETE) {
+            if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
                 add_error("Expected property name after '.'");
                 return expr;
             }
@@ -577,6 +597,30 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 expr = std::make_unique<OptionalChainingExpression>(
                     std::move(expr), std::move(property), true, start, end
                 );
+            } else if (match(TokenType::LEFT_PAREN)) {
+                // obj?.() - optional function call
+                advance(); // consume '('
+
+                std::vector<std::unique_ptr<ASTNode>> arguments;
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    do {
+                        auto arg = parse_assignment_expression();
+                        if (!arg) {
+                            add_error("Expected argument in optional call");
+                            break;
+                        }
+                        arguments.push_back(std::move(arg));
+                    } while (consume_if_match(TokenType::COMMA));
+                }
+
+                if (!consume(TokenType::RIGHT_PAREN)) {
+                    add_error("Expected ')' after optional call arguments");
+                    return expr;
+                }
+
+                Position end = get_current_position();
+                // Create CallExpression for optional call (?.())
+                expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
             } else {
                 // obj?.property
                 if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
@@ -649,21 +693,31 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
         if (match(TokenType::DOT)) {
             advance(); // consume '.'
 
-            // Allow both identifiers and keywords as property names
-            if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
-                current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
-                current_token().get_type() != TokenType::DELETE) {
-                add_error("Expected property name after '.'");
+            // Allow identifiers, keywords, and private fields as property names
+            if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type()) && !match(TokenType::HASH)) {
+                // DEBUG: Show what token we got
+                add_error("Expected property name after '.', got token type: " + std::to_string(static_cast<int>(current_token().get_type())));
                 return expr;
             }
 
-            // Create property identifier from current token (identifier or keyword)
-            const Token& token = current_token();
-            std::string name = token.get_value();
-            Position prop_start = token.get_start();
-            Position prop_end = token.get_end();
-            advance();
-            auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
+            std::unique_ptr<Identifier> property;
+            if (match(TokenType::HASH)) {
+                // Parse private field: obj.#field
+                auto private_field = parse_private_field();
+                if (!private_field) {
+                    add_error("Invalid private field after '.'");
+                    return expr;
+                }
+                property = std::unique_ptr<Identifier>(static_cast<Identifier*>(private_field.release()));
+            } else {
+                // Create property identifier from current token (identifier or keyword)
+                const Token& token = current_token();
+                std::string name = token.get_value();
+                Position prop_start = token.get_start();
+                Position prop_end = token.get_end();
+                advance();
+                property = std::make_unique<Identifier>(name, prop_start, prop_end);
+            }
             
             Position end = property->get_end();
             expr = std::make_unique<MemberExpression>(
@@ -691,10 +745,14 @@ std::unique_ptr<ASTNode> Parser::parse_member_expression() {
                 expr = std::make_unique<OptionalChainingExpression>(
                     std::move(expr), std::move(property), true, start, end
                 );
-            } else if (match(TokenType::IDENTIFIER)) {
-                // obj?.property
-                auto property = parse_identifier();
-                if (!property) return expr;
+            } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
+                // obj?.property (allow both identifiers and keywords)
+                const Token& token = current_token();
+                std::string name = token.get_value();
+                Position prop_start = token.get_start();
+                Position prop_end = token.get_end();
+                advance();
+                auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
                 
                 Position end = property->get_end();
                 expr = std::make_unique<OptionalChainingExpression>(
@@ -746,6 +804,8 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_undefined_literal();
         case TokenType::IDENTIFIER:
             return parse_identifier();
+        case TokenType::HASH:
+            return parse_private_field();
         case TokenType::THIS:
             return parse_this_expression();
         case TokenType::SUPER:
@@ -758,6 +818,8 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_function_expression();
         case TokenType::YIELD:
             return parse_yield_expression();
+        case TokenType::IMPORT:
+            return parse_import_expression();
         case TokenType::LEFT_BRACE:
             return parse_object_literal();
         case TokenType::LEFT_BRACKET:
@@ -791,11 +853,18 @@ std::unique_ptr<ASTNode> Parser::parse_number_literal() {
 std::unique_ptr<ASTNode> Parser::parse_string_literal() {
     const Token& token = current_token();
     std::string value = token.get_value();
-    
+
     Position start = token.get_start();
     Position end = token.get_end();
     advance();
-    
+
+    // Handle implicit string concatenation: consecutive string literals
+    while (!at_end() && current_token().get_type() == TokenType::STRING) {
+        value += current_token().get_value();
+        end = current_token().get_end();
+        advance();
+    }
+
     return std::make_unique<StringLiteral>(value, start, end);
 }
 
@@ -972,6 +1041,28 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
     Position end = token.get_end();
     advance();
     
+    return std::make_unique<Identifier>(name, start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_private_field() {
+    Position start = get_current_position();
+
+    if (!consume(TokenType::HASH)) {
+        add_error("Expected '#'");
+        return nullptr;
+    }
+
+    if (!match(TokenType::IDENTIFIER)) {
+        add_error("Expected identifier after '#'");
+        return nullptr;
+    }
+
+    const Token& token = current_token();
+    std::string name = "#" + token.get_value(); // Include # in the name
+    Position end = token.get_end();
+    advance();
+
+    // For now, return as Identifier with # prefix
     return std::make_unique<Identifier>(name, start, end);
 }
 
@@ -1186,6 +1277,84 @@ bool Parser::is_unary_operator(TokenType type) const {
            type == TokenType::DECREMENT;
 }
 
+bool Parser::is_keyword_token(TokenType type) const {
+    return type == TokenType::BREAK ||
+           type == TokenType::CASE ||
+           type == TokenType::CATCH ||
+           type == TokenType::CLASS ||
+           type == TokenType::CONST ||
+           type == TokenType::CONTINUE ||
+           type == TokenType::DEBUGGER ||
+           type == TokenType::DEFAULT ||
+           type == TokenType::DELETE ||
+           type == TokenType::DO ||
+           type == TokenType::ELSE ||
+           type == TokenType::EXPORT ||
+           type == TokenType::EXTENDS ||
+           type == TokenType::FINALLY ||
+           type == TokenType::FOR ||
+           type == TokenType::FUNCTION ||
+           type == TokenType::IF ||
+           type == TokenType::IMPORT ||
+           type == TokenType::IN ||
+           type == TokenType::INSTANCEOF ||
+           type == TokenType::LET ||
+           type == TokenType::NEW ||
+           type == TokenType::RETURN ||
+           type == TokenType::SUPER ||
+           type == TokenType::SWITCH ||
+           type == TokenType::THIS ||
+           type == TokenType::THROW ||
+           type == TokenType::TRY ||
+           type == TokenType::TYPEOF ||
+           type == TokenType::VAR ||
+           type == TokenType::VOID ||
+           type == TokenType::WHILE ||
+           type == TokenType::WITH ||
+           type == TokenType::YIELD ||
+           type == TokenType::ASYNC ||
+           type == TokenType::AWAIT ||
+           type == TokenType::FROM ||
+           type == TokenType::OF ||
+           type == TokenType::STATIC ||
+           type == TokenType::UNDEFINED ||
+           type == TokenType::NULL_LITERAL ||
+           type == TokenType::BOOLEAN;
+}
+
+bool Parser::is_valid_assignment_target(ASTNode* node) const {
+    if (!node) return false;
+
+    switch (node->get_type()) {
+        case ASTNode::Type::IDENTIFIER:
+            return true;
+        case ASTNode::Type::MEMBER_EXPRESSION:
+            return true;
+        case ASTNode::Type::CALL_EXPRESSION:
+            // Call expressions are not valid assignment targets
+            return false;
+        case ASTNode::Type::OBJECT_LITERAL:
+            // In destructuring context, object literals can be assignment targets
+            return true;
+        case ASTNode::Type::ARRAY_LITERAL:
+            // In destructuring context, array literals can be assignment targets
+            return true;
+        case ASTNode::Type::STRING_LITERAL:
+        case ASTNode::Type::NUMBER_LITERAL:
+        case ASTNode::Type::BOOLEAN_LITERAL:
+        case ASTNode::Type::NULL_LITERAL:
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+        case ASTNode::Type::BINARY_EXPRESSION:
+        case ASTNode::Type::UNARY_EXPRESSION:
+        case ASTNode::Type::CONDITIONAL_EXPRESSION:
+            return false;
+        default:
+            return false;
+    }
+}
+
 //=============================================================================
 // Statement Parsing Implementation
 //=============================================================================
@@ -1374,7 +1543,14 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         add_error("Expected 'for'");
         return nullptr;
     }
-    
+
+    // Check for 'await' keyword (for-await-of loops)
+    bool is_await_loop = false;
+    if (match(TokenType::AWAIT)) {
+        is_await_loop = true;
+        advance();
+    }
+
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after 'for'");
         return nullptr;
@@ -1405,6 +1581,20 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             // For for...of with destructuring, we need to handle it specially
             if (current_token().get_type() == TokenType::LEFT_BRACKET) {
                 // Array destructuring pattern - parse it and create a special init node
+                auto destructuring = parse_destructuring_pattern();
+                if (!destructuring) {
+                    add_error("Failed to parse destructuring pattern");
+                    return nullptr;
+                }
+
+                // Create a variable declaration with the destructuring pattern
+                Position decl_end = get_current_position();
+                init = std::move(destructuring);
+
+                // Skip the normal VariableDeclarator creation and jump to for...of check
+                goto check_for_of;
+            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                // Object destructuring pattern - parse it and create a special init node
                 auto destructuring = parse_destructuring_pattern();
                 if (!destructuring) {
                     add_error("Failed to parse destructuring pattern");
@@ -1490,15 +1680,15 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
         } else {
-            init = parse_expression();
-        }
-        if (!init) {
-            add_error("Expected initialization in for loop");
-            return nullptr;
+            init = parse_postfix_expression();
+            if (!init) {
+                add_error("Expected initialization in for loop");
+                return nullptr;
+            }
         }
     }
-    
-    // Check for for...in syntax
+
+    // Check for for...in syntax (for both variable declarations and expressions)
     if (current_token().get_type() == TokenType::IN) {
         advance(); // consume 'in'
         
@@ -1539,6 +1729,46 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
 
 check_for_of:
+    // Check for for...in syntax first
+    if (current_token().get_type() == TokenType::IN) {
+        advance(); // consume 'in'
+
+        // Safety check for end of input
+        if (at_end()) {
+            add_error("Unexpected end of input after 'in'");
+            return nullptr;
+        }
+
+        // Parse the object expression
+        auto object = parse_expression();
+        if (!object) {
+            add_error("Expected expression after 'in' in for...in loop");
+            return nullptr;
+        }
+
+        // Expect closing parenthesis
+        if (at_end() || current_token().get_type() != TokenType::RIGHT_PAREN) {
+            add_error("Expected ')' after for...in object");
+            return nullptr;
+        }
+        advance(); // consume ')'
+
+        // Parse body
+        if (at_end()) {
+            add_error("Expected statement after for...in");
+            return nullptr;
+        }
+
+        auto body = parse_statement();
+        if (!body) {
+            add_error("Failed to parse for...in body");
+            return nullptr;
+        }
+
+        Position end = get_current_position();
+        return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end);
+    }
+
     // Check for for...of syntax
     if (current_token().get_type() == TokenType::OF) {
         advance(); // consume 'of'
@@ -1576,7 +1806,7 @@ check_for_of:
         }
         
         Position end = get_current_position();
-        return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), start, end);
+        return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), is_await_loop, start, end);
     }
     
     if (!consume(TokenType::SEMICOLON)) {
@@ -1798,6 +2028,47 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                     if (destructuring_name == "__array_destructuring_") {
                         destructuring_name += current_token().get_value();
                     }
+                } else if (current_token().get_type() == TokenType::ASSIGN) {
+                    // Handle default value assignment within destructuring: [x] = [1]
+                    advance(); // consume '='
+                    // Skip the default value expression (could be array, object, etc.)
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array default value: = [1, 2, 3]
+                        int inner_bracket_count = 1;
+                        advance(); // consume '['
+                        while (inner_bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                inner_bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                inner_bracket_count--;
+                            }
+                            if (inner_bracket_count > 0) advance();
+                        }
+                        if (inner_bracket_count == 0) advance(); // consume final ']'
+                        continue; // Don't advance again at end of main loop
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object default value: = {a: 1}
+                        int inner_brace_count = 1;
+                        advance(); // consume '{'
+                        while (inner_brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                inner_brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                inner_brace_count--;
+                            }
+                            if (inner_brace_count > 0) advance();
+                        }
+                        if (inner_brace_count == 0) advance(); // consume final '}'
+                        continue; // Don't advance again at end of main loop
+                    } else {
+                        // Simple default value: = 5, = "string", etc.
+                        while (!at_end() &&
+                               current_token().get_type() != TokenType::COMMA &&
+                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                            advance();
+                        }
+                        continue; // Don't advance again at end of main loop
+                    }
                 }
                 advance();
             }
@@ -1960,8 +2231,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     
     // Parse methods within the class
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
-        if (current_token().get_type() == TokenType::IDENTIFIER) {
-            // Parse method definition
+        if (current_token().get_type() == TokenType::IDENTIFIER ||
+            current_token().get_type() == TokenType::MULTIPLY) {
+            // Parse method definition (regular or generator)
             auto method = parse_method_definition();
             if (method) {
                 statements.push_back(std::move(method));
@@ -2011,18 +2283,52 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         is_static = true;
         advance(); // consume 'static'
     }
-    
-    // Parse method name
-    if (current_token().get_type() != TokenType::IDENTIFIER) {
-        add_error("Expected method name");
+
+    // Check for generator method syntax: *methodName
+    bool is_generator = false;
+    if (current_token().get_type() == TokenType::MULTIPLY) {
+        is_generator = true;
+        advance(); // consume '*'
+    }
+
+    // Check for getter/setter method syntax: get/set propertyName
+    MethodDefinition::Kind method_kind = MethodDefinition::METHOD;
+    if (current_token().get_type() == TokenType::IDENTIFIER) {
+        std::string token_value = current_token().get_value();
+        if (token_value == "get") {
+            method_kind = MethodDefinition::GETTER;
+            advance(); // consume 'get'
+        } else if (token_value == "set") {
+            method_kind = MethodDefinition::SETTER;
+            advance(); // consume 'set'
+        }
+    }
+
+    // Parse method name (property name for getter/setter) - support computed properties
+    std::unique_ptr<ASTNode> key = nullptr;
+    if (current_token().get_type() == TokenType::IDENTIFIER) {
+        key = parse_identifier();
+    } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        // Computed property: get [expr]() or set [expr]()
+        advance(); // consume '['
+        key = parse_expression();
+        if (!key) {
+            add_error("Expected expression in computed property");
+            return nullptr;
+        }
+        if (!consume(TokenType::RIGHT_BRACKET)) {
+            add_error("Expected ']' after computed property");
+            return nullptr;
+        }
+    } else {
+        add_error("Expected method name or computed property");
         return nullptr;
     }
-    
-    auto key = parse_identifier();
+
     if (!key) return nullptr;
     
-    // Determine method kind
-    MethodDefinition::Kind kind = MethodDefinition::METHOD;
+    // Finalize method kind (prioritize constructor, then getter/setter, then regular method)
+    MethodDefinition::Kind kind = method_kind;
     if (Identifier* key_id = static_cast<Identifier*>(key.get())) {
         if (key_id->get_name() == "constructor") {
             kind = MethodDefinition::CONSTRUCTOR;
@@ -2049,30 +2355,125 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             advance(); // consume '...'
         }
         
-        if (current_token().get_type() == TokenType::IDENTIFIER) {
-            auto param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                          current_token().get_start(), current_token().get_end());
-            advance();
-            
-            // Check for default parameter syntax: param = value
-            // Note: Rest parameters cannot have default values
-            std::unique_ptr<ASTNode> default_value = nullptr;
-            if (!is_rest && match(TokenType::ASSIGN)) {
-                advance(); // consume '='
-                default_value = parse_assignment_expression();
-                if (!default_value) {
-                    add_error("Invalid default parameter value");
-                    return nullptr;
+        std::unique_ptr<Identifier> param_name = nullptr;
+
+        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+            // Array destructuring parameter: [a, b, c]
+            advance(); // consume '['
+
+            // Skip through the array destructuring pattern
+            std::string destructuring_name = "__array_destructuring_";
+            int bracket_count = 1;
+            while (bracket_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                    bracket_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                    bracket_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__array_destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                } else if (current_token().get_type() == TokenType::ASSIGN) {
+                    // Handle default value assignment within destructuring: [x] = [1]
+                    advance(); // consume '='
+                    // Skip the default value expression (could be array, object, etc.)
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array default value: = [1, 2, 3]
+                        int inner_bracket_count = 1;
+                        advance(); // consume '['
+                        while (inner_bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                inner_bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                inner_bracket_count--;
+                            }
+                            if (inner_bracket_count > 0) advance();
+                        }
+                        if (inner_bracket_count == 0) advance(); // consume final ']'
+                        continue; // Don't advance again at end of main loop
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object default value: = {a: 1}
+                        int inner_brace_count = 1;
+                        advance(); // consume '{'
+                        while (inner_brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                inner_brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                inner_brace_count--;
+                            }
+                            if (inner_brace_count > 0) advance();
+                        }
+                        if (inner_brace_count == 0) advance(); // consume final '}'
+                        continue; // Don't advance again at end of main loop
+                    } else {
+                        // Simple default value: = 5, = "string", etc.
+                        while (!at_end() &&
+                               current_token().get_type() != TokenType::COMMA &&
+                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                            advance();
+                        }
+                        continue; // Don't advance again at end of main loop
+                    }
                 }
-            } else if (is_rest && match(TokenType::ASSIGN)) {
-                add_error("Rest parameter cannot have default value");
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Object destructuring parameter: {a, b, c}
+            advance(); // consume '{'
+
+            // Skip through the destructuring pattern
+            std::string destructuring_name = "__destructuring_";
+            int brace_count = 1;
+            while (brace_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                    brace_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                    brace_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
+            }
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // Regular identifier parameter
+            param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                      current_token().get_start(), current_token().get_end());
+            advance();
+        } else {
+            add_error("Expected parameter name or destructuring pattern");
+            return nullptr;
+        }
+
+        // Check for default parameter syntax: param = value
+        // Note: Rest parameters cannot have default values
+        std::unique_ptr<ASTNode> default_value = nullptr;
+        if (!is_rest && match(TokenType::ASSIGN)) {
+            advance(); // consume '='
+            default_value = parse_assignment_expression();
+            if (!default_value) {
+                add_error("Invalid default parameter value");
                 return nullptr;
             }
-            
-            Position param_end = get_current_position();
-            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
-            params.push_back(std::move(param));
+        } else if (is_rest && match(TokenType::ASSIGN)) {
+            add_error("Rest parameter cannot have default value");
+            return nullptr;
         }
+
+        Position param_end = get_current_position();
+        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+        params.push_back(std::move(param));
         
         // Rest parameter must be last
         if (is_rest) {
@@ -2127,12 +2528,19 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::FUNCTION)) {
         add_error("Expected 'function'");
         return nullptr;
     }
-    
+
+    // Check for generator function (function*)
+    bool is_generator = false;
+    if (match(TokenType::MULTIPLY)) {
+        is_generator = true;
+        advance();
+    }
+
     // Parse optional function name
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
@@ -2140,49 +2548,120 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                                         current_token().get_start(), current_token().get_end());
         advance();
     }
-    
+
     // Parse parameter list
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after 'function'");
         return nullptr;
     }
-    
+
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;  // Track if any parameter is non-simple
-    
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
-        
+
         // Check for rest parameter syntax: ...args
         if (match(TokenType::ELLIPSIS)) {
             is_rest = true;
             has_non_simple_params = true;  // Rest parameters are non-simple
             advance(); // consume '...'
         }
-        
+
         std::unique_ptr<Identifier> param_name = nullptr;
-        
+
         if (current_token().get_type() == TokenType::LEFT_BRACKET) {
             // Array destructuring parameter: [a, b, c]
             has_non_simple_params = true;  // Destructuring makes params non-simple
             advance(); // consume '['
-            
-            if (current_token().get_type() != TokenType::IDENTIFIER) {
-                add_error("Expected identifier in destructuring pattern");
-                return nullptr;
+
+            // Skip through the array destructuring pattern
+            std::string destructuring_name = "__array_destructuring_";
+            int bracket_count = 1;
+            while (bracket_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                    bracket_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                    bracket_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__array_destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                } else if (current_token().get_type() == TokenType::ASSIGN) {
+                    // Handle default value assignment within destructuring: [x] = [1]
+                    advance(); // consume '='
+                    // Skip the default value expression (could be array, object, etc.)
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array default value: = [1, 2, 3]
+                        int inner_bracket_count = 1;
+                        advance(); // consume '['
+                        while (inner_bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                inner_bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                inner_bracket_count--;
+                            }
+                            if (inner_bracket_count > 0) advance();
+                        }
+                        if (inner_bracket_count == 0) advance(); // consume final ']'
+                        continue; // Don't advance again at end of main loop
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object default value: = {a: 1}
+                        int inner_brace_count = 1;
+                        advance(); // consume '{'
+                        while (inner_brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                inner_brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                inner_brace_count--;
+                            }
+                            if (inner_brace_count > 0) advance();
+                        }
+                        if (inner_brace_count == 0) advance(); // consume final '}'
+                        continue; // Don't advance again at end of main loop
+                    } else {
+                        // Simple default value: = 5, = "string", etc.
+                        while (!at_end() &&
+                               current_token().get_type() != TokenType::COMMA &&
+                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                            advance();
+                        }
+                        continue; // Don't advance again at end of main loop
+                    }
+                }
+                advance();
             }
-            
+
             // Create identifier for the destructured parameter
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
-            advance(); // consume identifier
-            
-            if (current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                add_error("Expected ']' to close destructuring pattern");
-                return nullptr;
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            // Object destructuring parameter: {a, b, c}
+            has_non_simple_params = true;  // Destructuring makes params non-simple
+            advance(); // consume '{'
+
+            // Skip through the destructuring pattern
+            std::string destructuring_name = "__destructuring_";
+            int brace_count = 1;
+            while (brace_count > 0 && !at_end()) {
+                if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                    brace_count++;
+                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                    brace_count--;
+                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
+                    // Collect first identifier for parameter name
+                    if (destructuring_name == "__destructuring_") {
+                        destructuring_name += current_token().get_value();
+                    }
+                }
+                advance();
             }
-            advance(); // consume ']'
+
+            // Create identifier for the destructured parameter
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // Regular identifier parameter
             param_name = std::make_unique<Identifier>(current_token().get_value(),
@@ -2288,7 +2767,14 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         add_error("Expected 'function' or '(' after 'async'");
         return nullptr;
     }
-    
+
+    // Check for async generator function expression (async function*)
+    bool is_generator = false;
+    if (current_token().get_type() == TokenType::MULTIPLY) {
+        advance(); // consume '*'
+        is_generator = true;
+    }
+
     // Parse optional function name
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
@@ -2336,6 +2822,47 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                     // Collect first identifier for parameter name
                     if (destructuring_name == "__array_destructuring_") {
                         destructuring_name += current_token().get_value();
+                    }
+                } else if (current_token().get_type() == TokenType::ASSIGN) {
+                    // Handle default value assignment within destructuring: [x] = [1]
+                    advance(); // consume '='
+                    // Skip the default value expression (could be array, object, etc.)
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array default value: = [1, 2, 3]
+                        int inner_bracket_count = 1;
+                        advance(); // consume '['
+                        while (inner_bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                inner_bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                inner_bracket_count--;
+                            }
+                            if (inner_bracket_count > 0) advance();
+                        }
+                        if (inner_bracket_count == 0) advance(); // consume final ']'
+                        continue; // Don't advance again at end of main loop
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object default value: = {a: 1}
+                        int inner_brace_count = 1;
+                        advance(); // consume '{'
+                        while (inner_brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                inner_brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                inner_brace_count--;
+                            }
+                            if (inner_brace_count > 0) advance();
+                        }
+                        if (inner_brace_count == 0) advance(); // consume final '}'
+                        continue; // Don't advance again at end of main loop
+                    } else {
+                        // Simple default value: = 5, = "string", etc.
+                        while (!at_end() &&
+                               current_token().get_type() != TokenType::COMMA &&
+                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                            advance();
+                        }
+                        continue; // Don't advance again at end of main loop
                     }
                 }
                 advance();
@@ -2448,7 +2975,14 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         add_error("Expected 'function' after 'async'");
         return nullptr;
     }
-    
+
+    // Check for async generator function (async function*)
+    bool is_generator = false;
+    if (current_token().get_type() == TokenType::MULTIPLY) {
+        advance(); // consume '*'
+        is_generator = true;
+    }
+
     // Parse function name (required for declarations)
     if (current_token().get_type() != TokenType::IDENTIFIER) {
         add_error("Expected function name after 'async function'");
@@ -2498,6 +3032,47 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                     // Collect first identifier for parameter name
                     if (destructuring_name == "__array_destructuring_") {
                         destructuring_name += current_token().get_value();
+                    }
+                } else if (current_token().get_type() == TokenType::ASSIGN) {
+                    // Handle default value assignment within destructuring: [x] = [1]
+                    advance(); // consume '='
+                    // Skip the default value expression (could be array, object, etc.)
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                        // Array default value: = [1, 2, 3]
+                        int inner_bracket_count = 1;
+                        advance(); // consume '['
+                        while (inner_bracket_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                                inner_bracket_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
+                                inner_bracket_count--;
+                            }
+                            if (inner_bracket_count > 0) advance();
+                        }
+                        if (inner_bracket_count == 0) advance(); // consume final ']'
+                        continue; // Don't advance again at end of main loop
+                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                        // Object default value: = {a: 1}
+                        int inner_brace_count = 1;
+                        advance(); // consume '{'
+                        while (inner_brace_count > 0 && !at_end()) {
+                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                                inner_brace_count++;
+                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
+                                inner_brace_count--;
+                            }
+                            if (inner_brace_count > 0) advance();
+                        }
+                        if (inner_brace_count == 0) advance(); // consume final '}'
+                        continue; // Don't advance again at end of main loop
+                    } else {
+                        // Simple default value: = 5, = "string", etc.
+                        while (!at_end() &&
+                               current_token().get_type() != TokenType::COMMA &&
+                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
+                            advance();
+                        }
+                        continue; // Don't advance again at end of main loop
                     }
                 }
                 advance();
@@ -2817,6 +3392,42 @@ std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
     return std::make_unique<YieldExpression>(std::move(argument), is_delegate, start, end);
 }
 
+std::unique_ptr<ASTNode> Parser::parse_import_expression() {
+    Position start = get_current_position();
+
+    if (!consume(TokenType::IMPORT)) {
+        add_error("Expected 'import'");
+        return nullptr;
+    }
+
+    // Dynamic import: import(specifier)
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'import'");
+        return nullptr;
+    }
+
+    // Parse module specifier expression
+    auto specifier = parse_assignment_expression();
+    if (!specifier) {
+        add_error("Expected module specifier in import()");
+        return nullptr;
+    }
+
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after import specifier");
+        return nullptr;
+    }
+
+    Position end = get_current_position();
+
+    // Create a call expression with 'import' as the function name
+    auto import_id = std::make_unique<Identifier>("import", start, get_current_position());
+    std::vector<std::unique_ptr<ASTNode>> args;
+    args.push_back(std::move(specifier));
+
+    return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
+}
+
 std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     Position start = get_current_position();
     
@@ -2993,6 +3604,13 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             advance(); // consume 'async'
         }
 
+        // Check for generator method: *methodName()
+        bool is_generator = false;
+        if (match(TokenType::MULTIPLY)) {
+            is_generator = true;
+            advance(); // consume '*'
+        }
+
         // Parse property key
         std::unique_ptr<ASTNode> key;
         bool computed = false;
@@ -3019,6 +3637,11 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         } else if (match(TokenType::NUMBER)) {
             // Numeric property key
             key = parse_number_literal();
+        } else if (is_keyword_token(current_token().get_type())) {
+            // Reserved keyword as property key (valid in ECMAScript)
+            key = std::make_unique<Identifier>(current_token().get_value(),
+                                               current_token().get_start(), current_token().get_end());
+            advance(); // consume keyword token
         } else {
             add_error("Expected property key");
             return nullptr;
@@ -3116,8 +3739,19 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                         return nullptr;
                     }
 
+                    // Check for default parameter: param = value
+                    std::unique_ptr<ASTNode> default_value = nullptr;
+                    if (match(TokenType::ASSIGN)) {
+                        advance(); // consume '='
+                        default_value = parse_assignment_expression();
+                        if (!default_value) {
+                            add_error("Expected expression after '=' in parameter default");
+                            return nullptr;
+                        }
+                    }
+
                     Position param_end = get_current_position();
-                    auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, is_rest, param_start, param_end);
+                    auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
                     params.push_back(std::move(param));
 
                     if (match(TokenType::COMMA)) {
@@ -3157,6 +3791,17 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     key->get_start(),
                     get_current_position()
                 );
+            } else if (is_generator) {
+                // Create GeneratorExpression for generator methods
+                auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                method_value = std::make_unique<FunctionExpression>(
+                    nullptr, // no name for method
+                    std::move(params),
+                    std::move(block_body),
+                    key->get_start(),
+                    get_current_position()
+                );
+                // TODO: Add proper GeneratorExpression support when available
             } else {
                 // Create regular FunctionExpression with proper constructor arguments
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));

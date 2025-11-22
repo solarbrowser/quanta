@@ -64,6 +64,7 @@ public:
         
         // Statements
         EXPRESSION_STATEMENT,
+        EMPTY_STATEMENT,
         VARIABLE_DECLARATION,
         VARIABLE_DECLARATOR,
         BLOCK_STATEMENT,
@@ -799,18 +800,20 @@ public:
 class ForOfStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> left_;     // variable declaration or identifier
-    std::unique_ptr<ASTNode> right_;    // iterable expression  
+    std::unique_ptr<ASTNode> right_;    // iterable expression
     std::unique_ptr<ASTNode> body_;     // loop body
+    bool is_await_;                     // true for for-await-of loops
 public:
     ForOfStatement(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
-                   std::unique_ptr<ASTNode> body, const Position& start, const Position& end)
-        : ASTNode(Type::FOR_OF_STATEMENT, start, end), 
-          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)) {}
-    
+                   std::unique_ptr<ASTNode> body, bool is_await, const Position& start, const Position& end)
+        : ASTNode(Type::FOR_OF_STATEMENT, start, end),
+          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)), is_await_(is_await) {}
+
     ASTNode* get_left() const { return left_.get(); }
     ASTNode* get_right() const { return right_.get(); }
     ASTNode* get_body() const { return body_.get(); }
-    
+    bool is_await() const { return is_await_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -1250,6 +1253,19 @@ public:
     
     ASTNode* get_expression() const { return expression_.get(); }
     
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Empty statement (e.g., ";")
+ */
+class EmptyStatement : public ASTNode {
+public:
+    EmptyStatement(const Position& start, const Position& end)
+        : ASTNode(Type::EMPTY_STATEMENT, start, end) {}
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

@@ -159,26 +159,41 @@ Engine::Result Engine::evaluate(const std::string& expression) {
         Lexer lexer(expression);
         Parser parser(lexer.tokenize());
         
-        // Parse the expression into AST
-        auto expr_ast = parser.parse_expression();
-        if (!expr_ast) {
-            return Result("Parse error: Failed to parse expression");
-        }
-        
-        // Standard AST evaluation
-        if (global_context_) {
-            Value result = expr_ast->evaluate(*global_context_);
-            
-            // Check if the context has any thrown exceptions
+        // Try to parse as a program first (to handle statements in eval)
+        auto program_ast = parser.parse_program();
+        if (program_ast && program_ast->get_statements().size() > 0) {
+            // Successfully parsed as a program, evaluate it
+            Value result = program_ast->evaluate(*global_context_);
+
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
                 return Result(exception.to_string());
             }
-            
+
             return Result(result);
         } else {
-            return Result("Engine context not initialized");
+            // Failed to parse as program, try as expression
+            Parser expr_parser(lexer.tokenize());
+            auto expr_ast = expr_parser.parse_expression();
+            if (!expr_ast) {
+                return Result("Parse error: Failed to parse expression");
+            }
+
+            // Standard AST evaluation for expressions
+            if (global_context_) {
+                Value result = expr_ast->evaluate(*global_context_);
+
+                if (global_context_->has_exception()) {
+                    Value exception = global_context_->get_exception();
+                    global_context_->clear_exception();
+                    return Result(exception.to_string());
+                }
+
+                return Result(result);
+            } else {
+                return Result("Engine context not initialized");
+            }
         }
         
     } catch (const std::exception& e) {
@@ -708,21 +723,8 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
 //=============================================================================
 
 bool Engine::is_simple_mathematical_loop(ASTNode* ast) {
-    if (!ast) return false;
-    
-    // Check if this is a program with a single for-loop containing simple math
-    if (ast->get_type() == ASTNode::Type::PROGRAM) {
-        // Check if program has exactly one statement that's a for-loop
-        auto program = static_cast<Program*>(ast);
-        if (program && program->get_statements().size() == 1) {
-            auto stmt = program->get_statements()[0].get();
-            if (stmt && stmt->get_type() == ASTNode::Type::FOR_STATEMENT) {
-                // This is a simple for-loop program - optimize it!
-                return true;
-            }
-        }
-    }
-    
+    // Disable C++ optimization to ensure proper JavaScript execution
+    // This allows Test262 and other JavaScript tests to run correctly
     return false;
 }
 
