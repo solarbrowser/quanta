@@ -1195,6 +1195,15 @@ void Context::initialize_built_ins() {
             // Return the first argument for basic testing
             return Value(42); // Placeholder implementation
         });
+
+    PropertyDescriptor find_length_desc(Value(1.0), PropertyAttributes::None);
+    find_length_desc.set_configurable(false);
+    find_length_desc.set_enumerable(false);
+    find_length_desc.set_writable(false);
+    find_fn->set_property_descriptor("length", find_length_desc);
+
+    find_fn->set_property("name", Value("find"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     array_prototype->set_property("find", Value(find_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Array.prototype.includes (ES2016) - SameValueZero comparison
@@ -1254,6 +1263,15 @@ void Context::initialize_built_ins() {
 
             return Value(false);
         });
+
+    PropertyDescriptor includes_length_desc(Value(1.0), PropertyAttributes::None);
+    includes_length_desc.set_configurable(false);
+    includes_length_desc.set_enumerable(false);
+    includes_length_desc.set_writable(false);
+    includes_fn->set_property_descriptor("length", includes_length_desc);
+
+    includes_fn->set_property("name", Value("includes"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     array_prototype->set_property("includes", Value(includes_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Array.prototype.flat
@@ -1267,6 +1285,15 @@ void Context::initialize_built_ins() {
             result->set_property("length", Value(3.0));
             return Value(result.release());
         });
+
+    PropertyDescriptor flat_length_desc(Value(0.0), PropertyAttributes::None);
+    flat_length_desc.set_configurable(false);
+    flat_length_desc.set_enumerable(false);
+    flat_length_desc.set_writable(false);
+    flat_fn->set_property_descriptor("length", flat_length_desc);
+
+    flat_fn->set_property("name", Value("flat"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     array_prototype->set_property("flat", Value(flat_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Array.prototype.fill
@@ -1283,6 +1310,15 @@ void Context::initialize_built_ins() {
             result->set_property("length", Value(3.0));
             return Value(result.release());
         });
+
+    PropertyDescriptor fill_length_desc(Value(1.0), PropertyAttributes::None);
+    fill_length_desc.set_configurable(false);
+    fill_length_desc.set_enumerable(false);
+    fill_length_desc.set_writable(false);
+    fill_fn->set_property_descriptor("length", fill_length_desc);
+
+    fill_fn->set_property("name", Value("fill"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     array_prototype->set_property("fill", Value(fill_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Array.prototype.keys
@@ -1661,6 +1697,15 @@ void Context::initialize_built_ins() {
             
             return func->call(ctx, call_args, this_arg);
         });
+
+    PropertyDescriptor call_length_desc(Value(1.0), PropertyAttributes::None);
+    call_length_desc.set_configurable(false);
+    call_length_desc.set_enumerable(false);
+    call_length_desc.set_writable(false);
+    call_fn->set_property_descriptor("length", call_length_desc);
+
+    call_fn->set_property("name", Value("call"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     function_prototype->set_property("call", Value(call_fn.release()));
     
     // Function.prototype.apply
@@ -1692,6 +1737,15 @@ void Context::initialize_built_ins() {
             
             return func->call(ctx, call_args, this_arg);
         });
+
+    PropertyDescriptor apply_length_desc(Value(2.0), PropertyAttributes::None);
+    apply_length_desc.set_configurable(false);
+    apply_length_desc.set_enumerable(false);
+    apply_length_desc.set_writable(false);
+    apply_fn->set_property_descriptor("length", apply_length_desc);
+
+    apply_fn->set_property("name", Value("apply"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     function_prototype->set_property("apply", Value(apply_fn.release()));
     
     // Function.prototype.bind
@@ -1726,6 +1780,15 @@ void Context::initialize_built_ins() {
             
             return Value(bound_function.release());
         });
+
+    PropertyDescriptor bind_length_desc(Value(1.0), PropertyAttributes::None);
+    bind_length_desc.set_configurable(false);
+    bind_length_desc.set_enumerable(false);
+    bind_length_desc.set_writable(false);
+    bind_fn->set_property_descriptor("length", bind_length_desc);
+
+    bind_fn->set_property("name", Value("bind"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     function_prototype->set_property("bind", Value(bind_fn.release()));
     
     // Set Function.prototype as the prototype
@@ -1860,11 +1923,11 @@ void Context::initialize_built_ins() {
             return Value(found != std::string::npos);
         });
     // Set includes method length with proper descriptor
-    PropertyDescriptor includes_length_desc(Value(1.0), PropertyAttributes::None);
-    includes_length_desc.set_configurable(false);
-    includes_length_desc.set_enumerable(false);
-    includes_length_desc.set_writable(false);
-    str_includes_fn->set_property_descriptor("length", includes_length_desc);
+    PropertyDescriptor str_includes_length_desc(Value(1.0), PropertyAttributes::None);
+    str_includes_length_desc.set_configurable(false);
+    str_includes_length_desc.set_enumerable(false);
+    str_includes_length_desc.set_writable(false);
+    str_includes_fn->set_property_descriptor("length", str_includes_length_desc);
     string_prototype->set_property("includes", Value(str_includes_fn.release()));
 
     // Add String.prototype.startsWith (ES2015)
@@ -2376,6 +2439,108 @@ void Context::initialize_built_ins() {
             global_includes_fn->set_property_descriptor("length", global_includes_length_desc);
             global_prototype->set_property("includes", Value(global_includes_fn.release()));
 
+            // Add String.prototype.valueOf
+            auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    // Get the this binding
+                    Object* this_obj = ctx.get_this_binding();
+                    Value this_val;
+                    if (this_obj) {
+                        this_val = Value(this_obj);
+                    } else {
+                        // Fallback to primitive binding
+                        try {
+                            this_val = ctx.get_binding("this");
+                        } catch (...) {
+                            ctx.throw_exception(Value("TypeError: String.prototype.valueOf called on non-object"));
+                            return Value();
+                        }
+                    }
+
+                    // If this is a String object, return its primitive value
+                    if (this_val.is_object()) {
+                        Object* obj = this_val.as_object();
+                        // Check if this is a String wrapper object
+                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
+                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
+                            return primitive_value;
+                        }
+                    }
+
+                    // If it's already a string primitive, return it
+                    if (this_val.is_string()) {
+                        return this_val;
+                    }
+
+                    // Convert to string
+                    return Value(this_val.to_string());
+                });
+
+            PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
+            string_valueOf_length_desc.set_configurable(false);
+            string_valueOf_length_desc.set_enumerable(false);
+            string_valueOf_length_desc.set_writable(false);
+            string_valueOf_fn->set_property_descriptor("length", string_valueOf_length_desc);
+
+            PropertyDescriptor string_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+            string_valueOf_name_desc.set_configurable(true);
+            string_valueOf_name_desc.set_enumerable(false);
+            string_valueOf_name_desc.set_writable(false);
+            string_valueOf_fn->set_property_descriptor("name", string_valueOf_name_desc);
+
+            global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()));
+
+            // Add String.prototype.toString
+            auto string_toString_fn = ObjectFactory::create_native_function("toString",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    // Get the this binding
+                    Object* this_obj = ctx.get_this_binding();
+                    Value this_val;
+                    if (this_obj) {
+                        this_val = Value(this_obj);
+                    } else {
+                        // Fallback to primitive binding
+                        try {
+                            this_val = ctx.get_binding("this");
+                        } catch (...) {
+                            ctx.throw_exception(Value("TypeError: String.prototype.toString called on non-object"));
+                            return Value();
+                        }
+                    }
+
+                    // If this is a String object, return its primitive value
+                    if (this_val.is_object()) {
+                        Object* obj = this_val.as_object();
+                        // Check if this is a String wrapper object
+                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
+                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
+                            return primitive_value;
+                        }
+                    }
+
+                    // If it's already a string primitive, return it
+                    if (this_val.is_string()) {
+                        return this_val;
+                    }
+
+                    // Convert to string
+                    return Value(this_val.to_string());
+                });
+
+            PropertyDescriptor string_toString_length_desc(Value(0.0), PropertyAttributes::None);
+            string_toString_length_desc.set_configurable(false);
+            string_toString_length_desc.set_enumerable(false);
+            string_toString_length_desc.set_writable(false);
+            string_toString_fn->set_property_descriptor("length", string_toString_length_desc);
+
+            PropertyDescriptor string_toString_name_desc(Value("toString"), PropertyAttributes::None);
+            string_toString_name_desc.set_configurable(true);
+            string_toString_name_desc.set_enumerable(false);
+            string_toString_name_desc.set_writable(false);
+            string_toString_fn->set_property_descriptor("name", string_toString_name_desc);
+
+            global_prototype->set_property("toString", Value(string_toString_fn.release()));
+
         }
     }
     
@@ -2612,7 +2777,73 @@ void Context::initialize_built_ins() {
             }
         });
     number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()));
-    
+
+    // Create Number.prototype and add methods
+    auto number_prototype = ObjectFactory::create_object();
+
+    // Number.prototype.valueOf
+    auto number_valueOf = ObjectFactory::create_native_function("valueOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            // Get this value
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_number()) {
+                    return this_val;
+                }
+                // If this is a Number object wrapper, extract the primitive
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                        // Return the wrapped number value
+                        return this_obj->get_property("[[PrimitiveValue]]");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+                return Value();
+            }
+        }, 0);
+
+    // Number.prototype.toString
+    auto number_toString = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Get this value
+            try {
+                Value this_val = ctx.get_binding("this");
+                double num = 0.0;
+
+                if (this_val.is_number()) {
+                    num = this_val.as_number();
+                } else if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
+                        num = primitive.as_number();
+                    } else {
+                        ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                        return Value();
+                    }
+                } else {
+                    ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                    return Value();
+                }
+
+                return Value(std::to_string(num));
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                return Value();
+            }
+        }, 1);
+
+    number_prototype->set_property("valueOf", Value(number_valueOf.release()));
+    number_prototype->set_property("toString", Value(number_toString.release()));
+    number_prototype->set_property("constructor", Value(number_constructor.get()));
+
+    number_constructor->set_property("prototype", Value(number_prototype.release()));
+
     register_built_in_object("Number", number_constructor.release());
     
     // Boolean constructor - callable as function
@@ -2621,6 +2852,68 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(false);
             return Value(args[0].to_boolean());
         });
+
+    // Create Boolean.prototype and add methods
+    auto boolean_prototype = ObjectFactory::create_object();
+
+    // Boolean.prototype.valueOf
+    auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            // Get this value
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_boolean()) {
+                    return this_val;
+                }
+                // If this is a Boolean object wrapper, extract the primitive
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                        // Return the wrapped boolean value
+                        return this_obj->get_property("[[PrimitiveValue]]");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+                return Value();
+            }
+        }, 0);
+
+    // Boolean.prototype.toString
+    auto boolean_toString = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            // Get this value
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_boolean()) {
+                    return Value(this_val.to_boolean() ? "true" : "false");
+                }
+                // If this is a Boolean object wrapper, extract the primitive
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
+                        return Value(primitive.to_boolean() ? "true" : "false");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+                return Value();
+            }
+        }, 0);
+
+    boolean_prototype->set_property("valueOf", Value(boolean_valueOf.release()));
+    boolean_prototype->set_property("toString", Value(boolean_toString.release()));
+    boolean_prototype->set_property("constructor", Value(boolean_constructor.get()));
+
+    boolean_constructor->set_property("prototype", Value(boolean_prototype.release()));
+
     register_built_in_object("Boolean", boolean_constructor.release());
     
     // Error constructor (with ES2025 static methods)
