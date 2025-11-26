@@ -31,7 +31,11 @@ Value::Value(Object* obj) {
         bits_ = QUIET_NAN | TAG_UNDEFINED;
         return;
     }
-    
+
+    // DEBUG: Check object type before wrapping in Value (disabled for performance)
+    // std::cout << "DEBUG Value(Object*): Wrapping object with type = " << static_cast<int>(obj->get_type())
+    //          << ", is_array() = " << obj->is_array() << std::endl;
+
     // Store object pointer directly - all Windows/MSYS2 pointers fit in 48-bit
     uint64_t ptr_value = reinterpret_cast<uint64_t>(obj);
     uint64_t masked_value = ptr_value & PAYLOAD_MASK;

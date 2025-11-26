@@ -167,9 +167,23 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             // No existing 'this' binding
         }
 
-        // Set 'this' binding for primitive values (especially strings)
-        if (!this_value.is_undefined() && !this_value.is_null()) {
-            ctx.set_binding("this", this_value);
+        // DEBUG: Check this_value before binding (disabled for performance)
+        // if (this_value.is_object()) {
+        //     Object* this_obj = this_value.as_object();
+        //     std::cout << "DEBUG Function::call: this_value is object with type = " << static_cast<int>(this_obj->get_type())
+        //              << ", is_array() = " << this_obj->is_array() << std::endl;
+        // } else {
+        //     std::cout << "DEBUG Function::call: this_value is not object, type = "
+        //              << (this_value.is_null() ? "null" : this_value.is_undefined() ? "undefined" : "other") << std::endl;
+        // }
+
+        // Set 'this' binding for ALL values including null and undefined
+        ctx.set_binding("this", this_value);
+
+        // SPECIAL CASE: For primitive values, also set a special binding that preserves the type
+        if (this_value.is_number() || this_value.is_string() || this_value.is_boolean() ||
+            this_value.is_null() || this_value.is_undefined()) {
+            ctx.set_binding("__primitive_this__", this_value);
         }
         
         // Call native C++ function

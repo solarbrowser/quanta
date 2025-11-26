@@ -120,6 +120,7 @@ public:
     std::unique_ptr<ASTNode> parse_async_function_expression();
     std::unique_ptr<ASTNode> parse_arrow_function();
     std::unique_ptr<ASTNode> parse_async_arrow_function(Position start);
+    std::unique_ptr<ASTNode> parse_async_arrow_function_single_param(Position start);
     std::unique_ptr<ASTNode> parse_yield_expression();
     std::unique_ptr<ASTNode> parse_import_expression();
     bool try_parse_arrow_function_params();

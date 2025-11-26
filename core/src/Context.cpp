@@ -925,8 +925,27 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
 
-            // 1. Get the this value first
-            Value this_val = ctx.get_binding("this");
+            // 1. Get the this value - try object binding first, then primitive binding
+            Value this_val;
+
+            // First try object this binding (for objects including arrays)
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                this_val = Value(this_obj);
+                // std::cout << "DEBUG toString: Got object this_binding, type = " << static_cast<int>(this_obj->get_type())
+                //          << ", is_array() = " << this_obj->is_array() << std::endl;
+            } else {
+                // Fallback to primitive this binding (for null, undefined, primitives)
+                try {
+                    this_val = ctx.get_binding("this");
+                    // std::cout << "DEBUG toString: Got primitive this_binding" << std::endl;
+                } catch (...) {
+                    // No this binding at all - default to undefined
+                    this_val = Value();
+                    // std::cout << "DEBUG toString: No this binding found, defaulting to undefined" << std::endl;
+                }
+            }
+
 
             // 2. Handle primitive values and null/undefined according to ES spec
             if (this_val.is_undefined()) {
@@ -948,37 +967,27 @@ void Context::initialize_built_ins() {
             } else if (this_val.is_object()) {
                 Object* this_obj = this_val.as_object();
 
-                // Check object type directly (more reliable than constructor)
+                // Check object type directly
                 Object::ObjectType obj_type = this_obj->get_type();
 
-                if (obj_type == Object::ObjectType::String) {
+                // DEBUG: Print object type info (disabled for performance)
+                // std::cout << "DEBUG toString: Object type = " << static_cast<int>(obj_type)
+                //          << ", is_array() = " << this_obj->is_array()
+                //          << ", has_length = " << this_obj->has_property("length") << std::endl;
+
+                // Priority check: Use is_array() method as primary detection
+                if (this_obj->is_array()) {
+                    builtinTag = "Array";
+                } else if (obj_type == Object::ObjectType::String) {
                     builtinTag = "String";
                 } else if (obj_type == Object::ObjectType::Number) {
                     builtinTag = "Number";
                 } else if (obj_type == Object::ObjectType::Boolean) {
                     builtinTag = "Boolean";
+                } else if (obj_type == Object::ObjectType::Function || this_obj->is_function()) {
+                    builtinTag = "Function";
                 } else {
-                    if (this_obj->is_array()) {
-                        builtinTag = "Array";
-                    } else if (this_obj->is_function()) {
-                        builtinTag = "Function";
-                    } else if (this_obj->has_property("message") && this_obj->has_property("name")) {
-                        // Error objects
-                        Value name = this_obj->get_property("name");
-                        if (name.is_string()) {
-                            builtinTag = "Error";
-                        } else {
-                            builtinTag = "Object";
-                        }
-                    } else if (this_obj->has_property("source") && this_obj->has_property("flags")) {
-                        // RegExp
-                        builtinTag = "RegExp";
-                    } else if (this_obj->has_property("getTime")) {
-                        // Date
-                        builtinTag = "Date";
-                    } else {
-                        builtinTag = "Object";
-                    }
+                    builtinTag = "Object";
                 }
             } else {
                 builtinTag = "Object";
@@ -2298,6 +2307,32 @@ void Context::initialize_built_ins() {
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()), PropertyAttributes::None);
     proto_ptr->set_property("constructor", Value(string_constructor.get()));
+
+    // Add String.raw static method BEFORE registering
+    auto string_raw_fn = ObjectFactory::create_native_function("raw",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_exception(Value("TypeError: String.raw requires at least 1 argument"));
+                return Value();
+            }
+
+            // Simple implementation for basic string raw functionality
+            if (args.size() > 0 && args[0].is_object()) {
+                Object* template_obj = args[0].as_object();
+                Value raw_val = template_obj->get_property("raw");
+                if (raw_val.is_object()) {
+                    Object* raw_array = raw_val.as_object();
+                    if (raw_array->is_array() && raw_array->get_length() > 0) {
+                        // Just return the first raw string segment for simplicity
+                        return raw_array->get_element(0);
+                    }
+                }
+            }
+
+            return Value("");
+        }, 1);
+
+    string_constructor->set_property("raw", Value(string_raw_fn.release()));
 
     register_built_in_object("String", string_constructor.release());
 

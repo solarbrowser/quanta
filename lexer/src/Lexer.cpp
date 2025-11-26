@@ -337,12 +337,19 @@ Token Lexer::read_identifier() {
             
             // Convert hex to character (simplified - just handle ASCII range)
             if (hex_digits == "61") value += 'a';  // \u{61} = 'a'
-            else if (hex_digits == "6C") value += 'l';  // \u{6C} = 'l'  
+            else if (hex_digits == "6C") value += 'l';  // \u{6C} = 'l'
             else if (hex_digits == "73") value += 's';  // \u{73} = 's'
             else if (hex_digits == "65") value += 'e';  // \u{65} = 'e'
+            else if (hex_digits == "6F") value += 'o';  // \u{6F} = 'o'
             else {
-                add_error("Unsupported unicode escape sequence in identifier");
-                return create_token(TokenType::INVALID, value, start);
+                // For other hex values, convert to actual character
+                unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (codepoint <= 0x7F) {  // ASCII range
+                    value += static_cast<char>(codepoint);
+                } else {
+                    add_error("Unsupported unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
             }
         } else {
             // \uHHHH format
@@ -360,11 +367,17 @@ Token Lexer::read_identifier() {
             // Convert hex to character (simplified)
             if (hex_digits == "0061") value += 'a';
             else if (hex_digits == "006C") value += 'l';
-            else if (hex_digits == "0073") value += 's';  
+            else if (hex_digits == "0073") value += 's';
             else if (hex_digits == "0065") value += 'e';
             else {
-                add_error("Unsupported unicode escape sequence in identifier");
-                return create_token(TokenType::INVALID, value, start);
+                // For other 4-digit hex values, convert to actual character
+                unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (codepoint <= 0x7F) {  // ASCII range
+                    value += static_cast<char>(codepoint);
+                } else {
+                    add_error("Unsupported unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
             }
         }
     } else {
@@ -398,11 +411,11 @@ Token Lexer::read_identifier() {
                 }
                 advance(); // consume '}'
                 
-                if (hex_digits == "61") value += 'a';
-                else if (hex_digits == "6C") value += 'l';
-                else if (hex_digits == "73") value += 's';
-                else if (hex_digits == "65") value += 'e';
-                else {
+                // Convert hex to character
+                unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (codepoint <= 0x7F) {  // ASCII range
+                    value += static_cast<char>(codepoint);
+                } else {
                     add_error("Unsupported unicode escape sequence in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
@@ -419,11 +432,11 @@ Token Lexer::read_identifier() {
                     }
                 }
                 
-                if (hex_digits == "0061") value += 'a';
-                else if (hex_digits == "006C") value += 'l';
-                else if (hex_digits == "0073") value += 's';
-                else if (hex_digits == "0065") value += 'e';
-                else {
+                // Convert 4-digit hex to character
+                unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (codepoint <= 0x7F) {  // ASCII range
+                    value += static_cast<char>(codepoint);
+                } else {
                     add_error("Unsupported unicode escape sequence in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
@@ -796,7 +809,7 @@ Token Lexer::read_operator() {
 }
 
 bool Lexer::is_identifier_start(char ch) const {
-    return std::isalpha(ch) || ch == '_' || ch == '$';
+    return std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\';
 }
 
 bool Lexer::is_identifier_part(char ch) const {

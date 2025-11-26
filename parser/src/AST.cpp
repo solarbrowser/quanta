@@ -6701,8 +6701,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         } else if (left_->get_type() == Type::IDENTIFIER) {
                             Identifier* id = static_cast<Identifier*>(left_.get());
                             var_name = id->get_name();
+                        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                            // Handle destructuring pattern: for (const [x, y] of ...)
+                            DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
+                            // For destructuring, we'll handle assignment differently below
+                            var_name = "__destructuring__"; // placeholder - actual assignment handled in loop
                         }
-                        
+
                         if (var_name.empty()) {
                             ctx.throw_exception(Value("For...of: Invalid loop variable"));
                             return Value();
@@ -6745,12 +6750,44 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 
                                 Value value = result_obj->get_property("value");
                                 
-                                // Set loop variable
-                                if (loop_ctx->has_binding(var_name)) {
-                                    loop_ctx->set_binding(var_name, value);
+                                // Set loop variable - handle destructuring
+                                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                                    // Handle destructuring assignment: [x, y] = value
+                                    DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
+
+                                    // Manual array destructuring for for...of loops
+                                    if (destructuring->get_type() == DestructuringAssignment::Type::ARRAY && value.is_object()) {
+                                        Object* array_obj = value.as_object();
+                                        const auto& targets = destructuring->get_targets();
+
+                                        for (size_t i = 0; i < targets.size(); ++i) {
+                                            const std::string& var_name = targets[i]->get_name();
+                                            Value element_value;
+
+                                            // Get array element by index
+                                            if (array_obj->has_property(std::to_string(i))) {
+                                                element_value = array_obj->get_property(std::to_string(i));
+                                            } else {
+                                                element_value = Value(); // undefined for missing elements
+                                            }
+
+                                            // Create or set binding
+                                            bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
+                                            if (loop_ctx->has_binding(var_name)) {
+                                                loop_ctx->set_binding(var_name, element_value);
+                                            } else {
+                                                loop_ctx->create_binding(var_name, element_value, is_mutable);
+                                            }
+                                        }
+                                    }
                                 } else {
-                                    bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
-                                    loop_ctx->create_binding(var_name, value, is_mutable);
+                                    // Handle regular variable assignment
+                                    if (loop_ctx->has_binding(var_name)) {
+                                        loop_ctx->set_binding(var_name, value);
+                                    } else {
+                                        bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
+                                        loop_ctx->create_binding(var_name, value, is_mutable);
+                                    }
                                 }
                                 
                                 // Execute body
@@ -8075,6 +8112,11 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     if (!array) {
         return Value("[]");  // Return string representation as fallback
     }
+
+    // DEBUG: Check array type at creation
+    // DEBUG: Check array type at creation (disabled for performance)
+    // std::cout << "DEBUG ArrayLiteral: Created array with type = " << static_cast<int>(array->get_type())
+    //          << ", is_array() = " << array->is_array() << std::endl;
     
     // Register array with GC if engine is available
     if (ctx.get_engine() && ctx.get_engine()->get_garbage_collector()) {

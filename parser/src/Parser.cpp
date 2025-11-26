@@ -531,8 +531,9 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
     }
     
     // Parse member access and function calls in any order (supports chaining like .then().then())
-    while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET) || 
-           match(TokenType::OPTIONAL_CHAINING) || match(TokenType::LEFT_PAREN)) {
+    while (match(TokenType::DOT) || match(TokenType::LEFT_BRACKET) ||
+           match(TokenType::OPTIONAL_CHAINING) || match(TokenType::LEFT_PAREN) ||
+           match(TokenType::TEMPLATE_LITERAL)) {
         Position start = expr->get_start();
         
         if (match(TokenType::DOT)) {
@@ -676,6 +677,24 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             }
             
             Position end = get_current_position();
+            expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
+        } else if (match(TokenType::TEMPLATE_LITERAL)) {
+            // Tagged template literal: func`template`
+            const Token& template_token = current_token();
+            Position template_start = template_token.get_start();
+            Position template_end = template_token.get_end();
+            std::string template_str = template_token.get_value();
+
+            advance(); // consume template literal
+
+            // Create template object argument for tagged template
+            std::vector<std::unique_ptr<ASTNode>> arguments;
+
+            // For simplicity, create a string literal argument
+            auto string_literal = std::make_unique<StringLiteral>(template_str, template_start, template_end);
+            arguments.push_back(std::move(string_literal));
+
+            Position end = template_end;
             expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
         }
     }
@@ -1578,34 +1597,43 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             }
             advance(); // consume var/let/const
             
-            // For for...of with destructuring, we need to handle it specially
-            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                // Array destructuring pattern - parse it and create a special init node
+            // Handle destructuring patterns in for loops
+            if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+                current_token().get_type() == TokenType::LEFT_BRACE) {
+
+                // Parse destructuring pattern
                 auto destructuring = parse_destructuring_pattern();
                 if (!destructuring) {
                     add_error("Failed to parse destructuring pattern");
                     return nullptr;
                 }
 
-                // Create a variable declaration with the destructuring pattern
-                Position decl_end = get_current_position();
-                init = std::move(destructuring);
+                // Check for assignment (= expression) - needed for regular for loops
+                if (current_token().get_type() == TokenType::ASSIGN) {
+                    advance(); // consume '='
+                    auto initializer = parse_assignment_expression();
+                    if (!initializer) {
+                        add_error("Expected expression after '=' in destructuring assignment");
+                        return nullptr;
+                    }
 
-                // Skip the normal VariableDeclarator creation and jump to for...of check
-                goto check_for_of;
-            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                // Object destructuring pattern - parse it and create a special init node
-                auto destructuring = parse_destructuring_pattern();
-                if (!destructuring) {
-                    add_error("Failed to parse destructuring pattern");
-                    return nullptr;
+                    // Create assignment expression with destructuring on left
+                    Position assign_start = destructuring->get_start();
+                    Position assign_end = initializer->get_end();
+                    auto assignment = std::make_unique<AssignmentExpression>(
+                        std::move(destructuring),
+                        AssignmentExpression::Operator::ASSIGN,
+                        std::move(initializer),
+                        assign_start,
+                        assign_end
+                    );
+                    init = std::move(assignment);
+                } else {
+                    // No assignment - for for...of loops
+                    init = std::move(destructuring);
                 }
 
-                // Create a variable declaration with the destructuring pattern
-                Position decl_end = get_current_position();
-                init = std::move(destructuring);
-
-                // Skip the normal VariableDeclarator creation and jump to for...of check
+                // Check if this is for...of or regular for loop
                 goto check_for_of;
             }
 
@@ -2756,15 +2784,18 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         return nullptr;
     }
 
-    // Check if next token is 'function' (async function) or '(' (async arrow function)
+    // Check if next token is 'function' (async function) or '(' (async arrow function) or identifier (async arrow)
     if (match(TokenType::FUNCTION)) {
         advance(); // consume 'function'
         // Continue with regular async function parsing
     } else if (match(TokenType::LEFT_PAREN)) {
         // This is an async arrow function: async () => {}
         return parse_async_arrow_function(start);
+    } else if (match(TokenType::IDENTIFIER)) {
+        // This is an async arrow function with single parameter: async x => {}
+        return parse_async_arrow_function_single_param(start);
     } else {
-        add_error("Expected 'function' or '(' after 'async'");
+        add_error("Expected 'function', '(', or identifier after 'async'");
         return nullptr;
     }
 
@@ -4555,6 +4586,19 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                     current_token().get_end()
                 );
                 targets.push_back(std::move(nested_placeholder));
+
+                // Check for default value after nested destructuring: [[x, y] = defaultValue]
+                if (match(TokenType::ASSIGN)) {
+                    advance(); // consume '='
+                    auto default_expr = parse_assignment_expression();
+                    if (!default_expr) {
+                        add_error("Expected expression after '=' in nested array destructuring");
+                        return nullptr;
+                    }
+                    // Store default value with the current target index
+                    size_t target_index = targets.size() - 1;
+                    default_exprs.emplace_back(target_index, std::move(default_expr));
+                }
             } else if (current_token().get_type() == TokenType::COMMA) {
                 // Handle skipping elements: [a, , c]
                 // Create a placeholder identifier for skipped element
@@ -5150,6 +5194,71 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
     // Create async arrow function expression
     // Note: We use AsyncFunctionExpression with null identifier for arrow functions
+    return std::make_unique<AsyncFunctionExpression>(
+        nullptr, // No identifier for arrow functions
+        std::move(params),
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+        start, end
+    );
+}
+
+std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Position start) {
+    std::vector<std::unique_ptr<Parameter>> params;
+
+    // Parse single identifier parameter: async x => {}
+    if (current_token().get_type() != TokenType::IDENTIFIER) {
+        add_error("Expected identifier for async arrow function parameter");
+        return nullptr;
+    }
+
+    // Create parameter from identifier
+    auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+                                                   current_token().get_start(), current_token().get_end());
+    Position param_end = current_token().get_end();
+    advance(); // consume identifier
+
+    // Single parameter with no default value
+    auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, start, param_end);
+    params.push_back(std::move(param));
+
+    // Expect arrow: =>
+    if (!consume(TokenType::ARROW)) {
+        add_error("Expected '=>' for async arrow function");
+        return nullptr;
+    }
+
+    // Parse function body (same as normal async arrow function)
+    std::unique_ptr<ASTNode> body = nullptr;
+    if (match(TokenType::LEFT_BRACE)) {
+        // Block body: async x => { statements }
+        body = parse_block_statement();
+    } else {
+        // Expression body: async x => expression
+        auto expr = parse_assignment_expression();
+        if (!expr) {
+            add_error("Expected function body");
+            return nullptr;
+        }
+
+        // Wrap expression in return statement for async arrow functions
+        Position ret_start = expr->get_start();
+        Position ret_end = expr->get_end();
+        auto return_stmt = std::make_unique<ReturnStatement>(std::move(expr), ret_start, ret_end);
+
+        // Create block statement containing the return
+        std::vector<std::unique_ptr<ASTNode>> statements;
+        statements.push_back(std::move(return_stmt));
+        body = std::make_unique<BlockStatement>(std::move(statements), ret_start, ret_end);
+    }
+
+    if (!body) {
+        add_error("Expected async arrow function body");
+        return nullptr;
+    }
+
+    Position end = get_current_position();
+
+    // Create async arrow function expression
     return std::make_unique<AsyncFunctionExpression>(
         nullptr, // No identifier for arrow functions
         std::move(params),
