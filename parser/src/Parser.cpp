@@ -2315,8 +2315,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     // Parse methods within the class
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
-            current_token().get_type() == TokenType::MULTIPLY) {
-            // Parse method definition (regular or generator)
+            current_token().get_type() == TokenType::MULTIPLY ||
+            is_reserved_word_as_property_name()) {
+            // Parse method definition (regular, generator, or reserved word method)
             auto method = parse_method_definition();
             if (method) {
                 statements.push_back(std::move(method));
@@ -2365,6 +2366,13 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     if (current_token().get_value() == "static") {
         is_static = true;
         advance(); // consume 'static'
+    }
+
+    // Check for async keyword
+    bool is_async = false;
+    if (current_token().get_type() == TokenType::ASYNC) {
+        is_async = true;
+        advance(); // consume 'async'
     }
 
     // Check for generator method syntax: *methodName
