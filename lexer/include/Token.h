@@ -69,6 +69,7 @@ enum class TokenType {
     FROM,
     OF,
     STATIC,
+    TARGET,
     
     // Operators
     PLUS,               // +

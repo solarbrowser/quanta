@@ -51,6 +51,7 @@ public:
         OPTIONAL_CHAINING_EXPRESSION,
         NULLISH_COALESCING_EXPRESSION,
         NEW_EXPRESSION,
+        META_PROPERTY,
         FUNCTION_EXPRESSION,
         ARROW_FUNCTION_EXPRESSION,
         ASYNC_FUNCTION_EXPRESSION,
@@ -634,6 +635,28 @@ public:
     ASTNode* get_constructor() const { return constructor_.get(); }
     const std::vector<std::unique_ptr<ASTNode>>& get_arguments() const { return arguments_; }
     
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * MetaProperty expression (e.g., new.target)
+ */
+class MetaProperty : public ASTNode {
+private:
+    std::string meta_;
+    std::string property_;
+
+public:
+    MetaProperty(const std::string& meta, const std::string& property,
+                 const Position& start, const Position& end)
+        : ASTNode(Type::META_PROPERTY, start, end),
+          meta_(meta), property_(property) {}
+
+    const std::string& get_meta() const { return meta_; }
+    const std::string& get_property() const { return property_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

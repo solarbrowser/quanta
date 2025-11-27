@@ -5911,6 +5911,27 @@ std::unique_ptr<ASTNode> NewExpression::clone() const {
     );
 }
 
+// MetaProperty implementation
+Value MetaProperty::evaluate(Context& ctx) {
+    if (meta_ == "new" && property_ == "target") {
+        // Return the constructor function that was used with 'new'
+        // For now, return undefined as a placeholder
+        return Value();
+    }
+
+    // Other meta properties can be added here
+    ctx.throw_exception(Value("ReferenceError: Unknown meta property: " + meta_ + "." + property_));
+    return Value();
+}
+
+std::string MetaProperty::to_string() const {
+    return meta_ + "." + property_;
+}
+
+std::unique_ptr<ASTNode> MetaProperty::clone() const {
+    return std::make_unique<MetaProperty>(meta_, property_, start_, end_);
+}
+
 //=============================================================================
 // ExpressionStatement Implementation
 //=============================================================================

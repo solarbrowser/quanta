@@ -53,6 +53,7 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"from", TokenType::FROM},
     {"of", TokenType::OF},
     {"static", TokenType::STATIC},
+    {"target", TokenType::TARGET},
     {"true", TokenType::BOOLEAN},
     {"false", TokenType::BOOLEAN},
     {"null", TokenType::NULL_LITERAL},

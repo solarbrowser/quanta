@@ -464,6 +464,22 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
     // Handle 'new' expression at call expression level to allow member access
     if (current_token().get_type() == TokenType::NEW) {
         Position start = current_token().get_start();
+
+        // Check for new.target metaproperty
+        if (peek_token().get_type() == TokenType::DOT) {
+            advance(); // consume 'new'
+            advance(); // consume '.'
+
+            if (current_token().get_type() == TokenType::TARGET) {
+                Position end = current_token().get_end();
+                advance(); // consume 'target'
+                return std::make_unique<MetaProperty>("new", "target", start, end);
+            } else {
+                add_error("Expected 'target' after 'new.'");
+                return nullptr;
+            }
+        }
+
         advance(); // consume 'new'
 
         // Parse constructor expression (can be identifier or member expression)
@@ -1209,6 +1225,45 @@ bool Parser::consume_if_match(TokenType type) {
         return true;
     }
     return false;
+}
+
+bool Parser::is_reserved_word_as_property_name() {
+    // Allow reserved words as property/method names
+    TokenType type = current_token().get_type();
+    return type == TokenType::RETURN ||
+           type == TokenType::IF ||
+           type == TokenType::ELSE ||
+           type == TokenType::FOR ||
+           type == TokenType::WHILE ||
+           type == TokenType::DO ||
+           type == TokenType::BREAK ||
+           type == TokenType::CONTINUE ||
+           type == TokenType::FUNCTION ||
+           type == TokenType::VAR ||
+           type == TokenType::LET ||
+           type == TokenType::CONST ||
+           type == TokenType::CLASS ||
+           type == TokenType::EXTENDS ||
+           type == TokenType::TRY ||
+           type == TokenType::CATCH ||
+           type == TokenType::FINALLY ||
+           type == TokenType::THROW ||
+           type == TokenType::DELETE ||
+           type == TokenType::TYPEOF ||
+           type == TokenType::INSTANCEOF ||
+           type == TokenType::IN ||
+           type == TokenType::NEW ||
+           type == TokenType::THIS ||
+           type == TokenType::SUPER ||
+           type == TokenType::DEFAULT ||
+           type == TokenType::SWITCH ||
+           type == TokenType::CASE ||
+           type == TokenType::IMPORT ||
+           type == TokenType::EXPORT ||
+           type == TokenType::FROM ||
+           type == TokenType::ASYNC ||
+           type == TokenType::AWAIT ||
+           type == TokenType::YIELD;
 }
 
 bool Parser::at_end() const {
@@ -2336,6 +2391,13 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     std::unique_ptr<ASTNode> key = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
         key = parse_identifier();
+    } else if (is_reserved_word_as_property_name()) {
+        // Allow reserved words as method/property names (e.g., get return(), set default())
+        std::string name = current_token().get_value();
+        Position start = current_token().get_start();
+        Position end = current_token().get_end();
+        advance(); // consume reserved word
+        key = std::make_unique<Identifier>(name, start, end);
     } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
         // Computed property: get [expr]() or set [expr]()
         advance(); // consume '['
@@ -5403,5 +5465,6 @@ void Parser::extract_variable_names_recursive(ASTNode* node, std::vector<std::st
         }
     }
 }
+
 
 } // namespace Quanta

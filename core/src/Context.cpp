@@ -999,7 +999,20 @@ void Context::initialize_built_ins() {
             // 4. Return "[object " + tag + "]"
             return Value("[object " + builtinTag + "]");
         });
-    
+
+    // Set name and length properties for Object.prototype.toString
+    PropertyDescriptor toString_name_desc(Value("toString"), PropertyAttributes::None);
+    toString_name_desc.set_configurable(true);
+    toString_name_desc.set_enumerable(false);
+    toString_name_desc.set_writable(false);
+    proto_toString_fn->set_property_descriptor("name", toString_name_desc);
+
+    PropertyDescriptor toString_length_desc(Value(0.0), PropertyAttributes::None);
+    toString_length_desc.set_configurable(false);
+    toString_length_desc.set_enumerable(false);
+    toString_length_desc.set_writable(false);
+    proto_toString_fn->set_property_descriptor("length", toString_length_desc);
+
     // Object.prototype.hasOwnProperty - working implementation
     auto proto_hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1018,6 +1031,19 @@ void Context::initialize_built_ins() {
             std::string prop_name = args[0].to_string();
             return Value(this_obj->has_own_property(prop_name));
         });
+
+    // Set name and length properties for Object.prototype.hasOwnProperty
+    PropertyDescriptor hasOwnProperty_name_desc(Value("hasOwnProperty"), PropertyAttributes::None);
+    hasOwnProperty_name_desc.set_configurable(true);
+    hasOwnProperty_name_desc.set_enumerable(false);
+    hasOwnProperty_name_desc.set_writable(false);
+    proto_hasOwnProperty_fn->set_property_descriptor("name", hasOwnProperty_name_desc);
+
+    PropertyDescriptor hasOwnProperty_length_desc(Value(1.0), PropertyAttributes::None);
+    hasOwnProperty_length_desc.set_configurable(false);
+    hasOwnProperty_length_desc.set_enumerable(false);
+    hasOwnProperty_length_desc.set_writable(false);
+    proto_hasOwnProperty_fn->set_property_descriptor("length", hasOwnProperty_length_desc);
 
     // Object.prototype.isPrototypeOf
     auto proto_isPrototypeOf_fn = ObjectFactory::create_native_function("isPrototypeOf",
@@ -1046,6 +1072,19 @@ void Context::initialize_built_ins() {
             
             return Value(false);
         });
+
+    // Set name and length properties for Object.prototype.isPrototypeOf
+    PropertyDescriptor isPrototypeOf_name_desc(Value("isPrototypeOf"), PropertyAttributes::None);
+    isPrototypeOf_name_desc.set_configurable(true);
+    isPrototypeOf_name_desc.set_enumerable(false);
+    isPrototypeOf_name_desc.set_writable(false);
+    proto_isPrototypeOf_fn->set_property_descriptor("name", isPrototypeOf_name_desc);
+
+    PropertyDescriptor isPrototypeOf_length_desc(Value(1.0), PropertyAttributes::None);
+    isPrototypeOf_length_desc.set_configurable(false);
+    isPrototypeOf_length_desc.set_enumerable(false);
+    isPrototypeOf_length_desc.set_writable(false);
+    proto_isPrototypeOf_fn->set_property_descriptor("length", isPrototypeOf_length_desc);
 
     // Set all Object.prototype methods
     object_prototype->set_property("toString", Value(proto_toString_fn.release()));
@@ -2807,6 +2846,19 @@ void Context::initialize_built_ins() {
             }
         }, 0);
 
+    // Set name and length properties for Number.prototype.valueOf
+    PropertyDescriptor number_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+    number_valueOf_name_desc.set_configurable(true);
+    number_valueOf_name_desc.set_enumerable(false);
+    number_valueOf_name_desc.set_writable(false);
+    number_valueOf->set_property_descriptor("name", number_valueOf_name_desc);
+
+    PropertyDescriptor number_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
+    number_valueOf_length_desc.set_configurable(false);
+    number_valueOf_length_desc.set_enumerable(false);
+    number_valueOf_length_desc.set_writable(false);
+    number_valueOf->set_property_descriptor("length", number_valueOf_length_desc);
+
     // Number.prototype.toString
     auto number_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2837,6 +2889,19 @@ void Context::initialize_built_ins() {
                 return Value();
             }
         }, 1);
+
+    // Set name and length properties for Number.prototype.toString
+    PropertyDescriptor number_toString_name_desc(Value("toString"), PropertyAttributes::None);
+    number_toString_name_desc.set_configurable(true);
+    number_toString_name_desc.set_enumerable(false);
+    number_toString_name_desc.set_writable(false);
+    number_toString->set_property_descriptor("name", number_toString_name_desc);
+
+    PropertyDescriptor number_toString_length_desc(Value(1.0), PropertyAttributes::None);
+    number_toString_length_desc.set_configurable(false);
+    number_toString_length_desc.set_enumerable(false);
+    number_toString_length_desc.set_writable(false);
+    number_toString->set_property_descriptor("length", number_toString_length_desc);
 
     number_prototype->set_property("valueOf", Value(number_valueOf.release()));
     number_prototype->set_property("toString", Value(number_toString.release()));
@@ -2882,6 +2947,19 @@ void Context::initialize_built_ins() {
             }
         }, 0);
 
+    // Set name and length properties for Boolean.prototype.valueOf
+    PropertyDescriptor boolean_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+    boolean_valueOf_name_desc.set_configurable(true);
+    boolean_valueOf_name_desc.set_enumerable(false);
+    boolean_valueOf_name_desc.set_writable(false);
+    boolean_valueOf->set_property_descriptor("name", boolean_valueOf_name_desc);
+
+    PropertyDescriptor boolean_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
+    boolean_valueOf_length_desc.set_configurable(false);
+    boolean_valueOf_length_desc.set_enumerable(false);
+    boolean_valueOf_length_desc.set_writable(false);
+    boolean_valueOf->set_property_descriptor("length", boolean_valueOf_length_desc);
+
     // Boolean.prototype.toString
     auto boolean_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2907,6 +2985,19 @@ void Context::initialize_built_ins() {
                 return Value();
             }
         }, 0);
+
+    // Set name and length properties for Boolean.prototype.toString
+    PropertyDescriptor boolean_toString_name_desc(Value("toString"), PropertyAttributes::None);
+    boolean_toString_name_desc.set_configurable(true);
+    boolean_toString_name_desc.set_enumerable(false);
+    boolean_toString_name_desc.set_writable(false);
+    boolean_toString->set_property_descriptor("name", boolean_toString_name_desc);
+
+    PropertyDescriptor boolean_toString_length_desc(Value(0.0), PropertyAttributes::None);
+    boolean_toString_length_desc.set_configurable(false);
+    boolean_toString_length_desc.set_enumerable(false);
+    boolean_toString_length_desc.set_writable(false);
+    boolean_toString->set_property_descriptor("length", boolean_toString_length_desc);
 
     boolean_prototype->set_property("valueOf", Value(boolean_valueOf.release()));
     boolean_prototype->set_property("toString", Value(boolean_toString.release()));
@@ -3500,6 +3591,16 @@ void Context::initialize_built_ins() {
     // Set constructor.prototype
     type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
 
+    // Set TypeError length property
+    PropertyDescriptor type_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    type_error_length_desc.set_configurable(true);
+    type_error_length_desc.set_enumerable(false);
+    type_error_length_desc.set_writable(false);
+    type_error_constructor->set_property_descriptor("length", type_error_length_desc);
+
+    // Set TypeError name property
+    type_error_constructor->set_property("name", Value("TypeError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     // Set TypeError's prototype to Error (TypeError inherits from Error)
     if (error_ctor) {
         type_error_constructor->set_prototype(error_ctor);
@@ -3549,6 +3650,16 @@ void Context::initialize_built_ins() {
     reference_error_prototype->set_property("constructor", Value(reference_error_constructor.get()));
     reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()));
 
+    // Set ReferenceError length property
+    PropertyDescriptor reference_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    reference_error_length_desc.set_configurable(true);
+    reference_error_length_desc.set_enumerable(false);
+    reference_error_length_desc.set_writable(false);
+    reference_error_constructor->set_property_descriptor("length", reference_error_length_desc);
+
+    // Set ReferenceError name property
+    reference_error_constructor->set_property("name", Value("ReferenceError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
     // Set ReferenceError's prototype to Error
     if (error_ctor) {
         reference_error_constructor->set_prototype(error_ctor);
@@ -3597,6 +3708,16 @@ void Context::initialize_built_ins() {
     
     syntax_error_prototype->set_property("constructor", Value(syntax_error_constructor.get()));
     syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()));
+
+    // Set SyntaxError length property
+    PropertyDescriptor syntax_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    syntax_error_length_desc.set_configurable(true);
+    syntax_error_length_desc.set_enumerable(false);
+    syntax_error_length_desc.set_writable(false);
+    syntax_error_constructor->set_property_descriptor("length", syntax_error_length_desc);
+
+    // Set SyntaxError name property
+    syntax_error_constructor->set_property("name", Value("SyntaxError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     // Set SyntaxError's prototype to Error
     if (error_ctor) {
@@ -3648,6 +3769,16 @@ void Context::initialize_built_ins() {
 
     // Set constructor.prototype
     range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
+
+    // Set RangeError length property
+    PropertyDescriptor range_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    range_error_length_desc.set_configurable(true);
+    range_error_length_desc.set_enumerable(false);
+    range_error_length_desc.set_writable(false);
+    range_error_constructor->set_property_descriptor("length", range_error_length_desc);
+
+    // Set RangeError name property
+    range_error_constructor->set_property("name", Value("RangeError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     // Set RangeError's prototype to Error
     if (error_ctor) {
@@ -3851,7 +3982,7 @@ void Context::initialize_built_ins() {
     aggregate_error_constructor->set_property_descriptor("name", name_desc);
 
     // Set AggregateError constructor length property
-    PropertyDescriptor length_desc(Value(2.0), PropertyAttributes::None);
+    PropertyDescriptor length_desc(Value(2.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     length_desc.set_configurable(true);
     length_desc.set_enumerable(false);
     length_desc.set_writable(false);
@@ -3859,6 +3990,9 @@ void Context::initialize_built_ins() {
 
     // Set constructor.prototype
     aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()));
+
+    // Set AggregateError name property
+    aggregate_error_constructor->set_property("name", Value("AggregateError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     // Set AggregateError's prototype to Error
     if (error_ctor) {
