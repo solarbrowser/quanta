@@ -108,6 +108,42 @@ if (typeof $262 === 'undefined') {
             }
 
             return AbstractModuleSource;
+        })(),
+
+        // IsHTMLDDA - Special object that emulates undefined but is actually an object
+        // Used in Test262 tests for checking [[IsHTMLDDA]] internal slot behavior
+        IsHTMLDDA: (function() {
+            var htmldda = {};
+            try {
+                // Make it behave like undefined in boolean contexts
+                Object.defineProperty(htmldda, Symbol.toPrimitive, {
+                    value: function() { return undefined; },
+                    configurable: false,
+                    writable: false,
+                    enumerable: false
+                });
+
+                // Override valueOf to return undefined
+                Object.defineProperty(htmldda, 'valueOf', {
+                    value: function() { return undefined; },
+                    configurable: false,
+                    writable: false,
+                    enumerable: false
+                });
+
+                // Override toString to return empty string (like undefined coercion)
+                Object.defineProperty(htmldda, 'toString', {
+                    value: function() { return ''; },
+                    configurable: false,
+                    writable: false,
+                    enumerable: false
+                });
+
+            } catch (e) {
+                // If symbol operations fail, still return the object
+            }
+
+            return htmldda;
         })()
     };
 }
@@ -139,12 +175,19 @@ if (typeof assert === 'undefined') {
         throw new Test262Error(message);
     };
 
-    assert.sameValue = function(actual, expected, message) {
-        if (actual === expected && (actual !== 0 || 1 / actual === 1 / expected)) {
-            return;
+    // SameValue comparison helper used by assert functions
+    assert._isSameValue = function(a, b) {
+        if (a === b) {
+            // Handle +0 vs -0
+            return a !== 0 || 1 / a === 1 / b;
         }
-        if (actual !== actual && expected !== expected) {
-            return; // Both NaN
+        // Handle NaN
+        return a !== a && b !== b;
+    };
+
+    assert.sameValue = function(actual, expected, message) {
+        if (assert._isSameValue(actual, expected)) {
+            return;
         }
         if (message === undefined) {
             message = '';
@@ -189,6 +232,55 @@ if (typeof assert === 'undefined') {
         }
         // Arrays are equal - success, return nothing
     };
+
+    // Add assert.deepEqual for object comparison
+    assert.deepEqual = function(actual, expected, message) {
+        function deepCompare(a, b) {
+            // Same reference
+            if (a === b) return true;
+
+            // Handle null/undefined
+            if (a == null || b == null) return a === b;
+
+            // Different types
+            if (typeof a !== typeof b) return false;
+
+            // For primitives, use strict equality
+            if (typeof a !== 'object') return a === b;
+
+            // For arrays
+            if (Array.isArray(a) && Array.isArray(b)) {
+                if (a.length !== b.length) return false;
+                for (var i = 0; i < a.length; i++) {
+                    if (!deepCompare(a[i], b[i])) return false;
+                }
+                return true;
+            }
+
+            // One is array, other is not
+            if (Array.isArray(a) || Array.isArray(b)) return false;
+
+            // For objects
+            var keysA = Object.keys(a);
+            var keysB = Object.keys(b);
+            if (keysA.length !== keysB.length) return false;
+
+            for (var i = 0; i < keysA.length; i++) {
+                var key = keysA[i];
+                if (!keysB.includes || keysB.indexOf(key) === -1) return false;
+                if (!deepCompare(a[key], b[key])) return false;
+            }
+
+            return true;
+        }
+
+        if (!deepCompare(actual, expected)) {
+            var msg = message || '';
+            if (msg) msg += ' ';
+            msg += 'Expected deep equality between objects';
+            throw new Test262Error(msg);
+        }
+    };
 }
 
 if (typeof verifyProperty === 'undefined') {
@@ -229,6 +321,37 @@ if (typeof verifyProperty === 'undefined') {
         if (desc.hasOwnProperty('configurable')) {
             if (originalDesc.configurable !== desc.configurable) {
                 throw new Test262Error("property '" + nameStr + "' has wrong configurable attribute");
+            }
+        }
+    };
+}
+
+// Add verifyCallableProperty for function property verification
+if (typeof verifyCallableProperty === 'undefined') {
+    verifyCallableProperty = function(obj, name, functionName, functionLength, desc, options) {
+        // First verify it's a property
+        verifyProperty(obj, name, desc, options);
+
+        var propValue = obj[name];
+
+        // Verify it's a function
+        if (typeof propValue !== 'function') {
+            throw new Test262Error("property '" + String(name) + "' should be a function");
+        }
+
+        // Verify function name if provided
+        if (functionName !== undefined) {
+            var actualName = propValue.name;
+            if (actualName !== functionName) {
+                throw new Test262Error("function '" + String(name) + "' should have name '" + functionName + "', got '" + actualName + "'");
+            }
+        }
+
+        // Verify function length if provided
+        if (functionLength !== undefined) {
+            var actualLength = propValue.length;
+            if (actualLength !== functionLength) {
+                throw new Test262Error("function '" + String(name) + "' should have length " + functionLength + ", got " + actualLength);
             }
         }
     };

@@ -488,8 +488,7 @@ void Context::initialize_built_ins() {
         });
 
     // Set the correct length property for Object.is with proper descriptor (should be 2)
-    PropertyDescriptor is_length_desc(Value(2.0), PropertyAttributes::None);
-    is_length_desc.set_configurable(false);
+    PropertyDescriptor is_length_desc(Value(2.0), PropertyAttributes::Configurable);
     is_length_desc.set_enumerable(false);
     is_length_desc.set_writable(false);
     is_fn->set_property_descriptor("length", is_length_desc);
@@ -1007,10 +1006,7 @@ void Context::initialize_built_ins() {
     toString_name_desc.set_writable(false);
     proto_toString_fn->set_property_descriptor("name", toString_name_desc);
 
-    PropertyDescriptor toString_length_desc(Value(0.0), PropertyAttributes::None);
-    toString_length_desc.set_configurable(false);
-    toString_length_desc.set_enumerable(false);
-    toString_length_desc.set_writable(false);
+    PropertyDescriptor toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
     proto_toString_fn->set_property_descriptor("length", toString_length_desc);
 
     // Object.prototype.hasOwnProperty - working implementation
@@ -1039,10 +1035,7 @@ void Context::initialize_built_ins() {
     hasOwnProperty_name_desc.set_writable(false);
     proto_hasOwnProperty_fn->set_property_descriptor("name", hasOwnProperty_name_desc);
 
-    PropertyDescriptor hasOwnProperty_length_desc(Value(1.0), PropertyAttributes::None);
-    hasOwnProperty_length_desc.set_configurable(false);
-    hasOwnProperty_length_desc.set_enumerable(false);
-    hasOwnProperty_length_desc.set_writable(false);
+    PropertyDescriptor hasOwnProperty_length_desc(Value(1.0), PropertyAttributes::Configurable);
     proto_hasOwnProperty_fn->set_property_descriptor("length", hasOwnProperty_length_desc);
 
     // Object.prototype.isPrototypeOf
@@ -1080,8 +1073,7 @@ void Context::initialize_built_ins() {
     isPrototypeOf_name_desc.set_writable(false);
     proto_isPrototypeOf_fn->set_property_descriptor("name", isPrototypeOf_name_desc);
 
-    PropertyDescriptor isPrototypeOf_length_desc(Value(1.0), PropertyAttributes::None);
-    isPrototypeOf_length_desc.set_configurable(false);
+    PropertyDescriptor isPrototypeOf_length_desc(Value(1.0), PropertyAttributes::Configurable);
     isPrototypeOf_length_desc.set_enumerable(false);
     isPrototypeOf_length_desc.set_writable(false);
     proto_isPrototypeOf_fn->set_property_descriptor("length", isPrototypeOf_length_desc);
@@ -1235,8 +1227,7 @@ void Context::initialize_built_ins() {
             return Value(42); // Placeholder implementation
         });
 
-    PropertyDescriptor find_length_desc(Value(1.0), PropertyAttributes::None);
-    find_length_desc.set_configurable(false);
+    PropertyDescriptor find_length_desc(Value(1.0), PropertyAttributes::Configurable);
     find_length_desc.set_enumerable(false);
     find_length_desc.set_writable(false);
     find_fn->set_property_descriptor("length", find_length_desc);
@@ -1425,13 +1416,9 @@ void Context::initialize_built_ins() {
             }
 
             return Value(false);
-        });
+        }, 1); // arity = 1
 
-    PropertyDescriptor includes_length_desc(Value(1.0), PropertyAttributes::None);
-    includes_length_desc.set_configurable(false);
-    includes_length_desc.set_enumerable(false);
-    includes_length_desc.set_writable(false);
-    includes_fn->set_property_descriptor("length", includes_length_desc);
+    // Function constructor already sets proper length descriptor with configurable: true
 
     includes_fn->set_property("name", Value("includes"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
@@ -1449,10 +1436,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         });
 
-    PropertyDescriptor flat_length_desc(Value(0.0), PropertyAttributes::None);
-    flat_length_desc.set_configurable(false);
-    flat_length_desc.set_enumerable(false);
-    flat_length_desc.set_writable(false);
+    PropertyDescriptor flat_length_desc(Value(0.0), PropertyAttributes::Configurable);
     flat_fn->set_property_descriptor("length", flat_length_desc);
 
     flat_fn->set_property("name", Value("flat"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -1472,12 +1456,9 @@ void Context::initialize_built_ins() {
             result->set_element(2, fill_value);
             result->set_property("length", Value(3.0));
             return Value(result.release());
-        });
+        }, 1); // arity = 1
 
-    PropertyDescriptor fill_length_desc(Value(1.0), PropertyAttributes::None);
-    fill_length_desc.set_configurable(false);
-    fill_length_desc.set_enumerable(false);
-    fill_length_desc.set_writable(false);
+    PropertyDescriptor fill_length_desc(Value(1.0), PropertyAttributes::Configurable);
     fill_fn->set_property_descriptor("length", fill_length_desc);
 
     fill_fn->set_property("name", Value("fill"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -1578,12 +1559,7 @@ void Context::initialize_built_ins() {
             return Value(static_cast<double>(this_obj->get_length()));
         }, 1); // Arity = 1 according to ECMAScript spec
 
-    // Set push method length property
-    PropertyDescriptor push_length_desc(Value(1.0), PropertyAttributes::None);
-    push_length_desc.set_configurable(false);
-    push_length_desc.set_enumerable(false);
-    push_length_desc.set_writable(false);
-    array_push_fn->set_property_descriptor("length", push_length_desc);
+    // Function constructor already sets proper length descriptor with configurable: true
 
     // Set push method
     array_prototype->set_property("push", Value(array_push_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1861,8 +1837,7 @@ void Context::initialize_built_ins() {
             return func->call(ctx, call_args, this_arg);
         });
 
-    PropertyDescriptor call_length_desc(Value(1.0), PropertyAttributes::None);
-    call_length_desc.set_configurable(false);
+    PropertyDescriptor call_length_desc(Value(1.0), PropertyAttributes::Configurable);
     call_length_desc.set_enumerable(false);
     call_length_desc.set_writable(false);
     call_fn->set_property_descriptor("length", call_length_desc);
@@ -1901,8 +1876,7 @@ void Context::initialize_built_ins() {
             return func->call(ctx, call_args, this_arg);
         });
 
-    PropertyDescriptor apply_length_desc(Value(2.0), PropertyAttributes::None);
-    apply_length_desc.set_configurable(false);
+    PropertyDescriptor apply_length_desc(Value(2.0), PropertyAttributes::Configurable);
     apply_length_desc.set_enumerable(false);
     apply_length_desc.set_writable(false);
     apply_fn->set_property_descriptor("length", apply_length_desc);
@@ -1944,8 +1918,7 @@ void Context::initialize_built_ins() {
             return Value(bound_function.release());
         });
 
-    PropertyDescriptor bind_length_desc(Value(1.0), PropertyAttributes::None);
-    bind_length_desc.set_configurable(false);
+    PropertyDescriptor bind_length_desc(Value(1.0), PropertyAttributes::Configurable);
     bind_length_desc.set_enumerable(false);
     bind_length_desc.set_writable(false);
     bind_fn->set_property_descriptor("length", bind_length_desc);
@@ -2089,8 +2062,7 @@ void Context::initialize_built_ins() {
             return Value(found != std::string::npos);
         });
     // Set includes method length with proper descriptor
-    PropertyDescriptor str_includes_length_desc(Value(1.0), PropertyAttributes::None);
-    str_includes_length_desc.set_configurable(false);
+    PropertyDescriptor str_includes_length_desc(Value(1.0), PropertyAttributes::Configurable);
     str_includes_length_desc.set_enumerable(false);
     str_includes_length_desc.set_writable(false);
     str_includes_fn->set_property_descriptor("length", str_includes_length_desc);
@@ -2128,8 +2100,7 @@ void Context::initialize_built_ins() {
             return Value(str.substr(position, search_string.length()) == search_string);
         });
     // Set startsWith method length with proper descriptor
-    PropertyDescriptor startsWith_length_desc(Value(1.0), PropertyAttributes::None);
-    startsWith_length_desc.set_configurable(false);
+    PropertyDescriptor startsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     startsWith_length_desc.set_enumerable(false);
     startsWith_length_desc.set_writable(false);
     startsWith_fn->set_property_descriptor("length", startsWith_length_desc);
@@ -2159,8 +2130,7 @@ void Context::initialize_built_ins() {
             return Value(str.substr(length - search_string.length(), search_string.length()) == search_string);
         });
     // Set endsWith method length with proper descriptor
-    PropertyDescriptor endsWith_length_desc(Value(1.0), PropertyAttributes::None);
-    endsWith_length_desc.set_configurable(false);
+    PropertyDescriptor endsWith_length_desc(Value(1.0), PropertyAttributes::Configurable);
     endsWith_length_desc.set_enumerable(false);
     endsWith_length_desc.set_writable(false);
     endsWith_fn->set_property_descriptor("length", endsWith_length_desc);
@@ -2598,8 +2568,7 @@ void Context::initialize_built_ins() {
                     size_t found = str.find(search_string, position);
                     return Value(found != std::string::npos);
                 });
-            PropertyDescriptor global_includes_length_desc(Value(1.0), PropertyAttributes::None);
-            global_includes_length_desc.set_configurable(false);
+            PropertyDescriptor global_includes_length_desc(Value(1.0), PropertyAttributes::Configurable);
             global_includes_length_desc.set_enumerable(false);
             global_includes_length_desc.set_writable(false);
             global_includes_fn->set_property_descriptor("length", global_includes_length_desc);
@@ -2642,8 +2611,7 @@ void Context::initialize_built_ins() {
                     return Value(this_val.to_string());
                 });
 
-            PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
-            string_valueOf_length_desc.set_configurable(false);
+            PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
             string_valueOf_length_desc.set_enumerable(false);
             string_valueOf_length_desc.set_writable(false);
             string_valueOf_fn->set_property_descriptor("length", string_valueOf_length_desc);
@@ -2693,8 +2661,7 @@ void Context::initialize_built_ins() {
                     return Value(this_val.to_string());
                 });
 
-            PropertyDescriptor string_toString_length_desc(Value(0.0), PropertyAttributes::None);
-            string_toString_length_desc.set_configurable(false);
+            PropertyDescriptor string_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
             string_toString_length_desc.set_enumerable(false);
             string_toString_length_desc.set_writable(false);
             string_toString_fn->set_property_descriptor("length", string_toString_length_desc);
@@ -2980,8 +2947,7 @@ void Context::initialize_built_ins() {
     number_valueOf_name_desc.set_writable(false);
     number_valueOf->set_property_descriptor("name", number_valueOf_name_desc);
 
-    PropertyDescriptor number_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
-    number_valueOf_length_desc.set_configurable(false);
+    PropertyDescriptor number_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
     number_valueOf_length_desc.set_enumerable(false);
     number_valueOf_length_desc.set_writable(false);
     number_valueOf->set_property_descriptor("length", number_valueOf_length_desc);
@@ -3024,8 +2990,7 @@ void Context::initialize_built_ins() {
     number_toString_name_desc.set_writable(false);
     number_toString->set_property_descriptor("name", number_toString_name_desc);
 
-    PropertyDescriptor number_toString_length_desc(Value(1.0), PropertyAttributes::None);
-    number_toString_length_desc.set_configurable(false);
+    PropertyDescriptor number_toString_length_desc(Value(1.0), PropertyAttributes::Configurable);
     number_toString_length_desc.set_enumerable(false);
     number_toString_length_desc.set_writable(false);
     number_toString->set_property_descriptor("length", number_toString_length_desc);
@@ -3081,8 +3046,7 @@ void Context::initialize_built_ins() {
     boolean_valueOf_name_desc.set_writable(false);
     boolean_valueOf->set_property_descriptor("name", boolean_valueOf_name_desc);
 
-    PropertyDescriptor boolean_valueOf_length_desc(Value(0.0), PropertyAttributes::None);
-    boolean_valueOf_length_desc.set_configurable(false);
+    PropertyDescriptor boolean_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
     boolean_valueOf_length_desc.set_enumerable(false);
     boolean_valueOf_length_desc.set_writable(false);
     boolean_valueOf->set_property_descriptor("length", boolean_valueOf_length_desc);
@@ -3120,8 +3084,7 @@ void Context::initialize_built_ins() {
     boolean_toString_name_desc.set_writable(false);
     boolean_toString->set_property_descriptor("name", boolean_toString_name_desc);
 
-    PropertyDescriptor boolean_toString_length_desc(Value(0.0), PropertyAttributes::None);
-    boolean_toString_length_desc.set_configurable(false);
+    PropertyDescriptor boolean_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
     boolean_toString_length_desc.set_enumerable(false);
     boolean_toString_length_desc.set_writable(false);
     boolean_toString->set_property_descriptor("length", boolean_toString_length_desc);
