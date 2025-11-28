@@ -311,7 +311,7 @@ void Map::setup_map_prototype(Context& ctx) {
     auto delete_fn = ObjectFactory::create_native_function("delete", map_delete);
     auto clear_fn = ObjectFactory::create_native_function("clear", map_clear);
     auto size_fn = ObjectFactory::create_native_function("size", map_size_getter);
-    
+
     map_prototype->set_property("set", Value(set_fn.release()));
     map_prototype->set_property("get", Value(get_fn.release()));
     map_prototype->set_property("has", Value(has_fn.release()));

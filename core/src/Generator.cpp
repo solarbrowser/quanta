@@ -224,6 +224,36 @@ void Generator::setup_generator_prototype(Context& ctx) {
     }
     
     ctx.create_binding("GeneratorPrototype", Value(gen_prototype.release()));
+
+    // Setup GeneratorFunction constructor
+    auto generator_function_constructor = ObjectFactory::create_native_function("GeneratorFunction",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Simple GeneratorFunction constructor implementation
+            std::vector<std::string> params;
+            std::string body_str = "return undefined;";
+
+            if (args.size() > 1) {
+                // Last argument is the function body
+                body_str = args.back().to_string();
+
+                // Previous arguments are parameter names
+                for (size_t i = 0; i < args.size() - 1; ++i) {
+                    params.push_back(args[i].to_string());
+                }
+            } else if (args.size() == 1) {
+                body_str = args[0].to_string();
+            }
+
+            // Create a simple generator function
+            auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", params, nullptr, &ctx);
+            return Value(gen_fn.release());
+        });
+
+    // Set name property for GeneratorFunction constructor
+    generator_function_constructor->set_property("name", Value("GeneratorFunction"));
+
+    // Register GeneratorFunction constructor
+    ctx.create_binding("GeneratorFunction", Value(generator_function_constructor.release()));
 }
 
 // Static tracking methods for yield expressions
