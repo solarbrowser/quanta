@@ -990,21 +990,24 @@ public:
     };
 
 private:
-    std::unique_ptr<Identifier> key_;
+    std::unique_ptr<ASTNode> key_;
     std::unique_ptr<FunctionExpression> value_;
     Kind kind_;
     bool is_static_;
+    bool computed_;
 
 public:
-    MethodDefinition(std::unique_ptr<Identifier> key,
+    MethodDefinition(std::unique_ptr<ASTNode> key,
                     std::unique_ptr<FunctionExpression> value,
                     Kind kind,
                     bool is_static,
+                    bool computed,
                     const Position& start, const Position& end)
         : ASTNode(Type::METHOD_DEFINITION, start, end),
-          key_(std::move(key)), value_(std::move(value)), kind_(kind), is_static_(is_static) {}
-    
-    Identifier* get_key() const { return key_.get(); }
+          key_(std::move(key)), value_(std::move(value)), kind_(kind), is_static_(is_static), computed_(computed) {}
+
+    ASTNode* get_key() const { return key_.get(); }
+    bool is_computed() const { return computed_; }
     FunctionExpression* get_value() const { return value_.get(); }
     Kind get_kind() const { return kind_; }
     bool is_static() const { return is_static_; }

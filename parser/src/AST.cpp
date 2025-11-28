@@ -7277,7 +7277,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         for (const auto& stmt : body_->get_statements()) {
             if (stmt->get_type() == Type::METHOD_DEFINITION) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
-                std::string method_name = method->get_key()->get_name();
+                std::string method_name;
+                if (method->is_computed()) {
+                    // For computed properties, generate a dynamic name
+                    method_name = "[computed]";
+                } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
+                    method_name = id->get_name();
+                } else {
+                    method_name = "[unknown]";
+                }
                 
                 if (method->is_constructor()) {
                     // Store constructor body and parameters
@@ -7357,7 +7365,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (stmt->get_type() == Type::METHOD_DEFINITION) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
                 if (method->is_static()) {
-                    std::string method_name = method->get_key()->get_name();
+                    std::string method_name;
+                    if (method->is_computed()) {
+                        // For computed properties, generate a dynamic name
+                        method_name = "[computed]";
+                    } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
+                        method_name = id->get_name();
+                    } else {
+                        method_name = "[unknown]";
+                    }
                     std::vector<std::unique_ptr<Parameter>> static_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
@@ -7479,8 +7495,12 @@ std::string MethodDefinition::to_string() const {
     
     if (is_constructor()) {
         oss << "constructor";
+    } else if (computed_) {
+        oss << "[" << key_->to_string() << "]";
+    } else if (Identifier* id = dynamic_cast<Identifier*>(key_.get())) {
+        oss << id->get_name();
     } else {
-        oss << key_->get_name();
+        oss << key_->to_string();
     }
     
     // Add function representation
@@ -7495,9 +7515,9 @@ std::string MethodDefinition::to_string() const {
 
 std::unique_ptr<ASTNode> MethodDefinition::clone() const {
     return std::make_unique<MethodDefinition>(
-        std::unique_ptr<Identifier>(static_cast<Identifier*>(key_->clone().release())),
+        key_ ? key_->clone() : nullptr,
         value_ ? std::unique_ptr<FunctionExpression>(static_cast<FunctionExpression*>(value_->clone().release())) : nullptr,
-        kind_, is_static_, start_, end_
+        kind_, is_static_, computed_, start_, end_
     );
 }
 

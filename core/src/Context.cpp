@@ -5956,13 +5956,31 @@ void Context::register_typed_array_constructors() {
                 
                 auto set_uint8_method = ObjectFactory::create_native_function("setUint8", DataView::js_set_uint8);
                 dataview_obj->set_property("setUint8", Value(set_uint8_method.release()));
-                
+
+                auto get_int8_method = ObjectFactory::create_native_function("getInt8", DataView::js_get_int8);
+                dataview_obj->set_property("getInt8", Value(get_int8_method.release()));
+
+                auto set_int8_method = ObjectFactory::create_native_function("setInt8", DataView::js_set_int8);
+                dataview_obj->set_property("setInt8", Value(set_int8_method.release()));
+
                 auto get_int16_method = ObjectFactory::create_native_function("getInt16", DataView::js_get_int16);
                 dataview_obj->set_property("getInt16", Value(get_int16_method.release()));
                 
                 auto set_int16_method = ObjectFactory::create_native_function("setInt16", DataView::js_set_int16);
                 dataview_obj->set_property("setInt16", Value(set_int16_method.release()));
-                
+
+                auto get_uint16_method = ObjectFactory::create_native_function("getUint16", DataView::js_get_uint16);
+                dataview_obj->set_property("getUint16", Value(get_uint16_method.release()));
+
+                auto set_uint16_method = ObjectFactory::create_native_function("setUint16", DataView::js_set_uint16);
+                dataview_obj->set_property("setUint16", Value(set_uint16_method.release()));
+
+                auto get_int32_method = ObjectFactory::create_native_function("getInt32", DataView::js_get_int32);
+                dataview_obj->set_property("getInt32", Value(get_int32_method.release()));
+
+                auto set_int32_method = ObjectFactory::create_native_function("setInt32", DataView::js_set_int32);
+                dataview_obj->set_property("setInt32", Value(set_int32_method.release()));
+
                 auto get_uint32_method = ObjectFactory::create_native_function("getUint32", DataView::js_get_uint32);
                 dataview_obj->set_property("getUint32", Value(get_uint32_method.release()));
                 
@@ -5984,7 +6002,20 @@ void Context::register_typed_array_constructors() {
             
             return result;
         });
-    
+
+    // Setup DataView.prototype with methods
+    auto dataview_prototype = ObjectFactory::create_object();
+
+    // Add all DataView prototype methods
+    auto get_int32_proto = ObjectFactory::create_native_function("getInt32", DataView::js_get_int32);
+    dataview_prototype->set_property("getInt32", Value(get_int32_proto.release()));
+
+    auto set_int32_proto = ObjectFactory::create_native_function("setInt32", DataView::js_set_int32);
+    dataview_prototype->set_property("setInt32", Value(set_int32_proto.release()));
+
+    // Set DataView.prototype
+    dataview_constructor->set_property("prototype", Value(dataview_prototype.release()));
+
     register_built_in_object("DataView", dataview_constructor.release());
 
     // Test262 async test helpers

@@ -17,11 +17,14 @@ namespace Quanta {
 // AsyncFunction Implementation
 //=============================================================================
 
-AsyncFunction::AsyncFunction(const std::string& name, 
+AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+
+    // Set constructor property to point to AsyncFunction constructor
+    // This will be set properly when the AsyncFunction constructor is available
 }
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -600,6 +603,43 @@ void setup_async_functions(Context& ctx) {
         promise_fn->set_property("resolve", Value(resolve_fn.release()));
         promise_fn->set_property("reject", Value(reject_fn.release()));
     }
+
+    // Setup AsyncFunction constructor
+    auto async_function_constructor = ObjectFactory::create_native_function("AsyncFunction",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Simple AsyncFunction constructor implementation
+            std::vector<std::string> params;
+            std::string body_str = "return undefined;";
+
+            if (args.size() > 1) {
+                // Last argument is the function body
+                body_str = args.back().to_string();
+
+                // Previous arguments are parameter names
+                for (size_t i = 0; i < args.size() - 1; ++i) {
+                    params.push_back(args[i].to_string());
+                }
+            } else if (args.size() == 1) {
+                body_str = args[0].to_string();
+            }
+
+            // Create a simple async function
+            auto async_fn = std::make_unique<AsyncFunction>("anonymous", params, nullptr, &ctx);
+            return Value(async_fn.release());
+        });
+
+    // Set name property for AsyncFunction constructor
+    async_function_constructor->set_property("name", Value("AsyncFunction"));
+
+    // Store AsyncFunction constructor reference
+    Function* async_func_ctor = async_function_constructor.get();
+
+    // Register AsyncFunction constructor
+    ctx.create_binding("AsyncFunction", Value(async_function_constructor.release()));
+
+    // Set constructor property on all AsyncFunction instances
+    // Note: This should be done when creating AsyncFunction instances
+    // For now, we'll set up a prototype-based approach later
 }
 
 } // namespace AsyncUtils

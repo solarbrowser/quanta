@@ -2316,6 +2316,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::MULTIPLY ||
+            current_token().get_type() == TokenType::LEFT_BRACKET ||
             is_reserved_word_as_property_name()) {
             // Parse method definition (regular, generator, or reserved word method)
             auto method = parse_method_definition();
@@ -2397,6 +2398,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     // Parse method name (property name for getter/setter) - support computed properties
     std::unique_ptr<ASTNode> key = nullptr;
+    bool computed = false;
+
     if (current_token().get_type() == TokenType::IDENTIFIER) {
         key = parse_identifier();
     } else if (is_reserved_word_as_property_name()) {
@@ -2407,11 +2410,22 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         advance(); // consume reserved word
         key = std::make_unique<Identifier>(name, start, end);
     } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-        // Computed property: get [expr]() or set [expr]()
+        // Computed property: [expr]()
+        computed = true;
         advance(); // consume '['
-        key = parse_expression();
+
+        // Handle expressions in computed properties
+        if (current_token().get_type() == TokenType::NUMBER) {
+            key = parse_number_literal();
+        } else if (current_token().get_type() == TokenType::STRING) {
+            key = parse_string_literal();
+        } else {
+            // Try full expression parsing for all cases
+            key = parse_assignment_expression();
+        }
+
         if (!key) {
-            add_error("Expected expression in computed property");
+            add_error("Failed to parse computed property expression");
             return nullptr;
         }
         if (!consume(TokenType::RIGHT_BRACKET)) {
@@ -2618,9 +2632,9 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     
     Position end = get_current_position();
     return std::make_unique<MethodDefinition>(
-        std::unique_ptr<Identifier>(static_cast<Identifier*>(key.release())),
+        std::move(key),
         std::move(function_expr),
-        kind, is_static, start, end
+        kind, is_static, computed, start, end
     );
 }
 
