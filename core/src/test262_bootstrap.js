@@ -652,6 +652,31 @@ if (typeof assertNativeFunction === 'undefined') {
             });
         }
     });
+
+    // Fix constructor [[Prototype]] to be Function.prototype (ES6 spec requirement)
+    const constructors = [Array, Object, String, Number, Boolean, Function,
+                         Error, TypeError, ReferenceError, SyntaxError, RangeError, URIError, EvalError, AggregateError,
+                         Date, RegExp, Promise];
+
+    // Add Map, Set if they exist
+    if (typeof Map !== 'undefined') constructors.push(Map);
+    if (typeof Set !== 'undefined') constructors.push(Set);
+    if (typeof WeakMap !== 'undefined') constructors.push(WeakMap);
+    if (typeof WeakSet !== 'undefined') constructors.push(WeakSet);
+    if (typeof ArrayBuffer !== 'undefined') constructors.push(ArrayBuffer);
+
+    constructors.forEach(function(ctor) {
+        if (ctor && typeof Object.setPrototypeOf === 'function') {
+            try {
+                const currentProto = Object.getPrototypeOf(ctor);
+                if (currentProto !== Function.prototype) {
+                    Object.setPrototypeOf(ctor, Function.prototype);
+                }
+            } catch (e) {
+                // Silently ignore if setPrototypeOf not available or fails
+            }
+        }
+    });
 })();
 
 // Bootstrap loaded silently - no console spam

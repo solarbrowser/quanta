@@ -679,7 +679,7 @@ void Context::initialize_built_ins() {
                 }
                 return Value(proto);
             }
-            
+
             return Value::null();
         });
     object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()));
@@ -2411,10 +2411,40 @@ void Context::initialize_built_ins() {
     // Set Function.prototype.name to empty string per ES6 spec
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
+    // Store Function.prototype pointer BEFORE releasing (needed for all constructor prototypes)
+    Object* function_proto_ptr = function_prototype.get();
+
     // Set Function.prototype as the prototype
     function_constructor->set_property("prototype", Value(function_prototype.release()), PropertyAttributes::None);
-    
+
+    // Set Function constructor's prototype to Function.prototype (circular reference)
+    // Must use Object::set_prototype to set internal [[Prototype]], not .prototype property
+    static_cast<Object*>(function_constructor.get())->set_prototype(function_proto_ptr);
+
     register_built_in_object("Function", function_constructor.release());
+
+    // ============================================================================
+    // Set all constructor prototypes to Function.prototype (ES6 spec requirement)
+    // All constructor functions must have Function.prototype as their [[Prototype]]
+    // ============================================================================
+
+    // Get all constructor functions from global object and set their prototype to Function.prototype
+    const char* constructor_names[] = {
+        "Array", "Object", "String", "Number", "Boolean",
+        "Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError", "AggregateError",
+        "Promise", "Map", "Set", "WeakMap", "WeakSet",
+        "Date", "RegExp", "ArrayBuffer"
+    };
+
+    for (const char* name : constructor_names) {
+        Value ctor = global_object_->get_property(name);
+        if (ctor.is_function()) {
+            // Set the internal [[Prototype]] (not the .prototype property)
+            // Must use Object::set_prototype to set header_.prototype, not Function::set_prototype
+            Function* func = ctor.as_function();
+            static_cast<Object*>(func)->set_prototype(function_proto_ptr);
+        }
+    }
     
     // String constructor - callable as function or constructor
     auto string_constructor = ObjectFactory::create_native_function("String",

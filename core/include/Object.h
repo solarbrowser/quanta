@@ -433,10 +433,14 @@ public:
     // Property override to ensure function properties work
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::None) override;
-    
-    // Prototype management (override to use prototype_ instead of header_.prototype)
-    Object* get_prototype() const override { return prototype_; }
-    void set_prototype(Object* proto) { prototype_ = proto; }
+
+    // Function.prototype property (for instances created by this function)
+    Object* get_function_prototype() const { return prototype_; }
+    void set_function_prototype(Object* proto) { prototype_ = proto; }
+
+    // NOTE: get_prototype() and set_prototype() inherited from Object
+    // They handle the internal [[Prototype]] (header_.prototype)
+    // Do NOT override them - that's for Object.getPrototypeOf(Function)
     static Function* create_function_prototype();
     
     // Debugging
