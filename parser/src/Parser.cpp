@@ -496,16 +496,36 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             if (match(TokenType::DOT)) {
                 advance(); // consume '.'
 
-                if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
+                // Support private field access: obj.#field
+                std::string name;
+                Position prop_start;
+                Position prop_end;
+
+                if (match(TokenType::HASH)) {
+                    // Private field access
+                    prop_start = current_token().get_start();
+                    advance(); // consume '#'
+
+                    if (!match(TokenType::IDENTIFIER)) {
+                        add_error("Expected identifier after '#' in member access");
+                        return nullptr;
+                    }
+
+                    name = "#" + current_token().get_value();
+                    prop_end = current_token().get_end();
+                    advance();
+                } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
+                    // Regular property access
+                    const Token& token = current_token();
+                    name = token.get_value();
+                    prop_start = token.get_start();
+                    prop_end = token.get_end();
+                    advance();
+                } else {
                     add_error("Expected property name after '.'");
                     return nullptr;
                 }
 
-                const Token& token = current_token();
-                std::string name = token.get_value();
-                Position prop_start = token.get_start();
-                Position prop_end = token.get_end();
-                advance();
                 auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
 
                 Position end = property->get_end();
@@ -553,21 +573,39 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
         Position start = expr->get_start();
         
         if (match(TokenType::DOT)) {
-            // Member access: obj.property
+            // Member access: obj.property or obj.#privateField
             advance(); // consume '.'
-            
-            // Allow both identifiers and keywords as property names
-            if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
+
+            // Support private field access: obj.#field
+            std::string name;
+            Position prop_start;
+            Position prop_end;
+
+            if (match(TokenType::HASH)) {
+                // Private field access
+                prop_start = current_token().get_start();
+                advance(); // consume '#'
+
+                if (!match(TokenType::IDENTIFIER)) {
+                    add_error("Expected identifier after '#' in member access");
+                    return expr;
+                }
+
+                name = "#" + current_token().get_value();
+                prop_end = current_token().get_end();
+                advance();
+            } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
+                // Regular property access
+                const Token& token = current_token();
+                name = token.get_value();
+                prop_start = token.get_start();
+                prop_end = token.get_end();
+                advance();
+            } else {
                 add_error("Expected property name after '.'");
                 return expr;
             }
-            
-            // Create property identifier from current token (identifier or keyword)
-            const Token& token = current_token();
-            std::string name = token.get_value();
-            Position prop_start = token.get_start();
-            Position prop_end = token.get_end();
-            advance();
+
             auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
             expr = std::make_unique<MemberExpression>(
                 std::move(expr), std::move(property), false, start, prop_end
@@ -2319,8 +2357,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::HASH ||  // Private members
             is_reserved_word_as_property_name()) {
-            // Parse method definition (regular, generator, or reserved word method)
+            // Parse method definition (regular, generator, private, or reserved word method)
             auto method = parse_method_definition();
             if (method) {
                 statements.push_back(std::move(method));
@@ -2406,8 +2445,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::HASH ||  // Private members
             is_reserved_word_as_property_name()) {
-            // Parse method definition (regular, generator, or reserved word method)
+            // Parse method definition (regular, generator, private, or reserved word method)
             auto method = parse_method_definition();
             if (method) {
                 statements.push_back(std::move(method));
@@ -2506,11 +2546,28 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
 
-    // Parse method name (property name for getter/setter) - support computed properties
+    // Parse method name (property name for getter/setter) - support computed properties and private members
     std::unique_ptr<ASTNode> key = nullptr;
     bool computed = false;
+    bool is_private = false;
 
-    if (current_token().get_type() == TokenType::IDENTIFIER) {
+    // Check for private member syntax: #name
+    if (current_token().get_type() == TokenType::HASH) {
+        is_private = true;
+        advance(); // consume '#'
+
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected identifier after '#' for private member");
+            return nullptr;
+        }
+
+        // Create identifier with '#' prefix
+        std::string private_name = "#" + current_token().get_value();
+        Position start = current_token().get_start();
+        Position end = current_token().get_end();
+        advance(); // consume identifier
+        key = std::make_unique<Identifier>(private_name, start, end);
+    } else if (current_token().get_type() == TokenType::IDENTIFIER) {
         key = parse_identifier();
     } else if (is_reserved_word_as_property_name()) {
         // Allow reserved words as method/property names (e.g., get return(), set default())
@@ -2548,7 +2605,48 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     }
 
     if (!key) return nullptr;
-    
+
+    // Check if this is a class field (has '=' or ';' instead of '(')
+    // Class field syntax: fieldName = value; or [computed] = value;
+    if (current_token().get_type() == TokenType::ASSIGN ||
+        current_token().get_type() == TokenType::SEMICOLON ||
+        current_token().get_type() == TokenType::RIGHT_BRACE) {
+
+        // This is a class field, not a method
+        std::unique_ptr<ASTNode> init = nullptr;
+
+        if (current_token().get_type() == TokenType::ASSIGN) {
+            advance(); // consume '='
+            // Parse field initializer expression
+            init = parse_assignment_expression();
+            if (!init) {
+                add_error("Expected field initializer after '='");
+                return nullptr;
+            }
+        }
+
+        // Optional semicolon after field
+        if (current_token().get_type() == TokenType::SEMICOLON) {
+            advance();
+        }
+
+        // Create an ExpressionStatement to represent the field
+        // We'll wrap the assignment in an expression statement
+        if (init) {
+            auto assignment = std::make_unique<AssignmentExpression>(
+                std::move(key),
+                AssignmentExpression::Operator::ASSIGN,  // Use simple assignment operator
+                std::move(init),
+                start,
+                get_current_position()
+            );
+            return std::make_unique<ExpressionStatement>(std::move(assignment), start, get_current_position());
+        } else {
+            // Field without initializer - just return the key as an expression statement
+            return std::make_unique<ExpressionStatement>(std::move(key), start, get_current_position());
+        }
+    }
+
     // Finalize method kind (prioritize constructor, then getter/setter, then regular method)
     MethodDefinition::Kind kind = method_kind;
     if (Identifier* key_id = static_cast<Identifier*>(key.get())) {
@@ -2556,8 +2654,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             kind = MethodDefinition::CONSTRUCTOR;
         }
     }
-    
-    // Parse function parameters and body
+
+    // Parse function parameters and body (this is a method, not a field)
     if (current_token().get_type() != TokenType::LEFT_PAREN) {
         add_error("Expected '(' for method parameters");
         return nullptr;
