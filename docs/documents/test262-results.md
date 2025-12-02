@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [December 2, 2025](#december-2-2025)
 - [November 22, 2025 - Property Descriptor & Engine Improvements](#november-22-2025---property-descriptor--engine-improvements)
 - [November 20, 2025 - Major Stability Improvements](#november-20-2025---major-stability-improvements)
 - [November 16, 2025 - Lexer & Parser Improvements](#november-16-2025---lexer--parser-improvements)
@@ -10,6 +11,20 @@
 ---
 
 ## Test History
+### December 2, 2025 
+**Engine Version:** q120125c126
+
+#### Overall Results
+
+| Metric | Count | % of Total Tests | % of Run Tests |
+|--------|-------|------------------:|----------------:|
+| **Total Tests in Suite** | 51,216 | 100.0% | - |
+| **Tests Executed** | 35,697 | 69.7% | 100.0% |
+| **Passed** | 10,311 | 20.1% | **28.88%** |
+| **Failed** | 25,386 | 49.6% | 71.12% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+
 
 ### November 22, 2025 - Property Descriptor & Engine Improvements
 **Engine Version:** q112225c116
@@ -231,6 +246,7 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
+| Dec 02, 2025 | q120125c126 | 10,311 | 28.88% | **+1,189** 🚀 |
 | Nov 22, 2025 | q112225c120 | 9,122 | 25.55% | **+1,205** 🚀 |
 | Nov 20, 2025 | q112025c114 | 7,917 | 22.18% | **+1,039** 🚀 |
 | Nov 16, 2025 | q111625c102 | 6,878 | 19.27% | **+274** ✅ |
@@ -238,6 +254,7 @@ Intentionally skipped test categories:
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **December 2, 2025:** (10,311 passed, pass rate 28.88%)
 - ✅ **November 22, 2025:** Property descriptor & engine improvements (+1,205 tests)
 - ✅ **November 20, 2025:** Major stability improvements (+1,039 tests) 
 - ✅ **November 16, 2025:** Lexer UTF-8 BOM support & Parser error improvements (+274 tests)

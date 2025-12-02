@@ -923,6 +923,69 @@ void Object::prevent_extensions() {
     header_.flags |= 0x01;
 }
 
+void Object::seal() {
+    // Prevent extensions
+    prevent_extensions();
+
+    // Make all properties non-configurable
+    auto prop_names = get_own_property_keys();
+    for (const auto& prop_name : prop_names) {
+        PropertyDescriptor desc = get_property_descriptor(prop_name);
+        desc.set_configurable(false);
+        set_property_descriptor(prop_name, desc);
+    }
+}
+
+void Object::freeze() {
+    // Prevent extensions
+    prevent_extensions();
+
+    // Make all properties non-configurable and non-writable
+    auto prop_names = get_own_property_keys();
+    for (const auto& prop_name : prop_names) {
+        PropertyDescriptor desc = get_property_descriptor(prop_name);
+        desc.set_configurable(false);
+        desc.set_writable(false);
+        set_property_descriptor(prop_name, desc);
+    }
+}
+
+bool Object::is_sealed() const {
+    // Must be non-extensible
+    if (is_extensible()) {
+        return false;
+    }
+
+    // All properties must be non-configurable
+    auto prop_names = get_own_property_keys();
+    for (const auto& prop_name : prop_names) {
+        PropertyDescriptor desc = get_property_descriptor(prop_name);
+        if (desc.is_configurable()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool Object::is_frozen() const {
+    // Must be non-extensible
+    if (is_extensible()) {
+        return false;
+    }
+
+    // All properties must be non-configurable and non-writable
+    auto prop_names = get_own_property_keys();
+    for (const auto& prop_name : prop_names) {
+        PropertyDescriptor desc = get_property_descriptor(prop_name);
+        if (desc.is_configurable() || (desc.is_data_descriptor() && desc.is_writable())) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool Object::is_array_index(const std::string& key, uint32_t* index) const {
     if (key.empty() || (key[0] == '0' && key.length() > 1)) {
         return false;

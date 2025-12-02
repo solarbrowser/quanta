@@ -345,10 +345,27 @@ Token Lexer::read_identifier() {
             else {
                 // For other hex values, convert to actual character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                if (codepoint <= 0x7F) {  // ASCII range
+                // Convert Unicode codepoint to UTF-8
+                if (codepoint <= 0x7F) {
+                    // ASCII range (1 byte)
                     value += static_cast<char>(codepoint);
+                } else if (codepoint <= 0x7FF) {
+                    // 2-byte UTF-8
+                    value += static_cast<char>(0xC0 | (codepoint >> 6));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0xFFFF) {
+                    // 3-byte UTF-8
+                    value += static_cast<char>(0xE0 | (codepoint >> 12));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0x10FFFF) {
+                    // 4-byte UTF-8
+                    value += static_cast<char>(0xF0 | (codepoint >> 18));
+                    value += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else {
-                    add_error("Unsupported unicode escape sequence in identifier");
+                    add_error("Invalid unicode codepoint in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
             }
@@ -373,10 +390,21 @@ Token Lexer::read_identifier() {
             else {
                 // For other 4-digit hex values, convert to actual character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                if (codepoint <= 0x7F) {  // ASCII range
+                // Convert Unicode codepoint to UTF-8
+                if (codepoint <= 0x7F) {
+                    // ASCII range (1 byte)
                     value += static_cast<char>(codepoint);
+                } else if (codepoint <= 0x7FF) {
+                    // 2-byte UTF-8
+                    value += static_cast<char>(0xC0 | (codepoint >> 6));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0xFFFF) {
+                    // 3-byte UTF-8
+                    value += static_cast<char>(0xE0 | (codepoint >> 12));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else {
-                    add_error("Unsupported unicode escape sequence in identifier");
+                    add_error("Invalid unicode codepoint in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
             }
@@ -414,10 +442,23 @@ Token Lexer::read_identifier() {
                 
                 // Convert hex to character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                if (codepoint <= 0x7F) {  // ASCII range
+                // Convert Unicode codepoint to UTF-8
+                if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
+                } else if (codepoint <= 0x7FF) {
+                    value += static_cast<char>(0xC0 | (codepoint >> 6));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0xFFFF) {
+                    value += static_cast<char>(0xE0 | (codepoint >> 12));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0x10FFFF) {
+                    value += static_cast<char>(0xF0 | (codepoint >> 18));
+                    value += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else {
-                    add_error("Unsupported unicode escape sequence in identifier");
+                    add_error("Invalid unicode codepoint in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
             } else {
@@ -435,10 +476,18 @@ Token Lexer::read_identifier() {
                 
                 // Convert 4-digit hex to character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                if (codepoint <= 0x7F) {  // ASCII range
+                // Convert Unicode codepoint to UTF-8
+                if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
+                } else if (codepoint <= 0x7FF) {
+                    value += static_cast<char>(0xC0 | (codepoint >> 6));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
+                } else if (codepoint <= 0xFFFF) {
+                    value += static_cast<char>(0xE0 | (codepoint >> 12));
+                    value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                    value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else {
-                    add_error("Unsupported unicode escape sequence in identifier");
+                    add_error("Invalid unicode codepoint in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
             }

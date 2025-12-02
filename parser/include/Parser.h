@@ -76,6 +76,7 @@ public:
     std::unique_ptr<ASTNode> parse_function_declaration();
     std::unique_ptr<ASTNode> parse_async_function_declaration();
     std::unique_ptr<ASTNode> parse_class_declaration();
+    std::unique_ptr<ASTNode> parse_class_expression();
     std::unique_ptr<ASTNode> parse_method_definition();
     std::unique_ptr<ASTNode> parse_return_statement();
     std::unique_ptr<ASTNode> parse_break_statement();

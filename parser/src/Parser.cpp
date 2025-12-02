@@ -851,6 +851,8 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_async_function_expression();
         case TokenType::FUNCTION:
             return parse_function_expression();
+        case TokenType::CLASS:
+            return parse_class_expression();
         case TokenType::YIELD:
             return parse_yield_expression();
         case TokenType::IMPORT:
@@ -2356,6 +2358,114 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
             start, end
         );
+    }
+}
+
+std::unique_ptr<ASTNode> Parser::parse_class_expression() {
+    Position start = get_current_position();
+
+    if (!consume(TokenType::CLASS)) {
+        add_error("Expected 'class'");
+        return nullptr;
+    }
+
+    // Parse optional class name (class expressions can be anonymous)
+    std::unique_ptr<ASTNode> id = nullptr;
+    if (current_token().get_type() == TokenType::IDENTIFIER) {
+        id = parse_identifier();
+        if (!id) return nullptr;
+    }
+
+    // Check for extends clause
+    std::unique_ptr<Identifier> superclass = nullptr;
+    if (match(TokenType::EXTENDS)) {
+        advance(); // consume 'extends'
+
+        if (current_token().get_type() != TokenType::IDENTIFIER) {
+            add_error("Expected superclass name after 'extends'");
+            return nullptr;
+        }
+
+        superclass = std::unique_ptr<Identifier>(static_cast<Identifier*>(parse_identifier().release()));
+        if (!superclass) return nullptr;
+    }
+
+    // Parse class body with methods
+    if (!match(TokenType::LEFT_BRACE)) {
+        add_error("Expected '{' to start class body");
+        return nullptr;
+    }
+
+    advance(); // consume '{'
+
+    // Parse class body - methods
+    std::vector<std::unique_ptr<ASTNode>> statements;
+
+    // Parse methods within the class
+    while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
+        if (current_token().get_type() == TokenType::IDENTIFIER ||
+            current_token().get_type() == TokenType::MULTIPLY ||
+            current_token().get_type() == TokenType::LEFT_BRACKET ||
+            is_reserved_word_as_property_name()) {
+            // Parse method definition (regular, generator, or reserved word method)
+            auto method = parse_method_definition();
+            if (method) {
+                statements.push_back(std::move(method));
+            } else {
+                // If method parsing fails, skip this token to avoid infinite loop
+                advance();
+            }
+        } else {
+            // Skip non-identifier tokens
+            advance();
+        }
+    }
+
+    if (!match(TokenType::RIGHT_BRACE)) {
+        add_error("Expected '}' to close class body");
+        return nullptr;
+    }
+
+    advance(); // consume '}'
+
+    auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
+
+    Position end = get_current_position();
+
+    // Create class with optional name
+    if (id) {
+        // Named class expression
+        if (superclass) {
+            return std::make_unique<ClassDeclaration>(
+                std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
+                std::move(superclass),
+                std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+                start, end
+            );
+        } else {
+            return std::make_unique<ClassDeclaration>(
+                std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
+                std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+                start, end
+            );
+        }
+    } else {
+        // Anonymous class expression - use empty identifier
+        auto anonymous_id = std::make_unique<Identifier>("", start, start);
+        if (superclass) {
+            return std::make_unique<ClassDeclaration>(
+                std::move(anonymous_id),
+                std::move(superclass),
+                std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+                start, end
+            );
+        } else {
+            return std::make_unique<ClassDeclaration>(
+                std::move(anonymous_id),
+                std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
+                start, end
+            );
+        }
     }
 }
 
