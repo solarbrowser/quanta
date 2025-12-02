@@ -639,4 +639,19 @@ if (typeof assertNativeFunction === 'undefined') {
     };
 }
 
+// Fix constructor properties for Error subclasses (temporary workaround for C++ initialization issue)
+(function() {
+    const errorTypes = [TypeError, ReferenceError, SyntaxError, RangeError, URIError, EvalError, AggregateError];
+    errorTypes.forEach(function(ErrorType) {
+        if (ErrorType && ErrorType.prototype && !ErrorType.prototype.hasOwnProperty('constructor')) {
+            Object.defineProperty(ErrorType.prototype, 'constructor', {
+                value: ErrorType,
+                writable: true,
+                enumerable: false,
+                configurable: true
+            });
+        }
+    });
+})();
+
 // Bootstrap loaded silently - no console spam

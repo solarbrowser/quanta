@@ -570,30 +570,44 @@ bool Object::delete_element(uint32_t index) {
 
 std::vector<std::string> Object::get_own_property_keys() const {
     std::vector<std::string> keys;
-    
-    
-    // Add properties from shape first
-    if (header_.shape) {
-        auto shape_properties = header_.shape->get_property_keys();
-        for (const auto& prop_name : shape_properties) {
-            keys.push_back(prop_name);
-        }
-    }
-    
-    // Add overflow properties
-    if (overflow_properties_) {
-        for (const auto& pair : *overflow_properties_) {
+
+    // Add properties from descriptors map first (for property descriptors)
+    if (descriptors_) {
+        for (const auto& pair : *descriptors_) {
             keys.push_back(pair.first);
         }
     }
-    
+
+    // Add properties from shape
+    if (header_.shape) {
+        auto shape_properties = header_.shape->get_property_keys();
+        for (const auto& prop_name : shape_properties) {
+            // Skip if already in descriptors to avoid duplicates
+            if (descriptors_ && descriptors_->find(prop_name) != descriptors_->end()) {
+                continue;
+            }
+            keys.push_back(prop_name);
+        }
+    }
+
+    // Add overflow properties
+    if (overflow_properties_) {
+        for (const auto& pair : *overflow_properties_) {
+            // Skip if already in descriptors to avoid duplicates
+            if (descriptors_ && descriptors_->find(pair.first) != descriptors_->end()) {
+                continue;
+            }
+            keys.push_back(pair.first);
+        }
+    }
+
     // Add array indices in order
     for (uint32_t i = 0; i < elements_.size(); ++i) {
         if (!elements_[i].is_undefined()) {
             keys.push_back(std::to_string(i));
         }
     }
-    
+
     return keys;
 }
 

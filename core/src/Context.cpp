@@ -1350,7 +1350,7 @@ void Context::initialize_built_ins() {
         });
     array_constructor->set_property("isArray", Value(isArray_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     
-    // Array.from
+    // Array.from (length = 1)
     auto from_fn = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused warning
@@ -1390,7 +1390,7 @@ void Context::initialize_built_ins() {
             
             // Fallback for other types
             return Value(ObjectFactory::create_array().release());
-        });
+        }, 1);  // Array.from.length = 1
     array_constructor->set_property("from", Value(from_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     
     // Array.of
@@ -4979,7 +4979,12 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         }, 2); // AggregateError takes 2 arguments: errors and message
 
-    aggregate_error_prototype->set_property("constructor", Value(aggregate_error_constructor.get()));
+    // Set prototype.constructor using set_property_descriptor (matching name/length pattern)
+    PropertyDescriptor constructor_desc(Value(aggregate_error_constructor.get()), PropertyAttributes::None);
+    constructor_desc.set_writable(true);
+    constructor_desc.set_enumerable(false);
+    constructor_desc.set_configurable(true);
+    aggregate_error_prototype->set_property_descriptor("constructor", constructor_desc);
 
     // Set AggregateError constructor name property
     PropertyDescriptor name_desc(Value("AggregateError"), PropertyAttributes::None);

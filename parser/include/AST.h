@@ -81,6 +81,7 @@ public:
         RETURN_STATEMENT,
         BREAK_STATEMENT,
         CONTINUE_STATEMENT,
+        LABELED_STATEMENT,
         TRY_STATEMENT,
         CATCH_CLAUSE,
         THROW_STATEMENT,
@@ -1244,10 +1245,15 @@ public:
  * Break statement (e.g., "break;")
  */
 class BreakStatement : public ASTNode {
+private:
+    std::string label_;
+
 public:
-    explicit BreakStatement(const Position& start, const Position& end)
-        : ASTNode(Type::BREAK_STATEMENT, start, end) {}
-    
+    explicit BreakStatement(const Position& start, const Position& end, const std::string& label = "")
+        : ASTNode(Type::BREAK_STATEMENT, start, end), label_(label) {}
+
+    const std::string& get_label() const { return label_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -1257,10 +1263,15 @@ public:
  * Continue statement (e.g., "continue;")
  */
 class ContinueStatement : public ASTNode {
+private:
+    std::string label_;
+
 public:
-    explicit ContinueStatement(const Position& start, const Position& end)
-        : ASTNode(Type::CONTINUE_STATEMENT, start, end) {}
-    
+    explicit ContinueStatement(const Position& start, const Position& end, const std::string& label = "")
+        : ASTNode(Type::CONTINUE_STATEMENT, start, end), label_(label) {}
+
+    const std::string& get_label() const { return label_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -1291,6 +1302,28 @@ class EmptyStatement : public ASTNode {
 public:
     EmptyStatement(const Position& start, const Position& end)
         : ASTNode(Type::EMPTY_STATEMENT, start, end) {}
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * Labeled statement (e.g., "label: statement")
+ */
+class LabeledStatement : public ASTNode {
+private:
+    std::string label_;
+    std::unique_ptr<ASTNode> statement_;
+
+public:
+    LabeledStatement(const std::string& label, std::unique_ptr<ASTNode> statement,
+                    const Position& start, const Position& end)
+        : ASTNode(Type::LABELED_STATEMENT, start, end),
+          label_(label), statement_(std::move(statement)) {}
+
+    const std::string& get_label() const { return label_; }
+    ASTNode* get_statement() const { return statement_.get(); }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

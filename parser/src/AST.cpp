@@ -5972,6 +5972,29 @@ std::unique_ptr<ASTNode> EmptyStatement::clone() const {
 }
 
 //=============================================================================
+// LabeledStatement Implementation
+//=============================================================================
+
+Value LabeledStatement::evaluate(Context& ctx) {
+    // Just evaluate the labeled statement
+    // Label tracking would be handled by break/continue statements
+    return statement_->evaluate(ctx);
+}
+
+std::string LabeledStatement::to_string() const {
+    return label_ + ": " + statement_->to_string();
+}
+
+std::unique_ptr<ASTNode> LabeledStatement::clone() const {
+    return std::make_unique<LabeledStatement>(
+        label_,
+        statement_->clone(),
+        start_,
+        end_
+    );
+}
+
+//=============================================================================
 // Program Implementation
 //=============================================================================
 

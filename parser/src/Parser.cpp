@@ -2060,14 +2060,33 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
+    Position start = get_current_position();
+
+    // Check for labeled statement: identifier followed by ':'
+    if (current_token().get_type() == TokenType::IDENTIFIER && peek_token().get_type() == TokenType::COLON) {
+        std::string label = current_token().get_value();
+        advance(); // consume identifier
+        advance(); // consume ':'
+
+        // Parse the statement after the label
+        auto statement = parse_statement();
+        if (!statement) {
+            add_error("Expected statement after label");
+            return nullptr;
+        }
+
+        Position end = statement->get_end();
+        return std::make_unique<LabeledStatement>(label, std::move(statement), start, end);
+    }
+
     auto expr = parse_expression();
     if (!expr) {
         return nullptr;
     }
-    
-    Position start = expr->get_start();
+
+    start = expr->get_start();
     Position end = expr->get_end();
-    
+
     // Automatic Semicolon Insertion (ASI) rules:
     // 1. If there's an explicit semicolon, consume it
     // 2. If we're at EOF, line terminator, or '}', ASI applies
@@ -3780,32 +3799,48 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_break_statement() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::BREAK)) {
         add_error("Expected 'break'");
         return nullptr;
     }
-    
+
+    // Check for optional label (must be on same line, no line terminator)
+    std::string label;
+    if (current_token().get_type() == TokenType::IDENTIFIER &&
+        current_token().get_start().line == start.line) {
+        label = current_token().get_value();
+        advance(); // consume label
+    }
+
     // Consume optional semicolon
     consume_if_match(TokenType::SEMICOLON);
-    
+
     Position end = get_current_position();
-    return std::make_unique<BreakStatement>(start, end);
+    return std::make_unique<BreakStatement>(start, end, label);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_continue_statement() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::CONTINUE)) {
         add_error("Expected 'continue'");
         return nullptr;
     }
-    
+
+    // Check for optional label (must be on same line, no line terminator)
+    std::string label;
+    if (current_token().get_type() == TokenType::IDENTIFIER &&
+        current_token().get_start().line == start.line) {
+        label = current_token().get_value();
+        advance(); // consume label
+    }
+
     // Consume optional semicolon
     consume_if_match(TokenType::SEMICOLON);
-    
+
     Position end = get_current_position();
-    return std::make_unique<ContinueStatement>(start, end);
+    return std::make_unique<ContinueStatement>(start, end, label);
 }
 
 //=============================================================================
