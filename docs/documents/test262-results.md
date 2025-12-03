@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [December 3, 2025](#december-3-2025)
 - [December 2, 2025](#december-2-2025)
 - [November 22, 2025 - Property Descriptor & Engine Improvements](#november-22-2025---property-descriptor--engine-improvements)
 - [November 20, 2025 - Major Stability Improvements](#november-20-2025---major-stability-improvements)
@@ -11,7 +12,24 @@
 ---
 
 ## Test History
-### December 2, 2025 
+### December 3, 2025
+**Engine Version:** q120325c132
+
+#### Overall Results
+
+| Metric | Count | % of Total Tests | % of Run Tests |
+|--------|-------|------------------:|----------------:|
+| **Total Tests in Suite** | 51,216 | 100.0% | - |
+| **Tests Executed** | 35,697 | 69.7% | 100.0% |
+| **Passed** | 11,181 | 21.8% | **31.32%** |
+| **Failed** | 24,516 | 47.9% | 68.68% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+**Test Duration:** 2763.9 seconds
+**Average Speed:** 18.5 tests/second
+
+
+### December 2, 2025
 **Engine Version:** q120125c126
 
 #### Overall Results
@@ -24,11 +42,12 @@
 | **Failed** | 25,386 | 49.6% | 71.12% |
 | **Skipped** | 15,519 | 30.3% | - |
 
+**Test Duration:** 2308.9 seconds
+**Average Speed:** 22.2 tests/second
 
 
 ### November 22, 2025 - Property Descriptor & Engine Improvements
 **Engine Version:** q112225c116
-**Test262 Commit:** Latest (November 2025)
 
 #### Overall Results
 
@@ -78,7 +97,6 @@
 
 ### November 16, 2025 - Lexer & Parser Improvements
 **Engine Version:** q111625c102
-**Test262 Commit:** Latest (November 2025)
 **Test Duration:** 2,241.7 seconds (37 minutes, 21 seconds)
 **Test Speed:** ~22.8 tests/second
 
@@ -117,7 +135,6 @@
 
 ### November 14, 2025 - Object.prototype & Error Fixes
 **Engine Version:** q111425c100  
-**Test262 Commit:** Latest (November 2025)  
 **Test Duration:** 2,120 seconds (35 minutes, 20 seconds)  
 **Test Speed:** ~24.2 tests/second
 
@@ -158,7 +175,6 @@
 
 ### November 13, 2025 - Initial Test262 Run
 **Engine Version:** q111325c86 
-**Test262 Commit:** Latest (November 2025)  
 **Test Duration:** 2,050.3 seconds (34 minutes, 10 seconds)  
 **Test Speed:** ~25 tests/second
 
@@ -246,7 +262,8 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
-| Dec 02, 2025 | q120125c126 | 10,311 | 28.88% | **+1,189** 🚀 |
+| Dec 03, 2025 | q120325c132 | 11,181 | 31.32% | **+870**  |
+| Dec 02, 2025 | q120125c126 | 10,311 | 28.88% | **+1,189**  |
 | Nov 22, 2025 | q112225c120 | 9,122 | 25.55% | **+1,205** 🚀 |
 | Nov 20, 2025 | q112025c114 | 7,917 | 22.18% | **+1,039** 🚀 |
 | Nov 16, 2025 | q111625c102 | 6,878 | 19.27% | **+274** ✅ |
@@ -254,6 +271,7 @@ Intentionally skipped test categories:
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **December 3, 2025:** (11,181 passed, pass rate 31.32%)
 - ✅ **December 2, 2025:** (10,311 passed, pass rate 28.88%)
 - ✅ **November 22, 2025:** Property descriptor & engine improvements (+1,205 tests)
 - ✅ **November 20, 2025:** Major stability improvements (+1,039 tests) 
