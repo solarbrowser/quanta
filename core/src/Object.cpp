@@ -1125,8 +1125,8 @@ std::string Object::to_string() const {
             Context* dummy_ctx = nullptr; // We need a context but this is risky
             std::vector<Value> args;
             // For safety, just use the Error types we know have proper toString
-            Value name_prop = get_own_property("name");
-            Value message_prop = get_own_property("message");
+            Value name_prop = get_property("name");
+            Value message_prop = get_property("message");
             if (name_prop.is_string() && (name_prop.to_string() == "Error" ||
                 name_prop.to_string() == "TypeError" || name_prop.to_string() == "ReferenceError" ||
                 name_prop.to_string() == "Test262Error" || name_prop.to_string() == "SyntaxError")) {

@@ -26,6 +26,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <fstream>
 #include "BigInt.h"
 #include "String.h"
 #include "platform/NativeAPI.h"
@@ -38,6 +39,9 @@
 #include <cstdlib>
 
 namespace Quanta {
+
+// Global storage for native functions to keep them alive
+static std::vector<std::unique_ptr<Function>> g_owned_native_functions;
 
 // Static member initialization
 uint32_t Context::next_context_id_ = 1;
@@ -3916,7 +3920,14 @@ void Context::initialize_built_ins() {
     // Add Math constants
     math_object->set_property("PI", Value(3.141592653589793));
     math_object->set_property("E", Value(2.718281828459045));
-    
+
+    // Helper to store native functions and keep them alive
+    auto store_fn = [](std::unique_ptr<Function> func) -> Function* {
+        Function* ptr = func.get();
+        g_owned_native_functions.push_back(std::move(func));
+        return ptr;
+    };
+
     // Add Math.max native function
     auto math_max_fn = ObjectFactory::create_native_function("max",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3934,7 +3945,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         });
-    math_object->set_property("max", Value(math_max_fn.release()));
+    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))));
     
     // Add Math.min native function
     auto math_min_fn = ObjectFactory::create_native_function("min",
@@ -3953,7 +3964,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         });
-    math_object->set_property("min", Value(math_min_fn.release()));
+    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))));
     
     // Add Math.round native function
     auto math_round_fn = ObjectFactory::create_native_function("round",
@@ -3965,7 +3976,7 @@ void Context::initialize_built_ins() {
             double value = args[0].to_number();
             return Value(std::round(value));
         });
-    math_object->set_property("round", Value(math_round_fn.release()));
+    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))));
     
     // Add Math.random native function
     auto math_random_fn = ObjectFactory::create_native_function("random",
@@ -3974,7 +3985,7 @@ void Context::initialize_built_ins() {
             (void)args; // Suppress unused warning
             return Value(static_cast<double>(rand()) / RAND_MAX);
         });
-    math_object->set_property("random", Value(math_random_fn.release()));
+    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))));
     
     // Add Math.floor native function
     auto math_floor_fn = ObjectFactory::create_native_function("floor",
@@ -3983,7 +3994,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::floor(args[0].to_number()));
         });
-    math_object->set_property("floor", Value(math_floor_fn.release()));
+    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))));
     
     // Add Math.ceil native function
     auto math_ceil_fn = ObjectFactory::create_native_function("ceil",
@@ -3992,7 +4003,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::ceil(args[0].to_number()));
         });
-    math_object->set_property("ceil", Value(math_ceil_fn.release()));
+    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))));
     
     // Add Math.abs native function
     auto math_abs_fn = ObjectFactory::create_native_function("abs",
@@ -4006,7 +4017,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::abs(value));
         });
-    math_object->set_property("abs", Value(math_abs_fn.release()));
+    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))));
     
     // Add Math.sqrt native function
     auto math_sqrt_fn = ObjectFactory::create_native_function("sqrt",
@@ -4015,7 +4026,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sqrt(args[0].to_number()));
         });
-    math_object->set_property("sqrt", Value(math_sqrt_fn.release()));
+    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))));
     
     // Add Math.pow native function
     auto math_pow_fn = ObjectFactory::create_native_function("pow",
@@ -4024,7 +4035,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::pow(args[0].to_number(), args[1].to_number()));
         });
-    math_object->set_property("pow", Value(math_pow_fn.release()));
+    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))));
     
     // Add Math.sin native function
     auto math_sin_fn = ObjectFactory::create_native_function("sin",
@@ -4033,7 +4044,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sin(args[0].to_number()));
         });
-    math_object->set_property("sin", Value(math_sin_fn.release()));
+    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))));
     
     // Add Math.cos native function
     auto math_cos_fn = ObjectFactory::create_native_function("cos",
@@ -4042,7 +4053,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
         });
-    math_object->set_property("cos", Value(math_cos_fn.release()));
+    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))));
     
     // Add Math.tan native function
     auto math_tan_fn = ObjectFactory::create_native_function("tan",
@@ -4051,7 +4062,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tan(args[0].to_number()));
         });
-    math_object->set_property("tan", Value(math_tan_fn.release()));
+    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))));
     
     // Add Math.log native function  
     auto math_log_fn = ObjectFactory::create_native_function("log",
@@ -4060,7 +4071,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log(args[0].to_number()));
         });
-    math_object->set_property("log", Value(math_log_fn.release()));
+    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))));
     
     // Add Math.log10 native function
     auto math_log10_fn = ObjectFactory::create_native_function("log10",
@@ -4069,7 +4080,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log10(args[0].to_number()));
         });
-    math_object->set_property("log10", Value(math_log10_fn.release()));
+    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))));
     
     // Add Math.exp native function
     auto math_exp_fn = ObjectFactory::create_native_function("exp",
@@ -4078,7 +4089,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::exp(args[0].to_number()));
         });
-    math_object->set_property("exp", Value(math_exp_fn.release()));
+    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))));
     
     // Math.trunc - truncate decimal part (toward zero)
     auto math_trunc_fn = ObjectFactory::create_native_function("trunc",
@@ -4090,7 +4101,7 @@ void Context::initialize_built_ins() {
             if (std::isnan(val)) return Value(0.0); // Simplified to avoid NaN issues
             return Value(std::trunc(val));
         });
-    math_object->set_property("trunc", Value(math_trunc_fn.release()));
+    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))));
     
     // Math.sign - returns sign of number (-1, 0, 1, or NaN)
     auto math_sign_fn = ObjectFactory::create_native_function("sign",
@@ -4103,7 +4114,7 @@ void Context::initialize_built_ins() {
             if (val < 0) return Value(-1.0);
             return Value(val); // Preserves +0 and -0
         });
-    math_object->set_property("sign", Value(math_sign_fn.release()));
+    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))));
 
     // Math.acos
     auto math_acos_fn = ObjectFactory::create_native_function("acos",
@@ -4112,7 +4123,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acos(args[0].to_number()));
         });
-    math_object->set_property("acos", Value(math_acos_fn.release()));
+    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))));
 
     // Math.acosh
     auto math_acosh_fn = ObjectFactory::create_native_function("acosh",
@@ -4121,7 +4132,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acosh(args[0].to_number()));
         });
-    math_object->set_property("acosh", Value(math_acosh_fn.release()));
+    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))));
 
     // Math.asin
     auto math_asin_fn = ObjectFactory::create_native_function("asin",
@@ -4130,7 +4141,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asin(args[0].to_number()));
         });
-    math_object->set_property("asin", Value(math_asin_fn.release()));
+    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))));
 
     // Math.asinh
     auto math_asinh_fn = ObjectFactory::create_native_function("asinh",
@@ -4139,7 +4150,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asinh(args[0].to_number()));
         });
-    math_object->set_property("asinh", Value(math_asinh_fn.release()));
+    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))));
 
     // Math.atan
     auto math_atan_fn = ObjectFactory::create_native_function("atan",
@@ -4148,7 +4159,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan(args[0].to_number()));
         });
-    math_object->set_property("atan", Value(math_atan_fn.release()));
+    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))));
 
     // Math.atan2
     auto math_atan2_fn = ObjectFactory::create_native_function("atan2",
@@ -4157,7 +4168,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan2(args[0].to_number(), args[1].to_number()));
         });
-    math_object->set_property("atan2", Value(math_atan2_fn.release()));
+    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))));
 
     // Math.atanh
     auto math_atanh_fn = ObjectFactory::create_native_function("atanh",
@@ -4166,7 +4177,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atanh(args[0].to_number()));
         });
-    math_object->set_property("atanh", Value(math_atanh_fn.release()));
+    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))));
 
     // Math.cbrt
     auto math_cbrt_fn = ObjectFactory::create_native_function("cbrt",
@@ -4175,7 +4186,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cbrt(args[0].to_number()));
         });
-    math_object->set_property("cbrt", Value(math_cbrt_fn.release()));
+    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))));
 
     // Math.clz32
     auto math_clz32_fn = ObjectFactory::create_native_function("clz32",
@@ -4191,7 +4202,7 @@ void Context::initialize_built_ins() {
             }
             return Value(static_cast<double>(count));
         });
-    math_object->set_property("clz32", Value(math_clz32_fn.release()));
+    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))));
 
     // Math.cosh
     auto math_cosh_fn = ObjectFactory::create_native_function("cosh",
@@ -4200,7 +4211,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cosh(args[0].to_number()));
         });
-    math_object->set_property("cosh", Value(math_cosh_fn.release()));
+    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))));
 
     // Math.expm1
     auto math_expm1_fn = ObjectFactory::create_native_function("expm1",
@@ -4209,7 +4220,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::expm1(args[0].to_number()));
         });
-    math_object->set_property("expm1", Value(math_expm1_fn.release()));
+    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))));
 
     // Math.fround
     auto math_fround_fn = ObjectFactory::create_native_function("fround",
@@ -4218,7 +4229,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(static_cast<double>(static_cast<float>(args[0].to_number())));
         });
-    math_object->set_property("fround", Value(math_fround_fn.release()));
+    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))));
 
     // Math.hypot
     auto math_hypot_fn = ObjectFactory::create_native_function("hypot",
@@ -4231,7 +4242,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::sqrt(sum));
         });
-    math_object->set_property("hypot", Value(math_hypot_fn.release()));
+    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))));
 
     // Math.imul
     auto math_imul_fn = ObjectFactory::create_native_function("imul",
@@ -4242,7 +4253,7 @@ void Context::initialize_built_ins() {
             int32_t b = static_cast<int32_t>(args[1].to_number());
             return Value(static_cast<double>(a * b));
         });
-    math_object->set_property("imul", Value(math_imul_fn.release()));
+    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))));
 
     // Math.log1p
     auto math_log1p_fn = ObjectFactory::create_native_function("log1p",
@@ -4251,7 +4262,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log1p(args[0].to_number()));
         });
-    math_object->set_property("log1p", Value(math_log1p_fn.release()));
+    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))));
 
     // Math.log2
     auto math_log2_fn = ObjectFactory::create_native_function("log2",
@@ -4260,7 +4271,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log2(args[0].to_number()));
         });
-    math_object->set_property("log2", Value(math_log2_fn.release()));
+    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))));
 
     // Math.sinh
     auto math_sinh_fn = ObjectFactory::create_native_function("sinh",
@@ -4269,7 +4280,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sinh(args[0].to_number()));
         });
-    math_object->set_property("sinh", Value(math_sinh_fn.release()));
+    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))));
 
     // Math.tanh
     auto math_tanh_fn = ObjectFactory::create_native_function("tanh",
@@ -4278,7 +4289,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tanh(args[0].to_number()));
         });
-    math_object->set_property("tanh", Value(math_tanh_fn.release()));
+    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))));
 
     // Math constants
     math_object->set_property("LN10", Value(2.302585092994046));
@@ -4288,54 +4299,8 @@ void Context::initialize_built_ins() {
     math_object->set_property("SQRT1_2", Value(0.7071067811865476));
     math_object->set_property("SQRT2", Value(1.4142135623730951));
 
-    register_built_in_object("Math", math_object.get());
-    
-    // Also directly bind Math to global scope to ensure it's accessible
-    if (lexical_environment_) {
-        lexical_environment_->create_binding("Math", Value(math_object.get()), false);
-    }
-    if (variable_environment_) {
-        variable_environment_->create_binding("Math", Value(math_object.get()), false);
-    }
-    if (global_object_) {
-        global_object_->set_property("Math", Value(math_object.get()));
-    }
-    
-    math_object.release(); // Release after manual binding
-    
-    // Create JSON object
-    auto json_obj = std::make_unique<Object>();
-    
-    // Create JSON.parse function
-    auto json_parse_fn = ObjectFactory::create_native_function("parse",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return JSON::js_parse(ctx, args);
-        });
-    
-    // Create JSON.stringify function
-    auto json_stringify_fn = ObjectFactory::create_native_function("stringify",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return JSON::js_stringify(ctx, args);
-        });
-    
-    json_obj->set_property("parse", Value(json_parse_fn.release()));
-    json_obj->set_property("stringify", Value(json_stringify_fn.release()));
-    
-    register_built_in_object("JSON", json_obj.get());
-    
-    // Also directly bind JSON to global scope to ensure it's accessible
-    if (lexical_environment_) {
-        lexical_environment_->create_binding("JSON", Value(json_obj.get()), false);
-    }
-    if (variable_environment_) {
-        variable_environment_->create_binding("JSON", Value(json_obj.get()), false);
-    }
-    if (global_object_) {
-        global_object_->set_property("JSON", Value(json_obj.get()));
-    }
-    
-    json_obj.release(); // Release after manual binding
-    
+    register_built_in_object("Math", math_object.release());
+
     // Helper function to add Date instance methods after construction
     auto add_date_instance_methods = [](Object* date_obj) {
         // Add getTime method - reads _timestamp from the object
@@ -6962,6 +6927,38 @@ void Context::register_typed_array_constructors() {
                     static_cast<Object*>(func)->set_prototype(function_proto_ptr);
                 }
             }
+        }
+    }
+
+    // ============================================================================
+    // Load Test262 Bootstrap Harness
+    // This provides essential Test262 functions: assert, Test262Error, $262, etc.
+    // ============================================================================
+
+    // Try to load test262_bootstrap.js from common locations
+    const char* bootstrap_paths[] = {
+        "core/src/test262_bootstrap.js",
+        "test262_bootstrap.js",
+        "../test262_bootstrap.js",
+        "./core/src/test262_bootstrap.js"
+    };
+
+    for (const char* path : bootstrap_paths) {
+        std::ifstream file(path);
+        if (file.is_open()) {
+            std::string bootstrap_code((std::istreambuf_iterator<char>(file)),
+                                      std::istreambuf_iterator<char>());
+            file.close();
+
+            // Execute bootstrap code in global context
+            try {
+                if (engine_) {
+                    engine_->execute(bootstrap_code, "<test262_bootstrap>");
+                }
+            } catch (...) {
+                // Silently ignore bootstrap load errors
+            }
+            break;  // Successfully loaded, exit loop
         }
     }
 
