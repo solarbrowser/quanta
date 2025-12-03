@@ -100,7 +100,10 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             
         case TokenType::DO:
             return parse_do_while_statement();
-            
+
+        case TokenType::WITH:
+            return parse_with_statement();
+
         case TokenType::FUNCTION:
             return parse_function_declaration();
             
@@ -550,7 +553,17 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         return nullptr;
                     }
                     arguments.push_back(std::move(arg));
-                } while (consume_if_match(TokenType::COMMA));
+
+                    // ES2017: Allow trailing comma in function calls
+                    if (consume_if_match(TokenType::COMMA)) {
+                        // If next token is ), break (trailing comma)
+                        if (current_token().get_type() == TokenType::RIGHT_PAREN) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } while (true);
             }
 
             if (!consume(TokenType::RIGHT_PAREN)) {
@@ -665,7 +678,17 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                             break;
                         }
                         arguments.push_back(std::move(arg));
-                    } while (consume_if_match(TokenType::COMMA));
+
+                        // ES2017: Allow trailing comma in function calls
+                        if (consume_if_match(TokenType::COMMA)) {
+                            // If next token is ), break (trailing comma)
+                            if (current_token().get_type() == TokenType::RIGHT_PAREN) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    } while (true);
                 }
 
                 if (!consume(TokenType::RIGHT_PAREN)) {
@@ -722,7 +745,17 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                         }
                         arguments.push_back(std::move(arg));
                     }
-                } while (consume_if_match(TokenType::COMMA));
+
+                    // ES2017: Allow trailing comma in function calls
+                    if (consume_if_match(TokenType::COMMA)) {
+                        // If next token is ), break (trailing comma)
+                        if (current_token().get_type() == TokenType::RIGHT_PAREN) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                } while (true);
             }
             
             if (!consume(TokenType::RIGHT_PAREN)) {
@@ -2057,6 +2090,42 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
     
     Position end = get_current_position();
     return std::make_unique<DoWhileStatement>(std::move(body), std::move(test), start, end);
+}
+
+std::unique_ptr<ASTNode> Parser::parse_with_statement() {
+    Position start = get_current_position();
+
+    if (!consume(TokenType::WITH)) {
+        add_error("Expected 'with'");
+        return nullptr;
+    }
+
+    if (!consume(TokenType::LEFT_PAREN)) {
+        add_error("Expected '(' after 'with'");
+        return nullptr;
+    }
+
+    // Parse the object expression
+    auto object = parse_expression();
+    if (!object) {
+        add_error("Expected expression in with statement");
+        return nullptr;
+    }
+
+    if (!consume(TokenType::RIGHT_PAREN)) {
+        add_error("Expected ')' after with object");
+        return nullptr;
+    }
+
+    // Parse the body statement
+    auto body = parse_statement();
+    if (!body) {
+        add_error("Expected statement for with body");
+        return nullptr;
+    }
+
+    Position end = get_current_position();
+    return std::make_unique<WithStatement>(std::move(object), std::move(body), start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {

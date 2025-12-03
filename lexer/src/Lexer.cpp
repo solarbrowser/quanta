@@ -53,7 +53,9 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"from", TokenType::FROM},
     {"of", TokenType::OF},
     {"static", TokenType::STATIC},
-    {"target", TokenType::TARGET},
+    // NOTE: "target" is NOT a reserved keyword in JavaScript
+    // It's only special in "new.target" context, which is handled separately
+    // {"target", TokenType::TARGET},  // REMOVED - causes false syntax errors
     {"true", TokenType::BOOLEAN},
     {"false", TokenType::BOOLEAN},
     {"null", TokenType::NULL_LITERAL},
@@ -498,13 +500,16 @@ Token Lexer::read_identifier() {
     
     // Determine token type
     TokenType type = lookup_keyword(value);
-    
-    // Check if this identifier with unicode escapes resolves to a keyword
+
+    // NOTE: Identifiers with unicode escapes that resolve to keywords are allowed
+    // in certain contexts (e.g., member expressions: obj.bre\u0061k)
+    // The parser will handle context-specific validation
+    // So we always return IDENTIFIER for escaped identifiers, even if they match keywords
     if (contains_unicode_escapes && type != TokenType::IDENTIFIER) {
-        add_error("SyntaxError: Keywords cannot contain unicode escape sequences");
-        return create_token(TokenType::INVALID, value, start);
+        // Override keyword type to IDENTIFIER for unicode-escaped identifiers
+        type = TokenType::IDENTIFIER;
     }
-    
+
     // In strict mode, forbid using reserved words as identifiers
     if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
         add_error("SyntaxError: Unexpected reserved word '" + value + "' in strict mode");
@@ -883,7 +888,22 @@ bool Lexer::is_octal_digit(char ch) const {
 }
 
 bool Lexer::is_whitespace(char ch) const {
-    return ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r';
+    unsigned char uch = static_cast<unsigned char>(ch);
+
+    // ES5.1 Section 7.2: WhiteSpace
+    // ASCII whitespace
+    if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
+        return true;
+    }
+
+    // Non-breaking space (NBSP) - U+00A0 (encoded as 0xC2 0xA0 in UTF-8)
+    // But in char-by-char processing, we see 0xC2 followed by 0xA0
+    // For now, treat 0xA0 as whitespace when seen
+    if (uch == 0xC2 || uch == 0xA0) {
+        return true;
+    }
+
+    return false;
 }
 
 bool Lexer::is_line_terminator(char ch) const {

@@ -7143,6 +7143,44 @@ std::unique_ptr<ASTNode> DoWhileStatement::clone() const {
 }
 
 //=============================================================================
+// WithStatement Implementation
+//=============================================================================
+
+Value WithStatement::evaluate(Context& ctx) {
+    // Evaluate the object expression
+    Value obj = object_->evaluate(ctx);
+
+    // Simplified implementation: For now, just execute the body in a new scope
+    // A full implementation would need to add the object's properties to the scope chain
+    // so that property access like `with(obj) { x = 1; }` writes to obj.x
+
+    // TODO: Implement proper with scope that adds object properties to lookup chain
+    // For now, just create a block scope and execute the body
+    ctx.push_block_scope();
+
+    try {
+        // Execute the body
+        Value result = body_->evaluate(ctx);
+        ctx.pop_block_scope();
+        return result;
+    } catch (...) {
+        // Make sure to pop scope even on exception
+        ctx.pop_block_scope();
+        throw;
+    }
+}
+
+std::string WithStatement::to_string() const {
+    return "with (" + object_->to_string() + ") " + body_->to_string();
+}
+
+std::unique_ptr<ASTNode> WithStatement::clone() const {
+    return std::make_unique<WithStatement>(
+        object_->clone(), body_->clone(), start_, end_
+    );
+}
+
+//=============================================================================
 // FunctionDeclaration Implementation
 //=============================================================================
 

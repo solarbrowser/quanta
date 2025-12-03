@@ -75,6 +75,7 @@ public:
         FOR_OF_STATEMENT,
         WHILE_STATEMENT,
         DO_WHILE_STATEMENT,
+        WITH_STATEMENT,
         FUNCTION_DECLARATION,
         CLASS_DECLARATION,
         METHOD_DEFINITION,
@@ -876,12 +877,35 @@ private:
 public:
     DoWhileStatement(std::unique_ptr<ASTNode> body, std::unique_ptr<ASTNode> test,
                      const Position& start, const Position& end)
-        : ASTNode(Type::DO_WHILE_STATEMENT, start, end), 
+        : ASTNode(Type::DO_WHILE_STATEMENT, start, end),
           body_(std::move(body)), test_(std::move(test)) {}
-    
+
     ASTNode* get_body() const { return body_.get(); }
     ASTNode* get_test() const { return test_.get(); }
-    
+
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+/**
+ * With statement: with (object) statement
+ * Deprecated but still part of ECMAScript (not allowed in strict mode)
+ */
+class WithStatement : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> object_;
+    std::unique_ptr<ASTNode> body_;
+
+public:
+    WithStatement(std::unique_ptr<ASTNode> object, std::unique_ptr<ASTNode> body,
+                  const Position& start, const Position& end)
+        : ASTNode(Type::WITH_STATEMENT, start, end),
+          object_(std::move(object)), body_(std::move(body)) {}
+
+    ASTNode* get_object() const { return object_.get(); }
+    ASTNode* get_body() const { return body_.get(); }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

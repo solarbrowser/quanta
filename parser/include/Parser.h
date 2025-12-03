@@ -73,6 +73,7 @@ public:
     std::unique_ptr<ASTNode> parse_for_statement();
     std::unique_ptr<ASTNode> parse_while_statement();
     std::unique_ptr<ASTNode> parse_do_while_statement();
+    std::unique_ptr<ASTNode> parse_with_statement();
     std::unique_ptr<ASTNode> parse_function_declaration();
     std::unique_ptr<ASTNode> parse_async_function_declaration();
     std::unique_ptr<ASTNode> parse_class_declaration();
