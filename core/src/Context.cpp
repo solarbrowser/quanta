@@ -1260,11 +1260,12 @@ void Context::initialize_built_ins() {
             }
 
             // Get the object to check
-            if (args.empty() || !args[0].is_object()) {
+            // NOTE: Must use is_object_like() to accept both objects AND functions
+            if (args.empty() || !args[0].is_object_like()) {
                 return Value(false);
             }
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             
             // Walk up the prototype chain
             Object* current = obj->get_prototype();
@@ -2423,29 +2424,6 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Function", function_constructor.release());
 
-    // ============================================================================
-    // Set all constructor prototypes to Function.prototype (ES6 spec requirement)
-    // All constructor functions must have Function.prototype as their [[Prototype]]
-    // ============================================================================
-
-    // Get all constructor functions from global object and set their prototype to Function.prototype
-    const char* constructor_names[] = {
-        "Array", "Object", "String", "Number", "Boolean",
-        "Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError", "AggregateError",
-        "Promise", "Map", "Set", "WeakMap", "WeakSet",
-        "Date", "RegExp", "ArrayBuffer"
-    };
-
-    for (const char* name : constructor_names) {
-        Value ctor = global_object_->get_property(name);
-        if (ctor.is_function()) {
-            // Set the internal [[Prototype]] (not the .prototype property)
-            // Must use Object::set_prototype to set header_.prototype, not Function::set_prototype
-            Function* func = ctor.as_function();
-            static_cast<Object*>(func)->set_prototype(function_proto_ptr);
-        }
-    }
-    
     // String constructor - callable as function or constructor
     auto string_constructor = ObjectFactory::create_native_constructor("String",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6950,6 +6928,42 @@ void Context::register_typed_array_constructors() {
             return Value();
         });
     global_object_->set_property("$DONE", Value(done_function.release()));
+
+    // ============================================================================
+    // Set all constructor prototypes to Function.prototype (ES6 spec requirement)
+    // All constructor functions must have Function.prototype as their [[Prototype]]
+    // This MUST be done at the END of initialization after all constructors are registered
+    // ============================================================================
+
+    // Get Function.prototype pointer (it was saved earlier when Function constructor was created)
+    Value function_ctor_value = global_object_->get_property("Function");
+    if (function_ctor_value.is_function()) {
+        Function* function_ctor = function_ctor_value.as_function();
+        Value func_proto_value = function_ctor->get_property("prototype");
+        if (func_proto_value.is_object()) {
+            Object* function_proto_ptr = func_proto_value.as_object();
+
+            // Get all constructor functions from global object and set their prototype to Function.prototype
+            const char* constructor_names[] = {
+                "Array", "Object", "String", "Number", "Boolean", "BigInt", "Symbol",
+                "Error", "TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError", "EvalError", "AggregateError",
+                "Promise", "Map", "Set", "WeakMap", "WeakSet",
+                "Date", "RegExp", "ArrayBuffer", "Int8Array", "Uint8Array", "Uint8ClampedArray",
+                "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array",
+                "DataView"
+            };
+
+            for (const char* name : constructor_names) {
+                Value ctor = global_object_->get_property(name);
+                if (ctor.is_function()) {
+                    // Set the internal [[Prototype]] (not the .prototype property)
+                    // Must use Object::set_prototype to set header_.prototype, not Function::set_prototype
+                    Function* func = ctor.as_function();
+                    static_cast<Object*>(func)->set_prototype(function_proto_ptr);
+                }
+            }
+        }
+    }
 
 }
 
