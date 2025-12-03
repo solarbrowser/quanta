@@ -309,7 +309,7 @@ void Context::initialize_built_ins() {
     // Create built-in objects (placeholder implementations)
     
     // Object constructor - create as a proper native function
-    auto object_constructor = ObjectFactory::create_native_function("Object",
+    auto object_constructor = ObjectFactory::create_native_constructor("Object",
         [](Context& /* ctx */, const std::vector<Value>& args) -> Value {
             // Object constructor implementation
             if (args.size() == 0) {
@@ -1320,7 +1320,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("Object", object_constructor.release());
     
     // Array constructor
-    auto array_constructor = ObjectFactory::create_native_function("Array",
+    auto array_constructor = ObjectFactory::create_native_constructor("Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 // new Array() - empty array
@@ -2287,7 +2287,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("Array", array_constructor.release());
     
     // Function constructor
-    auto function_constructor = ObjectFactory::create_native_function("Function",
+    auto function_constructor = ObjectFactory::create_native_constructor("Function",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // Function constructor implementation - basic placeholder
             return Value(ObjectFactory::create_function().release());
@@ -2447,7 +2447,7 @@ void Context::initialize_built_ins() {
     }
     
     // String constructor - callable as function or constructor
-    auto string_constructor = ObjectFactory::create_native_function("String",
+    auto string_constructor = ObjectFactory::create_native_constructor("String",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str_value = args.empty() ? "" : args[0].to_string();
 
@@ -3300,7 +3300,7 @@ void Context::initialize_built_ins() {
     }
 
     // BigInt constructor - callable as function
-    auto bigint_constructor = ObjectFactory::create_native_function("BigInt",
+    auto bigint_constructor = ObjectFactory::create_native_constructor("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 ctx.throw_exception(Value("BigInt constructor requires an argument"));
@@ -3331,7 +3331,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("BigInt", bigint_constructor.release());
     
     // Symbol constructor - NOT callable with 'new', only as function
-    auto symbol_constructor = ObjectFactory::create_native_function("Symbol",
+    auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // Symbol() can only be called as a function, not with 'new'
             std::string description = "";
@@ -3449,7 +3449,7 @@ void Context::initialize_built_ins() {
     Generator::setup_generator_prototype(*this);
     
     // Number constructor - callable as function with ES5 constants
-    auto number_constructor = ObjectFactory::create_native_function("Number",
+    auto number_constructor = ObjectFactory::create_native_constructor("Number",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(0.0);
             return Value(args[0].to_number());
@@ -3725,7 +3725,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("Number", number_constructor.release());
     
     // Boolean constructor - callable as function
-    auto boolean_constructor = ObjectFactory::create_native_function("Boolean",
+    auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
             return Value(args[0].to_boolean());
@@ -3825,7 +3825,7 @@ void Context::initialize_built_ins() {
     error_prototype->set_property("message", Value(""));
     Object* error_prototype_ptr = error_prototype.get();
     
-    auto error_constructor = ObjectFactory::create_native_function("Error",
+    auto error_constructor = ObjectFactory::create_native_constructor("Error",
         [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx; // Suppress unused parameter warning
             std::string message = "";
@@ -4457,7 +4457,7 @@ void Context::initialize_built_ins() {
     };
     
     // Create Date constructor function that adds instance methods
-    auto date_constructor_fn = ObjectFactory::create_native_function("Date",
+    auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
         [add_date_instance_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             // Call the original Date constructor
             Value date_obj = Date::date_constructor(ctx, args);
@@ -4589,7 +4589,7 @@ void Context::initialize_built_ins() {
     type_error_prototype->set_property("name", Value("TypeError"));
     Object* type_error_proto_ptr = type_error_prototype.get();
 
-    auto type_error_constructor = ObjectFactory::create_native_function("TypeError",
+    auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
         [type_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4650,7 +4650,7 @@ void Context::initialize_built_ins() {
     reference_error_prototype->set_property("name", Value("ReferenceError"));
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
-    auto reference_error_constructor = ObjectFactory::create_native_function("ReferenceError",
+    auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
         [reference_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4709,7 +4709,7 @@ void Context::initialize_built_ins() {
     syntax_error_prototype->set_property("name", Value("SyntaxError"));
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
-    auto syntax_error_constructor = ObjectFactory::create_native_function("SyntaxError",
+    auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
         [syntax_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4768,7 +4768,7 @@ void Context::initialize_built_ins() {
     range_error_prototype->set_property("name", Value("RangeError"));
     Object* range_error_proto_ptr = range_error_prototype.get();
 
-    auto range_error_constructor = ObjectFactory::create_native_function("RangeError",
+    auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
         [range_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4829,7 +4829,7 @@ void Context::initialize_built_ins() {
     uri_error_prototype->set_property("name", Value("URIError"));
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
-    auto uri_error_constructor = ObjectFactory::create_native_function("URIError",
+    auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
         [uri_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4880,7 +4880,7 @@ void Context::initialize_built_ins() {
     eval_error_prototype->set_property("name", Value("EvalError"));
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
-    auto eval_error_constructor = ObjectFactory::create_native_function("EvalError",
+    auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
         [eval_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = "";
             if (!args.empty() && !args[0].is_undefined()) {
@@ -4934,7 +4934,7 @@ void Context::initialize_built_ins() {
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 
     // AggregateError constructor (ES2021) - takes 2 arguments
-    auto aggregate_error_constructor = ObjectFactory::create_native_function("AggregateError",
+    auto aggregate_error_constructor = ObjectFactory::create_native_constructor("AggregateError",
         [agg_error_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             // Only convert message to string if it's provided and not undefined
             std::string message = "";
@@ -5084,7 +5084,7 @@ void Context::initialize_built_ins() {
     Object* regexp_proto_ptr = regexp_prototype.get();
 
     // RegExp constructor
-    auto regexp_constructor = ObjectFactory::create_native_function("RegExp",
+    auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string pattern = "";
             std::string flags = "";
@@ -5203,7 +5203,7 @@ void Context::initialize_built_ins() {
     };
     
     // Promise constructor
-    auto promise_constructor = ObjectFactory::create_native_function("Promise",
+    auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_exception(Value("Promise executor must be a function"));

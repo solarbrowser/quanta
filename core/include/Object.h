@@ -483,6 +483,10 @@ namespace ObjectFactory {
     std::unique_ptr<Function> create_native_function(const std::string& name,
                                                      std::function<Value(Context&, const std::vector<Value>&)> fn,
                                                      uint32_t arity);
+    // Create native constructor (with prototype)
+    std::unique_ptr<Function> create_native_constructor(const std::string& name,
+                                                        std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                        uint32_t arity = 1);
     std::unique_ptr<Function> create_array_method(const std::string& method_name);
     std::unique_ptr<Object> create_string(const std::string& value);
     std::unique_ptr<Object> create_number(double value);

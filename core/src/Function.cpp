@@ -84,8 +84,10 @@ Function::Function(const std::string& name,
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
-        // Make prototype accessible as a property
-        this->set_property("prototype", Value(prototype_));
+        // Make prototype accessible as a property with proper descriptor
+        // Constructor.prototype should be { writable: false, enumerable: false, configurable: false }
+        PropertyDescriptor prototype_desc(Value(prototype_), PropertyAttributes::None);
+        this->set_property_descriptor("prototype", prototype_desc);
     }
 
     // Add standard function properties for native functions
@@ -110,8 +112,10 @@ Function::Function(const std::string& name,
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
-        // Make prototype accessible as a property
-        this->set_property("prototype", Value(prototype_));
+        // Make prototype accessible as a property with proper descriptor
+        // Constructor.prototype should be { writable: false, enumerable: false, configurable: false }
+        PropertyDescriptor prototype_desc(Value(prototype_), PropertyAttributes::None);
+        this->set_property_descriptor("prototype", prototype_desc);
     }
 
     // Add standard function properties for native functions
@@ -625,6 +629,13 @@ std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn,
                                                  uint32_t arity) {
     return std::make_unique<Function>(name, fn, arity, false); // No prototype for built-in methods
+}
+
+// Create native constructor (with prototype)
+std::unique_ptr<Function> create_native_constructor(const std::string& name,
+                                                    std::function<Value(Context&, const std::vector<Value>&)> fn,
+                                                    uint32_t arity) {
+    return std::make_unique<Function>(name, fn, arity, true); // WITH prototype for constructors
 }
 
 } // namespace ObjectFactory
