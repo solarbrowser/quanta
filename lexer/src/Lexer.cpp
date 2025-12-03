@@ -83,7 +83,7 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
 //=============================================================================
 
 Lexer::Lexer(const std::string& source)
-    : source_(source), position_(0), current_position_(1, 1, 0) {
+    : source_(source), position_(0), current_position_(1, 1, 0), last_token_type_(TokenType::EOF_TOKEN) {
     options_.skip_whitespace = true;
     options_.skip_comments = true;
     options_.track_positions = true;
@@ -101,7 +101,7 @@ Lexer::Lexer(const std::string& source)
 }
 
 Lexer::Lexer(const std::string& source, const LexerOptions& options)
-    : source_(source), position_(0), current_position_(1, 1, 0), options_(options) {
+    : source_(source), position_(0), current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {
     // Skip UTF-8 BOM if present (EF BB BF)
     if (source_.size() >= 3 && 
         static_cast<unsigned char>(source_[0]) == 0xEF &&
@@ -118,7 +118,15 @@ TokenSequence Lexer::tokenize() {
     
     while (!at_end()) {
         Token token = next_token();
-        
+
+        // Update last token type for context-aware lexing (regex vs division)
+        // Only update for non-whitespace/comment tokens
+        if (token.get_type() != TokenType::WHITESPACE &&
+            token.get_type() != TokenType::COMMENT &&
+            token.get_type() != TokenType::NEWLINE) {
+            last_token_type_ = token.get_type();
+        }
+
         // Check for "use strict" directive at the beginning
         if (!strict_mode_detected && tokens.empty() && 
             token.get_type() == TokenType::STRING && 
@@ -715,6 +723,12 @@ Token Lexer::read_operator() {
             return create_token(TokenType::MULTIPLY, start);
             
         case '/':
+            // Check if this should be a regex literal based on context
+            // Regex can appear after: =, (, [, {, ,, ;, !, &, |, ?, :, +, -, *, /, %, <, >, return, throw, new, typeof, void, delete
+            if (is_regex_context()) {
+                return read_regex();
+            }
+
             advance();
             if (current_char() == '=') {
                 advance();
@@ -864,11 +878,30 @@ Token Lexer::read_operator() {
 }
 
 bool Lexer::is_identifier_start(char ch) const {
-    return std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\';
+    unsigned char uch = static_cast<unsigned char>(ch);
+    // ASCII letters, underscore, dollar, backslash for unicode escapes
+    if (std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\') {
+        return true;
+    }
+    // UTF-8 multi-byte sequence start (0x80-0xFF indicates Unicode character)
+    // This allows Greek letters (π), Cyrillic, Chinese, etc.
+    if (uch >= 0x80) {
+        return true;
+    }
+    return false;
 }
 
 bool Lexer::is_identifier_part(char ch) const {
-    return std::isalnum(ch) || ch == '_' || ch == '$';
+    unsigned char uch = static_cast<unsigned char>(ch);
+    // ASCII alphanumeric, underscore, dollar
+    if (std::isalnum(ch) || ch == '_' || ch == '$') {
+        return true;
+    }
+    // UTF-8 continuation byte or multi-byte sequence start
+    if (uch >= 0x80) {
+        return true;
+    }
+    return false;
 }
 
 bool Lexer::is_digit(char ch) const {
@@ -885,6 +918,59 @@ bool Lexer::is_binary_digit(char ch) const {
 
 bool Lexer::is_octal_digit(char ch) const {
     return ch >= '0' && ch <= '7';
+}
+
+bool Lexer::is_regex_context() const {
+    // Determine if '/' should be interpreted as regex based on last token
+    // Regex can appear after these tokens:
+    switch (last_token_type_) {
+        // Operators that can precede regex
+        case TokenType::ASSIGN:
+        case TokenType::PLUS_ASSIGN:
+        case TokenType::MINUS_ASSIGN:
+        case TokenType::MULTIPLY_ASSIGN:
+        case TokenType::DIVIDE_ASSIGN:
+        case TokenType::MODULO_ASSIGN:
+        case TokenType::LEFT_PAREN:
+        case TokenType::LEFT_BRACKET:
+        case TokenType::LEFT_BRACE:
+        case TokenType::COMMA:
+        case TokenType::SEMICOLON:
+        case TokenType::COLON:
+        case TokenType::QUESTION:
+        case TokenType::LOGICAL_NOT:
+        case TokenType::BITWISE_AND:
+        case TokenType::BITWISE_OR:
+        case TokenType::BITWISE_XOR:
+        case TokenType::PLUS:
+        case TokenType::MINUS:
+        case TokenType::MULTIPLY:
+        case TokenType::DIVIDE:
+        case TokenType::MODULO:
+        case TokenType::LESS_THAN:
+        case TokenType::GREATER_THAN:
+        case TokenType::EQUAL:
+        case TokenType::NOT_EQUAL:
+        case TokenType::STRICT_EQUAL:
+        case TokenType::STRICT_NOT_EQUAL:
+
+        // Keywords that can precede regex
+        case TokenType::RETURN:
+        case TokenType::THROW:
+        case TokenType::NEW:
+        case TokenType::TYPEOF:
+        case TokenType::VOID:
+        case TokenType::DELETE:
+        case TokenType::IN:
+        case TokenType::INSTANCEOF:
+
+        // Start of file
+        case TokenType::EOF_TOKEN:
+            return true;
+
+        default:
+            return false;
+    }
 }
 
 bool Lexer::is_whitespace(char ch) const {

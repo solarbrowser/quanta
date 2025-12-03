@@ -34,7 +34,8 @@ private:
     Position current_position_;
     LexerOptions options_;
     std::vector<std::string> errors_;
-    
+    TokenType last_token_type_;  // Track last token for context-aware lexing
+
     // Keywords mapping
     static const std::unordered_map<std::string, TokenType> keywords_;
     
@@ -109,6 +110,7 @@ private:
     bool is_octal_digit(char ch) const;
     bool is_whitespace(char ch) const;
     bool is_line_terminator(char ch) const;
+    bool is_regex_context() const;
     
     // Number parsing helpers
     double parse_decimal_literal();

@@ -76,12 +76,17 @@ Function::Function(const std::string& name,
 
 // Backward compatibility constructor
 Function::Function(const std::string& name,
-                   std::function<Value(Context&, const std::vector<Value>&)> native_fn)
+                   std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+                   bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
       prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
-    // Create default prototype object for native functions too
-    auto proto = ObjectFactory::create_object();
-    prototype_ = proto.release();
+    // Only create prototype for constructors, not for built-in methods
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+        // Make prototype accessible as a property
+        this->set_property("prototype", Value(prototype_));
+    }
 
     // Add standard function properties for native functions
     // Set name property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
@@ -97,16 +102,18 @@ Function::Function(const std::string& name,
 // New constructor with arity
 Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
-                   uint32_t arity)
+                   uint32_t arity,
+                   bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
       prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
-    // Create default prototype object for native functions too
-    auto proto = ObjectFactory::create_object();
-    prototype_ = proto.release();
-    
-    // Make prototype accessible as a property
-    this->set_property("prototype", Value(prototype_));
-    
+    // Only create prototype for constructors, not for built-in methods
+    if (create_prototype) {
+        auto proto = ObjectFactory::create_object();
+        prototype_ = proto.release();
+        // Make prototype accessible as a property
+        this->set_property("prototype", Value(prototype_));
+    }
+
     // Add standard function properties for native functions
     // Set name property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
@@ -115,7 +122,7 @@ Function::Function(const std::string& name,
     // Set length property with proper descriptor per ES7 spec: { writable: false, enumerable: false, configurable: true }
     PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
-    
+
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -607,17 +614,17 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
     return std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
 }
 
-// Backward compatibility overload
+// Backward compatibility overload - built-in methods (no prototype)
 std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn) {
-    return std::make_unique<Function>(name, fn, 0);
+    return std::make_unique<Function>(name, fn, false); // No prototype for built-in methods
 }
 
-// New overload with arity
+// New overload with arity - built-in methods (no prototype)
 std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn,
                                                  uint32_t arity) {
-    return std::make_unique<Function>(name, fn, arity);
+    return std::make_unique<Function>(name, fn, arity, false); // No prototype for built-in methods
 }
 
 } // namespace ObjectFactory

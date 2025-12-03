@@ -406,11 +406,13 @@ public:
              class Context* closure_context);
              
     Function(const std::string& name,
-             std::function<Value(Context&, const std::vector<Value>&)> native_fn);
+             std::function<Value(Context&, const std::vector<Value>&)> native_fn,
+             bool create_prototype = false);
 
     Function(const std::string& name,
              std::function<Value(Context&, const std::vector<Value>&)> native_fn,
-             uint32_t arity);
+             uint32_t arity,
+             bool create_prototype = false);
     
     virtual ~Function() = default;
 
