@@ -1889,8 +1889,25 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         ctx.throw_exception(Value("Invalid array method call"));
         return Value();
     };
-    
-    return std::make_unique<Function>(method_name, method_fn);
+
+    // Determine correct arity for the method according to ECMAScript spec
+    uint32_t arity = 1;  // Most array methods have arity 1 (especially push, pop, shift, etc.)
+    if (method_name == "map" || method_name == "filter" || method_name == "forEach" ||
+        method_name == "reduce" || method_name == "find" || method_name == "findIndex" ||
+        method_name == "some" || method_name == "every") {
+        arity = 1;  // These methods require a callback function
+    } else if (method_name == "slice" || method_name == "splice" || method_name == "indexOf" ||
+               method_name == "lastIndexOf") {
+        arity = 2;  // These methods typically take 2 parameters
+    } else if (method_name == "push" || method_name == "unshift" || method_name == "concat") {
+        arity = 1;  // Variable arguments but arity is 1
+    } else if (method_name == "join") {
+        arity = 1;  // Takes separator
+    } else if (method_name == "pop" || method_name == "shift" || method_name == "reverse") {
+        arity = 0;  // No required parameters
+    }
+
+    return std::make_unique<Function>(method_name, method_fn, arity, false);
 }
 
 std::unique_ptr<Object> create_error(const std::string& message) {
