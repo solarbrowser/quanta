@@ -237,24 +237,8 @@ Value Identifier::evaluate(Context& ctx) {
         return super_constructor;
     }
     
-    // Special handling for Math object identifier
-    if (name_ == "Math") {
-        // Create and return the Math object directly
-        auto math_obj = std::make_unique<Object>();
-        
-        // Add Math constants
-        math_obj->set_property("PI", Value(Math::PI));
-        math_obj->set_property("E", Value(Math::E));
-        math_obj->set_property("LN2", Value(Math::LN2));
-        math_obj->set_property("LN10", Value(Math::LN10));
-        math_obj->set_property("LOG2E", Value(Math::LOG2E));
-        math_obj->set_property("LOG10E", Value(Math::LOG10E));
-        math_obj->set_property("SQRT1_2", Value(Math::SQRT1_2));
-        math_obj->set_property("SQRT2", Value(Math::SQRT2));
-        
-        return Value(math_obj.release());
-    }
-    
+    // REMOVED: Hardcoded Math object creation - use ctx.get_binding instead
+
     // Check if the variable is declared - should throw ReferenceError if not
     if (!ctx.has_binding(name_)) {
         // Check if it's a known global like console, Math, etc.

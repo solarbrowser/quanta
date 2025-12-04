@@ -3924,7 +3924,9 @@ void Context::initialize_built_ins() {
     // Helper to store native functions and keep them alive
     auto store_fn = [](std::unique_ptr<Function> func) -> Function* {
         Function* ptr = func.get();
+        std::cerr << "[DEBUG] store_fn: storing function at " << (void*)ptr << std::endl;
         g_owned_native_functions.push_back(std::move(func));
+        std::cerr << "[DEBUG] store_fn: vector size now " << g_owned_native_functions.size() << std::endl;
         return ptr;
     };
 
@@ -4053,7 +4055,11 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
         });
-    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))));
+    Function* cos_ptr = store_fn(std::move(math_cos_fn));
+    std::cerr << "[DEBUG] Math.cos pointer: " << (void*)cos_ptr << std::endl;
+    Value cos_value(cos_ptr);
+    std::cerr << "[DEBUG] Math.cos Value is_function: " << cos_value.is_function() << std::endl;
+    math_object->set_property("cos", cos_value);
     
     // Add Math.tan native function
     auto math_tan_fn = ObjectFactory::create_native_function("tan",
@@ -4299,7 +4305,30 @@ void Context::initialize_built_ins() {
     math_object->set_property("SQRT1_2", Value(0.7071067811865476));
     math_object->set_property("SQRT2", Value(1.4142135623730951));
 
+    // DEBUG: Check Math.cos before register
+    Object* math_ptr = math_object.get();
+    Value cos_before = math_ptr->get_property("cos");
+    std::cerr << "[DEBUG] BEFORE register: Math.cos is_function = " << cos_before.is_function() << std::endl;
+    std::cerr << "[DEBUG] BEFORE register: Math.cos is_undefined = " << cos_before.is_undefined() << std::endl;
+
     register_built_in_object("Math", math_object.release());
+
+    // DEBUG: Check Math.cos after register
+    Object* math_from_built_in = built_in_objects_["Math"];
+    if (math_from_built_in) {
+        Value cos_after = math_from_built_in->get_property("cos");
+        std::cerr << "[DEBUG] AFTER register (built_in_objects): Math.cos is_function = " << cos_after.is_function() << std::endl;
+    }
+
+    // DEBUG: Check from global_object
+    if (global_object_) {
+        Value math_from_global = global_object_->get_property("Math");
+        if (math_from_global.is_object()) {
+            Object* math_obj_from_global = math_from_global.as_object();
+            Value cos_from_global = math_obj_from_global->get_property("cos");
+            std::cerr << "[DEBUG] AFTER register (global_object): Math.cos is_function = " << cos_from_global.is_function() << std::endl;
+        }
+    }
 
     // Helper function to add Date instance methods after construction
     auto add_date_instance_methods = [](Object* date_obj) {
