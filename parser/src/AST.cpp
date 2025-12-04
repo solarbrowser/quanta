@@ -1255,7 +1255,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     
     // Handle member expression assignment (e.g., obj.prop = value, this.prop = value)
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-        std::cout << "DEBUG: Processing member expression assignment" << std::endl;
+        // std::cout << "DEBUG: Processing member expression assignment" << std::endl;
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
         
         // Evaluate the object
@@ -1325,16 +1325,16 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Object* obj = nullptr;
         bool is_string_object = false;
 
-        std::cout << "DEBUG: object_value type check - is_object(): " << object_value.is_object() << std::endl;
-        std::cout << "DEBUG: object_value type check - is_function(): " << object_value.is_function() << std::endl;
-        std::cout << "DEBUG: object_value type check - is_string(): " << object_value.is_string() << std::endl;
-        std::cout << "DEBUG: object_value toString(): " << object_value.to_string() << std::endl;
+        // std::cout << "DEBUG: object_value type check - is_object(): " << object_value.is_object() << std::endl;
+        // std::cout << "DEBUG: object_value type check - is_function(): " << object_value.is_function() << std::endl;
+        // std::cout << "DEBUG: object_value type check - is_string(): " << object_value.is_string() << std::endl;
+        // std::cout << "DEBUG: object_value toString(): " << object_value.to_string() << std::endl;
 
         if (object_value.is_object()) {
             obj = object_value.as_object();
         } else if (object_value.is_function()) {
             // Functions are objects in JavaScript and can have properties
-            std::cout << "DEBUG: Detected function for property assignment" << std::endl;
+            // std::cout << "DEBUG: Detected function for property assignment" << std::endl;
             obj = object_value.as_function();
         } else if (object_value.is_string()) {
             // Check if it's a string representation of an object
@@ -1684,14 +1684,14 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
     
     // First handle property mappings (renaming)
 
-    printf("DEBUG: Processing %zu property mappings\n", property_mappings_.size());
+    // printf("DEBUG: Processing %zu property mappings\n", property_mappings_.size());
     for (const auto& mapping : property_mappings_) {
-        printf("DEBUG: Processing mapping: '%s' -> '%s'\n", mapping.property_name.c_str(), mapping.variable_name.c_str());
+        // printf("DEBUG: Processing mapping: '%s' -> '%s'\n", mapping.property_name.c_str(), mapping.variable_name.c_str());
 
         // FIX: Check if this pattern requires infinite depth handler
         if (mapping.variable_name.find("__nested:") != std::string::npos ||
             mapping.variable_name.find(":__nested:") != std::string::npos) {
-            printf("DEBUG: Found infinite depth pattern: '%s'\n", mapping.variable_name.c_str());
+            // printf("DEBUG: Found infinite depth pattern: '%s'\n", mapping.variable_name.c_str());
         }
         Value prop_value = obj->get_property(mapping.property_name);
 
@@ -1699,31 +1699,31 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         if ((mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") ||
             mapping.variable_name.find(":__nested:") != std::string::npos ||
             mapping.variable_name.find(':') != std::string::npos) {
-            printf("DEBUG: Found nested destructuring mapping!\n");
+            // printf("DEBUG: Found nested destructuring mapping!\n");
 
             // FIX: Handle all types of patterns
             if (mapping.variable_name.find(":__nested:") != std::string::npos) {
                 // Pattern like "b:__nested:c" - use infinite depth handler with complete pattern
-                printf("DEBUG: Using infinite depth handler for complete pattern: '%s'\n", mapping.variable_name.c_str());
+                // printf("DEBUG: Using infinite depth handler for complete pattern: '%s'\n", mapping.variable_name.c_str());
 
                 // Get the property value first (for mapping 'a' -> 'b:__nested:c', get obj['a'])
                 if (prop_value.is_object()) {
                     Object* nested_obj = prop_value.as_object();
                     handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
                 } else {
-                    printf("DEBUG: Property '%s' is not an object, cannot handle infinite depth\n", mapping.property_name.c_str());
+                    // printf("DEBUG: Property '%s' is not an object, cannot handle infinite depth\n", mapping.property_name.c_str());
                 }
                 continue; // Skip the rest of the processing for this mapping
             } else if (mapping.variable_name.find(':') != std::string::npos &&
                       mapping.variable_name.find("__nested:") == std::string::npos) {
                 // Simple renaming pattern like "name:myName" - handle with infinite depth handler
-                printf("DEBUG: Using infinite depth handler for simple renaming pattern: '%s'\n", mapping.variable_name.c_str());
+                // printf("DEBUG: Using infinite depth handler for simple renaming pattern: '%s'\n", mapping.variable_name.c_str());
 
                 if (prop_value.is_object()) {
                     Object* nested_obj = prop_value.as_object();
                     handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
                 } else {
-                    printf("DEBUG: Property '%s' is not an object, cannot handle simple renaming\n", mapping.property_name.c_str());
+                    // printf("DEBUG: Property '%s' is not an object, cannot handle simple renaming\n", mapping.property_name.c_str());
                 }
                 continue; // Skip the rest of the processing for this mapping
             }
@@ -1857,21 +1857,21 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                     }
                 }
 
-                printf("DEBUG: has_property_renaming = %s\n", has_property_renaming ? "true" : "false");
-                printf("DEBUG: smart_var_names size = %zu\n", smart_var_names.size());
+                // printf("DEBUG: has_property_renaming = %s\n", has_property_renaming ? "true" : "false");
+                // printf("DEBUG: smart_var_names size = %zu\n", smart_var_names.size());
                 for (size_t i = 0; i < smart_var_names.size(); ++i) {
-                    printf("DEBUG: smart_var_names[%zu] = '%s'\n", i, smart_var_names[i].c_str());
+                    // printf("DEBUG: smart_var_names[%zu] = '%s'\n", i, smart_var_names[i].c_str());
                 }
 
                 if (has_property_renaming) {
                     // Use the enhanced handler for property renaming
-                    printf("DEBUG: Taking property renaming path\n");
+                    // printf("DEBUG: Taking property renaming path\n");
                     handle_nested_object_destructuring_with_mappings(nested_obj, processed_var_names, ctx);
                 } else {
                     // Use infinite depth handler for basic destructuring
-                    printf("DEBUG: Taking basic destructuring path\n");
+                    // printf("DEBUG: Taking basic destructuring path\n");
                     for (const std::string& var_name : smart_var_names) {
-                        printf("DEBUG: Processing smart var_name: '%s'\n", var_name.c_str());
+                        // printf("DEBUG: Processing smart var_name: '%s'\n", var_name.c_str());
 
                         // Check if this is a nested pattern (proper or malformed)
                         bool is_nested_pattern = false;
@@ -1890,7 +1890,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 
                         if (is_nested_pattern) {
                             // This is a nested pattern - use the infinite depth handler
-                            printf("DEBUG: Calling handle_infinite_depth_destructuring for '%s'\n", var_name.c_str());
+                            // printf("DEBUG: Calling handle_infinite_depth_destructuring for '%s'\n", var_name.c_str());
                             handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                         } else {
                             // Regular variable - extract directly
@@ -1968,9 +1968,9 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 
         if (!has_mapping) {
             // NESTED DESTRUCTURING FIX: Handle nested object destructuring
-            printf("DEBUG: Checking prop_name: '%s' (length %zu)\n", prop_name.c_str(), prop_name.length());
+            // printf("DEBUG: Checking prop_name: '%s' (length %zu)\n", prop_name.c_str(), prop_name.length());
             if (prop_name.length() >= 9 && prop_name.substr(0, 9) == "__nested:") {
-                printf("DEBUG: Found __nested: pattern! vars_string will be: '%s'\n", prop_name.substr(9).c_str());
+                // printf("DEBUG: Found __nested: pattern! vars_string will be: '%s'\n", prop_name.substr(9).c_str());
 
                 // Extract the variable names from the identifier
                 std::string vars_string = prop_name.substr(9); // Remove "__nested:" prefix
@@ -2022,15 +2022,15 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                         Object* nested_obj = nested_object.as_object();
 
                         // Handle nested object destructuring with infinite depth support
-                        printf("DEBUG: Processing nested_var_names with %zu variables\n", nested_var_names.size());
+                        // printf("DEBUG: Processing nested_var_names with %zu variables\n", nested_var_names.size());
                         for (const std::string& var_name : nested_var_names) {
-                            printf("DEBUG: Processing var_name: '%s'\n", var_name.c_str());
+                            // printf("DEBUG: Processing var_name: '%s'\n", var_name.c_str());
                             if (var_name.length() > 9 && var_name.substr(0, 9) == "__nested:") {
-                                printf("DEBUG: Using infinite depth handler\n");
+                                // printf("DEBUG: Using infinite depth handler\n");
                                 // Use infinite depth handler for nested patterns
                                 handle_infinite_depth_destructuring(nested_obj, var_name, ctx);
                             } else {
-                                printf("DEBUG: Using regular variable extraction for '%s'\n", var_name.c_str());
+                                // printf("DEBUG: Using regular variable extraction for '%s'\n", var_name.c_str());
                                 // Regular variable - extract directly
                                 Value prop_value = nested_obj->get_property(var_name);
                                 if (!ctx.has_binding(var_name)) {
@@ -3370,21 +3370,21 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         
         Function* compareFn = nullptr;
         if (arguments_.size() > 0) {
-            std::cout << "DEBUG SORT: Has " << arguments_.size() << " arguments" << std::endl;
+            // std::cout << "DEBUG SORT: Has " << arguments_.size() << " arguments" << std::endl;
             Value compare_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) {
-                std::cout << "DEBUG SORT: Exception during argument evaluation" << std::endl;
+                // std::cout << "DEBUG SORT: Exception during argument evaluation" << std::endl;
                 return Value();
             }
-            std::cout << "DEBUG SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
+            // std::cout << "DEBUG SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
             if (compare_val.is_function()) {
                 compareFn = compare_val.as_function();
-                std::cout << "DEBUG SORT: compareFn set successfully" << std::endl;
+                // std::cout << "DEBUG SORT: compareFn set successfully" << std::endl;
             } else {
-                std::cout << "DEBUG SORT: compare_val is not a function" << std::endl;
+                // std::cout << "DEBUG SORT: compare_val is not a function" << std::endl;
             }
         } else {
-            std::cout << "DEBUG SORT: No arguments provided" << std::endl;
+            // std::cout << "DEBUG SORT: No arguments provided" << std::endl;
         }
         
         // Simple bubble sort for now (can be optimized later)
@@ -8749,17 +8749,17 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             // Check for compare function
             Function* compareFn = nullptr;
             if (args.size() > 0) {
-                std::cout << "DEBUG ARRAYLIT SORT: Has " << args.size() << " arguments" << std::endl;
+                // std::cout << "DEBUG ARRAYLIT SORT: Has " << args.size() << " arguments" << std::endl;
                 Value compare_val = args[0];
-                std::cout << "DEBUG ARRAYLIT SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
+                // std::cout << "DEBUG ARRAYLIT SORT: compare_val.is_function(): " << compare_val.is_function() << std::endl;
                 if (compare_val.is_function()) {
                     compareFn = compare_val.as_function();
-                    std::cout << "DEBUG ARRAYLIT SORT: compareFn set successfully" << std::endl;
+                    // std::cout << "DEBUG ARRAYLIT SORT: compareFn set successfully" << std::endl;
                 } else {
-                    std::cout << "DEBUG ARRAYLIT SORT: compare_val is not a function" << std::endl;
+                    // std::cout << "DEBUG ARRAYLIT SORT: compare_val is not a function" << std::endl;
                 }
             } else {
-                std::cout << "DEBUG ARRAYLIT SORT: No arguments provided" << std::endl;
+                // std::cout << "DEBUG ARRAYLIT SORT: No arguments provided" << std::endl;
             }
 
             // Simple bubble sort
@@ -9787,19 +9787,19 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
     // Handle unlimited nesting levels
     // Supports patterns like "h:__nested:i:__nested:j:__nested:k:__nested:t" for infinite depth
 
-    printf("DEBUG: INFINITE handle_infinite_depth_destructuring called with pattern: '%s'\n", nested_pattern.c_str());
+    // printf("DEBUG: INFINITE handle_infinite_depth_destructuring called with pattern: '%s'\n", nested_pattern.c_str());
 
     std::string pattern = nested_pattern;
     Object* current_obj = obj;
 
     // INFINITE LOOP: Process pattern segments until we reach the final variable
     while (!pattern.empty()) {
-        printf("DEBUG: INFINITE Processing pattern segment: '%s'\n", pattern.c_str());
+        // printf("DEBUG: INFINITE Processing pattern segment: '%s'\n", pattern.c_str());
 
         // Check if pattern starts with __nested:
         if (pattern.length() > 9 && pattern.substr(0, 9) == "__nested:") {
             pattern = pattern.substr(9); // Strip __nested: prefix
-            printf("DEBUG: INFINITE Stripped __nested:, remaining: '%s'\n", pattern.c_str());
+            // printf("DEBUG: INFINITE Stripped __nested:, remaining: '%s'\n", pattern.c_str());
             continue; // Process the remaining pattern
         }
 
@@ -9808,7 +9808,7 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (colon_pos == std::string::npos) {
             // No colon found - this is the final variable name
-            printf("DEBUG: INFINITE Final variable extraction: '%s'\n", pattern.c_str());
+            // printf("DEBUG: INFINITE Final variable extraction: '%s'\n", pattern.c_str());
             Value final_value = current_obj->get_property(pattern);
             if (!ctx.has_binding(pattern)) {
                 ctx.create_binding(pattern, final_value, true);
@@ -9822,7 +9822,7 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
         std::string prop_name = pattern.substr(0, colon_pos);
         std::string remaining = pattern.substr(colon_pos + 1);
 
-        printf("DEBUG: INFINITE Analyzing segment '%s:%s'\n", prop_name.c_str(), remaining.c_str());
+        // printf("DEBUG: INFINITE Analyzing segment '%s:%s'\n", prop_name.c_str(), remaining.c_str());
 
         // Check if this is a property renaming pattern (property:variable_name)
         // A renaming pattern has no more colons or __nested: in the remaining part
@@ -9831,7 +9831,7 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
 
         if (is_renaming) {
             // This is property renaming: extract prop_name and rename to remaining
-            printf("DEBUG: INFINITE Property renaming: '%s' -> '%s'\n", prop_name.c_str(), remaining.c_str());
+            // printf("DEBUG: INFINITE Property renaming: '%s' -> '%s'\n", prop_name.c_str(), remaining.c_str());
             Value prop_value = current_obj->get_property(prop_name);
             if (!ctx.has_binding(remaining)) {
                 ctx.create_binding(remaining, prop_value, true);
@@ -9842,18 +9842,18 @@ void DestructuringAssignment::handle_infinite_depth_destructuring(Object* obj, c
         }
 
         // Not renaming - this is navigation: navigate to the property
-        printf("DEBUG: INFINITE Navigating to property '%s', remaining: '%s'\n", prop_name.c_str(), remaining.c_str());
+        // printf("DEBUG: INFINITE Navigating to property '%s', remaining: '%s'\n", prop_name.c_str(), remaining.c_str());
 
         Value prop_value = current_obj->get_property(prop_name);
         if (!prop_value.is_object()) {
-            printf("DEBUG: INFINITE Property '%s' is not an object, cannot continue\n", prop_name.c_str());
+            // printf("DEBUG: INFINITE Property '%s' is not an object, cannot continue\n", prop_name.c_str());
             return;
         }
 
         current_obj = prop_value.as_object();
         pattern = remaining;
 
-        printf("DEBUG: INFINITE Successfully navigated to property '%s', continuing with pattern: '%s'\n", prop_name.c_str(), pattern.c_str());
+        // printf("DEBUG: INFINITE Successfully navigated to property '%s', continuing with pattern: '%s'\n", prop_name.c_str(), pattern.c_str());
     }
 }
 
