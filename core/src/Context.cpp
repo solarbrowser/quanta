@@ -400,7 +400,7 @@ void Context::initialize_built_ins() {
             }
             
             return Value(result_array.release());
-        });
+        }, 1);
     object_constructor->set_property("keys", Value(keys_fn.release()));
     
     // Object.values(obj) - returns array of own enumerable property values
@@ -436,7 +436,7 @@ void Context::initialize_built_ins() {
             }
             
             return Value(result_array.release());
-        });
+        }, 1);
     object_constructor->set_property("values", Value(values_fn.release()));
     
     // Object.entries(obj) - returns array of [key, value] pairs
@@ -475,7 +475,7 @@ void Context::initialize_built_ins() {
             }
             
             return Value(result_array.release());
-        });
+        }, 1);
     object_constructor->set_property("entries", Value(entries_fn.release()));
 
     // Object.is(value1, value2) - SameValue comparison
@@ -489,7 +489,7 @@ void Context::initialize_built_ins() {
 
             // Use the centralized SameValue implementation
             return Value(x.same_value(y));
-        });
+        }, 2);
 
     // Set the correct length property for Object.is with proper descriptor (should be 2)
     PropertyDescriptor is_length_desc(Value(2.0), PropertyAttributes::Configurable);
@@ -533,7 +533,7 @@ void Context::initialize_built_ins() {
             }
             
             return Value(result_obj.release());
-        });
+        }, 1);
     object_constructor->set_property("fromEntries", Value(fromEntries_fn.release()));
     
     // Object.create(prototype) - creates new object with specified prototype
@@ -570,7 +570,7 @@ void Context::initialize_built_ins() {
             // Invalid prototype argument
             ctx.throw_exception(Value("TypeError: Object prototype may only be an Object or null"));
             return Value();
-        });
+        }, 2);
     object_constructor->set_property("create", Value(create_fn.release()));
     
     // Object.assign
@@ -620,7 +620,7 @@ void Context::initialize_built_ins() {
             }
             
             return target;
-        });
+        }, 2);
     object_constructor->set_property("assign", Value(assign_fn.release()));
 
     // Object.getPrototypeOf
@@ -685,7 +685,7 @@ void Context::initialize_built_ins() {
             }
 
             return Value::null();
-        });
+        }, 1);
     object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()));
 
     // Object.setPrototypeOf
@@ -729,7 +729,7 @@ void Context::initialize_built_ins() {
             }
 
             return obj_val;
-        });
+        }, 2);
     object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()));
 
     // Object.hasOwnProperty (static method)
@@ -748,7 +748,7 @@ void Context::initialize_built_ins() {
             std::string prop_name = args[1].to_string();
 
             return Value(obj->has_own_property(prop_name));
-        });
+        }, 1);
     object_constructor->set_property("hasOwnProperty", Value(hasOwnProperty_fn.release()));
 
     // Object.getOwnPropertyDescriptor
@@ -813,7 +813,7 @@ void Context::initialize_built_ins() {
             }
 
             return Value(descriptor.release());
-        });
+        }, 2);
     object_constructor->set_property("getOwnPropertyDescriptor", Value(getOwnPropertyDescriptor_fn.release()));
 
     // Object.defineProperty
@@ -891,7 +891,7 @@ void Context::initialize_built_ins() {
             }
 
             return args[0]; // Return the object
-        });
+        }, 3);
     object_constructor->set_property("defineProperty", Value(defineProperty_fn.release()));
 
     // Object.getOwnPropertyNames
@@ -917,7 +917,7 @@ void Context::initialize_built_ins() {
             result->set_property("length", Value(static_cast<double>(props.size())));
 
             return Value(result.release());
-        });
+        }, 1);
     object_constructor->set_property("getOwnPropertyNames", Value(getOwnPropertyNames_fn.release()));
 
     // Object.defineProperties
@@ -993,7 +993,7 @@ void Context::initialize_built_ins() {
             }
 
             return args[0];
-        });
+        }, 2);
     object_constructor->set_property("defineProperties", Value(defineProperties_fn.release()));
 
     // Object.getOwnPropertyDescriptors
@@ -1047,7 +1047,7 @@ void Context::initialize_built_ins() {
             }
 
             return Value(result.release());
-        });
+        }, 1);
     object_constructor->set_property("getOwnPropertyDescriptors", Value(getOwnPropertyDescriptors_fn.release()));
 
     // Object.seal
@@ -1060,7 +1060,7 @@ void Context::initialize_built_ins() {
             obj->seal();
 
             return args[0];
-        });
+        }, 1);
     object_constructor->set_property("seal", Value(seal_fn.release()));
 
     // Object.freeze
@@ -1073,7 +1073,7 @@ void Context::initialize_built_ins() {
             obj->freeze();
 
             return args[0];
-        });
+        }, 1);
     object_constructor->set_property("freeze", Value(freeze_fn.release()));
 
     // Object.preventExtensions
@@ -1086,7 +1086,7 @@ void Context::initialize_built_ins() {
             obj->prevent_extensions();
 
             return args[0];
-        });
+        }, 1);
     object_constructor->set_property("preventExtensions", Value(preventExtensions_fn.release()));
 
     // Object.isSealed
@@ -1096,7 +1096,7 @@ void Context::initialize_built_ins() {
 
             Object* obj = args[0].as_object();
             return Value(obj->is_sealed());
-        });
+        }, 1);
     object_constructor->set_property("isSealed", Value(isSealed_fn.release()));
 
     // Object.isFrozen
@@ -1106,7 +1106,7 @@ void Context::initialize_built_ins() {
 
             Object* obj = args[0].as_object();
             return Value(obj->is_frozen());
-        });
+        }, 1);
     object_constructor->set_property("isFrozen", Value(isFrozen_fn.release()));
 
     // Object.isExtensible
@@ -1116,7 +1116,7 @@ void Context::initialize_built_ins() {
 
             Object* obj = args[0].as_object();
             return Value(obj->is_extensible());
-        });
+        }, 1);
     object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()));
 
     // Object.hasOwn (ES2022)
@@ -1242,7 +1242,7 @@ void Context::initialize_built_ins() {
 
             std::string prop_name = args[0].to_string();
             return Value(this_obj->has_own_property(prop_name));
-        });
+        }, 1);
 
     // Set name and length properties for Object.prototype.hasOwnProperty
     PropertyDescriptor hasOwnProperty_name_desc(Value("hasOwnProperty"), PropertyAttributes::None);
@@ -1352,7 +1352,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
             return Value(args[0].is_object() && args[0].as_object()->is_array());
-        });
+        }, 1);
     array_constructor->set_property("isArray", Value(isArray_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     
     // Array.from (length = 1)
@@ -1407,7 +1407,7 @@ void Context::initialize_built_ins() {
             }
             array->set_property("length", Value(static_cast<double>(args.size())));
             return Value(array.release());
-        });
+        }, 0);
     array_constructor->set_property("of", Value(of_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     // Array.fromAsync - minimal stub
@@ -1692,7 +1692,7 @@ void Context::initialize_built_ins() {
             result->set_element(2, Value(2));
             result->set_property("length", Value(3.0));
             return Value(result.release());
-        });
+        }, 1);
     array_prototype->set_property("keys", Value(array_keys_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Array.prototype.values
@@ -1705,7 +1705,7 @@ void Context::initialize_built_ins() {
             result->set_element(2, Value(3));
             result->set_property("length", Value(3.0));
             return Value(result.release());
-        });
+        }, 1);
     array_prototype->set_property("values", Value(array_values_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Array.prototype.entries
@@ -1723,7 +1723,7 @@ void Context::initialize_built_ins() {
             result->set_element(0, Value(pair0.release()));
             result->set_property("length", Value(1.0));
             return Value(result.release());
-        });
+        }, 1);
     array_prototype->set_property("entries", Value(array_entries_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Array.prototype.toString - returns comma-separated string representation
@@ -2282,7 +2282,10 @@ void Context::initialize_built_ins() {
     Object* array_proto_ptr = array_prototype.get();
 
     // Set Array.prototype.constructor BEFORE releasing array_constructor
-    array_proto_ptr->set_property("constructor", Value(array_constructor.get()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    // Use set_property_descriptor to set correct attributes { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor array_constructor_desc(Value(array_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    array_proto_ptr->set_property_descriptor("constructor", array_constructor_desc);
 
     array_constructor->set_property("prototype", Value(array_prototype.release()), PropertyAttributes::None);
 
@@ -3045,7 +3048,7 @@ void Context::initialize_built_ins() {
                 }
             }
             return Value(result);
-        });
+        }, 1);
     string_constructor->set_property("fromCharCode", Value(fromCharCode_fn.release()));
 
     // String.fromCodePoint
@@ -3076,7 +3079,7 @@ void Context::initialize_built_ins() {
                 }
             }
             return Value(result);
-        });
+        }, 1);
     string_constructor->set_property("fromCodePoint", Value(fromCodePoint_fn.release()));
 
     register_built_in_object("String", string_constructor.release());
@@ -3449,7 +3452,7 @@ void Context::initialize_built_ins() {
             if (!args[0].is_number()) return Value(false);
             double num = args[0].to_number();
             return Value(std::isfinite(num) && std::floor(num) == num);
-        });
+        }, 1);
     number_constructor->set_property("isInteger", Value(isInteger_fn.release()));
     
     // Number.isNaN - workaround for engine NaN handling limitations
@@ -3471,7 +3474,7 @@ void Context::initialize_built_ins() {
             // For actual numbers, use the standard NaN != NaN test
             double val = args[0].to_number();
             return Value(val != val);
-        });
+        }, 1);
     number_constructor->set_property("isNaN", Value(numberIsNaN_fn.release()));
     
     // Number.isFinite -  implementation matching isNaN logic
@@ -3490,7 +3493,7 @@ void Context::initialize_built_ins() {
             // Check for infinity by comparing to maximum finite values
             const double MAX_FINITE = 1.7976931348623157e+308;
             return Value(val > -MAX_FINITE && val < MAX_FINITE);
-        });
+        }, 1);
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()));
     
     // Number.parseFloat - same as global parseFloat
@@ -3512,7 +3515,7 @@ void Context::initialize_built_ins() {
             } catch (...) {
                 return Value(std::numeric_limits<double>::quiet_NaN());
             }
-        });
+        }, 1);
     number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()));
 
     // Create Number.prototype and add methods
@@ -3684,7 +3687,10 @@ void Context::initialize_built_ins() {
         });
     number_prototype->set_property("toLocaleString", Value(number_toLocaleString_fn.release()));
 
-    number_prototype->set_property("constructor", Value(number_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor number_constructor_desc(Value(number_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    number_prototype->set_property_descriptor("constructor", number_constructor_desc);
 
     // Number.isSafeInteger
     auto isSafeInteger_fn = ObjectFactory::create_native_function("isSafeInteger",
@@ -3694,7 +3700,7 @@ void Context::initialize_built_ins() {
             const double MAX_SAFE_INTEGER = 9007199254740991.0; // 2^53 - 1
             return Value(std::isfinite(num) && std::floor(num) == num &&
                         num >= -MAX_SAFE_INTEGER && num <= MAX_SAFE_INTEGER);
-        });
+        }, 1);
     number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()));
 
     // Number constants
@@ -3794,7 +3800,10 @@ void Context::initialize_built_ins() {
 
     boolean_prototype->set_property("valueOf", Value(boolean_valueOf.release()));
     boolean_prototype->set_property("toString", Value(boolean_toString.release()));
-    boolean_prototype->set_property("constructor", Value(boolean_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor boolean_constructor_desc(Value(boolean_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    boolean_prototype->set_property_descriptor("constructor", boolean_constructor_desc);
 
     boolean_constructor->set_property("prototype", Value(boolean_prototype.release()));
 
@@ -3882,7 +3891,10 @@ void Context::initialize_built_ins() {
     error_constructor->set_property("isError", Value(error_isError.release()));
 
     // Set constructor property on prototype
-    error_prototype->set_property("constructor", Value(error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor error_constructor_desc(Value(error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    error_prototype->set_property_descriptor("constructor", error_constructor_desc);
 
     // Set constructor.prototype
     error_constructor->set_property("prototype", Value(error_prototype_ptr), PropertyAttributes::None);
@@ -3944,7 +3956,7 @@ void Context::initialize_built_ins() {
                 result = std::max(result, value);
             }
             return Value(result);
-        });
+        }, 2);
     math_object->set_property("max", Value(store_fn(std::move(math_max_fn))));
     
     // Add Math.min native function
@@ -3963,7 +3975,7 @@ void Context::initialize_built_ins() {
                 result = std::min(result, value);
             }
             return Value(result);
-        });
+        }, 2);
     math_object->set_property("min", Value(store_fn(std::move(math_min_fn))));
     
     // Add Math.round native function
@@ -3975,7 +3987,7 @@ void Context::initialize_built_ins() {
             
             double value = args[0].to_number();
             return Value(std::round(value));
-        });
+        }, 1);
     math_object->set_property("round", Value(store_fn(std::move(math_round_fn))));
     
     // Add Math.random native function
@@ -3984,7 +3996,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             (void)args; // Suppress unused warning
             return Value(static_cast<double>(rand()) / RAND_MAX);
-        });
+        }, 0);
     math_object->set_property("random", Value(store_fn(std::move(math_random_fn))));
     
     // Add Math.floor native function
@@ -3993,7 +4005,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::floor(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))));
     
     // Add Math.ceil native function
@@ -4002,7 +4014,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::ceil(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))));
     
     // Add Math.abs native function
@@ -4016,7 +4028,7 @@ void Context::initialize_built_ins() {
                 return Value::positive_infinity();
             }
             return Value(std::abs(value));
-        });
+        }, 1);
     math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))));
     
     // Add Math.sqrt native function
@@ -4025,7 +4037,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sqrt(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))));
     
     // Add Math.pow native function
@@ -4034,7 +4046,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::pow(args[0].to_number(), args[1].to_number()));
-        });
+        }, 2);
     math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))));
     
     // Add Math.sin native function
@@ -4043,7 +4055,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sin(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))));
     
     // Add Math.cos native function
@@ -4052,7 +4064,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))));
     
     // Add Math.tan native function
@@ -4061,7 +4073,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tan(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))));
     
     // Add Math.log native function  
@@ -4070,7 +4082,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("log", Value(store_fn(std::move(math_log_fn))));
     
     // Add Math.log10 native function
@@ -4079,7 +4091,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log10(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))));
     
     // Add Math.exp native function
@@ -4088,7 +4100,7 @@ void Context::initialize_built_ins() {
             (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::exp(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))));
     
     // Math.trunc - truncate decimal part (toward zero)
@@ -4100,7 +4112,7 @@ void Context::initialize_built_ins() {
             if (std::isinf(val)) return Value(val);
             if (std::isnan(val)) return Value(0.0); // Simplified to avoid NaN issues
             return Value(std::trunc(val));
-        });
+        }, 1);
     math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))));
     
     // Math.sign - returns sign of number (-1, 0, 1, or NaN)
@@ -4113,7 +4125,7 @@ void Context::initialize_built_ins() {
             if (val > 0) return Value(1.0);
             if (val < 0) return Value(-1.0);
             return Value(val); // Preserves +0 and -0
-        });
+        }, 1);
     math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))));
 
     // Math.acos
@@ -4122,7 +4134,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acos(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))));
 
     // Math.acosh
@@ -4131,7 +4143,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acosh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))));
 
     // Math.asin
@@ -4140,7 +4152,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asin(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))));
 
     // Math.asinh
@@ -4149,7 +4161,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asinh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))));
 
     // Math.atan
@@ -4158,7 +4170,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))));
 
     // Math.atan2
@@ -4167,7 +4179,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan2(args[0].to_number(), args[1].to_number()));
-        });
+        }, 2);
     math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))));
 
     // Math.atanh
@@ -4176,7 +4188,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atanh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))));
 
     // Math.cbrt
@@ -4185,7 +4197,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cbrt(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))));
 
     // Math.clz32
@@ -4201,7 +4213,7 @@ void Context::initialize_built_ins() {
                 count++;
             }
             return Value(static_cast<double>(count));
-        });
+        }, 1);
     math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))));
 
     // Math.cosh
@@ -4210,7 +4222,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cosh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))));
 
     // Math.expm1
@@ -4219,7 +4231,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::expm1(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))));
 
     // Math.fround
@@ -4228,7 +4240,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(static_cast<double>(static_cast<float>(args[0].to_number())));
-        });
+        }, 1);
     math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))));
 
     // Math.hypot
@@ -4241,7 +4253,7 @@ void Context::initialize_built_ins() {
                 sum += val * val;
             }
             return Value(std::sqrt(sum));
-        });
+        }, 2);
     math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))));
 
     // Math.imul
@@ -4252,7 +4264,7 @@ void Context::initialize_built_ins() {
             int32_t a = static_cast<int32_t>(args[0].to_number());
             int32_t b = static_cast<int32_t>(args[1].to_number());
             return Value(static_cast<double>(a * b));
-        });
+        }, 2);
     math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))));
 
     // Math.log1p
@@ -4261,7 +4273,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log1p(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))));
 
     // Math.log2
@@ -4270,7 +4282,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log2(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))));
 
     // Math.sinh
@@ -4279,7 +4291,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sinh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))));
 
     // Math.tanh
@@ -4288,7 +4300,7 @@ void Context::initialize_built_ins() {
             (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tanh(args[0].to_number()));
-        });
+        }, 1);
     math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))));
 
     // Math constants
@@ -4566,7 +4578,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    type_error_prototype->set_property("constructor", Value(type_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor type_error_constructor_desc(Value(type_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    type_error_prototype->set_property_descriptor("constructor", type_error_constructor_desc);
 
     // Set constructor.prototype
     type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
@@ -4627,7 +4642,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     
-    reference_error_prototype->set_property("constructor", Value(reference_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor reference_error_constructor_desc(Value(reference_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    reference_error_prototype->set_property_descriptor("constructor", reference_error_constructor_desc);
     reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()));
 
     // Set ReferenceError length property
@@ -4686,7 +4704,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
     
-    syntax_error_prototype->set_property("constructor", Value(syntax_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor syntax_error_constructor_desc(Value(syntax_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    syntax_error_prototype->set_property_descriptor("constructor", syntax_error_constructor_desc);
     syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()));
 
     // Set SyntaxError length property
@@ -4745,7 +4766,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    range_error_prototype->set_property("constructor", Value(range_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor range_error_constructor_desc(Value(range_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    range_error_prototype->set_property_descriptor("constructor", range_error_constructor_desc);
 
     // Set constructor.prototype
     range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
@@ -4806,7 +4830,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    uri_error_prototype->set_property("constructor", Value(uri_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor uri_error_constructor_desc(Value(uri_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    uri_error_prototype->set_property_descriptor("constructor", uri_error_constructor_desc);
 
     // Set constructor.prototype
     uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()));
@@ -4857,7 +4884,10 @@ void Context::initialize_built_ins() {
             return Value(error_obj.release());
         });
 
-    eval_error_prototype->set_property("constructor", Value(eval_error_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor eval_error_constructor_desc(Value(eval_error_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    eval_error_prototype->set_property_descriptor("constructor", eval_error_constructor_desc);
 
     // Set constructor.prototype
     eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()));
@@ -5090,7 +5120,10 @@ void Context::initialize_built_ins() {
         });
 
     // Set up bidirectional constructor/prototype relationship
-    regexp_prototype->set_property("constructor", Value(regexp_constructor.get()));
+    // Constructor property: { writable: true, enumerable: false, configurable: true }
+    PropertyDescriptor regexp_constructor_desc(Value(regexp_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
 
     register_built_in_object("RegExp", regexp_constructor.release());
@@ -5658,7 +5691,7 @@ void Context::setup_global_bindings() {
             } catch (...) {
                 return Value::nan();
             }
-        });
+        }, 2);
     lexical_environment_->create_binding("parseInt", Value(parseInt_fn.release()), false);
     
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
@@ -5695,7 +5728,7 @@ void Context::setup_global_bindings() {
             } catch (...) {
                 return Value::nan();
             }
-        });
+        }, 1);
     lexical_environment_->create_binding("parseFloat", Value(parseFloat_fn.release()), false);
     
     auto isNaN_fn = ObjectFactory::create_native_function("isNaN",
@@ -5708,7 +5741,7 @@ void Context::setup_global_bindings() {
             // Then check for IEEE 754 NaN in regular numbers
             double num = args[0].to_number();
             return Value(std::isnan(num));
-        });
+        }, 1);
     lexical_environment_->create_binding("isNaN", Value(isNaN_fn.release()), false);
     
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
@@ -5716,7 +5749,7 @@ void Context::setup_global_bindings() {
             if (args.empty()) return Value(false);
             double num = args[0].to_number();
             return Value(std::isfinite(num));
-        });
+        }, 1);
     lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
 
 
@@ -5744,7 +5777,7 @@ void Context::setup_global_bindings() {
                 ctx.throw_exception(Value("SyntaxError: Invalid code in eval"));
                 return Value();
             }
-        });
+        }, 1);
     lexical_environment_->create_binding("eval", Value(eval_fn.release()), false);
 
     // Global constants
@@ -5779,7 +5812,7 @@ void Context::setup_global_bindings() {
             std::string input = args[0].to_string();
             // Basic implementation - just return the input for now
             return Value(input);
-        });
+        }, 1);
     lexical_environment_->create_binding("encodeURI", Value(encode_uri_fn.release()), false);
     
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
@@ -5788,7 +5821,7 @@ void Context::setup_global_bindings() {
             std::string input = args[0].to_string();
             // Basic implementation - just return the input for now
             return Value(input);
-        });
+        }, 1);
     lexical_environment_->create_binding("decodeURI", Value(decode_uri_fn.release()), false);
     
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
@@ -5797,7 +5830,7 @@ void Context::setup_global_bindings() {
             std::string input = args[0].to_string();
             // Basic implementation - just return the input for now
             return Value(input);
-        });
+        }, 1);
     lexical_environment_->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), false);
     
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
@@ -5806,7 +5839,7 @@ void Context::setup_global_bindings() {
             std::string input = args[0].to_string();
             // Basic implementation - just return the input for now
             return Value(input);
-        });
+        }, 1);
     lexical_environment_->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), false);
     
     // BigInt constructor
@@ -5984,7 +6017,7 @@ void Context::setup_global_bindings() {
 
     // Create console object with log, error, warn methods
     auto console_obj = ObjectFactory::create_object();
-    auto console_log_fn = ObjectFactory::create_native_function("log", WebAPI::console_log);
+    auto console_log_fn = ObjectFactory::create_native_function("log", WebAPI::console_log, 1);
     auto console_error_fn = ObjectFactory::create_native_function("error", WebAPI::console_error);
     auto console_warn_fn = ObjectFactory::create_native_function("warn", WebAPI::console_warn);
     
