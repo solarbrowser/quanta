@@ -161,6 +161,9 @@ if (typeof Test262Error === 'undefined') {
     };
     Test262Error.prototype = Object.create(Error.prototype);
     Test262Error.prototype.constructor = Test262Error;
+    Test262Error.prototype.toString = function() {
+        return this.name + ": " + this.message;
+    };
 }
 
 // Now add assert and verifyProperty that depend on Test262Error

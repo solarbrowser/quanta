@@ -552,6 +552,87 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     return target->construct(ctx, construct_args);
 }
 
+Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vector<Value>& args) {
+    if (args.size() < 2) {
+        ctx.throw_exception(Value("TypeError: Reflect.getOwnPropertyDescriptor requires two arguments"));
+        return Value();
+    }
+    
+    Object* target = to_object(args[0], ctx);
+    if (!target) {
+        return Value();
+    }
+    
+    std::string key = to_property_key(args[1]);
+    PropertyDescriptor desc = target->get_property_descriptor(key);
+    
+    return from_property_descriptor(desc);
+}
+
+Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& args) {
+    if (args.size() < 3) {
+        ctx.throw_exception(Value("TypeError: Reflect.defineProperty requires three arguments"));
+        return Value();
+    }
+    
+    Object* target = to_object(args[0], ctx);
+    if (!target) {
+        return Value(false);
+    }
+    
+    std::string key = to_property_key(args[1]);
+    
+    // Parse property descriptor from third argument
+    if (!args[2].is_object()) {
+        ctx.throw_exception(Value("TypeError: Property descriptor must be an object"));
+        return Value(false);
+    }
+    
+    Object* desc_obj = args[2].as_object();
+    PropertyDescriptor prop_desc;
+    
+    // Handle getter (accessor descriptor)
+    if (desc_obj->has_own_property("get")) {
+        Value getter = desc_obj->get_property("get");
+        if (getter.is_function()) {
+            prop_desc.set_getter(getter.as_object());
+        }
+    }
+    
+    // Handle setter (accessor descriptor)
+    if (desc_obj->has_own_property("set")) {
+        Value setter = desc_obj->get_property("set");
+        if (setter.is_function()) {
+            prop_desc.set_setter(setter.as_object());
+        }
+    }
+    
+    // Handle value (data descriptor)
+    if (desc_obj->has_own_property("value")) {
+        Value value = desc_obj->get_property("value");
+        prop_desc.set_value(value);
+    }
+    
+    // Handle writable attribute
+    if (desc_obj->has_own_property("writable")) {
+        prop_desc.set_writable(desc_obj->get_property("writable").to_boolean());
+    }
+    
+    // Handle enumerable attribute
+    if (desc_obj->has_own_property("enumerable")) {
+        prop_desc.set_enumerable(desc_obj->get_property("enumerable").to_boolean());
+    }
+    
+    // Handle configurable attribute
+    if (desc_obj->has_own_property("configurable")) {
+        prop_desc.set_configurable(desc_obj->get_property("configurable").to_boolean());
+    }
+    
+    // Set the property descriptor and return success/failure
+    bool success = target->set_property_descriptor(key, prop_desc);
+    return Value(success);
+}
+
 void Reflect::setup_reflect(Context& ctx) {
     // Create Reflect object
     auto reflect_obj = ObjectFactory::create_object();
@@ -568,6 +649,8 @@ void Reflect::setup_reflect(Context& ctx) {
     auto prevent_extensions_fn = ObjectFactory::create_native_function("preventExtensions", reflect_prevent_extensions);
     auto apply_fn = ObjectFactory::create_native_function("apply", reflect_apply);
     auto construct_fn = ObjectFactory::create_native_function("construct", reflect_construct);
+    auto get_own_property_descriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor", reflect_get_own_property_descriptor, 2);
+    auto define_property_fn = ObjectFactory::create_native_function("defineProperty", reflect_define_property, 3);
     
     reflect_obj->set_property("get", Value(get_fn.release()));
     reflect_obj->set_property("set", Value(set_fn.release()));
@@ -580,6 +663,8 @@ void Reflect::setup_reflect(Context& ctx) {
     reflect_obj->set_property("preventExtensions", Value(prevent_extensions_fn.release()));
     reflect_obj->set_property("apply", Value(apply_fn.release()));
     reflect_obj->set_property("construct", Value(construct_fn.release()));
+    reflect_obj->set_property("getOwnPropertyDescriptor", Value(get_own_property_descriptor_fn.release()));
+    reflect_obj->set_property("defineProperty", Value(define_property_fn.release()));
     
     ctx.register_built_in_object("Reflect", reflect_obj.release());
 }

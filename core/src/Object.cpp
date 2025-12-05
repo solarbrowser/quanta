@@ -1116,32 +1116,21 @@ std::string Object::to_string() const {
         return oss.str();
     }
     
-    // Check if object has toString method (including prototype chain)
-    Value toString_method = get_property("toString");
-    if (toString_method.is_function()) {
-        try {
-            // Call the toString method
-            Function* func = toString_method.as_function();
-            Context* dummy_ctx = nullptr; // We need a context but this is risky
-            std::vector<Value> args;
-            // For safety, just use the Error types we know have proper toString
-            Value name_prop = get_property("name");
-            Value message_prop = get_property("message");
-            if (name_prop.is_string() && (name_prop.to_string() == "Error" ||
-                name_prop.to_string() == "TypeError" || name_prop.to_string() == "ReferenceError" ||
-                name_prop.to_string() == "Test262Error" || name_prop.to_string() == "SyntaxError")) {
-                std::string name = name_prop.to_string();
-                std::string message = message_prop.is_string() ? message_prop.to_string() : "";
-                if (message.empty()) {
-                    return name;
-                }
-                return name + ": " + message;
+    // Check for Error-like objects (have name and message properties)
+    Value name_prop = get_property("name");
+    Value message_prop = get_property("message");
+    if (!name_prop.is_undefined() && !message_prop.is_undefined()) {
+        // This looks like an Error object
+        std::string name = name_prop.to_string();
+        std::string message = message_prop.to_string();
+        if (!name.empty()) {
+            if (message.empty()) {
+                return name;
             }
-        } catch (...) {
-            // Fall through to default
+            return name + ": " + message;
         }
     }
-    
+
     return "[object Object]";
 }
 
