@@ -55,7 +55,7 @@ Quanta has been tested against the official **Test262** ECMAScript test suite (5
 |--------|-------:|-----------:|---------------:|
 | **Total Tests** | 51,216 | 100.0% | - |
 | **Tests Run** | 35,697 | 69.7% | 100.00% |
-| **Passed** | 11,181 | 23.74% | **34.07%** |
+| **Passed** | 12,161 | 23.74% | **34.07%** |
 | **Failed** | 24,516 | 45.96% | 65.93% |
 | **Skipped** | 15,519 | 30.3% | - |
 
