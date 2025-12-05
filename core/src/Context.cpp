@@ -12,6 +12,7 @@
 #include "RegExp.h"
 #include "Promise.h"
 #include "ProxyReflect.h"
+#include "Temporal.h"
 #include "WebAPIInterface.h"
 #include "ArrayBuffer.h"
 #include "TypedArray.h"
@@ -3534,10 +3535,13 @@ void Context::initialize_built_ins() {
     
     register_built_in_object("Symbol", symbol_constructor.release());
     
-    //  PROXY AND REFLECT - ES2023+ METAPROGRAMMING 
+    //  PROXY AND REFLECT - ES2023+ METAPROGRAMMING
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
-    
+
+    //  TEMPORAL API - TC39 STAGE 3
+    Temporal::setup(*this);
+
     //  MAP AND SET COLLECTIONS 
     Map::setup_map_prototype(*this);
     Set::setup_set_prototype(*this);

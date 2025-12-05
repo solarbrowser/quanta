@@ -35,11 +35,13 @@ demo.js
 example*.js
 test262/
 tests/
-.js
+*.js
 neo/
 
 # other
 .eshostrc
+*.py
+*.ps1
 
 # OS specific files
 .DS_Store
@@ -47,3 +49,4 @@ Thumbs.db
 
 # Log files
 *.log
+*.txt
