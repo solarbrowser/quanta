@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [December 5, 2025](#december-5-2025)
 - [December 3, 2025](#december-3-2025)
 - [December 2, 2025](#december-2-2025)
 - [November 22, 2025 - Property Descriptor & Engine Improvements](#november-22-2025---property-descriptor--engine-improvements)
@@ -12,6 +13,22 @@
 ---
 
 ## Test History
+### December 5, 2025
+**Engine Version:** q120525c141
+
+#### Overall Results
+
+| Metric | Count | % of Total | % of Executed |
+|--------|-------:|-----------:|---------------:|
+| **Total Tests** | 51,216 | 100.0% | - |
+| **Tests Run** | 35,697 | 69.7% | 100.00% |
+| **Passed** | 11,181 | 23.74% | **34.07%** |
+| **Failed** | 24,516 | 45.96% | 65.93% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+**Test Duration:** 2648.5s
+**Average speed:** 19.3 tests/second
+
 ### December 3, 2025
 **Engine Version:** q120325c132
 
@@ -262,6 +279,7 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
+| Dec 05, 2025 | q120525c141 | 12161 | 34.07% | **+980**  |
 | Dec 03, 2025 | q120325c132 | 11,181 | 31.32% | **+870**  |
 | Dec 02, 2025 | q120125c126 | 10,311 | 28.88% | **+1,189**  |
 | Nov 22, 2025 | q112225c120 | 9,122 | 25.55% | **+1,205** 🚀 |
@@ -271,6 +289,7 @@ Intentionally skipped test categories:
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **December 5, 2025:** (12161 passed, pass rate 34.07%)
 - ✅ **December 3, 2025:** (11,181 passed, pass rate 31.32%)
 - ✅ **December 2, 2025:** (10,311 passed, pass rate 28.88%)
 - ✅ **November 22, 2025:** Property descriptor & engine improvements (+1,205 tests)
