@@ -6814,45 +6814,102 @@ void Context::register_typed_array_constructors() {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_uint8_array(0).release());
             }
-            
+
+            // Constructor(length)
             if (args[0].is_number()) {
                 size_t length = static_cast<size_t>(args[0].as_number());
                 return Value(TypedArrayFactory::create_uint8_array(length).release());
             }
-            
+
+            // Constructor(buffer [, byteOffset [, length]])
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
+
+                // From ArrayBuffer
                 if (obj->is_array_buffer()) {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     return Value(TypedArrayFactory::create_uint8_array_from_buffer(buffer).release());
                 }
+
+                // From Array or Array-like object
+                if (obj->is_array() || obj->has_property("length")) {
+                    uint32_t length = obj->is_array() ? obj->get_length() :
+                                     (obj->has_property("length") ? static_cast<uint32_t>(obj->get_property("length").to_number()) : 0);
+
+                    auto typed_array = TypedArrayFactory::create_uint8_array(length);
+
+                    // Copy elements
+                    for (uint32_t i = 0; i < length; i++) {
+                        Value element = obj->get_element(i);
+                        typed_array->set_element(i, element);
+                    }
+
+                    return Value(typed_array.release());
+                }
+
+                // From TypedArray (copy constructor)
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* source = static_cast<TypedArrayBase*>(obj);
+                    size_t length = source->length();
+                    auto typed_array = TypedArrayFactory::create_uint8_array(length);
+
+                    // Copy elements
+                    for (size_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, source->get_element(i));
+                    }
+
+                    return Value(typed_array.release());
+                }
             }
-            
+
             ctx.throw_type_error("Uint8Array constructor argument not supported");
             return Value();
         });
     register_built_in_object("Uint8Array", uint8array_constructor.release());
     
-    // Float32Array constructor  
+    // Float32Array constructor
     auto float32array_constructor = ObjectFactory::create_native_function("Float32Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_float32_array(0).release());
             }
-            
+
             if (args[0].is_number()) {
                 size_t length = static_cast<size_t>(args[0].as_number());
                 return Value(TypedArrayFactory::create_float32_array(length).release());
             }
-            
+
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
+
                 if (obj->is_array_buffer()) {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     return Value(TypedArrayFactory::create_float32_array_from_buffer(buffer).release());
                 }
+
+                // From Array or Array-like
+                if (obj->is_array() || obj->has_property("length")) {
+                    uint32_t length = obj->is_array() ? obj->get_length() :
+                                     static_cast<uint32_t>(obj->get_property("length").to_number());
+                    auto typed_array = TypedArrayFactory::create_float32_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
+
+                // From TypedArray
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* source = static_cast<TypedArrayBase*>(obj);
+                    size_t length = source->length();
+                    auto typed_array = TypedArrayFactory::create_float32_array(length);
+                    for (size_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, source->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
             }
-            
+
             ctx.throw_type_error("Float32Array constructor argument not supported");
             return Value();
         });
@@ -6874,6 +6931,16 @@ void Context::register_typed_array_constructors() {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Int8Array>(shared_buffer).release());
+                }
+                // From Array/Array-like/TypedArray
+                if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
+                    uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
+                                     (obj->is_array() ? obj->get_length() : static_cast<uint32_t>(obj->get_property("length").to_number()));
+                    auto typed_array = TypedArrayFactory::create_int8_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
                 }
             }
             ctx.throw_type_error("Int8Array constructor argument not supported");
@@ -6940,6 +7007,15 @@ void Context::register_typed_array_constructors() {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Uint32Array>(shared_buffer).release());
+                }
+                if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
+                    uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
+                                     (obj->is_array() ? obj->get_length() : static_cast<uint32_t>(obj->get_property("length").to_number()));
+                    auto typed_array = TypedArrayFactory::create_uint32_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
                 }
             }
             ctx.throw_type_error("Uint32Array constructor argument not supported");
