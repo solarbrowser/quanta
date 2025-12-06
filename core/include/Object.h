@@ -164,11 +164,17 @@ public:
     Value shift();
     
     // Modern array methods
-    std::unique_ptr<Object> map(Function* callback, Context& ctx);
-    std::unique_ptr<Object> filter(Function* callback, Context& ctx);
-    void forEach(Function* callback, Context& ctx);
+    std::unique_ptr<Object> map(Function* callback, Context& ctx, const Value& thisArg = Value());
+    std::unique_ptr<Object> filter(Function* callback, Context& ctx, const Value& thisArg = Value());
+    void forEach(Function* callback, Context& ctx, const Value& thisArg = Value());
     Value reduce(Function* callback, const Value& initial_value, Context& ctx);
-    
+    Value reduceRight(Function* callback, const Value& initial_value, Context& ctx);
+    std::unique_ptr<Object> flat(uint32_t depth = 1);
+    std::unique_ptr<Object> flatMap(Function* callback, Context& ctx, const Value& thisArg = Value());
+    Object* copyWithin(int32_t target, int32_t start, int32_t end = -1);
+    Value findLast(Function* callback, Context& ctx, const Value& thisArg = Value());
+    Value findLastIndex(Function* callback, Context& ctx, const Value& thisArg = Value());
+
     // ES2026 Array methods
     Value groupBy(Function* callback, Context& ctx);
     

@@ -325,10 +325,14 @@ void Map::setup_map_prototype(Context& ctx) {
         auto map_iterator_fn = ObjectFactory::create_native_function("@@iterator", map_iterator_method);
         map_prototype->set_property(iterator_symbol->to_string(), Value(map_iterator_fn.release()));
     }
-    
+
+    // Add Symbol.toStringTag to Map.prototype
+    PropertyDescriptor map_tag_desc(Value(std::string("Map")), PropertyAttributes::Configurable);
+    map_prototype->set_property_descriptor("Symbol.toStringTag", map_tag_desc);
+
     // Store reference for constructor use
     Map::prototype_object = map_prototype.get();
-    
+
     map_constructor_fn->set_property("prototype", Value(map_prototype.release()));
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
@@ -571,10 +575,14 @@ void Set::setup_set_prototype(Context& ctx) {
         auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
         set_prototype->set_property(iterator_symbol->to_string(), Value(set_iterator_fn.release()));
     }
-    
+
+    // Add Symbol.toStringTag to Set.prototype
+    PropertyDescriptor set_tag_desc(Value(std::string("Set")), PropertyAttributes::Configurable);
+    set_prototype->set_property_descriptor("Symbol.toStringTag", set_tag_desc);
+
     // Store reference for constructor use
     Set::prototype_object = set_prototype.get();
-    
+
     set_constructor_fn->set_property("prototype", Value(set_prototype.release()));
     ctx.create_binding("Set", Value(set_constructor_fn.release()));
 }

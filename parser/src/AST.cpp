@@ -4752,7 +4752,14 @@ Value MemberExpression::evaluate(Context& ctx) {
         Object* obj = object_value.as_object();
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        std::string prop_name = prop_value.to_string();
+
+        // For Symbol values, use the description as the property key
+        std::string prop_name;
+        if (prop_value.is_symbol()) {
+            prop_name = prop_value.as_symbol()->get_description();
+        } else {
+            prop_name = prop_value.to_string();
+        }
 
         // Check if this property has a getter (accessor descriptor)
         PropertyDescriptor desc = obj->get_property_descriptor(prop_name);

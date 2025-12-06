@@ -771,7 +771,14 @@ void Context::initialize_built_ins() {
             }
 
             Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
-            std::string prop_name = args[1].to_string();
+
+            // For Symbol values, use the description as the property key
+            std::string prop_name;
+            if (args[1].is_symbol()) {
+                prop_name = args[1].as_symbol()->get_description();
+            } else {
+                prop_name = args[1].to_string();
+            }
 
             // Get the actual property descriptor
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
@@ -1129,13 +1136,20 @@ void Context::initialize_built_ins() {
     auto hasOwn_fn = ObjectFactory::create_native_function("hasOwn",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) return Value(false);
+
+            // ToObject conversion - throw for null/undefined
+            if (args[0].is_null() || args[0].is_undefined()) {
+                ctx.throw_type_error("Cannot convert undefined or null to object");
+                return Value();
+            }
+
             if (!args[0].is_object()) return Value(false);
 
             Object* obj = args[0].as_object();
             std::string prop_name = args[1].to_string();
 
             return Value(obj->has_own_property(prop_name));
-        });
+        }, 2);
     object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()));
 
     // Create Object.prototype
@@ -2367,6 +2381,10 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     array_proto_ptr->set_property_descriptor("constructor", array_constructor_desc);
 
+    // Add Symbol.toStringTag to Array.prototype
+    PropertyDescriptor array_tag_desc(Value(std::string("Array")), PropertyAttributes::Configurable);
+    array_proto_ptr->set_property_descriptor("Symbol.toStringTag", array_tag_desc);
+
     array_constructor->set_property("prototype", Value(array_prototype.release()), PropertyAttributes::None);
 
     // Set the array prototype in ObjectFactory so new arrays inherit from it
@@ -2838,25 +2856,98 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
-            
+
             if (args.size() < 2) return Value(str);
-            
+
             std::string search = args[0].to_string();
-            std::string replace = args[1].to_string();
-            
+            bool is_function = args[1].is_function();
+
             if (search.empty()) return Value(str);
-            
+
+            // Find all matches first
+            std::vector<size_t> positions;
             size_t pos = 0;
             while ((pos = str.find(search, pos)) != std::string::npos) {
-                str.replace(pos, search.length(), replace);
-                pos += replace.length();
+                positions.push_back(pos);
+                pos += search.length();
             }
-            
+
+            // Replace from back to front to maintain positions
+            for (auto it = positions.rbegin(); it != positions.rend(); ++it) {
+                std::string replacement;
+                if (is_function) {
+                    Function* replacer = args[1].as_function();
+                    std::vector<Value> fn_args = {
+                        Value(search),                          // matched substring
+                        Value(static_cast<double>(*it)),        // offset
+                        Value(this_value.to_string())           // original string
+                    };
+                    Value result = replacer->call(ctx, fn_args);
+                    if (ctx.has_exception()) return Value();
+                    replacement = result.to_string();
+                } else {
+                    replacement = args[1].to_string();
+                }
+                str.replace(*it, search.length(), replacement);
+            }
+
             return Value(str);
-        });
+        }, 2);
     PropertyDescriptor replaceAll_desc(Value(replaceAll_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     string_prototype->set_property_descriptor("replaceAll", replaceAll_desc);
+
+    // String.prototype.trim
+    auto trim_fn = ObjectFactory::create_native_function("trim",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            // Trim whitespace from both ends
+            size_t start = str.find_first_not_of(" \t\n\r\f\v");
+            if (start == std::string::npos) return Value("");
+
+            size_t end = str.find_last_not_of(" \t\n\r\f\v");
+            return Value(str.substr(start, end - start + 1));
+        }, 0);
+    PropertyDescriptor trim_desc(Value(trim_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("trim", trim_desc);
+
+    // String.prototype.trimStart (ES2019)
+    auto trimStart_fn = ObjectFactory::create_native_function("trimStart",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            size_t start = str.find_first_not_of(" \t\n\r\f\v");
+            if (start == std::string::npos) return Value("");
+
+            return Value(str.substr(start));
+        }, 0);
+    PropertyDescriptor trimStart_desc(Value(trimStart_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("trimStart", trimStart_desc);
+    string_prototype->set_property_descriptor("trimLeft", trimStart_desc);  // Alias
+
+    // String.prototype.trimEnd (ES2019)
+    auto trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            size_t end = str.find_last_not_of(" \t\n\r\f\v");
+            if (end == std::string::npos) return Value("");
+
+            return Value(str.substr(0, end + 1));
+        }, 0);
+    PropertyDescriptor trimEnd_desc(Value(trimEnd_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("trimEnd", trimEnd_desc);
+    string_prototype->set_property_descriptor("trimRight", trimEnd_desc);  // Alias
 
     // Add basic String.prototype methods
 
@@ -4076,13 +4167,17 @@ void Context::initialize_built_ins() {
         });
     json_object->set_property("parse", Value(json_parse.release()));
     
-    // JSON.stringify  
+    // JSON.stringify
     auto json_stringify = ObjectFactory::create_native_function("stringify",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return JSON::js_stringify(ctx, args);
         });
     json_object->set_property("stringify", Value(json_stringify.release()));
-    
+
+    // Add Symbol.toStringTag property
+    PropertyDescriptor json_tag_desc(Value(std::string("JSON")), PropertyAttributes::Configurable);
+    json_object->set_property_descriptor("Symbol.toStringTag", json_tag_desc);
+
     register_built_in_object("JSON", json_object.release());
     
     // Math object setup with native functions
@@ -4469,6 +4564,11 @@ void Context::initialize_built_ins() {
     math_object->set_property("LOG2E", Value(1.4426950408889634));
     math_object->set_property("SQRT1_2", Value(0.7071067811865476));
     math_object->set_property("SQRT2", Value(1.4142135623730951));
+
+    // Add Symbol.toStringTag property
+    // Property attributes: { writable: false, enumerable: false, configurable: true }
+    PropertyDescriptor math_tag_desc(Value(std::string("Math")), PropertyAttributes::Configurable);
+    math_object->set_property_descriptor("Symbol.toStringTag", math_tag_desc);
 
     register_built_in_object("Math", math_object.release());
 
@@ -5562,7 +5662,11 @@ void Context::initialize_built_ins() {
             return Value(new_promise);
         });
     promise_prototype->set_property("finally", Value(promise_finally.release()));
-    
+
+    // Add Symbol.toStringTag to Promise.prototype
+    PropertyDescriptor promise_tag_desc(Value(std::string("Promise")), PropertyAttributes::Configurable);
+    promise_prototype->set_property_descriptor("Symbol.toStringTag", promise_tag_desc);
+
     // Set Promise.prototype on the constructor
     promise_constructor->set_property("prototype", Value(promise_prototype.release()));
     
@@ -7179,6 +7283,10 @@ void Context::register_typed_array_constructors() {
 
     auto set_float64_proto = ObjectFactory::create_native_function("setFloat64", DataView::js_set_float64);
     dataview_prototype->set_property("setFloat64", Value(set_float64_proto.release()));
+
+    // Add Symbol.toStringTag to DataView.prototype
+    PropertyDescriptor dataview_tag_desc(Value(std::string("DataView")), PropertyAttributes::Configurable);
+    dataview_prototype->set_property_descriptor("Symbol.toStringTag", dataview_tag_desc);
 
     // Set DataView.prototype
     dataview_constructor->set_property("prototype", Value(dataview_prototype.release()));

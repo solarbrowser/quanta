@@ -291,11 +291,12 @@ Value Object::get_property(const std::string& key) const {
     
     // For Array objects, handle array methods
     if (this->get_type() == ObjectType::Array) {
-        if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" || 
-            key == "indexOf" || key == "slice" || key == "splice" || key == "push" || 
+        if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" ||
+            key == "indexOf" || key == "slice" || key == "splice" || key == "push" ||
             key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "toString" || key == "groupBy" ||
-            key == "reverse" || key == "sort" || key == "find" || key == "includes" || 
-            key == "some" || key == "every" || key == "findIndex") {
+            key == "reverse" || key == "sort" || key == "find" || key == "includes" ||
+            key == "some" || key == "every" || key == "findIndex" || key == "flat" || key == "flatMap" || key == "reduceRight" || key == "copyWithin" ||
+            key == "findLast" || key == "findLastIndex") {
             // Return a native function that will call the appropriate array method
             return Value(ObjectFactory::create_array_method(key).release());
         }
@@ -762,15 +763,15 @@ Value Object::shift() {
 }
 
 // Modern Array Methods Implementation
-std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
+std::unique_ptr<Object> Object::map(Function* callback, Context& ctx, const Value& thisArg) {
     if (header_.type != ObjectType::Array) {
         // Return empty array instead of nullptr to prevent JavaScript errors
         return ObjectFactory::create_array(0);
     }
-    
+
     uint32_t length = get_length();
     auto result = ObjectFactory::create_array(length);
-    
+
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
@@ -784,8 +785,8 @@ std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
                         Value(static_cast<double>(i)),
                         Value(this)
                     };
-                    
-                    Value mapped_value = callback->call(ctx, args);
+
+                    Value mapped_value = callback->call(ctx, args, thisArg);
                     if (!ctx.has_exception()) {
                         result->set_element(i, mapped_value);
                     } else {
@@ -802,54 +803,54 @@ std::unique_ptr<Object> Object::map(Function* callback, Context& ctx) {
             }
         }
     }
-    
+
     return result;
 }
 
-std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx) {
+std::unique_ptr<Object> Object::filter(Function* callback, Context& ctx, const Value& thisArg) {
     if (header_.type != ObjectType::Array) {
         // Return empty array instead of nullptr to prevent JavaScript errors
         return ObjectFactory::create_array(0);
     }
-    
+
     uint32_t length = get_length();
     auto result = ObjectFactory::create_array(0);
     uint32_t result_index = 0;
-    
+
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
             // Call callback(element, index, array)
             std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-            Value should_include = callback->call(ctx, args);
+            Value should_include = callback->call(ctx, args, thisArg);
             if (ctx.has_exception()) return nullptr;
-            
+
             if (should_include.to_boolean()) {
                 result->set_element(result_index++, element);
             }
         }
     }
-    
+
     result->set_length(result_index);
     return result;
 }
 
-void Object::forEach(Function* callback, Context& ctx) {
+void Object::forEach(Function* callback, Context& ctx, const Value& thisArg) {
     if (header_.type != ObjectType::Array) {
         return;
     }
-    
+
     uint32_t length = get_length();
-    
+
     for (uint32_t i = 0; i < length; i++) {
         Value element = get_element(i);
         if (!element.is_undefined()) {
             // Call callback(element, index, array)
             std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
-            
+
             // CLOSURE FIX: Let the callback execute with its proper closure environment
             // Create a minimal context for exception handling but let callback use its closure
-            Value result = callback->call(ctx, args, Value());
+            Value result = callback->call(ctx, args, thisArg);
             if (ctx.has_exception()) return;
         }
     }
@@ -880,6 +881,40 @@ Value Object::reduce(Function* callback, const Value& initial_value, Context& ct
         }
     }
     
+    return accumulator;
+}
+
+Value Object::reduceRight(Function* callback, const Value& initial_value, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return Value();
+    }
+
+    uint32_t length = get_length();
+    if (length == 0 && initial_value.is_undefined()) {
+        ctx.throw_type_error("Reduce of empty array with no initial value");
+        return Value();
+    }
+
+    Value accumulator = initial_value;
+    int32_t start_index = static_cast<int32_t>(length) - 1;
+
+    // If no initial value provided, use last element
+    if (initial_value.is_undefined() && length > 0) {
+        accumulator = get_element(length - 1);
+        start_index = static_cast<int32_t>(length) - 2;
+    }
+
+    // Iterate from right to left
+    for (int32_t i = start_index; i >= 0; i--) {
+        Value element = get_element(static_cast<uint32_t>(i));
+        if (!element.is_undefined()) {
+            // Call callback(accumulator, element, index, array)
+            std::vector<Value> args = {accumulator, element, Value(static_cast<double>(i)), Value(this)};
+            accumulator = callback->call(ctx, args);
+            if (ctx.has_exception()) return Value();
+        }
+    }
+
     return accumulator;
 }
 
@@ -927,6 +962,139 @@ Value Object::groupBy(Function* callback, Context& ctx) {
     
     std::cout << "Array.groupBy: Grouped " << length << " elements into object with proper formatting" << std::endl;
     return Value(result.release());
+}
+
+std::unique_ptr<Object> Object::flat(uint32_t depth) {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    auto result = ObjectFactory::create_array(0);
+    uint32_t length = get_length();
+
+    // Helper lambda for flattening recursively
+    std::function<void(Object*, uint32_t)> flatten_into;
+    flatten_into = [&](Object* source, uint32_t current_depth) {
+        uint32_t source_length = source->get_length();
+        for (uint32_t i = 0; i < source_length; i++) {
+            Value element = source->get_element(i);
+
+            // If element is an array and we haven't reached max depth, flatten it
+            if (element.is_object() && element.as_object()->is_array() && current_depth > 0) {
+                flatten_into(element.as_object(), current_depth - 1);
+            } else {
+                // Otherwise just add the element
+                result->push(element);
+            }
+        }
+    };
+
+    flatten_into(this, depth);
+    return result;
+}
+
+std::unique_ptr<Object> Object::flatMap(Function* callback, Context& ctx, const Value& thisArg) {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    auto result = ObjectFactory::create_array(0);
+    uint32_t length = get_length();
+
+    for (uint32_t i = 0; i < length; i++) {
+        Value element = get_element(i);
+
+        // Call callback(element, index, array)
+        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+        Value mapped = callback->call(ctx, args, thisArg);
+        if (ctx.has_exception()) return result;
+
+        // If result is an array, flatten it (depth 1)
+        if (mapped.is_object() && mapped.as_object()->is_array()) {
+            Object* mapped_array = mapped.as_object();
+            uint32_t mapped_length = mapped_array->get_length();
+            for (uint32_t j = 0; j < mapped_length; j++) {
+                result->push(mapped_array->get_element(j));
+            }
+        } else {
+            // Otherwise just add the value
+            result->push(mapped);
+        }
+    }
+
+    return result;
+}
+
+Object* Object::copyWithin(int32_t target, int32_t start, int32_t end) {
+    if (header_.type != ObjectType::Array) {
+        return this;
+    }
+
+    uint32_t length = get_length();
+    int32_t len = static_cast<int32_t>(length);
+
+    // Normalize negative indices
+    int32_t to = target < 0 ? std::max(len + target, 0) : std::min(target, len);
+    int32_t from = start < 0 ? std::max(len + start, 0) : std::min(start, len);
+    int32_t final = end == -1 ? len : (end < 0 ? std::max(len + end, 0) : std::min(end, len));
+
+    // Calculate count
+    int32_t count = std::min(final - from, len - to);
+
+    if (count <= 0) return this;
+
+    // Copy elements - handle overlapping regions correctly
+    if (from < to && to < from + count) {
+        // Overlapping, copy backwards
+        for (int32_t i = count - 1; i >= 0; i--) {
+            set_element(static_cast<uint32_t>(to + i), get_element(static_cast<uint32_t>(from + i)));
+        }
+    } else {
+        // Non-overlapping or safe, copy forwards
+        for (int32_t i = 0; i < count; i++) {
+            set_element(static_cast<uint32_t>(to + i), get_element(static_cast<uint32_t>(from + i)));
+        }
+    }
+
+    return this;
+}
+
+Value Object::findLast(Function* callback, Context& ctx, const Value& thisArg) {
+    if (header_.type != ObjectType::Array) {
+        return Value();
+    }
+
+    uint32_t length = get_length();
+    // Iterate from end to beginning
+    for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
+        Value element = get_element(static_cast<uint32_t>(i));
+        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+        Value result = callback->call(ctx, args, thisArg);
+        if (ctx.has_exception()) return Value();
+        if (result.to_boolean()) {
+            return element;
+        }
+    }
+    return Value(); // undefined
+}
+
+Value Object::findLastIndex(Function* callback, Context& ctx, const Value& thisArg) {
+    if (header_.type != ObjectType::Array) {
+        return Value(-1.0);
+    }
+
+    uint32_t length = get_length();
+    // Iterate from end to beginning
+    for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
+        Value element = get_element(static_cast<uint32_t>(i));
+        std::vector<Value> args = {element, Value(static_cast<double>(i)), Value(this)};
+        Value result = callback->call(ctx, args, thisArg);
+        if (ctx.has_exception()) return Value(-1.0);
+        if (result.to_boolean()) {
+            return Value(static_cast<double>(i));
+        }
+    }
+    return Value(-1.0);
 }
 
 bool Object::is_extensible() const {
@@ -1511,7 +1679,8 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         
         if (method_name == "map") {
             if (args.size() > 0 && args[0].is_function()) {
-                auto result = array->map(args[0].as_function(), ctx);
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                auto result = array->map(args[0].as_function(), ctx, thisArg);
                 // Always return a valid array, never null/undefined
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
@@ -1521,7 +1690,8 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             }
         } else if (method_name == "filter") {
             if (args.size() > 0 && args[0].is_function()) {
-                auto result = array->filter(args[0].as_function(), ctx);
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                auto result = array->filter(args[0].as_function(), ctx, thisArg);
                 // Always return a valid array, never null/undefined
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
@@ -1534,11 +1704,35 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 Value initial = args.size() > 1 ? args[1] : Value();
                 return array->reduce(args[0].as_function(), initial, ctx);
             }
+        } else if (method_name == "reduceRight") {
+            if (args.size() > 0 && args[0].is_function()) {
+                Value initial = args.size() > 1 ? args[1] : Value();
+                return array->reduceRight(args[0].as_function(), initial, ctx);
+            }
         } else if (method_name == "forEach") {
             if (args.size() > 0 && args[0].is_function()) {
-                array->forEach(args[0].as_function(), ctx);
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                array->forEach(args[0].as_function(), ctx, thisArg);
                 return Value(); // undefined
             }
+        } else if (method_name == "flat") {
+            uint32_t depth = 1; // default depth
+            if (args.size() > 0 && args[0].is_number()) {
+                depth = static_cast<uint32_t>(args[0].to_number());
+            }
+            auto result = array->flat(depth);
+            return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
+        } else if (method_name == "flatMap") {
+            if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                auto result = array->flatMap(args[0].as_function(), ctx, thisArg);
+                return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
+            }
+        } else if (method_name == "copyWithin") {
+            int32_t target = args.size() > 0 ? static_cast<int32_t>(args[0].to_number()) : 0;
+            int32_t start = args.size() > 1 ? static_cast<int32_t>(args[1].to_number()) : 0;
+            int32_t end = args.size() > 2 ? static_cast<int32_t>(args[2].to_number()) : -1;
+            return Value(array->copyWithin(target, start, end));
         } else if (method_name == "indexOf") {
             if (args.size() > 0) {
                 Value search_element = args[0];
@@ -1730,17 +1924,30 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             return Value(deleted.release());
         } else if (method_name == "find") {
             if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value element = array->get_element(i);
                     std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
                     if (result.to_boolean()) {
                         return element;
                     }
                 }
                 return Value(); // undefined
             }
+        } else if (method_name == "findLast") {
+            if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                return array->findLast(args[0].as_function(), ctx, thisArg);
+            }
+            return Value();
+        } else if (method_name == "findLastIndex") {
+            if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
+                return array->findLastIndex(args[0].as_function(), ctx, thisArg);
+            }
+            return Value(-1.0);
         } else if (method_name == "includes") {
             if (args.size() > 0) {
                 Value search_element = args[0];
@@ -1770,11 +1977,12 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             }
         } else if (method_name == "some") {
             if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value element = array->get_element(i);
                     std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
                     if (result.to_boolean()) {
                         return Value(true);
                     }
@@ -1783,11 +1991,12 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             }
         } else if (method_name == "every") {
             if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value element = array->get_element(i);
                     std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
                     if (!result.to_boolean()) {
                         return Value(false);
                     }
@@ -1796,11 +2005,12 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             }
         } else if (method_name == "findIndex") {
             if (args.size() > 0 && args[0].is_function()) {
+                Value thisArg = args.size() > 1 ? args[1] : Value();
                 uint32_t length = array->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value element = array->get_element(i);
                     std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(array)};
-                    Value result = args[0].as_function()->call(ctx, callback_args);
+                    Value result = args[0].as_function()->call(ctx, callback_args, thisArg);
                     if (result.to_boolean()) {
                         return Value(static_cast<double>(i));
                     }
@@ -1882,9 +2092,14 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
     // Determine correct arity for the method according to ECMAScript spec
     uint32_t arity = 1;  // Most array methods have arity 1 (especially push, pop, shift, etc.)
     if (method_name == "map" || method_name == "filter" || method_name == "forEach" ||
-        method_name == "reduce" || method_name == "find" || method_name == "findIndex" ||
-        method_name == "some" || method_name == "every") {
+        method_name == "reduce" || method_name == "reduceRight" || method_name == "find" || method_name == "findIndex" ||
+        method_name == "some" || method_name == "every" || method_name == "flatMap" ||
+        method_name == "findLast" || method_name == "findLastIndex") {
         arity = 1;  // These methods require a callback function
+    } else if (method_name == "flat") {
+        arity = 0;  // flat takes optional depth parameter, default arity is 0
+    } else if (method_name == "copyWithin") {
+        arity = 2;  // copyWithin(target, start, end) - target and start required
     } else if (method_name == "slice" || method_name == "splice" || method_name == "indexOf" ||
                method_name == "lastIndexOf") {
         arity = 2;  // These methods typically take 2 parameters
