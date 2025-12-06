@@ -232,19 +232,23 @@ void Context::throw_range_error(const std::string& message) {
 
 void Context::register_built_in_object(const std::string& name, Object* object) {
     built_in_objects_[name] = object;
-    
-    // Also bind to global object if available
+
+    // Also bind to global object if available with correct property descriptors
+    // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
     if (global_object_) {
-        global_object_->set_property(name, Value(object));
+        PropertyDescriptor desc(Value(object), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor(name, desc);
     }
 }
 
 void Context::register_built_in_function(const std::string& name, Function* function) {
     built_in_functions_[name] = function;
-    
-    // Also bind to global object if available
+
+    // Also bind to global object if available with correct property descriptors
+    // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
     if (global_object_) {
-        global_object_->set_property(name, Value(function));
+        PropertyDescriptor desc(Value(function), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor(name, desc);
     }
 }
 
@@ -299,12 +303,13 @@ void Context::initialize_global_context() {
     // Create global object
     global_object_ = ObjectFactory::create_object().release();
     this_binding_ = global_object_;
-    
-    // Create global environment
-    auto global_env = std::make_unique<Environment>(Environment::Type::Global);
+
+    // Create global environment with global_object as binding_object
+    // This ensures Environment::create_binding uses property descriptors on global object
+    auto global_env = std::make_unique<Environment>(global_object_);  // Uses Object environment constructor
     lexical_environment_ = global_env.release();
     variable_environment_ = lexical_environment_;
-    
+
     // Initialize built-ins
     initialize_built_ins();
     setup_global_bindings();
@@ -5979,12 +5984,14 @@ void Context::setup_global_bindings() {
         lexical_environment_->create_binding("global", Value(global_object_), false);  // Node.js style
         lexical_environment_->create_binding("window", Value(global_object_), false);  // Browser style
         lexical_environment_->create_binding("this", Value(global_object_), false);    // Global this binding
-        
-        // Also ensure global object has self-reference
-        global_object_->set_property("globalThis", Value(global_object_));
-        global_object_->set_property("global", Value(global_object_));
-        global_object_->set_property("window", Value(global_object_));
-        global_object_->set_property("this", Value(global_object_));
+
+        // Also ensure global object has self-reference with correct property descriptors
+        // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
+        PropertyDescriptor global_ref_desc(Value(global_object_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor("globalThis", global_ref_desc);
+        global_object_->set_property_descriptor("global", global_ref_desc);
+        global_object_->set_property_descriptor("window", global_ref_desc);
+        global_object_->set_property_descriptor("this", global_ref_desc);
     }
     lexical_environment_->create_binding("true", Value(true), false);
     lexical_environment_->create_binding("false", Value(false), false);
@@ -6648,9 +6655,12 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
     if (has_own_binding(name)) {
         return false; // Binding already exists
     }
-    
+
     if (type_ == Type::Object && binding_object_) {
-        return binding_object_->set_property(name, value);
+        // For object environment (global), use property descriptors with enumerable: false
+        // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
+        PropertyDescriptor desc(value, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        return binding_object_->set_property_descriptor(name, desc);
     } else {
         bindings_[name] = value;
         mutable_flags_[name] = mutable_binding;
