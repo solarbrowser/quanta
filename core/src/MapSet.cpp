@@ -340,6 +340,52 @@ void Map::setup_map_prototype(Context& ctx) {
     // Store reference for constructor use
     Map::prototype_object = map_prototype.get();
 
+    // Map.groupBy (ES2024) - static method
+    auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) {
+                throw std::runtime_error("Map.groupBy requires 2 arguments");
+            }
+
+            Object* iterable = args[0].as_object();
+            Function* callback = args[1].as_function();
+
+            if (!iterable || !callback) {
+                throw std::runtime_error("Invalid arguments to Map.groupBy");
+            }
+
+            // Create a new Map to hold grouped results
+            auto result_map = std::make_unique<Map>();
+            uint32_t length = iterable->get_length();
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), args[0] };
+                Value key = callback->call(ctx, callback_args);
+
+                // Get or create array for this key
+                Value group = result_map->get(key);
+                Object* group_array;
+
+                if (group.is_undefined()) {
+                    // Create new array for this key
+                    auto new_array = ObjectFactory::create_array();
+                    group_array = new_array.get();
+                    result_map->set(key, Value(new_array.release()));
+                } else {
+                    group_array = group.as_object();
+                }
+
+                // Add element to group
+                uint32_t group_length = group_array->get_length();
+                group_array->set_element(group_length, element);
+                group_array->set_length(group_length + 1);
+            }
+
+            return Value(result_map.release());
+        }, 2);
+    map_constructor_fn->set_property("groupBy", Value(map_groupBy_fn.release()));
+
     map_constructor_fn->set_property("prototype", Value(map_prototype.release()));
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
