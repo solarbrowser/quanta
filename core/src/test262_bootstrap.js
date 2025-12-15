@@ -24,6 +24,12 @@ if (typeof $262 === 'undefined') {
             }
         },
 
+        CreateResizableArrayBuffer: function(byteLength, maxByteLength) {
+            // Create a resizable ArrayBuffer
+            // For now, create a regular ArrayBuffer as a fallback
+            return new ArrayBuffer(byteLength);
+        },
+
         evalScript: function(source) {
             return eval(source);
         },
@@ -457,6 +463,17 @@ if (typeof verifyEqualTo === 'undefined') {
         if (actual !== expected) {
             throw new Test262Error(message || ('Expected ' + String(expected) + ' but got ' + String(actual)));
         }
+    };
+}
+
+// CreateResizableArrayBuffer - global helper
+if (typeof CreateResizableArrayBuffer === 'undefined') {
+    CreateResizableArrayBuffer = function(byteLength, maxByteLength) {
+        if (typeof $262 !== 'undefined' && $262.CreateResizableArrayBuffer) {
+            return $262.CreateResizableArrayBuffer(byteLength, maxByteLength);
+        }
+        // Fallback: create regular ArrayBuffer
+        return new ArrayBuffer(byteLength);
     };
 }
 

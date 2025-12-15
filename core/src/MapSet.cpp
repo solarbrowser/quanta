@@ -312,12 +312,19 @@ void Map::setup_map_prototype(Context& ctx) {
     auto clear_fn = ObjectFactory::create_native_function("clear", map_clear);
     auto size_fn = ObjectFactory::create_native_function("size", map_size_getter);
 
-    map_prototype->set_property("set", Value(set_fn.release()));
-    map_prototype->set_property("get", Value(get_fn.release()));
-    map_prototype->set_property("has", Value(has_fn.release()));
-    map_prototype->set_property("delete", Value(delete_fn.release()));
-    map_prototype->set_property("clear", Value(clear_fn.release()));
-    map_prototype->set_property("size", Value(size_fn.release()));
+    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
+    map_prototype->set_property("set", Value(set_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    map_prototype->set_property("get", Value(get_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    map_prototype->set_property("has", Value(has_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    map_prototype->set_property("delete", Value(delete_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    map_prototype->set_property("clear", Value(clear_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    map_prototype->set_property("size", Value(size_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Symbol.iterator method for Map iteration
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
@@ -563,11 +570,17 @@ void Set::setup_set_prototype(Context& ctx) {
     auto clear_fn = ObjectFactory::create_native_function("clear", set_clear);
     auto size_fn = ObjectFactory::create_native_function("size", set_size_getter);
     
-    set_prototype->set_property("add", Value(add_fn.release()));
-    set_prototype->set_property("has", Value(has_fn.release()));
-    set_prototype->set_property("delete", Value(delete_fn.release()));
-    set_prototype->set_property("clear", Value(clear_fn.release()));
-    set_prototype->set_property("size", Value(size_fn.release()));
+    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
+    set_prototype->set_property("add", Value(add_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    set_prototype->set_property("has", Value(has_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    set_prototype->set_property("delete", Value(delete_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    set_prototype->set_property("clear", Value(clear_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    set_prototype->set_property("size", Value(size_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Symbol.iterator method for Set iteration
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
@@ -632,10 +645,15 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     auto has_fn = ObjectFactory::create_native_function("has", weakmap_has);
     auto delete_fn = ObjectFactory::create_native_function("delete", weakmap_delete);
     
-    weakmap_prototype->set_property("set", Value(set_fn.release()));
-    weakmap_prototype->set_property("get", Value(get_fn.release()));
-    weakmap_prototype->set_property("has", Value(has_fn.release()));
-    weakmap_prototype->set_property("delete", Value(delete_fn.release()));
+    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
+    weakmap_prototype->set_property("set", Value(set_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    weakmap_prototype->set_property("get", Value(get_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    weakmap_prototype->set_property("has", Value(has_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    weakmap_prototype->set_property("delete", Value(delete_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Store reference for constructor use
     WeakMap::prototype_object = weakmap_prototype.get();
@@ -680,9 +698,13 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     auto has_fn = ObjectFactory::create_native_function("has", weakset_has);
     auto delete_fn = ObjectFactory::create_native_function("delete", weakset_delete);
     
-    weakset_prototype->set_property("add", Value(add_fn.release()));
-    weakset_prototype->set_property("has", Value(has_fn.release()));
-    weakset_prototype->set_property("delete", Value(delete_fn.release()));
+    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
+    weakset_prototype->set_property("add", Value(add_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    weakset_prototype->set_property("has", Value(has_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    weakset_prototype->set_property("delete", Value(delete_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Store reference for constructor use
     WeakSet::prototype_object = weakset_prototype.get();

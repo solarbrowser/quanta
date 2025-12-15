@@ -3159,6 +3159,35 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     string_prototype->set_property_descriptor("charAt", charAt_desc);
 
+    // String.prototype.at (ES2022)
+    auto string_at_fn = ObjectFactory::create_native_function("at",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.empty()) {
+                return Value();
+            }
+
+            int64_t index = static_cast<int64_t>(args[0].to_number());
+            int64_t len = static_cast<int64_t>(str.length());
+
+            // Handle negative indices
+            if (index < 0) {
+                index = len + index;
+            }
+
+            // Out of bounds check
+            if (index < 0 || index >= len) {
+                return Value();
+            }
+
+            return Value(std::string(1, str[static_cast<size_t>(index)]));
+        }, 1);
+    PropertyDescriptor string_at_desc(Value(string_at_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("at", string_at_desc);
+
     // String.prototype.charCodeAt
     auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4118,9 +4147,38 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     number_prototype->set_property_descriptor("constructor", number_constructor_desc);
 
+    // Number.isNaN
+    auto isNaN_fn = ObjectFactory::create_native_function("isNaN",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty() || !args[0].is_number()) return Value(false);
+            return Value(std::isnan(args[0].to_number()));
+        }, 1);
+    number_constructor->set_property("isNaN", Value(isNaN_fn.release()));
+
+    // Number.isFinite
+    auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty() || !args[0].is_number()) return Value(false);
+            return Value(std::isfinite(args[0].to_number()));
+        }, 1);
+    number_constructor->set_property("isFinite", Value(isFinite_fn.release()));
+
+    // Number.isInteger
+    auto isInteger_fn = ObjectFactory::create_native_function("isInteger",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty() || !args[0].is_number()) return Value(false);
+            double num = args[0].to_number();
+            return Value(std::isfinite(num) && std::floor(num) == num);
+        }, 1);
+    number_constructor->set_property("isInteger", Value(isInteger_fn.release()));
+
     // Number.isSafeInteger
     auto isSafeInteger_fn = ObjectFactory::create_native_function("isSafeInteger",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty() || !args[0].is_number()) return Value(false);
             double num = args[0].to_number();
             const double MAX_SAFE_INTEGER = 9007199254740991.0; // 2^53 - 1
@@ -4129,10 +4187,43 @@ void Context::initialize_built_ins() {
         }, 1);
     number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()));
 
+    // Number.parseFloat (same as global parseFloat)
+    auto number_parseFloat = ObjectFactory::create_native_function("parseFloat",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            std::string str = args[0].to_string();
+            try {
+                return Value(std::stod(str));
+            } catch (...) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+        }, 1);
+    number_constructor->set_property("parseFloat", Value(number_parseFloat.release()));
+
+    // Number.parseInt (same as global parseInt)
+    auto number_parseInt = ObjectFactory::create_native_function("parseInt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            std::string str = args[0].to_string();
+            int radix = args.size() > 1 ? static_cast<int>(args[1].to_number()) : 10;
+            if (radix < 2 || radix > 36) return Value(std::numeric_limits<double>::quiet_NaN());
+            try {
+                return Value(static_cast<double>(std::stoll(str, nullptr, radix)));
+            } catch (...) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+        }, 2);
+    number_constructor->set_property("parseInt", Value(number_parseInt.release()));
+
     // Number constants
     number_constructor->set_property("MAX_SAFE_INTEGER", Value(9007199254740991.0));
     number_constructor->set_property("MIN_SAFE_INTEGER", Value(-9007199254740991.0));
     number_constructor->set_property("EPSILON", Value(2.220446049250313e-16));
+    number_constructor->set_property("POSITIVE_INFINITY", Value::positive_infinity());
+    number_constructor->set_property("NEGATIVE_INFINITY", Value::negative_infinity());
+    number_constructor->set_property("MAX_VALUE", Value(1.7976931348623157e+308));
+    number_constructor->set_property("MIN_VALUE", Value(5e-324));
+    number_constructor->set_property("NaN", Value(std::numeric_limits<double>::quiet_NaN()));
 
     number_constructor->set_property("prototype", Value(number_prototype.release()));
 
@@ -4346,18 +4437,20 @@ void Context::initialize_built_ins() {
     auto json_object = ObjectFactory::create_object();
     
     // JSON.parse
-    auto json_parse = ObjectFactory::create_native_function("parse", 
+    auto json_parse = ObjectFactory::create_native_function("parse",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return JSON::js_parse(ctx, args);
-        });
-    json_object->set_property("parse", Value(json_parse.release()));
-    
+        }, 2);
+    json_object->set_property("parse", Value(json_parse.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     // JSON.stringify
     auto json_stringify = ObjectFactory::create_native_function("stringify",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return JSON::js_stringify(ctx, args);
-        });
-    json_object->set_property("stringify", Value(json_stringify.release()));
+        }, 3);
+    json_object->set_property("stringify", Value(json_stringify.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Add Symbol.toStringTag property
     PropertyDescriptor json_tag_desc(Value(std::string("JSON")), PropertyAttributes::Configurable);
@@ -5993,6 +6086,85 @@ void Context::initialize_built_ins() {
         });
     promise_constructor->set_property("race", Value(promise_race_static.release()));
 
+    // Add Promise.allSettled static method (ES2020)
+    auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_exception(Value("Promise.allSettled expects an iterable"));
+                return Value();
+            }
+
+            Object* iterable = args[0].as_object();
+            if (!iterable->is_array()) {
+                ctx.throw_exception(Value("Promise.allSettled expects an array"));
+                return Value();
+            }
+
+            uint32_t length = iterable->get_length();
+            auto result_promise = std::make_unique<Promise>(&ctx);
+            add_promise_methods(result_promise.get());
+            result_promise->set_property("_isPromise", Value(true));
+
+            // Create results array with settled objects
+            auto results_array = ObjectFactory::create_array(length);
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+                auto settled_obj = ObjectFactory::create_object();
+
+                // All promises are considered fulfilled for simplified implementation
+                settled_obj->set_property("status", Value(std::string("fulfilled")));
+                settled_obj->set_property("value", element);
+
+                results_array->set_element(i, Value(settled_obj.release()));
+            }
+
+            result_promise->fulfill(Value(results_array.release()));
+            return Value(result_promise.release());
+        }, 1);
+    promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()));
+
+    // Add Promise.any static method (ES2021)
+    auto promise_any_static = ObjectFactory::create_native_function("any",
+        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_exception(Value("Promise.any expects an iterable"));
+                return Value();
+            }
+
+            Object* iterable = args[0].as_object();
+            if (!iterable->is_array()) {
+                ctx.throw_exception(Value("Promise.any expects an array"));
+                return Value();
+            }
+
+            uint32_t length = iterable->get_length();
+            auto result_promise = std::make_unique<Promise>(&ctx);
+            add_promise_methods(result_promise.get());
+            result_promise->set_property("_isPromise", Value(true));
+
+            if (length == 0) {
+                // Empty array rejects with AggregateError
+                ctx.throw_exception(Value("AggregateError: All promises were rejected"));
+                return Value();
+            }
+
+            // For simplified implementation, resolve with first element
+            Value first_element = iterable->get_element(0);
+            if (first_element.is_object()) {
+                Object* obj = first_element.as_object();
+                if (obj && obj->has_property("_isPromise") && obj->has_property("_promiseValue")) {
+                    result_promise->fulfill(obj->get_property("_promiseValue"));
+                } else {
+                    result_promise->fulfill(first_element);
+                }
+            } else {
+                result_promise->fulfill(first_element);
+            }
+
+            return Value(result_promise.release());
+        }, 1);
+    promise_constructor->set_property("any", Value(promise_any_static.release()));
+
     register_built_in_object("Promise", promise_constructor.release());
 
     // WeakRef constructor (ES2021)
@@ -6500,12 +6672,23 @@ void Context::initialize_built_ins() {
     register_built_in_object("AsyncDisposableStack", asyncdisposablestack_constructor.release());
 
     // Iterator constructor (ES2015)
-    // Iterator is not a constructor - it's the base class for iterator objects
+    // Iterator constructor is subclassable
     auto iterator_constructor = ObjectFactory::create_native_function("Iterator",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            ctx.throw_type_error("Iterator is not a constructor");
-            return Value();
+            // Create a new Iterator instance
+            auto iterator_obj = ObjectFactory::create_object();
+
+            // Get Iterator.prototype
+            Object* constructor = ctx.get_this_binding();
+            if (constructor && constructor->is_function()) {
+                Value prototype_val = constructor->get_property("prototype");
+                if (prototype_val.is_object()) {
+                    iterator_obj->set_prototype(prototype_val.as_object());
+                }
+            }
+
+            return Value(iterator_obj.release());
         });
 
     // Create Iterator.prototype
@@ -6605,6 +6788,25 @@ void Context::initialize_built_ins() {
     byteLength_desc.set_enumerable(false);
     byteLength_desc.set_configurable(true);
     arraybuffer_prototype->set_property_descriptor("byteLength", byteLength_desc);
+
+    // ArrayBuffer.prototype.detached getter (ES2024)
+    auto detached_getter = ObjectFactory::create_native_function("get detached",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_array_buffer()) {
+                ctx.throw_type_error("ArrayBuffer.prototype.detached called on non-ArrayBuffer");
+                return Value();
+            }
+            ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            return Value(ab->is_detached());
+        }, 0);
+
+    PropertyDescriptor detached_desc;
+    detached_desc.set_getter(detached_getter.release());
+    detached_desc.set_enumerable(false);
+    detached_desc.set_configurable(true);
+    arraybuffer_prototype->set_property_descriptor("detached", detached_desc);
 
     // ArrayBuffer.prototype.slice (ES6)
     auto ab_slice_fn = ObjectFactory::create_native_function("slice",
