@@ -128,9 +128,11 @@ public:
     bool has_own_property(const std::string& key) const;
     
     virtual Value get_property(const std::string& key) const;
+    Value get_property(const Value& key) const;  // Overload for Value keys (handles Symbols)
     Value get_own_property(const std::string& key) const;
-    
+
     virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);  // Overload for Value keys
     bool delete_property(const std::string& key);
     
     // Array-like element access (optimized for indices)
@@ -174,6 +176,12 @@ public:
     Object* copyWithin(int32_t target, int32_t start, int32_t end = -1);
     Value findLast(Function* callback, Context& ctx, const Value& thisArg = Value());
     Value findLastIndex(Function* callback, Context& ctx, const Value& thisArg = Value());
+    std::unique_ptr<Object> toSpliced(uint32_t start, uint32_t deleteCount, const std::vector<Value>& items);
+    Object* fill(const Value& value, int32_t start = 0, int32_t end = -1);
+    std::unique_ptr<Object> toSorted(Function* compareFn, Context& ctx);
+    std::unique_ptr<Object> with_method(uint32_t index, const Value& value);
+    Value at(int32_t index);
+    std::unique_ptr<Object> toReversed();
 
     // ES2026 Array methods
     Value groupBy(Function* callback, Context& ctx);

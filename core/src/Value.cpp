@@ -59,7 +59,7 @@ std::string Value::to_string() const {
     if (is_undefined()) {
         return "undefined";
     }
-    if (is_null()) return "null"; 
+    if (is_null()) return "null";
     if (is_boolean()) {
         return as_boolean() ? "true" : "false";
     }
@@ -96,6 +96,15 @@ std::string Value::to_string() const {
         return "[function Function]";
     }
     return "unknown";
+}
+
+std::string Value::to_property_key() const {
+    // Special handling for Symbols - use to_property_key() instead of to_string()
+    if (is_symbol()) {
+        return as_symbol()->to_property_key();
+    }
+    // For all other types, use normal to_string()
+    return to_string();
 }
 
 double Value::to_number() const {

@@ -90,6 +90,16 @@ std::string Symbol::to_string() const {
     return oss.str();
 }
 
+std::string Symbol::to_property_key() const {
+    // For well-known symbols, use the description directly as property key
+    // This allows Symbol.species to map to "Symbol.species" string key
+    if (!description_.empty() && description_.find("Symbol.") == 0) {
+        return description_;
+    }
+    // For regular symbols, return the full string representation
+    return to_string();
+}
+
 bool Symbol::equals(const Symbol* other) const {
     return other && id_ == other->id_;
 }

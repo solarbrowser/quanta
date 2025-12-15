@@ -296,7 +296,8 @@ Value Object::get_property(const std::string& key) const {
             key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "toString" || key == "groupBy" ||
             key == "reverse" || key == "sort" || key == "find" || key == "includes" ||
             key == "some" || key == "every" || key == "findIndex" || key == "flat" || key == "flatMap" || key == "reduceRight" || key == "copyWithin" ||
-            key == "findLast" || key == "findLastIndex") {
+            key == "findLast" || key == "findLastIndex" || key == "toSpliced" || key == "fill" ||
+            key == "toSorted" || key == "with" || key == "at" || key == "toReversed") {
             // Return a native function that will call the appropriate array method
             return Value(ObjectFactory::create_array_method(key).release());
         }
@@ -366,12 +367,25 @@ Value Object::get_own_property(const std::string& key) const {
                 if (getter) {
                     Function* getter_fn = dynamic_cast<Function*>(getter);
                     if (getter_fn) {
-                        // DESIGN NOTE: This getter function cannot be called here because 
+                        // SPECIAL CASE: For Symbol.species and similar getters that just return `this`,
+                        // we can optimize by checking if it's a well-known symbol getter
+                        // These getters are named "get [Symbol.XXX]" and return the object itself
+                        std::string getter_name = getter_fn->get_name();
+                        if (getter_name.find("get [Symbol.") == 0) {
+                            // Symbol.species getter returns `this` (the constructor)
+                            // Since this is called on a constructor object, return it as a function
+                            if (this->is_function()) {
+                                return Value(const_cast<Function*>(static_cast<const Function*>(this)));
+                            }
+                            return Value(const_cast<Object*>(this));
+                        }
+
+                        // DESIGN NOTE: This getter function cannot be called here because
                         // Object::get_property() doesn't have access to a Context.
                         // Proper getter execution happens in AST evaluation (MemberExpression)
                         // or Context::get_property() where a Context is available.
-                        // 
-                        // For now, return undefined to indicate the property exists but 
+                        //
+                        // For now, return undefined to indicate the property exists but
                         // cannot be evaluated without proper context.
                         return Value(); // Return undefined - getter needs context to execute
                     }
@@ -384,8 +398,13 @@ Value Object::get_own_property(const std::string& key) const {
     }
     
     // Property not found in any storage location
-    
+
     return Value(); // undefined
+}
+
+// Overload for Value keys - handles Symbols by converting to property key
+Value Object::get_property(const Value& key) const {
+    return get_property(key.to_property_key());
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
@@ -492,6 +511,11 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     
     // Fall back to overflow storage
     return store_in_overflow(key, value);
+}
+
+// Overload for Value keys - handles Symbols by converting to property key
+bool Object::set_property(const Value& key, const Value& value, PropertyAttributes attrs) {
+    return set_property(key.to_property_key(), value, attrs);
 }
 
 bool Object::delete_property(const std::string& key) {
@@ -689,8 +713,11 @@ uint32_t Object::get_length() const {
 
 void Object::set_length(uint32_t length) {
     if (header_.type == ObjectType::Array) {
-        set_property("length", Value(static_cast<double>(length)));
-        
+        // Per ECMAScript spec: array.length should be { writable: true, enumerable: false, configurable: false }
+        PropertyDescriptor length_desc(Value(static_cast<double>(length)),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable));
+        set_property_descriptor("length", length_desc);
+
         // Truncate elements if necessary
         if (length < elements_.size()) {
             elements_.resize(length);
@@ -1095,6 +1122,157 @@ Value Object::findLastIndex(Function* callback, Context& ctx, const Value& thisA
         }
     }
     return Value(-1.0);
+}
+
+std::unique_ptr<Object> Object::toSpliced(uint32_t start, uint32_t deleteCount, const std::vector<Value>& items) {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    uint32_t length = get_length();
+    uint32_t actualStart = std::min(start, length);
+    uint32_t actualDeleteCount = std::min(deleteCount, length - actualStart);
+    uint32_t newLength = length - actualDeleteCount + items.size();
+
+    auto result = ObjectFactory::create_array(newLength);
+
+    // Copy elements before start
+    for (uint32_t i = 0; i < actualStart; i++) {
+        result->set_element(i, get_element(i));
+    }
+
+    // Insert new items
+    for (size_t i = 0; i < items.size(); i++) {
+        result->set_element(actualStart + i, items[i]);
+    }
+
+    // Copy elements after deleted section
+    for (uint32_t i = actualStart + actualDeleteCount; i < length; i++) {
+        result->set_element(items.size() + i - actualDeleteCount, get_element(i));
+    }
+
+    return result;
+}
+
+Object* Object::fill(const Value& value, int32_t start, int32_t end) {
+    if (header_.type != ObjectType::Array) {
+        return this;
+    }
+
+    uint32_t length = get_length();
+    int32_t len = static_cast<int32_t>(length);
+
+    // Normalize negative indices
+    int32_t k = start < 0 ? std::max(len + start, 0) : std::min(start, len);
+    int32_t final = end == -1 ? len : (end < 0 ? std::max(len + end, 0) : std::min(end, len));
+
+    // Fill from k to final
+    for (int32_t i = k; i < final; i++) {
+        set_element(static_cast<uint32_t>(i), value);
+    }
+
+    return this;
+}
+
+std::unique_ptr<Object> Object::toSorted(Function* compareFn, Context& ctx) {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    uint32_t length = get_length();
+    auto result = ObjectFactory::create_array(length);
+
+    // Copy all elements
+    for (uint32_t i = 0; i < length; i++) {
+        result->set_element(i, get_element(i));
+    }
+
+    // Sort using compareFn if provided
+    if (compareFn) {
+        // Simple bubble sort with compareFn
+        for (uint32_t i = 0; i < length - 1; i++) {
+            for (uint32_t j = 0; j < length - i - 1; j++) {
+                Value a = result->get_element(j);
+                Value b = result->get_element(j + 1);
+                std::vector<Value> args = {a, b};
+                Value cmp = compareFn->call(ctx, args);
+                if (ctx.has_exception()) return result;
+                if (cmp.to_number() > 0) {
+                    result->set_element(j, b);
+                    result->set_element(j + 1, a);
+                }
+            }
+        }
+    } else {
+        // Default string sort
+        for (uint32_t i = 0; i < length - 1; i++) {
+            for (uint32_t j = 0; j < length - i - 1; j++) {
+                Value a = result->get_element(j);
+                Value b = result->get_element(j + 1);
+                if (a.to_string() > b.to_string()) {
+                    result->set_element(j, b);
+                    result->set_element(j + 1, a);
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
+std::unique_ptr<Object> Object::with_method(uint32_t index, const Value& value) {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    uint32_t length = get_length();
+    auto result = ObjectFactory::create_array(length);
+
+    // Copy all elements
+    for (uint32_t i = 0; i < length; i++) {
+        if (i == index) {
+            result->set_element(i, value);
+        } else {
+            result->set_element(i, get_element(i));
+        }
+    }
+
+    return result;
+}
+
+Value Object::at(int32_t index) {
+    if (header_.type != ObjectType::Array) {
+        return Value();
+    }
+
+    uint32_t length = get_length();
+    int32_t len = static_cast<int32_t>(length);
+
+    // Normalize negative index
+    int32_t k = index < 0 ? len + index : index;
+
+    // Check bounds
+    if (k < 0 || k >= len) {
+        return Value(); // undefined
+    }
+
+    return get_element(static_cast<uint32_t>(k));
+}
+
+std::unique_ptr<Object> Object::toReversed() {
+    if (header_.type != ObjectType::Array) {
+        return ObjectFactory::create_array(0);
+    }
+
+    uint32_t length = get_length();
+    auto result = ObjectFactory::create_array(length);
+
+    // Copy elements in reverse order
+    for (uint32_t i = 0; i < length; i++) {
+        result->set_element(i, get_element(length - 1 - i));
+    }
+
+    return result;
 }
 
 bool Object::is_extensible() const {
@@ -1649,8 +1827,10 @@ std::unique_ptr<Object> create_function() {
 
 std::unique_ptr<Object> create_string(const std::string& value) {
     auto str_obj = std::make_unique<Object>(Object::ObjectType::String);
-    // Store string properties without creating recursive Value calls
-    str_obj->set_property("length", Value(static_cast<double>(value.length())));
+    // Per ECMAScript spec: string.length should be { writable: false, enumerable: false, configurable: false }
+    PropertyDescriptor length_desc(Value(static_cast<double>(value.length())),
+        static_cast<PropertyAttributes>(PropertyAttributes::None));
+    str_obj->set_property_descriptor("length", length_desc);
     return str_obj;
 }
 
@@ -1922,6 +2102,47 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             array->set_length(length - deleteCount + insertCount);
             
             return Value(deleted.release());
+        } else if (method_name == "toSpliced") {
+            uint32_t start = 0;
+            uint32_t deleteCount = array->get_length();
+
+            if (args.size() > 0) {
+                start = static_cast<uint32_t>(std::max(0.0, args[0].to_number()));
+            }
+            if (args.size() > 1) {
+                deleteCount = static_cast<uint32_t>(std::max(0.0, args[1].to_number()));
+            }
+
+            // Collect items to insert (args from index 2 onwards)
+            std::vector<Value> items;
+            for (size_t i = 2; i < args.size(); i++) {
+                items.push_back(args[i]);
+            }
+
+            auto result = array->toSpliced(start, deleteCount, items);
+            return Value(result.release());
+        } else if (method_name == "fill") {
+            Value value = args.size() > 0 ? args[0] : Value();
+            int32_t start = args.size() > 1 ? static_cast<int32_t>(args[1].to_number()) : 0;
+            int32_t end = args.size() > 2 ? static_cast<int32_t>(args[2].to_number()) : -1;
+            return Value(array->fill(value, start, end));
+        } else if (method_name == "toSorted") {
+            Function* compareFn = (args.size() > 0 && args[0].is_function()) ? args[0].as_function() : nullptr;
+            auto result = array->toSorted(compareFn, ctx);
+            return Value(result.release());
+        } else if (method_name == "with") {
+            if (args.size() >= 2) {
+                uint32_t index = static_cast<uint32_t>(args[0].to_number());
+                auto result = array->with_method(index, args[1]);
+                return Value(result.release());
+            }
+            return Value(array); // Return original if invalid args
+        } else if (method_name == "at") {
+            int32_t index = args.size() > 0 ? static_cast<int32_t>(args[0].to_number()) : 0;
+            return array->at(index);
+        } else if (method_name == "toReversed") {
+            auto result = array->toReversed();
+            return Value(result.release());
         } else if (method_name == "find") {
             if (args.size() > 0 && args[0].is_function()) {
                 Value thisArg = args.size() > 1 ? args[1] : Value();
@@ -2096,10 +2317,10 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         method_name == "some" || method_name == "every" || method_name == "flatMap" ||
         method_name == "findLast" || method_name == "findLastIndex") {
         arity = 1;  // These methods require a callback function
-    } else if (method_name == "flat") {
-        arity = 0;  // flat takes optional depth parameter, default arity is 0
-    } else if (method_name == "copyWithin") {
-        arity = 2;  // copyWithin(target, start, end) - target and start required
+    } else if (method_name == "flat" || method_name == "fill" || method_name == "toSorted" || method_name == "at") {
+        arity = 1;  // flat(depth), fill(value), toSorted(compareFn), at(index)
+    } else if (method_name == "copyWithin" || method_name == "toSpliced" || method_name == "with") {
+        arity = 2;  // copyWithin(target, start), toSpliced(start, deleteCount), with(index, value)
     } else if (method_name == "slice" || method_name == "splice" || method_name == "indexOf" ||
                method_name == "lastIndexOf") {
         arity = 2;  // These methods typically take 2 parameters
@@ -2107,7 +2328,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         arity = 1;  // Variable arguments but arity is 1
     } else if (method_name == "join") {
         arity = 1;  // Takes separator
-    } else if (method_name == "pop" || method_name == "shift" || method_name == "reverse") {
+    } else if (method_name == "pop" || method_name == "shift" || method_name == "reverse" || method_name == "toReversed") {
         arity = 0;  // No required parameters
     }
 

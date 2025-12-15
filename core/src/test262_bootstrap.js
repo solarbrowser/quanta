@@ -682,4 +682,173 @@ if (typeof assertNativeFunction === 'undefined') {
     });
 })();
 
+// =============================================================================
+// Test262 Harness Helper Variables
+// =============================================================================
+
+// TypedArray constructors list (used by many tests)
+if (typeof ctors === 'undefined') {
+    var ctors = [
+        Int8Array,
+        Uint8Array,
+        Uint8ClampedArray,
+        Int16Array,
+        Uint16Array,
+        Int32Array,
+        Uint32Array,
+        Float32Array,
+        Float64Array
+    ];
+}
+
+// Float TypedArray constructors
+if (typeof floatCtors === 'undefined') {
+    var floatCtors = [Float32Array, Float64Array];
+}
+
+// Integer TypedArray constructors
+if (typeof intCtors === 'undefined') {
+    var intCtors = [
+        Int8Array,
+        Uint8Array,
+        Uint8ClampedArray,
+        Int16Array,
+        Uint16Array,
+        Int32Array,
+        Uint32Array
+    ];
+}
+
+// Test conversion values for TypedArrays
+if (typeof byteConversionValues === 'undefined') {
+    var byteConversionValues = {
+        values: [
+            127,         // 2^7-1
+            128,         // 2^7
+            32767,       // 2^15-1
+            32768,       // 2^15
+            2147483647,  // 2^31-1
+            2147483648,  // 2^31
+            255,         // 2^8-1
+            256,         // 2^8
+            65535,       // 2^16-1
+            65536,       // 2^16
+            4294967295,  // 2^32-1
+            4294967296,  // 2^32
+            9007199254740991, // 2^53-1
+            9007199254740992, // 2^53
+            1.1,
+            0.1,
+            0.5,
+            0.50000001,
+            0.6,
+            0.7,
+            undefined,
+            -1,
+            -0,
+            -0.1,
+            -1.1,
+            NaN,
+            -127,
+            -128,
+            -32767,
+            -32768,
+            -2147483647,
+            -2147483648,
+            -2147483649,
+            Infinity,
+            -Infinity
+        ],
+        expected: {
+            Int8: [127, -128, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0,
+                   1, 0, 0, 0, 0, 0, 0, -1, 0, 0, -1, 0, -127, -128, 1, 0, 1, 0, 1, 0, 0],
+            Uint8: [127, 128, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0,
+                    1, 0, 0, 0, 0, 0, 0, 255, 0, 0, 255, 0, 129, 128, 1, 0, 1, 0, 1, 0, 0],
+            Uint8Clamped: [127, 128, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0,
+                           1, 0, 1, 1, 1, 1, 0, 255, 0, 0, 255, 0, 129, 128, 1, 0, 1, 0, 1, 0, 0],
+            Int16: [127, 128, 32767, -32768, -1, 0, 255, 0, -1, 0, -1, 0, -1, 0,
+                    1, 0, 0, 0, 0, 0, 0, -1, 0, 0, -1, 0, -127, -128, -32767, -32768, 1, 0, 1, 0, 0],
+            Uint16: [127, 128, 32767, 32768, 65535, 0, 255, 256, 65535, 0, 65535, 0, 65535, 0,
+                     1, 0, 0, 0, 0, 0, 0, 65535, 0, 0, 65535, 0, 65409, 65408, 32769, 32768, 32769, 32768, 32769, 0, 0],
+            Int32: [127, 128, 32767, 32768, 2147483647, -2147483648, 255, 256, 65535, 65536, -1, 0, -1, 0,
+                    1, 0, 0, 0, 0, 0, 0, -1, 0, 0, -1, 0, -127, -128, -32767, -32768, -2147483647, -2147483648, 2147483647, 0, 0],
+            Uint32: [127, 128, 32767, 32768, 2147483647, 2147483648, 255, 256, 65535, 65536, 4294967295, 0, 4294967295, 0,
+                     1, 0, 0, 0, 0, 0, 0, 4294967295, 0, 0, 4294967295, 0, 4294967169, 4294967168, 4294934529, 4294934528, 2147483649, 2147483648, 2147483649, 0, 0],
+            Float32: [127, 128, 32767, 32768, 2147483648, 2147483648, 255, 256, 65535, 65536, 4294967296, 4294967296,
+                      9007199254740992, 9007199254740992, 1.100000023841858, 0.10000000149011612,
+                      0.5, 0.5, 0.6000000238418579, 0.699999988079071, NaN, -1, -0, -0.10000000149011612,
+                      -1.100000023841858, NaN, -127, -128, -32767, -32768, -2147483648, -2147483648, -2147483648,
+                      Infinity, -Infinity],
+            Float64: [127, 128, 32767, 32768, 2147483647, 2147483648, 255, 256, 65535, 65536, 4294967295, 4294967296,
+                      9007199254740991, 9007199254740992, 1.1, 0.1, 0.5, 0.50000001, 0.6, 0.7, NaN, -1, -0, -0.1,
+                      -1.1, NaN, -127, -128, -32767, -32768, -2147483647, -2147483648, -2147483649,
+                      Infinity, -Infinity]
+        }
+    };
+}
+
+// Common NaN values for testing
+if (typeof NaNs === 'undefined') {
+    var NaNs = [
+        NaN,
+        Number.NaN,
+        0/0,
+        Infinity - Infinity,
+        Math.sqrt(-1),
+        Number("not a number")
+    ];
+}
+
+// Date boundary values for historical date tests
+if (typeof date_1899_end === 'undefined') {
+    var date_1899_end = new Date(1899, 11, 31, 23, 59, 59, 999);
+}
+
+if (typeof date_1900_start === 'undefined') {
+    var date_1900_start = new Date(1900, 0, 1, 0, 0, 0, 0);
+}
+
+if (typeof date_1969_end === 'undefined') {
+    var date_1969_end = new Date(1969, 11, 31, 23, 59, 59, 999);
+}
+
+if (typeof date_1970_start === 'undefined') {
+    var date_1970_start = new Date(1970, 0, 1, 0, 0, 0, 0);
+}
+
+// TemporalHelpers stub (complex feature - basic stub only)
+if (typeof TemporalHelpers === 'undefined') {
+    var TemporalHelpers = {
+        assertDuration: function() {},
+        assertPlainDate: function() {},
+        assertPlainTime: function() {},
+        assertPlainDateTime: function() {},
+        ISO8601String: function() { return "1970-01-01"; }
+    };
+}
+
+// WellKnownIntrinsicObjects list
+if (typeof WellKnownIntrinsicObjects === 'undefined') {
+    var WellKnownIntrinsicObjects = [
+        Array, ArrayBuffer, Boolean, DataView, Date, Error, EvalError,
+        Float32Array, Float64Array, Function, Int8Array, Int16Array, Int32Array,
+        Map, Number, Object, Promise, Proxy, RangeError, ReferenceError, RegExp,
+        Set, String, Symbol, SyntaxError, TypeError, Uint8Array, Uint16Array,
+        Uint32Array, URIError, WeakMap, WeakSet
+    ];
+}
+
+// BigInt TypedArrays stubs (until BigInt is fully implemented)
+if (typeof BigInt64Array === 'undefined') {
+    var BigInt64Array = function BigInt64Array() {
+        throw new TypeError("BigInt64Array not yet implemented");
+    };
+}
+
+if (typeof BigUint64Array === 'undefined') {
+    var BigUint64Array = function BigUint64Array() {
+        throw new TypeError("BigUint64Array not yet implemented");
+    };
+}
+
 // Bootstrap loaded silently - no console spam

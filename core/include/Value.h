@@ -299,8 +299,9 @@ public:
     bool to_boolean() const;
     double to_number() const;
     std::string to_string() const;
+    std::string to_property_key() const;  // Convert Value to property key (handles Symbols specially)
     Object* to_object() const;
-    
+
     // Comparison operations
     bool strict_equals(const Value& other) const;
     bool loose_equals(const Value& other) const;

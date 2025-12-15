@@ -56,7 +56,8 @@ public:
     std::string get_description() const { return description_; }
     uint64_t get_id() const { return id_; }
     std::string to_string() const;
-    
+    std::string to_property_key() const;  // Convert Symbol to property key string
+
     // Comparison
     bool equals(const Symbol* other) const;
     

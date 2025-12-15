@@ -52,24 +52,59 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         digits_.push_back(0);
         return;
     }
-    
-    // Parse decimal string
+
+    // Detect number base
+    int base = 10;
+    if (start + 1 < str.length() && str[start] == '0') {
+        char prefix = str[start + 1];
+        if (prefix == 'x' || prefix == 'X') {
+            base = 16;
+            start += 2;
+        } else if (prefix == 'o' || prefix == 'O') {
+            base = 8;
+            start += 2;
+        } else if (prefix == 'b' || prefix == 'B') {
+            base = 2;
+            start += 2;
+        }
+    }
+
+    // Parse number string
     digits_.push_back(0);
-    
+
     for (size_t i = start; i < str.length(); ++i) {
         char c = str[i];
-        if (c < '0' || c > '9') {
+
+        // Skip numeric separators
+        if (c == '_') {
+            continue;
+        }
+
+        // Convert character to digit value
+        int digit_value;
+        if (c >= '0' && c <= '9') {
+            digit_value = c - '0';
+        } else if (c >= 'a' && c <= 'f') {
+            digit_value = c - 'a' + 10;
+        } else if (c >= 'A' && c <= 'F') {
+            digit_value = c - 'A' + 10;
+        } else {
             throw std::invalid_argument("Invalid BigInt string: " + str);
         }
-        
-        // Multiply current value by 10 and add digit
-        uint64_t carry = c - '0';
+
+        // Check if digit is valid for the base
+        if (digit_value >= base) {
+            throw std::invalid_argument("Invalid BigInt string: " + str);
+        }
+
+        // Multiply current value by base and add digit
+        uint64_t carry = digit_value;
         for (auto& digit : digits_) {
-            uint64_t temp = static_cast<uint64_t>(digit) * 10 + carry;
+            uint64_t temp = static_cast<uint64_t>(digit) * base + carry;
             digit = temp & 0xFFFFFFFF;
             carry = temp >> 32;
         }
-        
+
         while (carry > 0) {
             digits_.push_back(static_cast<uint32_t>(carry & 0xFFFFFFFFULL));
             carry = carry >> 32;

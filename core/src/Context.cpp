@@ -236,7 +236,15 @@ void Context::register_built_in_object(const std::string& name, Object* object) 
     // Also bind to global object if available with correct property descriptors
     // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
     if (global_object_) {
-        PropertyDescriptor desc(Value(object), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        // Check if the object is actually a Function and cast it properly to preserve type
+        Value binding_value;
+        if (object->is_function()) {
+            Function* func_ptr = static_cast<Function*>(object);
+            binding_value = Value(func_ptr);
+        } else {
+            binding_value = Value(object);
+        }
+        PropertyDescriptor desc(binding_value, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
         global_object_->set_property_descriptor(name, desc);
     }
 }
@@ -316,8 +324,11 @@ void Context::initialize_global_context() {
 }
 
 void Context::initialize_built_ins() {
+    // Initialize well-known symbols FIRST so they can be used in all built-in objects
+    Symbol::initialize_well_known_symbols();
+
     // Create built-in objects (placeholder implementations)
-    
+
     // Object constructor - create as a proper native function
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
         [](Context& /* ctx */, const std::vector<Value>& args) -> Value {
@@ -812,12 +823,24 @@ void Context::initialize_built_ins() {
             } else if (desc.is_accessor_descriptor()) {
                 // Accessor descriptor
                 if (desc.has_getter()) {
-                    descriptor->set_property("get", Value(desc.get_getter()));
+                    Object* getter = desc.get_getter();
+                    // Getters are Functions, cast appropriately for correct typeof
+                    if (getter && getter->is_function()) {
+                        descriptor->set_property("get", Value(static_cast<Function*>(getter)));
+                    } else {
+                        descriptor->set_property("get", Value(getter));
+                    }
                 } else {
                     descriptor->set_property("get", Value()); // undefined
                 }
                 if (desc.has_setter()) {
-                    descriptor->set_property("set", Value(desc.get_setter()));
+                    Object* setter = desc.get_setter();
+                    // Setters are Functions, cast appropriately for correct typeof
+                    if (setter && setter->is_function()) {
+                        descriptor->set_property("set", Value(static_cast<Function*>(setter)));
+                    } else {
+                        descriptor->set_property("set", Value(setter));
+                    }
                 } else {
                     descriptor->set_property("set", Value()); // undefined
                 }
@@ -1378,55 +1401,102 @@ void Context::initialize_built_ins() {
     // Array.from (length = 1)
     auto from_fn = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused warning
             if (args.empty()) return Value(ObjectFactory::create_array().release());
-            
+
             Value arrayLike = args[0];
-            
-            // Handle strings specially
+            Function* mapfn = (args.size() > 1 && args[1].is_function()) ? args[1].as_function() : nullptr;
+            Value thisArg = (args.size() > 2) ? args[2] : Value();
+
+            // Get the constructor (this value in Array.from.call(Constructor, ...))
+            Object* this_binding = ctx.get_this_binding();
+            Function* constructor = nullptr;
+            if (this_binding && this_binding->is_function()) {
+                constructor = static_cast<Function*>(this_binding);
+            }
+
+            // Determine length
+            uint32_t length = 0;
+            if (arrayLike.is_string()) {
+                length = static_cast<uint32_t>(arrayLike.to_string().length());
+            } else if (arrayLike.is_object()) {
+                Object* obj = arrayLike.as_object();
+                Value lengthValue = obj->get_property("length");
+                length = lengthValue.is_number() ? static_cast<uint32_t>(lengthValue.to_number()) : 0;
+            }
+
+            // Create result array using constructor if available
+            Object* result = nullptr;
+            if (constructor) {
+                std::vector<Value> constructor_args = { Value(static_cast<double>(length)) };
+                Value constructed = constructor->construct(ctx, constructor_args);
+                if (constructed.is_object()) {
+                    result = constructed.as_object();
+                } else {
+                    result = ObjectFactory::create_array().release();
+                }
+            } else {
+                result = ObjectFactory::create_array().release();
+            }
+
+            // Populate the result
             if (arrayLike.is_string()) {
                 std::string str = arrayLike.to_string();
-                auto array = ObjectFactory::create_array();
-                
-                for (size_t i = 0; i < str.length(); i++) {
-                    array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str[i])));
-                }
-                array->set_property("length", Value(static_cast<double>(str.length())));
-                return Value(array.release());
-            }
-            
-            // Handle objects (including arrays)
-            if (arrayLike.is_object()) {
-                Object* obj = arrayLike.as_object();
-                auto array = ObjectFactory::create_array();
-                
-                // Get length property
-                Value lengthValue = obj->get_property("length");
-                uint32_t length = lengthValue.is_number() ? 
-                    static_cast<uint32_t>(lengthValue.to_number()) : 0;
-                
-                // Copy elements
                 for (uint32_t i = 0; i < length; i++) {
-                    array->set_element(i, obj->get_element(i));
+                    Value element = Value(std::string(1, str[i]));
+                    if (mapfn) {
+                        std::vector<Value> mapfn_args = { element, Value(static_cast<double>(i)) };
+                        element = mapfn->call(ctx, mapfn_args, thisArg);
+                    }
+                    result->set_element(i, element);
                 }
-                array->set_property("length", Value(static_cast<double>(length)));
-                return Value(array.release());
+            } else if (arrayLike.is_object()) {
+                Object* obj = arrayLike.as_object();
+                for (uint32_t i = 0; i < length; i++) {
+                    Value element = obj->get_element(i);
+                    if (mapfn) {
+                        std::vector<Value> mapfn_args = { element, Value(static_cast<double>(i)) };
+                        element = mapfn->call(ctx, mapfn_args, thisArg);
+                    }
+                    result->set_element(i, element);
+                }
             }
-            
-            // Fallback for other types
-            return Value(ObjectFactory::create_array().release());
+
+            // Set length property if not already set correctly
+            result->set_property("length", Value(static_cast<double>(length)));
+            return Value(result);
         }, 1);  // Array.from.length = 1
     array_constructor->set_property("from", Value(from_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     
     // Array.of
     auto of_fn = ObjectFactory::create_native_function("of",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto array = ObjectFactory::create_array();
-            for (size_t i = 0; i < args.size(); i++) {
-                array->set_element(static_cast<uint32_t>(i), args[i]);
+            // Get the constructor (this value in Array.of.call(Constructor, ...))
+            Object* this_binding = ctx.get_this_binding();
+            Function* constructor = nullptr;
+            if (this_binding && this_binding->is_function()) {
+                constructor = static_cast<Function*>(this_binding);
             }
-            array->set_property("length", Value(static_cast<double>(args.size())));
-            return Value(array.release());
+
+            // Create result using constructor if available
+            Object* result = nullptr;
+            if (constructor) {
+                std::vector<Value> constructor_args = { Value(static_cast<double>(args.size())) };
+                Value constructed = constructor->construct(ctx, constructor_args);
+                if (constructed.is_object()) {
+                    result = constructed.as_object();
+                } else {
+                    result = ObjectFactory::create_array().release();
+                }
+            } else {
+                result = ObjectFactory::create_array().release();
+            }
+
+            // Populate the result
+            for (size_t i = 0; i < args.size(); i++) {
+                result->set_element(static_cast<uint32_t>(i), args[i]);
+            }
+            result->set_property("length", Value(static_cast<double>(args.size())));
+            return Value(result);
         }, 0);
     array_constructor->set_property("of", Value(of_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
@@ -1445,6 +1515,24 @@ void Context::initialize_built_ins() {
     fromAsync_fn->set_property_descriptor("length", fromAsync_length_desc);
 
     array_constructor->set_property("fromAsync", Value(fromAsync_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // Array[Symbol.species] getter
+    auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            // Return the this value
+            Object* this_binding = ctx.get_this_binding();
+            if (this_binding) {
+                return Value(this_binding);
+            }
+            return Value();
+        }, 0);
+
+    PropertyDescriptor species_desc;
+    species_desc.set_getter(species_getter.release());
+    species_desc.set_enumerable(false);
+    species_desc.set_configurable(true);
+    array_constructor->set_property_descriptor("Symbol.species", species_desc);
 
     // Create Array.prototype as an Array object (not regular Object)
     auto array_prototype = ObjectFactory::create_array();
@@ -2387,6 +2475,29 @@ void Context::initialize_built_ins() {
 
     array_constructor->set_property("prototype", Value(array_prototype.release()), PropertyAttributes::None);
 
+    // Add Symbol.species getter to Array constructor
+    // Symbol.species is used by derived objects to determine which constructor to use
+    // The getter returns `this` (the constructor itself)
+    auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            // Return 'this' value (the constructor)
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj && this_obj->is_function()) {
+                return Value(static_cast<Function*>(this_obj));
+            }
+            if (this_obj) {
+                return Value(this_obj);
+            }
+            return Value();
+        }, 0);
+
+    PropertyDescriptor species_desc;
+    species_desc.set_getter(species_getter.release());
+    species_desc.set_enumerable(false);
+    species_desc.set_configurable(true);
+    array_constructor->set_property_descriptor("Symbol.species", species_desc);
+
     // Set the array prototype in ObjectFactory so new arrays inherit from it
     ObjectFactory::set_array_prototype(array_proto_ptr);
 
@@ -2539,7 +2650,10 @@ void Context::initialize_built_ins() {
             if (this_obj) {
                 // Called as constructor - set up the String object
                 this_obj->set_property("value", Value(str_value));
-                this_obj->set_property("length", Value(static_cast<double>(str_value.length())));
+                // Per ECMAScript spec: string.length should be { writable: false, enumerable: false, configurable: false }
+                PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
+                    static_cast<PropertyAttributes>(PropertyAttributes::None));
+                this_obj->set_property_descriptor("length", length_desc);
 
                 // Add toString method to the object
                 auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -2948,6 +3062,79 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     string_prototype->set_property_descriptor("trimEnd", trimEnd_desc);
     string_prototype->set_property_descriptor("trimRight", trimEnd_desc);  // Alias
+
+    // String.prototype.codePointAt (ES2015)
+    auto codePointAt_fn = ObjectFactory::create_native_function("codePointAt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.size() == 0 || str.empty()) return Value();
+
+            int32_t pos = static_cast<int32_t>(args[0].to_number());
+            if (pos < 0 || pos >= static_cast<int32_t>(str.length())) {
+                return Value(); // undefined
+            }
+
+            // Simplified: return char code at position (basic ASCII/UTF-8)
+            unsigned char ch = str[pos];
+
+            // Handle UTF-8 multi-byte sequences
+            if ((ch & 0x80) == 0) {
+                // Single byte (ASCII)
+                return Value(static_cast<double>(ch));
+            } else if ((ch & 0xE0) == 0xC0) {
+                // 2-byte sequence
+                if (pos + 1 < static_cast<int32_t>(str.length())) {
+                    uint32_t codePoint = ((ch & 0x1F) << 6) | (str[pos + 1] & 0x3F);
+                    return Value(static_cast<double>(codePoint));
+                }
+            } else if ((ch & 0xF0) == 0xE0) {
+                // 3-byte sequence
+                if (pos + 2 < static_cast<int32_t>(str.length())) {
+                    uint32_t codePoint = ((ch & 0x0F) << 12) |
+                                        ((str[pos + 1] & 0x3F) << 6) |
+                                        (str[pos + 2] & 0x3F);
+                    return Value(static_cast<double>(codePoint));
+                }
+            } else if ((ch & 0xF8) == 0xF0) {
+                // 4-byte sequence (for emojis, etc.)
+                if (pos + 3 < static_cast<int32_t>(str.length())) {
+                    uint32_t codePoint = ((ch & 0x07) << 18) |
+                                        ((str[pos + 1] & 0x3F) << 12) |
+                                        ((str[pos + 2] & 0x3F) << 6) |
+                                        (str[pos + 3] & 0x3F);
+                    return Value(static_cast<double>(codePoint));
+                }
+            }
+
+            // Fallback: return basic char code
+            return Value(static_cast<double>(ch));
+        }, 1);
+    PropertyDescriptor codePointAt_desc(Value(codePointAt_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("codePointAt", codePointAt_desc);
+
+    // String.prototype.localeCompare
+    auto localeCompare_fn = ObjectFactory::create_native_function("localeCompare",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            if (args.size() == 0) return Value(0.0);
+
+            std::string that = args[0].to_string();
+
+            // Simple lexicographic comparison (basic implementation)
+            if (str < that) return Value(-1.0);
+            if (str > that) return Value(1.0);
+            return Value(0.0);
+        }, 1);
+    PropertyDescriptor localeCompare_desc(Value(localeCompare_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    string_prototype->set_property_descriptor("localeCompare", localeCompare_desc);
 
     // Add basic String.prototype methods
 
@@ -3564,10 +3751,8 @@ void Context::initialize_built_ins() {
             return Symbol::symbol_key_for(ctx, args);
         });
     symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()));
-    
-    // Initialize well-known symbols and add them as static properties
-    Symbol::initialize_well_known_symbols();
-    
+
+    // Add well-known symbols as static properties (already initialized at start of initialize_built_ins)
     // Add well-known symbols with null checks
     Symbol* iterator_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_sym) {
@@ -4825,7 +5010,9 @@ void Context::initialize_built_ins() {
         variable_environment_->create_binding("Date", Value(date_constructor_fn.get()), false);
     }
     if (global_object_) {
-        global_object_->set_property("Date", Value(date_constructor_fn.get()));
+        PropertyDescriptor date_desc(Value(date_constructor_fn.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        global_object_->set_property_descriptor("Date", date_desc);
     }
     
     date_constructor_fn.release(); // Release after manual binding
@@ -5807,7 +5994,538 @@ void Context::initialize_built_ins() {
     promise_constructor->set_property("race", Value(promise_race_static.release()));
 
     register_built_in_object("Promise", promise_constructor.release());
-    
+
+    // WeakRef constructor (ES2021)
+    auto weakref_constructor = ObjectFactory::create_native_constructor("WeakRef",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_type_error("WeakRef constructor requires an object argument");
+                return Value();
+            }
+
+            auto weakref_obj = ObjectFactory::create_object();
+            weakref_obj->set_property("_target", args[0]);
+
+            // Add deref method
+            auto deref_fn = ObjectFactory::create_native_function("deref",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (this_obj) {
+                        return this_obj->get_property("_target");
+                    }
+                    return Value();
+                }, 0);
+            weakref_obj->set_property("deref", Value(deref_fn.release()));
+
+            return Value(weakref_obj.release());
+        });
+    register_built_in_object("WeakRef", weakref_constructor.release());
+
+    // FinalizationRegistry constructor (ES2021)
+    auto finalizationregistry_constructor = ObjectFactory::create_native_constructor("FinalizationRegistry",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("FinalizationRegistry constructor requires a callback function");
+                return Value();
+            }
+
+            auto registry_obj = ObjectFactory::create_object();
+            registry_obj->set_property("_callback", args[0]);
+
+            // Create a Map to store registrations
+            auto map_constructor = ctx.get_binding("Map");
+            if (map_constructor.is_function()) {
+                Function* map_ctor = map_constructor.as_function();
+                std::vector<Value> no_args;
+                Value map_instance = map_ctor->call(ctx, no_args);
+                registry_obj->set_property("_registry", map_instance);
+            }
+
+            // Add register method
+            auto register_fn = ObjectFactory::create_native_function("register",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.size() < 2 || !args[0].is_object()) {
+                        return Value();
+                    }
+
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value registry_map = this_obj->get_property("_registry");
+                    if (registry_map.is_object()) {
+                        Object* map_obj = registry_map.as_object();
+
+                        // If unregisterToken provided, use it as key
+                        if (args.size() >= 3 && !args[2].is_undefined()) {
+                            // Create entry object
+                            auto entry = ObjectFactory::create_object();
+                            entry->set_property("target", args[0]);
+                            entry->set_property("heldValue", args[1]);
+
+                            // Call Map.set(token, entry)
+                            Value set_method = map_obj->get_property("set");
+                            if (set_method.is_function()) {
+                                Function* set_fn = set_method.as_function();
+                                std::vector<Value> set_args = {args[2], Value(entry.release())};
+                                set_fn->call(ctx, set_args, Value(map_obj));
+                            }
+                        }
+                    }
+                    return Value();
+                }, 2);
+            registry_obj->set_property("register", Value(register_fn.release()));
+
+            // Add unregister method
+            auto unregister_fn = ObjectFactory::create_native_function("unregister",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) {
+                        return Value(false);
+                    }
+
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value(false);
+
+                    Value registry_map = this_obj->get_property("_registry");
+                    if (registry_map.is_object()) {
+                        Object* map_obj = registry_map.as_object();
+
+                        // Call Map.delete(token)
+                        Value delete_method = map_obj->get_property("delete");
+                        if (delete_method.is_function()) {
+                            Function* delete_fn = delete_method.as_function();
+                            std::vector<Value> delete_args = {args[0]};
+                            return delete_fn->call(ctx, delete_args, Value(map_obj));
+                        }
+                    }
+                    return Value(false);
+                }, 1);
+            registry_obj->set_property("unregister", Value(unregister_fn.release()));
+
+            return Value(registry_obj.release());
+        });
+    register_built_in_object("FinalizationRegistry", finalizationregistry_constructor.release());
+
+    // DisposableStack constructor (ES2024)
+    auto disposablestack_constructor = ObjectFactory::create_native_constructor("DisposableStack",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            auto stack_obj = ObjectFactory::create_object();
+            stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+            stack_obj->set_property("_disposed", Value(false));
+
+            // Add use method
+            auto use_fn = ObjectFactory::create_native_function("use",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("DisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.size() > 0) {
+                        Value stack_val = this_obj->get_property("_stack");
+                        if (stack_val.is_object()) {
+                            Object* stack = stack_val.as_object();
+                            stack->push(args[0]);
+                        }
+                        return args[0];
+                    }
+                    return Value();
+                }, 1);
+            stack_obj->set_property("use", Value(use_fn.release()));
+
+            // Add dispose method
+            auto dispose_fn = ObjectFactory::create_native_function("dispose",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        return Value();
+                    }
+
+                    this_obj->set_property("_disposed", Value(true));
+
+                    // Dispose resources in reverse order (LIFO)
+                    Value stack_val = this_obj->get_property("_stack");
+                    if (stack_val.is_object()) {
+                        Object* stack = stack_val.as_object();
+                        uint32_t length = stack->get_length();
+
+                        for (int32_t i = length - 1; i >= 0; i--) {
+                            Value resource = stack->get_element(static_cast<uint32_t>(i));
+                            if (resource.is_object()) {
+                                Object* res_obj = resource.as_object();
+                                // Try to call dispose method if it exists
+                                Value dispose_method = res_obj->get_property("dispose");
+                                if (dispose_method.is_function()) {
+                                    Function* dispose_fn_inner = dispose_method.as_function();
+                                    std::vector<Value> no_args;
+                                    dispose_fn_inner->call(ctx, no_args, resource);
+                                }
+                            }
+                        }
+                    }
+                    return Value();
+                }, 0);
+            stack_obj->set_property("dispose", Value(dispose_fn.release()));
+
+            // Add adopt method
+            auto adopt_fn = ObjectFactory::create_native_function("adopt",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("DisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.size() < 2) return Value();
+
+                    Value value = args[0];
+                    Value onDispose = args[1];
+
+                    if (!onDispose.is_function()) {
+                        ctx.throw_type_error("onDispose must be a function");
+                        return Value();
+                    }
+
+                    // Create wrapper object with dispose method
+                    auto wrapper = ObjectFactory::create_object();
+                    wrapper->set_property("_value", value);
+                    wrapper->set_property("_onDispose", onDispose);
+
+                    auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
+                        [](Context& ctx, const std::vector<Value>& args) -> Value {
+                            (void)args;
+                            Object* wrapper_obj = ctx.get_this_binding();
+                            if (!wrapper_obj) return Value();
+
+                            Value val = wrapper_obj->get_property("_value");
+                            Value on_dispose = wrapper_obj->get_property("_onDispose");
+
+                            if (on_dispose.is_function()) {
+                                Function* dispose_callback = on_dispose.as_function();
+                                std::vector<Value> callback_args = {val};
+                                dispose_callback->call(ctx, callback_args);
+                            }
+                            return Value();
+                        }, 0);
+                    wrapper->set_property("dispose", Value(wrapper_dispose.release()));
+
+                    // Add to stack
+                    Value stack_val = this_obj->get_property("_stack");
+                    if (stack_val.is_object()) {
+                        Object* stack = stack_val.as_object();
+                        stack->push(Value(wrapper.release()));
+                    }
+
+                    return value;
+                }, 2);
+            stack_obj->set_property("adopt", Value(adopt_fn.release()));
+
+            // Add defer method
+            auto defer_fn = ObjectFactory::create_native_function("defer",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("DisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.empty() || !args[0].is_function()) {
+                        ctx.throw_type_error("defer requires a function argument");
+                        return Value();
+                    }
+
+                    // Create wrapper with dispose method
+                    auto wrapper = ObjectFactory::create_object();
+                    wrapper->set_property("_onDispose", args[0]);
+
+                    auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
+                        [](Context& ctx, const std::vector<Value>& args) -> Value {
+                            (void)args;
+                            Object* wrapper_obj = ctx.get_this_binding();
+                            if (!wrapper_obj) return Value();
+
+                            Value on_dispose = wrapper_obj->get_property("_onDispose");
+                            if (on_dispose.is_function()) {
+                                Function* dispose_callback = on_dispose.as_function();
+                                std::vector<Value> no_args;
+                                dispose_callback->call(ctx, no_args);
+                            }
+                            return Value();
+                        }, 0);
+                    wrapper->set_property("dispose", Value(wrapper_dispose.release()));
+
+                    // Add to stack
+                    Value stack_val = this_obj->get_property("_stack");
+                    if (stack_val.is_object()) {
+                        Object* stack = stack_val.as_object();
+                        stack->push(Value(wrapper.release()));
+                    }
+
+                    return Value();
+                }, 1);
+            stack_obj->set_property("defer", Value(defer_fn.release()));
+
+            // Add move method
+            auto move_fn = ObjectFactory::create_native_function("move",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("DisposableStack already disposed");
+                        return Value();
+                    }
+
+                    // Create new DisposableStack
+                    auto disposable_ctor = ctx.get_binding("DisposableStack");
+                    if (disposable_ctor.is_function()) {
+                        Function* ctor = disposable_ctor.as_function();
+                        std::vector<Value> no_args;
+                        Value new_stack = ctor->call(ctx, no_args);
+
+                        if (new_stack.is_object()) {
+                            Object* new_stack_obj = new_stack.as_object();
+
+                            // Move the stack
+                            Value old_stack = this_obj->get_property("_stack");
+                            new_stack_obj->set_property("_stack", old_stack);
+
+                            // Clear old stack and mark as disposed
+                            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+                            this_obj->set_property("_disposed", Value(true));
+
+                            return new_stack;
+                        }
+                    }
+
+                    return Value();
+                }, 0);
+            stack_obj->set_property("move", Value(move_fn.release()));
+
+            return Value(stack_obj.release());
+        });
+    register_built_in_object("DisposableStack", disposablestack_constructor.release());
+
+    // AsyncDisposableStack constructor (ES2024)
+    auto asyncdisposablestack_constructor = ObjectFactory::create_native_constructor("AsyncDisposableStack",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            auto stack_obj = ObjectFactory::create_object();
+            stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+            stack_obj->set_property("_disposed", Value(false));
+
+            // Add use method
+            auto use_fn = ObjectFactory::create_native_function("use",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.size() > 0) {
+                        Value stack_val = this_obj->get_property("_stack");
+                        if (stack_val.is_object()) {
+                            Object* stack = stack_val.as_object();
+                            stack->push(args[0]);
+                        }
+                        return args[0];
+                    }
+                    return Value();
+                }, 1);
+            stack_obj->set_property("use", Value(use_fn.release()));
+
+            // Add disposeAsync method
+            auto disposeAsync_fn = ObjectFactory::create_native_function("disposeAsync",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        // Return resolved promise
+                        Value promise_ctor = ctx.get_binding("Promise");
+                        if (promise_ctor.is_function()) {
+                            Function* ctor = promise_ctor.as_function();
+                            Value resolve_method = ctor->get_property("resolve");
+                            if (resolve_method.is_function()) {
+                                Function* resolve_fn = resolve_method.as_function();
+                                std::vector<Value> args;
+                                return resolve_fn->call(ctx, args, promise_ctor);
+                            }
+                        }
+                        return Value();
+                    }
+
+                    this_obj->set_property("_disposed", Value(true));
+
+                    // Use Promise.resolve() to return resolved promise
+                    Value promise_ctor = ctx.get_binding("Promise");
+                    if (promise_ctor.is_function()) {
+                        Function* ctor = promise_ctor.as_function();
+                        Value resolve_method = ctor->get_property("resolve");
+                        if (resolve_method.is_function()) {
+                            Function* resolve_fn = resolve_method.as_function();
+                            std::vector<Value> args;
+                            return resolve_fn->call(ctx, args, promise_ctor);
+                        }
+                    }
+
+                    return Value();
+                }, 0);
+            stack_obj->set_property("disposeAsync", Value(disposeAsync_fn.release()));
+
+            // Add adopt method (similar to DisposableStack)
+            auto adopt_fn = ObjectFactory::create_native_function("adopt",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.size() < 2) return Value();
+
+                    Value value = args[0];
+                    Value onDisposeAsync = args[1];
+
+                    if (!onDisposeAsync.is_function()) {
+                        ctx.throw_type_error("onDisposeAsync must be a function");
+                        return Value();
+                    }
+
+                    auto wrapper = ObjectFactory::create_object();
+                    wrapper->set_property("_value", value);
+                    wrapper->set_property("_onDisposeAsync", onDisposeAsync);
+
+                    Value stack_val = this_obj->get_property("_stack");
+                    if (stack_val.is_object()) {
+                        Object* stack = stack_val.as_object();
+                        stack->push(Value(wrapper.release()));
+                    }
+
+                    return value;
+                }, 2);
+            stack_obj->set_property("adopt", Value(adopt_fn.release()));
+
+            // Add defer method
+            auto defer_fn = ObjectFactory::create_native_function("defer",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                        return Value();
+                    }
+
+                    if (args.empty() || !args[0].is_function()) {
+                        ctx.throw_type_error("defer requires a function argument");
+                        return Value();
+                    }
+
+                    auto wrapper = ObjectFactory::create_object();
+                    wrapper->set_property("_onDisposeAsync", args[0]);
+
+                    Value stack_val = this_obj->get_property("_stack");
+                    if (stack_val.is_object()) {
+                        Object* stack = stack_val.as_object();
+                        stack->push(Value(wrapper.release()));
+                    }
+
+                    return Value();
+                }, 1);
+            stack_obj->set_property("defer", Value(defer_fn.release()));
+
+            // Add move method
+            auto move_fn = ObjectFactory::create_native_function("move",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* this_obj = ctx.get_this_binding();
+                    if (!this_obj) return Value();
+
+                    Value disposed = this_obj->get_property("_disposed");
+                    if (disposed.to_boolean()) {
+                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                        return Value();
+                    }
+
+                    auto disposable_ctor = ctx.get_binding("AsyncDisposableStack");
+                    if (disposable_ctor.is_function()) {
+                        Function* ctor = disposable_ctor.as_function();
+                        std::vector<Value> no_args;
+                        Value new_stack = ctor->call(ctx, no_args);
+
+                        if (new_stack.is_object()) {
+                            Object* new_stack_obj = new_stack.as_object();
+                            Value old_stack = this_obj->get_property("_stack");
+                            new_stack_obj->set_property("_stack", old_stack);
+                            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+                            this_obj->set_property("_disposed", Value(true));
+                            return new_stack;
+                        }
+                    }
+
+                    return Value();
+                }, 0);
+            stack_obj->set_property("move", Value(move_fn.release()));
+
+            return Value(stack_obj.release());
+        });
+    register_built_in_object("AsyncDisposableStack", asyncdisposablestack_constructor.release());
+
+    // Iterator constructor (ES2015)
+    // Iterator is not a constructor - it's the base class for iterator objects
+    auto iterator_constructor = ObjectFactory::create_native_function("Iterator",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            ctx.throw_type_error("Iterator is not a constructor");
+            return Value();
+        });
+
+    // Create Iterator.prototype
+    auto iterator_prototype = ObjectFactory::create_object();
+
+    // Add next method to Iterator.prototype (returns {done: true, value: undefined})
+    auto iterator_next = ObjectFactory::create_native_function("next",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            (void)args;
+            auto result = ObjectFactory::create_object();
+            result->set_property("done", Value(true));
+            result->set_property("value", Value());
+            return Value(result.release());
+        }, 0);
+    iterator_prototype->set_property("next", Value(iterator_next.release()));
+
+    iterator_constructor->set_property("prototype", Value(iterator_prototype.release()));
+    register_built_in_object("Iterator", iterator_constructor.release());
+
     // ArrayBuffer constructor for binary data support
     auto arraybuffer_constructor = ObjectFactory::create_native_function("ArrayBuffer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5868,6 +6586,25 @@ void Context::initialize_built_ins() {
 
     // Create ArrayBuffer.prototype
     auto arraybuffer_prototype = ObjectFactory::create_object();
+
+    // ArrayBuffer.prototype.byteLength getter
+    auto byteLength_getter = ObjectFactory::create_native_function("get byteLength",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_array_buffer()) {
+                ctx.throw_type_error("ArrayBuffer.prototype.byteLength called on non-ArrayBuffer");
+                return Value();
+            }
+            ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            return Value(static_cast<double>(ab->byte_length()));
+        }, 0);
+
+    PropertyDescriptor byteLength_desc;
+    byteLength_desc.set_getter(byteLength_getter.release());
+    byteLength_desc.set_enumerable(false);
+    byteLength_desc.set_configurable(true);
+    arraybuffer_prototype->set_property_descriptor("byteLength", byteLength_desc);
 
     // ArrayBuffer.prototype.slice (ES6)
     auto ab_slice_fn = ObjectFactory::create_native_function("slice",
@@ -6462,8 +7199,11 @@ void Context::setup_global_bindings() {
                 
                 lexical_environment_->create_binding(pair.first, binding_value, false);
                 // Also ensure it's bound to global object for property access
+                // Per ECMAScript spec: global properties should be { writable: true, enumerable: false, configurable: true }
                 if (global_object_) {
-                    global_object_->set_property(pair.first, binding_value);
+                    PropertyDescriptor desc(binding_value,
+                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    global_object_->set_property_descriptor(pair.first, desc);
                 }
             }
         }
@@ -6970,7 +7710,64 @@ void Context::register_typed_array_constructors() {
             return Value();
         });
     register_built_in_object("Uint8Array", uint8array_constructor.release());
-    
+
+    // Uint8ClampedArray constructor
+    auto uint8clampedarray_constructor = ObjectFactory::create_native_function("Uint8ClampedArray",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                auto typed_array = TypedArrayFactory::create_uint8_clamped_array(0);
+                return Value(typed_array.release());
+            }
+
+            const Value& arg = args[0];
+
+            // From length (number)
+            if (arg.is_number()) {
+                size_t length = static_cast<size_t>(arg.to_number());
+                auto typed_array = TypedArrayFactory::create_uint8_clamped_array(length);
+                return Value(typed_array.release());
+            }
+
+            // From object
+            if (arg.is_object()) {
+                Object* obj = arg.as_object();
+
+                // From array-like object
+                if (obj->is_array() || obj->has_property("length")) {
+                    uint32_t length = obj->is_array() ? obj->get_length() :
+                                     static_cast<uint32_t>(obj->get_property("length").to_number());
+
+                    auto typed_array = TypedArrayFactory::create_uint8_clamped_array(length);
+
+                    // Copy elements
+                    for (uint32_t i = 0; i < length; i++) {
+                        Value element = obj->get_element(i);
+                        typed_array->set_element(i, element);
+                    }
+
+                    return Value(typed_array.release());
+                }
+
+                // From TypedArray (copy constructor)
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* source = static_cast<TypedArrayBase*>(obj);
+                    size_t length = source->length();
+                    auto typed_array = TypedArrayFactory::create_uint8_clamped_array(length);
+
+                    // Copy elements
+                    for (size_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, source->get_element(i));
+                    }
+
+                    return Value(typed_array.release());
+                }
+            }
+
+            ctx.throw_type_error("Uint8ClampedArray constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("Uint8ClampedArray", uint8clampedarray_constructor.release());
+
     // Float32Array constructor
     auto float32array_constructor = ObjectFactory::create_native_function("Float32Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -7018,6 +7815,323 @@ void Context::register_typed_array_constructors() {
             return Value();
         });
     register_built_in_object("Float32Array", float32array_constructor.release());
+
+    // TypedArray base constructor (%TypedArray% intrinsic object)
+    // This is the abstract base class that all TypedArray constructors inherit from
+    auto typedarray_constructor = ObjectFactory::create_native_function("TypedArray",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            ctx.throw_type_error("Abstract class TypedArray not intended to be instantiated directly");
+            return Value();
+        }, 0);
+
+    // Set proper name property descriptor
+    PropertyDescriptor typedarray_name_desc(Value(std::string("TypedArray")),
+        static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    typedarray_constructor->set_property_descriptor("name", typedarray_name_desc);
+
+    // Set length property
+    PropertyDescriptor typedarray_length_desc(Value(0.0),
+        static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    typedarray_constructor->set_property_descriptor("length", typedarray_length_desc);
+
+    // Create TypedArray.prototype
+    auto typedarray_prototype = ObjectFactory::create_object();
+
+    // TypedArray.prototype.constructor should point back to TypedArray
+    PropertyDescriptor typedarray_constructor_desc(Value(typedarray_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_prototype->set_property_descriptor("constructor", typedarray_constructor_desc);
+
+    // Add Symbol.toStringTag to TypedArray.prototype
+    PropertyDescriptor typedarray_tag_desc(Value(std::string("TypedArray")), PropertyAttributes::Configurable);
+    typedarray_prototype->set_property_descriptor("Symbol.toStringTag", typedarray_tag_desc);
+
+    // Add accessor properties to TypedArray.prototype
+
+    // TypedArray.prototype.buffer getter
+    auto buffer_getter = ObjectFactory::create_native_function("get buffer",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.buffer called on non-TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            return Value(ta->buffer());
+        }, 0);
+    PropertyDescriptor buffer_desc;
+    buffer_desc.set_getter(buffer_getter.release());
+    buffer_desc.set_enumerable(false);
+    buffer_desc.set_configurable(true);
+    typedarray_prototype->set_property_descriptor("buffer", buffer_desc);
+
+    // TypedArray.prototype.byteLength getter
+    auto byteLength_getter = ObjectFactory::create_native_function("get byteLength",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.byteLength called on non-TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            return Value(static_cast<double>(ta->byte_length()));
+        }, 0);
+    PropertyDescriptor byteLength_desc;
+    byteLength_desc.set_getter(byteLength_getter.release());
+    byteLength_desc.set_enumerable(false);
+    byteLength_desc.set_configurable(true);
+    typedarray_prototype->set_property_descriptor("byteLength", byteLength_desc);
+
+    // TypedArray.prototype.byteOffset getter
+    auto byteOffset_getter = ObjectFactory::create_native_function("get byteOffset",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.byteOffset called on non-TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            return Value(static_cast<double>(ta->byte_offset()));
+        }, 0);
+    PropertyDescriptor byteOffset_desc;
+    byteOffset_desc.set_getter(byteOffset_getter.release());
+    byteOffset_desc.set_enumerable(false);
+    byteOffset_desc.set_configurable(true);
+    typedarray_prototype->set_property_descriptor("byteOffset", byteOffset_desc);
+
+    // TypedArray.prototype.length getter
+    auto length_getter = ObjectFactory::create_native_function("get length",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.length called on non-TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            return Value(static_cast<double>(ta->length()));
+        }, 0);
+    PropertyDescriptor length_desc;
+    length_desc.set_getter(length_getter.release());
+    length_desc.set_enumerable(false);
+    length_desc.set_configurable(true);
+    typedarray_prototype->set_property_descriptor("length", length_desc);
+
+    // Store pointer before releasing
+    Object* typedarray_proto_ptr = typedarray_prototype.get();
+
+    // Add TypedArray.prototype methods (using raw pointer before release)
+
+    // TypedArray.prototype.forEach
+    auto forEach_fn = ObjectFactory::create_native_function("forEach",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.forEach called on non-TypedArray");
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("forEach requires a callback function");
+                return Value();
+            }
+
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
+            size_t length = ta->length();
+            for (size_t i = 0; i < length; i++) {
+                std::vector<Value> callback_args = {
+                    ta->get_element(i),
+                    Value(static_cast<double>(i)),
+                    Value(this_obj)
+                };
+                callback->call(ctx, callback_args, thisArg);
+            }
+            return Value();
+        }, 1);
+    PropertyDescriptor forEach_desc(Value(forEach_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_proto_ptr->set_property_descriptor("forEach", forEach_desc);
+
+    // TypedArray.prototype.map
+    auto map_fn = ObjectFactory::create_native_function("map",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.map called on non-TypedArray");
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("map requires a callback function");
+                return Value();
+            }
+
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
+            size_t length = ta->length();
+            // Create same type of TypedArray as result based on array_type
+            TypedArrayBase* result = nullptr;
+            switch (ta->get_array_type()) {
+                case TypedArrayBase::ArrayType::INT8:
+                    result = TypedArrayFactory::create_int8_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT8:
+                    result = TypedArrayFactory::create_uint8_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT8_CLAMPED:
+                    result = TypedArrayFactory::create_uint8_clamped_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::INT16:
+                    result = TypedArrayFactory::create_int16_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT16:
+                    result = TypedArrayFactory::create_uint16_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::INT32:
+                    result = TypedArrayFactory::create_int32_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT32:
+                    result = TypedArrayFactory::create_uint32_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::FLOAT32:
+                    result = TypedArrayFactory::create_float32_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::FLOAT64:
+                    result = TypedArrayFactory::create_float64_array(length).release();
+                    break;
+                default:
+                    ctx.throw_type_error("Unsupported TypedArray type");
+                    return Value();
+            }
+
+            for (size_t i = 0; i < length; i++) {
+                std::vector<Value> callback_args = {
+                    ta->get_element(i),
+                    Value(static_cast<double>(i)),
+                    Value(this_obj)
+                };
+                Value mapped = callback->call(ctx, callback_args, thisArg);
+                result->set_element(i, mapped);
+            }
+            return Value(result);
+        }, 1);
+    PropertyDescriptor map_desc(Value(map_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_proto_ptr->set_property_descriptor("map", map_desc);
+
+    // TypedArray.prototype.filter
+    auto filter_fn = ObjectFactory::create_native_function("filter",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.filter called on non-TypedArray");
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("filter requires a callback function");
+                return Value();
+            }
+
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
+            size_t length = ta->length();
+            std::vector<Value> filtered;
+
+            for (size_t i = 0; i < length; i++) {
+                Value element = ta->get_element(i);
+                std::vector<Value> callback_args = {
+                    element,
+                    Value(static_cast<double>(i)),
+                    Value(this_obj)
+                };
+                Value result = callback->call(ctx, callback_args, thisArg);
+                if (result.to_boolean()) {
+                    filtered.push_back(element);
+                }
+            }
+
+            // Create result TypedArray with filtered elements
+            TypedArrayBase* result = nullptr;
+            switch (ta->get_array_type()) {
+                case TypedArrayBase::ArrayType::INT8:
+                    result = TypedArrayFactory::create_int8_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT8:
+                    result = TypedArrayFactory::create_uint8_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT8_CLAMPED:
+                    result = TypedArrayFactory::create_uint8_clamped_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::INT16:
+                    result = TypedArrayFactory::create_int16_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT16:
+                    result = TypedArrayFactory::create_uint16_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::INT32:
+                    result = TypedArrayFactory::create_int32_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::UINT32:
+                    result = TypedArrayFactory::create_uint32_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::FLOAT32:
+                    result = TypedArrayFactory::create_float32_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::FLOAT64:
+                    result = TypedArrayFactory::create_float64_array(filtered.size()).release();
+                    break;
+                default:
+                    ctx.throw_type_error("Unsupported TypedArray type");
+                    return Value();
+            }
+            for (size_t i = 0; i < filtered.size(); i++) {
+                result->set_element(i, filtered[i]);
+            }
+            return Value(result);
+        }, 1);
+    PropertyDescriptor filter_desc(Value(filter_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_proto_ptr->set_property_descriptor("filter", filter_desc);
+
+    // Set TypedArray.prototype (non-writable, non-enumerable, non-configurable per spec)
+    PropertyDescriptor typedarray_prototype_desc(Value(typedarray_prototype.release()), PropertyAttributes::None);
+    typedarray_constructor->set_property_descriptor("prototype", typedarray_prototype_desc);
+
+    // Add TypedArray static methods
+
+    // TypedArray.from
+    auto typedarray_from = ObjectFactory::create_native_function("from",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // TypedArray.from is abstract - should be called on concrete TypedArray constructors
+            // For testing purposes, return a basic implementation
+            ctx.throw_type_error("TypedArray.from must be called on a concrete TypedArray constructor");
+            return Value();
+        }, 1);
+    PropertyDescriptor from_desc(Value(typedarray_from.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_constructor->set_property_descriptor("from", from_desc);
+
+    // TypedArray.of
+    auto typedarray_of = ObjectFactory::create_native_function("of",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // TypedArray.of is abstract - should be called on concrete TypedArray constructors
+            ctx.throw_type_error("TypedArray.of must be called on a concrete TypedArray constructor");
+            return Value();
+        }, 0);
+    PropertyDescriptor of_desc(Value(typedarray_of.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    typedarray_constructor->set_property_descriptor("of", of_desc);
+
+    register_built_in_object("TypedArray", typedarray_constructor.release());
 
     // Additional TypedArray constructors
     auto int8array_constructor = ObjectFactory::create_native_function("Int8Array",
@@ -7068,6 +8182,16 @@ void Context::register_typed_array_constructors() {
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Uint16Array>(shared_buffer).release());
                 }
+                // From Array or Array-like or TypedArray
+                if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
+                    uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
+                                     (obj->is_array() ? obj->get_length() : static_cast<uint32_t>(obj->get_property("length").to_number()));
+                    auto typed_array = TypedArrayFactory::create_uint16_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
             }
             ctx.throw_type_error("Uint16Array constructor argument not supported");
             return Value();
@@ -7089,6 +8213,16 @@ void Context::register_typed_array_constructors() {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Int16Array>(shared_buffer).release());
+                }
+                // From Array or Array-like or TypedArray
+                if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
+                    uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
+                                     (obj->is_array() ? obj->get_length() : static_cast<uint32_t>(obj->get_property("length").to_number()));
+                    auto typed_array = TypedArrayFactory::create_int16_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
                 }
             }
             ctx.throw_type_error("Int16Array constructor argument not supported");
@@ -7143,6 +8277,16 @@ void Context::register_typed_array_constructors() {
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Int32Array>(shared_buffer).release());
                 }
+                // From Array or Array-like or TypedArray
+                if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
+                    uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
+                                     (obj->is_array() ? obj->get_length() : static_cast<uint32_t>(obj->get_property("length").to_number()));
+                    auto typed_array = TypedArrayFactory::create_int32_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
             }
             ctx.throw_type_error("Int32Array constructor argument not supported");
             return Value();
@@ -7154,18 +8298,44 @@ void Context::register_typed_array_constructors() {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_float64_array(0).release());
             }
+
             if (args[0].is_number()) {
                 size_t length = static_cast<size_t>(args[0].as_number());
                 return Value(TypedArrayFactory::create_float64_array(length).release());
             }
+
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
+
                 if (obj->is_array_buffer()) {
                     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
                     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
                     return Value(std::make_unique<Float64Array>(shared_buffer).release());
                 }
+
+                // From Array or Array-like object
+                if (obj->is_array() || obj->has_property("length")) {
+                    uint32_t length = obj->is_array() ? obj->get_length() :
+                                     static_cast<uint32_t>(obj->get_property("length").to_number());
+                    auto typed_array = TypedArrayFactory::create_float64_array(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, obj->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
+
+                // From TypedArray (copy constructor)
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* source = static_cast<TypedArrayBase*>(obj);
+                    size_t length = source->length();
+                    auto typed_array = TypedArrayFactory::create_float64_array(length);
+                    for (size_t i = 0; i < length; i++) {
+                        typed_array->set_element(i, source->get_element(i));
+                    }
+                    return Value(typed_array.release());
+                }
             }
+
             ctx.throw_type_error("Float64Array constructor argument not supported");
             return Value();
         });
