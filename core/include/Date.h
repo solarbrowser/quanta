@@ -64,6 +64,19 @@ public:
     static Value getYear(Context& ctx, const std::vector<Value>& args);
     static Value setYear(Context& ctx, const std::vector<Value>& args);
 
+    // Timezone
+    static Value getTimezoneOffset(Context& ctx, const std::vector<Value>& args);
+
+    // UTC methods
+    static Value getUTCDate(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCDay(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCFullYear(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCHours(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMilliseconds(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMinutes(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMonth(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCSeconds(Context& ctx, const std::vector<Value>& args);
+
     // String methods
     static Value toString(Context& ctx, const std::vector<Value>& args);
     static Value toISOString(Context& ctx, const std::vector<Value>& args);

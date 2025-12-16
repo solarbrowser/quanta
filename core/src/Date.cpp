@@ -373,4 +373,91 @@ Value Date::setYear(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(new_timestamp));
 }
 
+// Get timezone offset in minutes
+Value Date::getTimezoneOffset(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* local_tm = std::localtime(&tt);
+    std::tm* utc_tm = std::gmtime(&tt);
+
+    if (!local_tm || !utc_tm) {
+        return Value(0.0);
+    }
+
+    // Calculate offset in minutes
+    int offset_hours = local_tm->tm_hour - utc_tm->tm_hour;
+    int offset_mins = local_tm->tm_min - utc_tm->tm_min;
+
+    // JavaScript returns offset in minutes (negative for ahead of UTC)
+    int total_offset = -(offset_hours * 60 + offset_mins);
+
+    return Value(static_cast<double>(total_offset));
+}
+
+// UTC Date methods
+Value Date::getUTCDate(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCDay(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_wday)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCFullYear(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCHours(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_hour)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms % 1000));
+}
+
+Value Date::getUTCMinutes(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_min)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCMonth(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
+Value Date::getUTCSeconds(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm* utc_tm = std::gmtime(&tt);
+    return utc_tm ? Value(static_cast<double>(utc_tm->tm_sec)) : Value(std::numeric_limits<double>::quiet_NaN());
+}
+
 } // namespace Quanta

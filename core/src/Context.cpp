@@ -1593,13 +1593,29 @@ void Context::initialize_built_ins() {
     // Array.prototype.find
     auto find_fn = ObjectFactory::create_native_function("find",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // For now, simplified implementation
-            if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: callback must be a function"));
-                return Value();
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.find callback must be a function");
             }
-            // Return the first argument for basic testing
-            return Value(42); // Placeholder implementation
+
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
+            uint32_t length = this_obj->get_length();
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                Value result = callback->call(ctx, callback_args, thisArg);
+
+                if (result.to_boolean()) {
+                    return element;
+                }
+            }
+
+            return Value(); // undefined if not found
         });
 
     PropertyDescriptor find_length_desc(Value(1.0), PropertyAttributes::Configurable);
@@ -1633,14 +1649,20 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            Function* callback_fn = callback.as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
             uint32_t length = this_obj->get_length();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                // Simplified: just return first element for now
-                return element;
+                Value result = callback_fn->call(ctx, callback_args, thisArg);
+
+                if (result.to_boolean()) {
+                    return element;
+                }
             }
-            return Value(); // undefined
+            return Value(); // undefined if not found
         }, 1);
 
     findLast_fn->set_property("name", Value("findLast"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -1668,12 +1690,18 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            Function* callback_fn = callback.as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
             uint32_t length = this_obj->get_length();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                // Simplified: just return first index for now
-                return Value(static_cast<double>(i));
+                Value result = callback_fn->call(ctx, callback_args, thisArg);
+
+                if (result.to_boolean()) {
+                    return Value(static_cast<double>(i));
+                }
             }
             return Value(-1.0); // not found
         }, 1);
@@ -1692,15 +1720,40 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            // Simplified implementation - return a copy of the array
-            auto result = ObjectFactory::create_array();
             uint32_t length = this_obj->get_length();
 
-            // Copy all elements
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = this_obj->get_element(i);
-                result->set_element(i, element);
+            // Get index and value
+            if (args.empty()) {
+                throw std::runtime_error("TypeError: Array.prototype.with requires an index argument");
             }
+
+            double index_arg = args[0].to_number();
+            int32_t actual_index;
+
+            // Handle negative indices
+            if (index_arg < 0) {
+                actual_index = static_cast<int32_t>(length) + static_cast<int32_t>(index_arg);
+            } else {
+                actual_index = static_cast<int32_t>(index_arg);
+            }
+
+            // Check if index is out of bounds
+            if (actual_index < 0 || actual_index >= static_cast<int32_t>(length)) {
+                throw std::runtime_error("RangeError: Array.prototype.with index out of bounds");
+            }
+
+            Value new_value = args.size() > 1 ? args[1] : Value();
+
+            // Create new array with all elements
+            auto result = ObjectFactory::create_array();
+            for (uint32_t i = 0; i < length; i++) {
+                if (i == static_cast<uint32_t>(actual_index)) {
+                    result->set_element(i, new_value);
+                } else {
+                    result->set_element(i, this_obj->get_element(i));
+                }
+            }
+            result->set_length(length);
 
             return Value(result.release());
         }, 2);
@@ -1814,12 +1867,46 @@ void Context::initialize_built_ins() {
     // Array.prototype.flat
     auto flat_fn = ObjectFactory::create_native_function("flat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Simplified implementation - return new array
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value(ObjectFactory::create_array().release());
+
+            // Get depth argument (default is 1)
+            double depth = 1.0;
+            if (!args.empty() && !args[0].is_undefined()) {
+                depth = args[0].to_number();
+                if (std::isnan(depth) || depth < 0) {
+                    depth = 0.0;
+                }
+            }
+
+            // Helper lambda for recursive flattening
+            std::function<void(Object*, std::unique_ptr<Object>&, double)> flatten_helper;
+            flatten_helper = [&](Object* source, std::unique_ptr<Object>& target, double current_depth) {
+                uint32_t source_length = source->get_length();
+                uint32_t target_length = target->get_length();
+
+                for (uint32_t i = 0; i < source_length; i++) {
+                    Value element = source->get_element(i);
+
+                    // If element is array and we haven't reached depth limit, recurse
+                    if (element.is_object() && current_depth > 0) {
+                        Object* element_obj = element.as_object();
+                        if (element_obj->has_property("length")) {
+                            flatten_helper(element_obj, target, current_depth - 1);
+                            continue;
+                        }
+                    }
+
+                    // Otherwise, add element to target
+                    target->set_element(target_length++, element);
+                }
+
+                target->set_length(target_length);
+            };
+
             auto result = ObjectFactory::create_array();
-            result->set_element(0, Value(1));
-            result->set_element(1, Value(2));
-            result->set_element(2, Value(3));
-            result->set_property("length", Value(3.0));
+            flatten_helper(this_obj, result, depth);
+
             return Value(result.release());
         });
 
@@ -1965,11 +2052,55 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     array_prototype->set_property_descriptor("push", push_desc);
 
-    // Missing Array.prototype methods - minimal stubs for name/length properties
+    // Array.prototype.copyWithin
     auto copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Minimal stub - just return this
-            return Value(ctx.get_this_binding());
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            uint32_t length = this_obj->get_length();
+
+            // Get target position
+            double target_arg = args.empty() ? 0.0 : args[0].to_number();
+            int32_t target = target_arg < 0
+                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(target_arg))
+                : std::min(static_cast<uint32_t>(target_arg), length);
+
+            // Get start position
+            double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
+            int32_t start = start_arg < 0
+                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
+                : std::min(static_cast<uint32_t>(start_arg), length);
+
+            // Get end position
+            double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
+            int32_t end = end_arg < 0
+                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
+                : std::min(static_cast<uint32_t>(end_arg), length);
+
+            // Calculate count
+            int32_t count = std::min(end - start, static_cast<int32_t>(length) - target);
+
+            if (count <= 0) {
+                return Value(this_obj);
+            }
+
+            // Copy in correct direction to handle overlapping regions
+            if (start < target && target < start + count) {
+                // Copy backwards
+                for (int32_t i = count - 1; i >= 0; i--) {
+                    Value val = this_obj->get_element(start + i);
+                    this_obj->set_element(target + i, val);
+                }
+            } else {
+                // Copy forwards
+                for (int32_t i = 0; i < count; i++) {
+                    Value val = this_obj->get_element(start + i);
+                    this_obj->set_element(target + i, val);
+                }
+            }
+
+            return Value(this_obj);
         });
 
     // Set correct length property for copyWithin (should be 2)
@@ -2127,8 +2258,40 @@ void Context::initialize_built_ins() {
 
     auto toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Minimal stub - return empty string
-            return Value("");
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value("");
+
+            uint32_t length = this_obj->get_length();
+            std::string result;
+
+            for (uint32_t i = 0; i < length; i++) {
+                if (i > 0) {
+                    result += ",";
+                }
+
+                Value element = this_obj->get_element(i);
+
+                // Call toLocaleString on each element if it exists
+                if (!element.is_null() && !element.is_undefined()) {
+                    if (element.is_object()) {
+                        Object* elem_obj = element.as_object();
+                        if (elem_obj->has_property("toLocaleString")) {
+                            Value toLocaleString_val = elem_obj->get_property("toLocaleString");
+                            if (toLocaleString_val.is_function()) {
+                                Function* fn = toLocaleString_val.as_function();
+                                std::vector<Value> empty_args;
+                                Value str_val = fn->call(ctx, empty_args, element);
+                                result += str_val.to_string();
+                                continue;
+                            }
+                        }
+                    }
+                    result += element.to_string();
+                }
+            }
+
+            return Value(result);
         });
     PropertyDescriptor array_toLocaleString_desc(Value(toLocaleString_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -2274,14 +2437,21 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(false);
 
-            if (args.empty() || !args[0].is_function()) return Value(false);
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.every callback must be a function");
+            }
 
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                // Simplified - always return true for now
-                return Value(true);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call(ctx, callback_args, thisArg);
+                if (!result.to_boolean()) {
+                    return Value(false);
+                }
             }
             return Value(true);
         }, 1);
@@ -2295,8 +2465,26 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.filter callback must be a function");
+            }
+
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+            uint32_t length = this_obj->get_length();
+
             auto result = ObjectFactory::create_array();
-            // Simplified - return empty array for now
+            uint32_t result_index = 0;
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value test_result = callback->call(ctx, callback_args, thisArg);
+                if (test_result.to_boolean()) {
+                    result->set_element(result_index++, element);
+                }
+            }
+            result->set_length(result_index);
             return Value(result.release());
         }, 1);
     PropertyDescriptor filter_desc(Value(filter_fn.release()),
@@ -2349,12 +2537,22 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.map callback must be a function");
+            }
+
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
             auto result = ObjectFactory::create_array();
             uint32_t length = this_obj->get_length();
 
-            // Copy elements (simplified - no callback execution)
+            // Execute callback for each element
             for (uint32_t i = 0; i < length; i++) {
-                result->set_element(i, this_obj->get_element(i));
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value mapped = callback->call(ctx, callback_args, thisArg);
+                result->set_element(i, mapped);
             }
             result->set_length(length);
             return Value(result.release());
@@ -2369,13 +2567,39 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
-            if (args.empty() || !args[0].is_function()) return Value();
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+            }
 
+            Function* callback = args[0].as_function();
             uint32_t length = this_obj->get_length();
-            if (length == 0) return args.size() > 1 ? args[1] : Value();
 
-            // Simplified - return first element
-            return this_obj->get_element(0);
+            if (length == 0 && args.size() < 2) {
+                throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+            }
+
+            uint32_t start_index = 0;
+            Value accumulator;
+
+            if (args.size() > 1) {
+                accumulator = args[1];
+            } else {
+                accumulator = this_obj->get_element(0);
+                start_index = 1;
+            }
+
+            for (uint32_t i = start_index; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = {
+                    accumulator,
+                    element,
+                    Value(static_cast<double>(i)),
+                    Value(this_obj)
+                };
+                accumulator = callback->call(ctx, callback_args);
+            }
+
+            return accumulator;
         }, 1);
     PropertyDescriptor reduce_desc(Value(reduce_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -2387,9 +2611,23 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(false);
 
-            if (args.empty() || !args[0].is_function()) return Value(false);
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.some callback must be a function");
+            }
 
-            // Simplified - return false for now
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+            uint32_t length = this_obj->get_length();
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call(ctx, callback_args, thisArg);
+                if (result.to_boolean()) {
+                    return Value(true);
+                }
+            }
+
             return Value(false);
         }, 1);
     PropertyDescriptor some_desc(Value(some_fn.release()),
@@ -2402,9 +2640,23 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(-1.0);
 
-            if (args.empty() || !args[0].is_function()) return Value(-1.0);
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.findIndex callback must be a function");
+            }
 
-            // Simplified - return -1
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+            uint32_t length = this_obj->get_length();
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                Value result = callback->call(ctx, callback_args, thisArg);
+                if (result.to_boolean()) {
+                    return Value(static_cast<double>(i));
+                }
+            }
+
             return Value(-1.0);
         }, 1);
     PropertyDescriptor findIndex_desc(Value(findIndex_fn.release()),
@@ -2525,35 +2777,63 @@ void Context::initialize_built_ins() {
 
             // Get compareFn if provided
             Function* compareFn = nullptr;
-            if (!args.empty() && args[0].is_function()) {
+            if (!args.empty() && !args[0].is_undefined() && args[0].is_function()) {
                 compareFn = args[0].as_function();
             }
 
-            // Simple bubble sort implementation
-            for (uint32_t i = 0; i < length - 1; i++) {
-                for (uint32_t j = 0; j < length - i - 1; j++) {
-                    Value a = this_obj->get_element(j);
-                    Value b = this_obj->get_element(j + 1);
+            // Comparison function wrapper
+            auto compare = [&](const Value& a, const Value& b) -> int {
+                // Handle undefined values (they sort to the end)
+                if (a.is_undefined() && b.is_undefined()) return 0;
+                if (a.is_undefined()) return 1;
+                if (b.is_undefined()) return -1;
 
-                    bool should_swap = false;
-                    if (compareFn) {
-                        // Use custom compare function
-                        std::vector<Value> compare_args = { a, b };
-                        Value result = compareFn->call(ctx, compare_args);
-                        should_swap = result.to_number() > 0;
-                    } else {
-                        // Default: convert to string and compare
-                        std::string str_a = a.to_string();
-                        std::string str_b = b.to_string();
-                        should_swap = str_a > str_b;
-                    }
-
-                    if (should_swap) {
-                        this_obj->set_element(j, b);
-                        this_obj->set_element(j + 1, a);
-                    }
+                if (compareFn) {
+                    // Use custom compare function
+                    std::vector<Value> compare_args = { a, b };
+                    Value result = compareFn->call(ctx, compare_args);
+                    double cmp = result.to_number();
+                    if (std::isnan(cmp)) return 0;
+                    return cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
+                } else {
+                    // Default: convert to string and compare
+                    std::string str_a = a.to_string();
+                    std::string str_b = b.to_string();
+                    return str_a.compare(str_b);
                 }
-            }
+            };
+
+            // QuickSort implementation (in-place, O(n log n) average)
+            std::function<void(int32_t, int32_t)> quicksort;
+            quicksort = [&](int32_t low, int32_t high) {
+                if (low < high) {
+                    // Partition
+                    Value pivot = this_obj->get_element(high);
+                    int32_t i = low - 1;
+
+                    for (int32_t j = low; j < high; j++) {
+                        Value current = this_obj->get_element(j);
+                        if (compare(current, pivot) <= 0) {
+                            i++;
+                            Value temp = this_obj->get_element(i);
+                            this_obj->set_element(i, current);
+                            this_obj->set_element(j, temp);
+                        }
+                    }
+
+                    Value temp = this_obj->get_element(i + 1);
+                    this_obj->set_element(i + 1, this_obj->get_element(high));
+                    this_obj->set_element(high, temp);
+
+                    int32_t pivot_index = i + 1;
+
+                    // Recursively sort partitions
+                    quicksort(low, pivot_index - 1);
+                    quicksort(pivot_index + 1, high);
+                }
+            };
+
+            quicksort(0, static_cast<int32_t>(length) - 1);
 
             return Value(this_obj);
         }, 1);
@@ -2567,8 +2847,72 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            uint32_t length = this_obj->get_length();
+
+            // Get start index
+            int32_t start = 0;
+            if (!args.empty()) {
+                double start_arg = args[0].to_number();
+                if (start_arg < 0) {
+                    start = std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg));
+                } else {
+                    start = std::min(static_cast<uint32_t>(start_arg), length);
+                }
+            }
+
+            // Get delete count
+            uint32_t delete_count = 0;
+            if (args.size() < 2) {
+                delete_count = length - start;
+            } else {
+                double delete_arg = args[1].to_number();
+                if (delete_arg < 0) {
+                    delete_count = 0;
+                } else {
+                    delete_count = std::min(static_cast<uint32_t>(delete_arg), length - start);
+                }
+            }
+
+            // Collect items to insert (args[2] onwards)
+            std::vector<Value> items_to_insert;
+            for (size_t i = 2; i < args.size(); i++) {
+                items_to_insert.push_back(args[i]);
+            }
+
+            // Create result array with deleted elements
             auto result = ObjectFactory::create_array();
-            // Simplified - return empty array
+            for (uint32_t i = 0; i < delete_count; i++) {
+                result->set_element(i, this_obj->get_element(start + i));
+            }
+            result->set_length(delete_count);
+
+            // Calculate new length
+            uint32_t item_count = items_to_insert.size();
+            uint32_t new_length = length - delete_count + item_count;
+
+            // If inserting more than deleting, shift elements right
+            if (item_count > delete_count) {
+                uint32_t shift = item_count - delete_count;
+                for (int32_t i = length - 1; i >= static_cast<int32_t>(start + delete_count); i--) {
+                    this_obj->set_element(i + shift, this_obj->get_element(i));
+                }
+            }
+            // If deleting more than inserting, shift elements left
+            else if (delete_count > item_count) {
+                uint32_t shift = delete_count - item_count;
+                for (uint32_t i = start + delete_count; i < length; i++) {
+                    this_obj->set_element(i - shift, this_obj->get_element(i));
+                }
+            }
+
+            // Insert new items
+            for (uint32_t i = 0; i < item_count; i++) {
+                this_obj->set_element(start + i, items_to_insert[i]);
+            }
+
+            // Update length
+            this_obj->set_length(new_length);
+
             return Value(result.release());
         }, 2);
     PropertyDescriptor splice_desc(Value(splice_fn.release()),
@@ -5306,6 +5650,47 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     date_prototype->set_property_descriptor("toTimeString", toTimeString_desc);
 
+    // Timezone offset
+    auto getTimezoneOffset_fn = ObjectFactory::create_native_function("getTimezoneOffset", Date::getTimezoneOffset, 0);
+    PropertyDescriptor getTimezoneOffset_desc(Value(getTimezoneOffset_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getTimezoneOffset", getTimezoneOffset_desc);
+
+    // UTC methods
+    auto getUTCDate_fn = ObjectFactory::create_native_function("getUTCDate", Date::getUTCDate, 0);
+    auto getUTCDay_fn = ObjectFactory::create_native_function("getUTCDay", Date::getUTCDay, 0);
+    auto getUTCFullYear_fn = ObjectFactory::create_native_function("getUTCFullYear", Date::getUTCFullYear, 0);
+    auto getUTCHours_fn = ObjectFactory::create_native_function("getUTCHours", Date::getUTCHours, 0);
+    auto getUTCMilliseconds_fn = ObjectFactory::create_native_function("getUTCMilliseconds", Date::getUTCMilliseconds, 0);
+    auto getUTCMinutes_fn = ObjectFactory::create_native_function("getUTCMinutes", Date::getUTCMinutes, 0);
+    auto getUTCMonth_fn = ObjectFactory::create_native_function("getUTCMonth", Date::getUTCMonth, 0);
+    auto getUTCSeconds_fn = ObjectFactory::create_native_function("getUTCSeconds", Date::getUTCSeconds, 0);
+
+    PropertyDescriptor getUTCDate_desc(Value(getUTCDate_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCDate", getUTCDate_desc);
+    PropertyDescriptor getUTCDay_desc(Value(getUTCDay_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCDay", getUTCDay_desc);
+    PropertyDescriptor getUTCFullYear_desc(Value(getUTCFullYear_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCFullYear", getUTCFullYear_desc);
+    PropertyDescriptor getUTCHours_desc(Value(getUTCHours_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCHours", getUTCHours_desc);
+    PropertyDescriptor getUTCMilliseconds_desc(Value(getUTCMilliseconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCMilliseconds", getUTCMilliseconds_desc);
+    PropertyDescriptor getUTCMinutes_desc(Value(getUTCMinutes_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCMinutes", getUTCMinutes_desc);
+    PropertyDescriptor getUTCMonth_desc(Value(getUTCMonth_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCMonth", getUTCMonth_desc);
+    PropertyDescriptor getUTCSeconds_desc(Value(getUTCSeconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("getUTCSeconds", getUTCSeconds_desc);
+
     // Legacy methods (Annex B) - should be non-enumerable
     date_prototype->set_property("getYear", Value(getYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     date_prototype->set_property("setYear", Value(setYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -6975,10 +7360,27 @@ void Context::initialize_built_ins() {
             }
         });
     
-    // ArrayBuffer.isView - minimal stub to avoid segfaults
+    // ArrayBuffer.isView - check if value is a TypedArray or DataView
     auto arraybuffer_isView = ObjectFactory::create_native_function("isView",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Minimal stub - return false
+            (void)ctx;
+            if (args.empty() || !args[0].is_object()) {
+                return Value(false);
+            }
+
+            Object* obj = args[0].as_object();
+
+            // Check if it's a TypedArray or DataView by checking for specific properties
+            // TypedArrays and DataView have a [[ViewedArrayBuffer]] internal slot
+            // We can check if the object has buffer property (TypedArrays) or is DataView
+            if (obj->has_property("buffer") || obj->has_property("byteLength")) {
+                Value buffer_val = obj->get_property("buffer");
+                // If it has a buffer property that's an ArrayBuffer, it's a view
+                if (buffer_val.is_object()) {
+                    return Value(true);
+                }
+            }
+
             return Value(false);
         });
 
@@ -7267,40 +7669,102 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("NaN", Value::nan(), false);
     lexical_environment_->create_binding("Infinity", Value::positive_infinity(), false);
     
-    // Missing global functions
+    // URI encoding/decoding functions
     auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value("");
             std::string input = args[0].to_string();
-            // Basic implementation - just return the input for now
-            return Value(input);
+            std::string result;
+
+            // Characters not to encode in encodeURI: A-Z a-z 0-9 ; , / ? : @ & = + $ - _ . ! ~ * ' ( ) #
+            for (unsigned char c : input) {
+                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                    c == ';' || c == ',' || c == '/' || c == '?' || c == ':' || c == '@' ||
+                    c == '&' || c == '=' || c == '+' || c == '$' || c == '-' || c == '_' ||
+                    c == '.' || c == '!' || c == '~' || c == '*' || c == '\'' || c == '(' ||
+                    c == ')' || c == '#') {
+                    result += c;
+                } else {
+                    char hex[4];
+                    snprintf(hex, sizeof(hex), "%%%02X", c);
+                    result += hex;
+                }
+            }
+            return Value(result);
         }, 1);
     lexical_environment_->create_binding("encodeURI", Value(encode_uri_fn.release()), false);
-    
+
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value("");
             std::string input = args[0].to_string();
-            // Basic implementation - just return the input for now
-            return Value(input);
+            std::string result;
+
+            for (size_t i = 0; i < input.length(); i++) {
+                if (input[i] == '%' && i + 2 < input.length()) {
+                    int value;
+                    if (sscanf(input.substr(i + 1, 2).c_str(), "%x", &value) == 1) {
+                        result += static_cast<char>(value);
+                        i += 2;
+                    } else {
+                        result += input[i];
+                    }
+                } else {
+                    result += input[i];
+                }
+            }
+            return Value(result);
         }, 1);
     lexical_environment_->create_binding("decodeURI", Value(decode_uri_fn.release()), false);
-    
+
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value("");
             std::string input = args[0].to_string();
-            // Basic implementation - just return the input for now
-            return Value(input);
+            std::string result;
+
+            // Characters not to encode in encodeURIComponent: A-Z a-z 0-9 - _ . ! ~ * ' ( )
+            for (unsigned char c : input) {
+                if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' || c == '.' || c == '!' || c == '~' || c == '*' ||
+                    c == '\'' || c == '(' || c == ')') {
+                    result += c;
+                } else {
+                    char hex[4];
+                    snprintf(hex, sizeof(hex), "%%%02X", c);
+                    result += hex;
+                }
+            }
+            return Value(result);
         }, 1);
     lexical_environment_->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), false);
-    
+
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value("");
             std::string input = args[0].to_string();
-            // Basic implementation - just return the input for now
-            return Value(input);
+            std::string result;
+
+            for (size_t i = 0; i < input.length(); i++) {
+                if (input[i] == '%' && i + 2 < input.length()) {
+                    int value;
+                    if (sscanf(input.substr(i + 1, 2).c_str(), "%x", &value) == 1) {
+                        result += static_cast<char>(value);
+                        i += 2;
+                    } else {
+                        result += input[i];
+                    }
+                } else if (input[i] == '+') {
+                    result += ' ';
+                } else {
+                    result += input[i];
+                }
+            }
+            return Value(result);
         }, 1);
     lexical_environment_->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), false);
     
