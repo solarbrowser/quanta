@@ -267,8 +267,15 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("ArrayBuffer size must be a number");
         return Value();
     }
-    
+
     double length_double = args[0].as_number();
+
+    // Check for NaN and Infinity
+    if (std::isnan(length_double) || std::isinf(length_double)) {
+        ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
+        return Value();
+    }
+
     if (length_double < 0 || length_double != std::floor(length_double)) {
         ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
         return Value();

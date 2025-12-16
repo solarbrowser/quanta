@@ -1919,6 +1919,53 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     array_prototype->set_property_descriptor("flat", flat_desc);
 
+    // Array.prototype.flatMap (ES2019)
+    auto flatMap_fn = ObjectFactory::create_native_function("flatMap",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value(ObjectFactory::create_array().release());
+
+            if (args.empty() || !args[0].is_function()) {
+                throw std::runtime_error("TypeError: Array.prototype.flatMap callback must be a function");
+            }
+
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
+            uint32_t length = this_obj->get_length();
+            auto result = ObjectFactory::create_array();
+            uint32_t result_index = 0;
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                Value mapped = callback->call(ctx, callback_args, thisArg);
+
+                // Flatten the mapped value (depth 1 only)
+                if (mapped.is_object()) {
+                    Object* mapped_obj = mapped.as_object();
+                    if (mapped_obj->has_property("length")) {
+                        uint32_t mapped_length = mapped_obj->get_length();
+                        for (uint32_t j = 0; j < mapped_length; j++) {
+                            result->set_element(result_index++, mapped_obj->get_element(j));
+                        }
+                        continue;
+                    }
+                }
+
+                // Not array-like, just add the value
+                result->set_element(result_index++, mapped);
+            }
+
+            result->set_length(result_index);
+            return Value(result.release());
+        }, 1);
+
+    flatMap_fn->set_property("name", Value("flatMap"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    PropertyDescriptor flatMap_desc(Value(flatMap_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    array_prototype->set_property_descriptor("flatMap", flatMap_desc);
+
     // Array.prototype.fill
     auto fill_fn = ObjectFactory::create_native_function("fill",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4949,6 +4996,25 @@ void Context::initialize_built_ins() {
     json_object->set_property("stringify", Value(json_stringify.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
+    // JSON.isRawJSON (ES2024)
+    auto json_isRawJSON = ObjectFactory::create_native_function("isRawJSON",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty() || !args[0].is_object()) {
+                return Value(false);
+            }
+
+            // Check if object has rawJSON property (simplified check)
+            Object* obj = args[0].as_object();
+            if (obj->has_property("rawJSON")) {
+                return Value(true);
+            }
+
+            return Value(false);
+        }, 1);
+    json_object->set_property("isRawJSON", Value(json_isRawJSON.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     // Add Symbol.toStringTag property
     PropertyDescriptor json_tag_desc(Value(std::string("JSON")), PropertyAttributes::Configurable);
     json_object->set_property_descriptor("Symbol.toStringTag", json_tag_desc);
@@ -4986,7 +5052,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))));
+    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.min native function
     auto math_min_fn = ObjectFactory::create_native_function("min",
@@ -5005,7 +5071,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))));
+    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.round native function
     auto math_round_fn = ObjectFactory::create_native_function("round",
@@ -5017,7 +5083,7 @@ void Context::initialize_built_ins() {
             double value = args[0].to_number();
             return Value(std::round(value));
         }, 1);
-    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))));
+    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.random native function
     auto math_random_fn = ObjectFactory::create_native_function("random",
@@ -5026,7 +5092,7 @@ void Context::initialize_built_ins() {
             (void)args; // Suppress unused warning
             return Value(static_cast<double>(rand()) / RAND_MAX);
         }, 0);
-    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))));
+    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.floor native function
     auto math_floor_fn = ObjectFactory::create_native_function("floor",
@@ -5035,7 +5101,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::floor(args[0].to_number()));
         }, 1);
-    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))));
+    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.ceil native function
     auto math_ceil_fn = ObjectFactory::create_native_function("ceil",
@@ -5044,7 +5110,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::ceil(args[0].to_number()));
         }, 1);
-    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))));
+    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.abs native function
     auto math_abs_fn = ObjectFactory::create_native_function("abs",
@@ -5058,7 +5124,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::abs(value));
         }, 1);
-    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))));
+    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.sqrt native function
     auto math_sqrt_fn = ObjectFactory::create_native_function("sqrt",
@@ -5067,7 +5133,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sqrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))));
+    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.pow native function
     auto math_pow_fn = ObjectFactory::create_native_function("pow",
@@ -5076,7 +5142,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::pow(args[0].to_number(), args[1].to_number()));
         }, 2);
-    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))));
+    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.sin native function
     auto math_sin_fn = ObjectFactory::create_native_function("sin",
@@ -5085,7 +5151,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sin(args[0].to_number()));
         }, 1);
-    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))));
+    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.cos native function
     auto math_cos_fn = ObjectFactory::create_native_function("cos",
@@ -5094,7 +5160,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
         }, 1);
-    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))));
+    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.tan native function
     auto math_tan_fn = ObjectFactory::create_native_function("tan",
@@ -5103,7 +5169,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tan(args[0].to_number()));
         }, 1);
-    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))));
+    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.log native function  
     auto math_log_fn = ObjectFactory::create_native_function("log",
@@ -5112,7 +5178,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log(args[0].to_number()));
         }, 1);
-    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))));
+    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.log10 native function
     auto math_log10_fn = ObjectFactory::create_native_function("log10",
@@ -5121,7 +5187,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log10(args[0].to_number()));
         }, 1);
-    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))));
+    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Add Math.exp native function
     auto math_exp_fn = ObjectFactory::create_native_function("exp",
@@ -5130,7 +5196,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::exp(args[0].to_number()));
         }, 1);
-    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))));
+    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Math.trunc - truncate decimal part (toward zero)
     auto math_trunc_fn = ObjectFactory::create_native_function("trunc",
@@ -5142,7 +5208,7 @@ void Context::initialize_built_ins() {
             if (std::isnan(val)) return Value(0.0); // Simplified to avoid NaN issues
             return Value(std::trunc(val));
         }, 1);
-    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))));
+    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
     // Math.sign - returns sign of number (-1, 0, 1, or NaN)
     auto math_sign_fn = ObjectFactory::create_native_function("sign",
@@ -5155,7 +5221,7 @@ void Context::initialize_built_ins() {
             if (val < 0) return Value(-1.0);
             return Value(val); // Preserves +0 and -0
         }, 1);
-    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))));
+    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.acos
     auto math_acos_fn = ObjectFactory::create_native_function("acos",
@@ -5164,7 +5230,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acos(args[0].to_number()));
         }, 1);
-    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))));
+    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.acosh
     auto math_acosh_fn = ObjectFactory::create_native_function("acosh",
@@ -5173,7 +5239,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))));
+    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.asin
     auto math_asin_fn = ObjectFactory::create_native_function("asin",
@@ -5182,7 +5248,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asin(args[0].to_number()));
         }, 1);
-    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))));
+    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.asinh
     auto math_asinh_fn = ObjectFactory::create_native_function("asinh",
@@ -5191,7 +5257,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))));
+    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.atan
     auto math_atan_fn = ObjectFactory::create_native_function("atan",
@@ -5200,7 +5266,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan(args[0].to_number()));
         }, 1);
-    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))));
+    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.atan2
     auto math_atan2_fn = ObjectFactory::create_native_function("atan2",
@@ -5209,7 +5275,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan2(args[0].to_number(), args[1].to_number()));
         }, 2);
-    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))));
+    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.atanh
     auto math_atanh_fn = ObjectFactory::create_native_function("atanh",
@@ -5218,7 +5284,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))));
+    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.cbrt
     auto math_cbrt_fn = ObjectFactory::create_native_function("cbrt",
@@ -5227,7 +5293,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cbrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))));
+    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.clz32
     auto math_clz32_fn = ObjectFactory::create_native_function("clz32",
@@ -5243,7 +5309,7 @@ void Context::initialize_built_ins() {
             }
             return Value(static_cast<double>(count));
         }, 1);
-    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))));
+    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.cosh
     auto math_cosh_fn = ObjectFactory::create_native_function("cosh",
@@ -5252,7 +5318,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))));
+    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.expm1
     auto math_expm1_fn = ObjectFactory::create_native_function("expm1",
@@ -5261,7 +5327,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::expm1(args[0].to_number()));
         }, 1);
-    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))));
+    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.fround
     auto math_fround_fn = ObjectFactory::create_native_function("fround",
@@ -5270,7 +5336,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(static_cast<double>(static_cast<float>(args[0].to_number())));
         }, 1);
-    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))));
+    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.hypot
     auto math_hypot_fn = ObjectFactory::create_native_function("hypot",
@@ -5283,7 +5349,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::sqrt(sum));
         }, 2);
-    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))));
+    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.imul
     auto math_imul_fn = ObjectFactory::create_native_function("imul",
@@ -5294,7 +5360,7 @@ void Context::initialize_built_ins() {
             int32_t b = static_cast<int32_t>(args[1].to_number());
             return Value(static_cast<double>(a * b));
         }, 2);
-    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))));
+    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.log1p
     auto math_log1p_fn = ObjectFactory::create_native_function("log1p",
@@ -5303,7 +5369,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log1p(args[0].to_number()));
         }, 1);
-    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))));
+    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.log2
     auto math_log2_fn = ObjectFactory::create_native_function("log2",
@@ -5312,7 +5378,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log2(args[0].to_number()));
         }, 1);
-    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))));
+    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.sinh
     auto math_sinh_fn = ObjectFactory::create_native_function("sinh",
@@ -5321,7 +5387,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))));
+    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math.tanh
     auto math_tanh_fn = ObjectFactory::create_native_function("tanh",
@@ -5330,7 +5396,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))));
+    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Math constants
     math_object->set_property("LN10", Value(2.302585092994046));
@@ -5690,6 +5756,72 @@ void Context::initialize_built_ins() {
     PropertyDescriptor getUTCSeconds_desc(Value(getUTCSeconds_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     date_prototype->set_property_descriptor("getUTCSeconds", getUTCSeconds_desc);
+
+    // Setter methods
+    auto setTime_fn = ObjectFactory::create_native_function("setTime", Date::setTime, 1);
+    auto setFullYear_fn = ObjectFactory::create_native_function("setFullYear", Date::setFullYear, 3);
+    auto setMonth_fn = ObjectFactory::create_native_function("setMonth", Date::setMonth, 2);
+    auto setDate_fn = ObjectFactory::create_native_function("setDate", Date::setDate, 1);
+    auto setHours_fn = ObjectFactory::create_native_function("setHours", Date::setHours, 4);
+    auto setMinutes_fn = ObjectFactory::create_native_function("setMinutes", Date::setMinutes, 3);
+    auto setSeconds_fn = ObjectFactory::create_native_function("setSeconds", Date::setSeconds, 2);
+    auto setMilliseconds_fn = ObjectFactory::create_native_function("setMilliseconds", Date::setMilliseconds, 1);
+
+    PropertyDescriptor setTime_desc(Value(setTime_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setTime", setTime_desc);
+    PropertyDescriptor setFullYear_desc(Value(setFullYear_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setFullYear", setFullYear_desc);
+    PropertyDescriptor setMonth_desc(Value(setMonth_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setMonth", setMonth_desc);
+    PropertyDescriptor setDate_desc(Value(setDate_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setDate", setDate_desc);
+    PropertyDescriptor setHours_desc(Value(setHours_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setHours", setHours_desc);
+    PropertyDescriptor setMinutes_desc(Value(setMinutes_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setMinutes", setMinutes_desc);
+    PropertyDescriptor setSeconds_desc(Value(setSeconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setSeconds", setSeconds_desc);
+    PropertyDescriptor setMilliseconds_desc(Value(setMilliseconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setMilliseconds", setMilliseconds_desc);
+
+    // UTC Setter methods
+    auto setUTCFullYear_fn = ObjectFactory::create_native_function("setUTCFullYear", Date::setUTCFullYear, 3);
+    auto setUTCMonth_fn = ObjectFactory::create_native_function("setUTCMonth", Date::setUTCMonth, 2);
+    auto setUTCDate_fn = ObjectFactory::create_native_function("setUTCDate", Date::setUTCDate, 1);
+    auto setUTCHours_fn = ObjectFactory::create_native_function("setUTCHours", Date::setUTCHours, 4);
+    auto setUTCMinutes_fn = ObjectFactory::create_native_function("setUTCMinutes", Date::setUTCMinutes, 3);
+    auto setUTCSeconds_fn = ObjectFactory::create_native_function("setUTCSeconds", Date::setUTCSeconds, 2);
+    auto setUTCMilliseconds_fn = ObjectFactory::create_native_function("setUTCMilliseconds", Date::setUTCMilliseconds, 1);
+
+    PropertyDescriptor setUTCFullYear_desc(Value(setUTCFullYear_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCFullYear", setUTCFullYear_desc);
+    PropertyDescriptor setUTCMonth_desc(Value(setUTCMonth_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCMonth", setUTCMonth_desc);
+    PropertyDescriptor setUTCDate_desc(Value(setUTCDate_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCDate", setUTCDate_desc);
+    PropertyDescriptor setUTCHours_desc(Value(setUTCHours_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCHours", setUTCHours_desc);
+    PropertyDescriptor setUTCMinutes_desc(Value(setUTCMinutes_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCMinutes", setUTCMinutes_desc);
+    PropertyDescriptor setUTCSeconds_desc(Value(setUTCSeconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCSeconds", setUTCSeconds_desc);
+    PropertyDescriptor setUTCMilliseconds_desc(Value(setUTCMilliseconds_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("setUTCMilliseconds", setUTCMilliseconds_desc);
 
     // Legacy methods (Annex B) - should be non-enumerable
     date_prototype->set_property("getYear", Value(getYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -6891,393 +7023,414 @@ void Context::initialize_built_ins() {
     auto disposablestack_constructor = ObjectFactory::create_native_constructor("DisposableStack",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            Object* constructor = ctx.get_this_binding();
             auto stack_obj = ObjectFactory::create_object();
+
+            // Set prototype from constructor
+            if (constructor && constructor->is_function()) {
+                Value prototype_val = constructor->get_property("prototype");
+                if (prototype_val.is_object()) {
+                    stack_obj->set_prototype(prototype_val.as_object());
+                }
+            }
+
             stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
             stack_obj->set_property("_disposed", Value(false));
 
-            // Add use method
-            auto use_fn = ObjectFactory::create_native_function("use",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("DisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.size() > 0) {
-                        Value stack_val = this_obj->get_property("_stack");
-                        if (stack_val.is_object()) {
-                            Object* stack = stack_val.as_object();
-                            stack->push(args[0]);
-                        }
-                        return args[0];
-                    }
-                    return Value();
-                }, 1);
-            stack_obj->set_property("use", Value(use_fn.release()));
-
-            // Add dispose method
-            auto dispose_fn = ObjectFactory::create_native_function("dispose",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        return Value();
-                    }
-
-                    this_obj->set_property("_disposed", Value(true));
-
-                    // Dispose resources in reverse order (LIFO)
-                    Value stack_val = this_obj->get_property("_stack");
-                    if (stack_val.is_object()) {
-                        Object* stack = stack_val.as_object();
-                        uint32_t length = stack->get_length();
-
-                        for (int32_t i = length - 1; i >= 0; i--) {
-                            Value resource = stack->get_element(static_cast<uint32_t>(i));
-                            if (resource.is_object()) {
-                                Object* res_obj = resource.as_object();
-                                // Try to call dispose method if it exists
-                                Value dispose_method = res_obj->get_property("dispose");
-                                if (dispose_method.is_function()) {
-                                    Function* dispose_fn_inner = dispose_method.as_function();
-                                    std::vector<Value> no_args;
-                                    dispose_fn_inner->call(ctx, no_args, resource);
-                                }
-                            }
-                        }
-                    }
-                    return Value();
-                }, 0);
-            stack_obj->set_property("dispose", Value(dispose_fn.release()));
-
-            // Add adopt method
-            auto adopt_fn = ObjectFactory::create_native_function("adopt",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("DisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.size() < 2) return Value();
-
-                    Value value = args[0];
-                    Value onDispose = args[1];
-
-                    if (!onDispose.is_function()) {
-                        ctx.throw_type_error("onDispose must be a function");
-                        return Value();
-                    }
-
-                    // Create wrapper object with dispose method
-                    auto wrapper = ObjectFactory::create_object();
-                    wrapper->set_property("_value", value);
-                    wrapper->set_property("_onDispose", onDispose);
-
-                    auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
-                        [](Context& ctx, const std::vector<Value>& args) -> Value {
-                            (void)args;
-                            Object* wrapper_obj = ctx.get_this_binding();
-                            if (!wrapper_obj) return Value();
-
-                            Value val = wrapper_obj->get_property("_value");
-                            Value on_dispose = wrapper_obj->get_property("_onDispose");
-
-                            if (on_dispose.is_function()) {
-                                Function* dispose_callback = on_dispose.as_function();
-                                std::vector<Value> callback_args = {val};
-                                dispose_callback->call(ctx, callback_args);
-                            }
-                            return Value();
-                        }, 0);
-                    wrapper->set_property("dispose", Value(wrapper_dispose.release()));
-
-                    // Add to stack
-                    Value stack_val = this_obj->get_property("_stack");
-                    if (stack_val.is_object()) {
-                        Object* stack = stack_val.as_object();
-                        stack->push(Value(wrapper.release()));
-                    }
-
-                    return value;
-                }, 2);
-            stack_obj->set_property("adopt", Value(adopt_fn.release()));
-
-            // Add defer method
-            auto defer_fn = ObjectFactory::create_native_function("defer",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("DisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.empty() || !args[0].is_function()) {
-                        ctx.throw_type_error("defer requires a function argument");
-                        return Value();
-                    }
-
-                    // Create wrapper with dispose method
-                    auto wrapper = ObjectFactory::create_object();
-                    wrapper->set_property("_onDispose", args[0]);
-
-                    auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
-                        [](Context& ctx, const std::vector<Value>& args) -> Value {
-                            (void)args;
-                            Object* wrapper_obj = ctx.get_this_binding();
-                            if (!wrapper_obj) return Value();
-
-                            Value on_dispose = wrapper_obj->get_property("_onDispose");
-                            if (on_dispose.is_function()) {
-                                Function* dispose_callback = on_dispose.as_function();
-                                std::vector<Value> no_args;
-                                dispose_callback->call(ctx, no_args);
-                            }
-                            return Value();
-                        }, 0);
-                    wrapper->set_property("dispose", Value(wrapper_dispose.release()));
-
-                    // Add to stack
-                    Value stack_val = this_obj->get_property("_stack");
-                    if (stack_val.is_object()) {
-                        Object* stack = stack_val.as_object();
-                        stack->push(Value(wrapper.release()));
-                    }
-
-                    return Value();
-                }, 1);
-            stack_obj->set_property("defer", Value(defer_fn.release()));
-
-            // Add move method
-            auto move_fn = ObjectFactory::create_native_function("move",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("DisposableStack already disposed");
-                        return Value();
-                    }
-
-                    // Create new DisposableStack
-                    auto disposable_ctor = ctx.get_binding("DisposableStack");
-                    if (disposable_ctor.is_function()) {
-                        Function* ctor = disposable_ctor.as_function();
-                        std::vector<Value> no_args;
-                        Value new_stack = ctor->call(ctx, no_args);
-
-                        if (new_stack.is_object()) {
-                            Object* new_stack_obj = new_stack.as_object();
-
-                            // Move the stack
-                            Value old_stack = this_obj->get_property("_stack");
-                            new_stack_obj->set_property("_stack", old_stack);
-
-                            // Clear old stack and mark as disposed
-                            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
-                            this_obj->set_property("_disposed", Value(true));
-
-                            return new_stack;
-                        }
-                    }
-
-                    return Value();
-                }, 0);
-            stack_obj->set_property("move", Value(move_fn.release()));
-
             return Value(stack_obj.release());
-        });
+        }, 0);
+
+    // Create DisposableStack.prototype
+    auto disposablestack_prototype = ObjectFactory::create_object();
+
+    // Add use method to prototype
+    auto ds_use_fn = ObjectFactory::create_native_function("use",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("DisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.size() > 0) {
+                Value stack_val = this_obj->get_property("_stack");
+                if (stack_val.is_object()) {
+                    Object* stack = stack_val.as_object();
+                    stack->push(args[0]);
+                }
+                return args[0];
+            }
+            return Value();
+        }, 1);
+    disposablestack_prototype->set_property("use", Value(ds_use_fn.release()));
+
+    // Add dispose method to prototype
+    auto ds_dispose_fn = ObjectFactory::create_native_function("dispose",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                return Value();
+            }
+
+            this_obj->set_property("_disposed", Value(true));
+
+            // Dispose resources in reverse order (LIFO)
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) {
+                Object* stack = stack_val.as_object();
+                uint32_t length = stack->get_length();
+
+                for (int32_t i = length - 1; i >= 0; i--) {
+                    Value resource = stack->get_element(static_cast<uint32_t>(i));
+                    if (resource.is_object()) {
+                        Object* res_obj = resource.as_object();
+                        Value dispose_method = res_obj->get_property("dispose");
+                        if (dispose_method.is_function()) {
+                            Function* dispose_fn_inner = dispose_method.as_function();
+                            std::vector<Value> no_args;
+                            dispose_fn_inner->call(ctx, no_args, resource);
+                        }
+                    }
+                }
+            }
+            return Value();
+        }, 0);
+    disposablestack_prototype->set_property("dispose", Value(ds_dispose_fn.release()));
+
+    // Add adopt method to prototype
+    auto ds_adopt_fn = ObjectFactory::create_native_function("adopt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("DisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.size() < 2) return Value();
+
+            Value value = args[0];
+            Value onDispose = args[1];
+
+            if (!onDispose.is_function()) {
+                ctx.throw_type_error("onDispose must be a function");
+                return Value();
+            }
+
+            auto wrapper = ObjectFactory::create_object();
+            wrapper->set_property("_value", value);
+            wrapper->set_property("_onDispose", onDispose);
+
+            auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* wrapper_obj = ctx.get_this_binding();
+                    if (!wrapper_obj) return Value();
+
+                    Value val = wrapper_obj->get_property("_value");
+                    Value on_dispose = wrapper_obj->get_property("_onDispose");
+
+                    if (on_dispose.is_function()) {
+                        Function* dispose_callback = on_dispose.as_function();
+                        std::vector<Value> callback_args = {val};
+                        dispose_callback->call(ctx, callback_args);
+                    }
+                    return Value();
+                }, 0);
+            wrapper->set_property("dispose", Value(wrapper_dispose.release()));
+
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) {
+                Object* stack = stack_val.as_object();
+                stack->push(Value(wrapper.release()));
+            }
+
+            return value;
+        }, 2);
+    disposablestack_prototype->set_property("adopt", Value(ds_adopt_fn.release()));
+
+    // Add defer method to prototype
+    auto ds_defer_fn = ObjectFactory::create_native_function("defer",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("DisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("defer requires a function argument");
+                return Value();
+            }
+
+            auto wrapper = ObjectFactory::create_object();
+            wrapper->set_property("_onDispose", args[0]);
+
+            auto wrapper_dispose = ObjectFactory::create_native_function("dispose",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* wrapper_obj = ctx.get_this_binding();
+                    if (!wrapper_obj) return Value();
+
+                    Value on_dispose = wrapper_obj->get_property("_onDispose");
+                    if (on_dispose.is_function()) {
+                        Function* dispose_callback = on_dispose.as_function();
+                        std::vector<Value> no_args;
+                        dispose_callback->call(ctx, no_args);
+                    }
+                    return Value();
+                }, 0);
+            wrapper->set_property("dispose", Value(wrapper_dispose.release()));
+
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) {
+                Object* stack = stack_val.as_object();
+                stack->push(Value(wrapper.release()));
+            }
+
+            return Value();
+        }, 1);
+    disposablestack_prototype->set_property("defer", Value(ds_defer_fn.release()));
+
+    // Add move method to prototype
+    auto ds_move_fn = ObjectFactory::create_native_function("move",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("DisposableStack already disposed");
+                return Value();
+            }
+
+            auto disposable_ctor = ctx.get_binding("DisposableStack");
+            if (disposable_ctor.is_function()) {
+                Function* ctor = disposable_ctor.as_function();
+                std::vector<Value> no_args;
+                Value new_stack = ctor->call(ctx, no_args);
+
+                if (new_stack.is_object()) {
+                    Object* new_stack_obj = new_stack.as_object();
+                    Value old_stack = this_obj->get_property("_stack");
+                    new_stack_obj->set_property("_stack", old_stack);
+                    this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+                    this_obj->set_property("_disposed", Value(true));
+                    return new_stack;
+                }
+            }
+
+            return Value();
+        }, 0);
+    disposablestack_prototype->set_property("move", Value(ds_move_fn.release()));
+
+    // Set DisposableStack.prototype
+    disposablestack_constructor->set_property("prototype", Value(disposablestack_prototype.release()));
+
     register_built_in_object("DisposableStack", disposablestack_constructor.release());
 
     // AsyncDisposableStack constructor (ES2024)
     auto asyncdisposablestack_constructor = ObjectFactory::create_native_constructor("AsyncDisposableStack",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            Object* constructor = ctx.get_this_binding();
             auto stack_obj = ObjectFactory::create_object();
+
+            // Set prototype from constructor
+            if (constructor && constructor->is_function()) {
+                Value prototype_val = constructor->get_property("prototype");
+                if (prototype_val.is_object()) {
+                    stack_obj->set_prototype(prototype_val.as_object());
+                }
+            }
+
             stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
             stack_obj->set_property("_disposed", Value(false));
 
-            // Add use method
-            auto use_fn = ObjectFactory::create_native_function("use",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.size() > 0) {
-                        Value stack_val = this_obj->get_property("_stack");
-                        if (stack_val.is_object()) {
-                            Object* stack = stack_val.as_object();
-                            stack->push(args[0]);
-                        }
-                        return args[0];
-                    }
-                    return Value();
-                }, 1);
-            stack_obj->set_property("use", Value(use_fn.release()));
-
-            // Add disposeAsync method
-            auto disposeAsync_fn = ObjectFactory::create_native_function("disposeAsync",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        // Return resolved promise
-                        Value promise_ctor = ctx.get_binding("Promise");
-                        if (promise_ctor.is_function()) {
-                            Function* ctor = promise_ctor.as_function();
-                            Value resolve_method = ctor->get_property("resolve");
-                            if (resolve_method.is_function()) {
-                                Function* resolve_fn = resolve_method.as_function();
-                                std::vector<Value> args;
-                                return resolve_fn->call(ctx, args, promise_ctor);
-                            }
-                        }
-                        return Value();
-                    }
-
-                    this_obj->set_property("_disposed", Value(true));
-
-                    // Use Promise.resolve() to return resolved promise
-                    Value promise_ctor = ctx.get_binding("Promise");
-                    if (promise_ctor.is_function()) {
-                        Function* ctor = promise_ctor.as_function();
-                        Value resolve_method = ctor->get_property("resolve");
-                        if (resolve_method.is_function()) {
-                            Function* resolve_fn = resolve_method.as_function();
-                            std::vector<Value> args;
-                            return resolve_fn->call(ctx, args, promise_ctor);
-                        }
-                    }
-
-                    return Value();
-                }, 0);
-            stack_obj->set_property("disposeAsync", Value(disposeAsync_fn.release()));
-
-            // Add adopt method (similar to DisposableStack)
-            auto adopt_fn = ObjectFactory::create_native_function("adopt",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.size() < 2) return Value();
-
-                    Value value = args[0];
-                    Value onDisposeAsync = args[1];
-
-                    if (!onDisposeAsync.is_function()) {
-                        ctx.throw_type_error("onDisposeAsync must be a function");
-                        return Value();
-                    }
-
-                    auto wrapper = ObjectFactory::create_object();
-                    wrapper->set_property("_value", value);
-                    wrapper->set_property("_onDisposeAsync", onDisposeAsync);
-
-                    Value stack_val = this_obj->get_property("_stack");
-                    if (stack_val.is_object()) {
-                        Object* stack = stack_val.as_object();
-                        stack->push(Value(wrapper.release()));
-                    }
-
-                    return value;
-                }, 2);
-            stack_obj->set_property("adopt", Value(adopt_fn.release()));
-
-            // Add defer method
-            auto defer_fn = ObjectFactory::create_native_function("defer",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
-                        return Value();
-                    }
-
-                    if (args.empty() || !args[0].is_function()) {
-                        ctx.throw_type_error("defer requires a function argument");
-                        return Value();
-                    }
-
-                    auto wrapper = ObjectFactory::create_object();
-                    wrapper->set_property("_onDisposeAsync", args[0]);
-
-                    Value stack_val = this_obj->get_property("_stack");
-                    if (stack_val.is_object()) {
-                        Object* stack = stack_val.as_object();
-                        stack->push(Value(wrapper.release()));
-                    }
-
-                    return Value();
-                }, 1);
-            stack_obj->set_property("defer", Value(defer_fn.release()));
-
-            // Add move method
-            auto move_fn = ObjectFactory::create_native_function("move",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) return Value();
-
-                    Value disposed = this_obj->get_property("_disposed");
-                    if (disposed.to_boolean()) {
-                        ctx.throw_reference_error("AsyncDisposableStack already disposed");
-                        return Value();
-                    }
-
-                    auto disposable_ctor = ctx.get_binding("AsyncDisposableStack");
-                    if (disposable_ctor.is_function()) {
-                        Function* ctor = disposable_ctor.as_function();
-                        std::vector<Value> no_args;
-                        Value new_stack = ctor->call(ctx, no_args);
-
-                        if (new_stack.is_object()) {
-                            Object* new_stack_obj = new_stack.as_object();
-                            Value old_stack = this_obj->get_property("_stack");
-                            new_stack_obj->set_property("_stack", old_stack);
-                            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
-                            this_obj->set_property("_disposed", Value(true));
-                            return new_stack;
-                        }
-                    }
-
-                    return Value();
-                }, 0);
-            stack_obj->set_property("move", Value(move_fn.release()));
-
             return Value(stack_obj.release());
-        });
+        }, 0);
+
+    // Create AsyncDisposableStack.prototype
+    auto asyncdisposablestack_prototype = ObjectFactory::create_object();
+
+    // Add use method to prototype
+    auto ads_use_fn = ObjectFactory::create_native_function("use",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.size() > 0) {
+                Value stack_val = this_obj->get_property("_stack");
+                if (stack_val.is_object()) {
+                    Object* stack = stack_val.as_object();
+                    stack->push(args[0]);
+                }
+                return args[0];
+            }
+            return Value();
+        }, 1);
+    asyncdisposablestack_prototype->set_property("use", Value(ads_use_fn.release()));
+
+    // Add disposeAsync method to prototype
+    auto ads_disposeAsync_fn = ObjectFactory::create_native_function("disposeAsync",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                Value promise_ctor = ctx.get_binding("Promise");
+                if (promise_ctor.is_function()) {
+                    Function* ctor = promise_ctor.as_function();
+                    Value resolve_method = ctor->get_property("resolve");
+                    if (resolve_method.is_function()) {
+                        Function* resolve_fn = resolve_method.as_function();
+                        std::vector<Value> args;
+                        return resolve_fn->call(ctx, args, promise_ctor);
+                    }
+                }
+                return Value();
+            }
+
+            this_obj->set_property("_disposed", Value(true));
+
+            Value promise_ctor = ctx.get_binding("Promise");
+            if (promise_ctor.is_function()) {
+                Function* ctor = promise_ctor.as_function();
+                Value resolve_method = ctor->get_property("resolve");
+                if (resolve_method.is_function()) {
+                    Function* resolve_fn = resolve_method.as_function();
+                    std::vector<Value> args;
+                    return resolve_fn->call(ctx, args, promise_ctor);
+                }
+            }
+
+            return Value();
+        }, 0);
+    asyncdisposablestack_prototype->set_property("disposeAsync", Value(ads_disposeAsync_fn.release()));
+
+    // Add adopt method to prototype
+    auto ads_adopt_fn = ObjectFactory::create_native_function("adopt",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.size() < 2) return Value();
+
+            Value value = args[0];
+            Value onDisposeAsync = args[1];
+
+            if (!onDisposeAsync.is_function()) {
+                ctx.throw_type_error("onDisposeAsync must be a function");
+                return Value();
+            }
+
+            auto wrapper = ObjectFactory::create_object();
+            wrapper->set_property("_value", value);
+            wrapper->set_property("_onDisposeAsync", onDisposeAsync);
+
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) {
+                Object* stack = stack_val.as_object();
+                stack->push(Value(wrapper.release()));
+            }
+
+            return value;
+        }, 2);
+    asyncdisposablestack_prototype->set_property("adopt", Value(ads_adopt_fn.release()));
+
+    // Add defer method to prototype
+    auto ads_defer_fn = ObjectFactory::create_native_function("defer",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                return Value();
+            }
+
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("defer requires a function argument");
+                return Value();
+            }
+
+            auto wrapper = ObjectFactory::create_object();
+            wrapper->set_property("_onDisposeAsync", args[0]);
+
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) {
+                Object* stack = stack_val.as_object();
+                stack->push(Value(wrapper.release()));
+            }
+
+            return Value();
+        }, 1);
+    asyncdisposablestack_prototype->set_property("defer", Value(ads_defer_fn.release()));
+
+    // Add move method to prototype
+    auto ads_move_fn = ObjectFactory::create_native_function("move",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
+            Value disposed = this_obj->get_property("_disposed");
+            if (disposed.to_boolean()) {
+                ctx.throw_reference_error("AsyncDisposableStack already disposed");
+                return Value();
+            }
+
+            auto disposable_ctor = ctx.get_binding("AsyncDisposableStack");
+            if (disposable_ctor.is_function()) {
+                Function* ctor = disposable_ctor.as_function();
+                std::vector<Value> no_args;
+                Value new_stack = ctor->call(ctx, no_args);
+
+                if (new_stack.is_object()) {
+                    Object* new_stack_obj = new_stack.as_object();
+                    Value old_stack = this_obj->get_property("_stack");
+                    new_stack_obj->set_property("_stack", old_stack);
+                    this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+                    this_obj->set_property("_disposed", Value(true));
+                    return new_stack;
+                }
+            }
+
+            return Value();
+        }, 0);
+    asyncdisposablestack_prototype->set_property("move", Value(ads_move_fn.release()));
+
+    // Set AsyncDisposableStack.prototype
+    asyncdisposablestack_constructor->set_property("prototype", Value(asyncdisposablestack_prototype.release()));
+
     register_built_in_object("AsyncDisposableStack", asyncdisposablestack_constructor.release());
 
     // Iterator constructor (ES2015)
@@ -7465,9 +7618,63 @@ void Context::initialize_built_ins() {
     ab_transfer_fn->set_property("name", Value("transfer"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("transfer", Value(ab_transfer_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
+    // ArrayBuffer.prototype.maxByteLength getter (ES2024)
+    auto ab_maxByteLength_fn = ObjectFactory::create_native_function("get maxByteLength",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("ArrayBuffer.prototype.maxByteLength called on non-ArrayBuffer");
+                return Value();
+            }
+
+            // Check if this is a resizable ArrayBuffer
+            if (this_obj->has_property("maxByteLength")) {
+                return this_obj->get_property("maxByteLength");
+            }
+
+            // For non-resizable buffers, maxByteLength equals byteLength
+            if (this_obj->has_property("byteLength")) {
+                return this_obj->get_property("byteLength");
+            }
+
+            return Value(0.0);
+        }, 0);
+
+    PropertyDescriptor maxByteLength_desc(Value(ab_maxByteLength_fn.release()), PropertyAttributes::Configurable);
+    maxByteLength_desc.set_enumerable(false);
+    arraybuffer_prototype->set_property_descriptor("maxByteLength", maxByteLength_desc);
+
+    // ArrayBuffer.prototype.resizable getter (ES2024)
+    auto ab_resizable_fn = ObjectFactory::create_native_function("get resizable",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("ArrayBuffer.prototype.resizable called on non-ArrayBuffer");
+                return Value();
+            }
+
+            // Check if maxByteLength property exists and differs from byteLength
+            if (this_obj->has_property("maxByteLength") && this_obj->has_property("byteLength")) {
+                Value max = this_obj->get_property("maxByteLength");
+                Value current = this_obj->get_property("byteLength");
+                if (max.is_number() && current.is_number()) {
+                    return Value(max.as_number() != current.as_number());
+                }
+            }
+
+            return Value(false);
+        }, 0);
+
+    PropertyDescriptor resizable_desc(Value(ab_resizable_fn.release()), PropertyAttributes::Configurable);
+    resizable_desc.set_enumerable(false);
+    arraybuffer_prototype->set_property_descriptor("resizable", resizable_desc);
+
     // ArrayBuffer.prototype.transferToFixedLength (ES2024)
     auto ab_transferToFixedLength_fn = ObjectFactory::create_native_function("transferToFixedLength",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args;
             // Simplified: return undefined
             return Value();
         }, 0);

@@ -325,12 +325,21 @@ void Map::setup_map_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     map_prototype->set_property("size", Value(size_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    
-    // Add Symbol.iterator method for Map iteration
+
+    // Add entries, keys, values iterator methods
+    auto entries_fn = ObjectFactory::create_native_function("entries", map_iterator_method, 0);
+    map_prototype->set_property("entries", Value(entries_fn.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // Add Symbol.iterator - same as entries per ES6 spec
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        auto map_iterator_fn = ObjectFactory::create_native_function("@@iterator", map_iterator_method);
-        map_prototype->set_property(iterator_symbol->to_string(), Value(map_iterator_fn.release()));
+        // Symbol.iterator should be the same function object as entries
+        map_prototype->set_property(iterator_symbol->to_string(), Value(entries_fn.release()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    } else {
+        // If symbol not available, still release the function to avoid leak
+        entries_fn.release();
     }
 
     // Add Symbol.toStringTag to Map.prototype

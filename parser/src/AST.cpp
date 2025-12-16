@@ -7370,7 +7370,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
-                    prototype->set_property(method_name, Value(instance_method.release()));
+                    // Class methods should be non-enumerable per ES6 spec
+                    prototype->set_property(method_name, Value(instance_method.release()),
+                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
                 }
             }
         }
@@ -7441,7 +7443,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
-                    constructor_fn->set_property(method_name, Value(static_method.release()));
+                    // Static methods should also be non-enumerable per ES6 spec
+                    constructor_fn->set_property(method_name, Value(static_method.release()),
+                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
                 }
             }
         }

@@ -77,6 +77,15 @@ public:
     static Value getUTCMonth(Context& ctx, const std::vector<Value>& args);
     static Value getUTCSeconds(Context& ctx, const std::vector<Value>& args);
 
+    // UTC setters
+    static Value setUTCFullYear(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCMonth(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCDate(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCHours(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCMinutes(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCSeconds(Context& ctx, const std::vector<Value>& args);
+    static Value setUTCMilliseconds(Context& ctx, const std::vector<Value>& args);
+
     // String methods
     static Value toString(Context& ctx, const std::vector<Value>& args);
     static Value toISOString(Context& ctx, const std::vector<Value>& args);

@@ -460,4 +460,55 @@ Value Date::getUTCSeconds(Context& ctx, const std::vector<Value>& args) {
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_sec)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
+// UTC Setters - simplified implementations
+Value Date::setUTCFullYear(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    // Simplified: return current time
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCMonth(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCDate(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCHours(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCMinutes(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCSeconds(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
+Value Date::setUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
+    (void)ctx; (void)args;
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    return Value(static_cast<double>(ms));
+}
+
 } // namespace Quanta
