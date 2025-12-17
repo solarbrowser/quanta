@@ -2719,19 +2719,48 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
 
         // Create an ExpressionStatement to represent the field
-        // We'll wrap the assignment in an expression statement
+        // We need to convert "x = 42" to "this.x = 42"
         if (init) {
-            auto assignment = std::make_unique<AssignmentExpression>(
+            // Create "this" identifier
+            auto this_id = std::make_unique<Identifier>("this", start, start);
+
+            // Create "this.x" member expression
+            auto member_expr = std::make_unique<MemberExpression>(
+                std::move(this_id),
                 std::move(key),
-                AssignmentExpression::Operator::ASSIGN,  // Use simple assignment operator
+                computed,  // Use computed flag from parsing
+                start,
+                get_current_position()
+            );
+
+            // Create "this.x = 42" assignment
+            auto assignment = std::make_unique<AssignmentExpression>(
+                std::move(member_expr),
+                AssignmentExpression::Operator::ASSIGN,
                 std::move(init),
                 start,
                 get_current_position()
             );
             return std::make_unique<ExpressionStatement>(std::move(assignment), start, get_current_position());
         } else {
-            // Field without initializer - just return the key as an expression statement
-            return std::make_unique<ExpressionStatement>(std::move(key), start, get_current_position());
+            // Field without initializer: "this.x = undefined"
+            auto this_id = std::make_unique<Identifier>("this", start, start);
+            auto member_expr = std::make_unique<MemberExpression>(
+                std::move(this_id),
+                std::move(key),
+                computed,
+                start,
+                get_current_position()
+            );
+            auto undefined_val = std::make_unique<Identifier>("undefined", start, start);
+            auto assignment = std::make_unique<AssignmentExpression>(
+                std::move(member_expr),
+                AssignmentExpression::Operator::ASSIGN,
+                std::move(undefined_val),
+                start,
+                get_current_position()
+            );
+            return std::make_unique<ExpressionStatement>(std::move(assignment), start, get_current_position());
         }
     }
 

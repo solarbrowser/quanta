@@ -7321,12 +7321,20 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     // Create class prototype object
     auto prototype = std::make_unique<Object>();
     
-    // Find constructor method and other methods
+    // Find constructor method, other methods, and class fields
     std::unique_ptr<ASTNode> constructor_body = nullptr;
     std::vector<std::string> constructor_params;
-    
+    std::vector<std::unique_ptr<ASTNode>> field_initializers; // Store field initializers
+
     if (body_) {
         for (const auto& stmt : body_->get_statements()) {
+            // Check if this is a class field (ExpressionStatement with assignment or identifier)
+            if (stmt->get_type() == Type::EXPRESSION_STATEMENT) {
+                // This is a class field - store it for later initialization
+                field_initializers.push_back(stmt->clone());
+                continue;
+            }
+
             if (stmt->get_type() == Type::METHOD_DEFINITION) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
                 std::string method_name;
@@ -7384,12 +7392,35 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         // Create an empty block statement for default constructor
         std::vector<std::unique_ptr<ASTNode>> empty_statements;
         constructor_body = std::make_unique<BlockStatement>(
-            std::move(empty_statements), 
-            Position{0, 0}, 
+            std::move(empty_statements),
+            Position{0, 0},
             Position{0, 0}
         );
     }
-    
+
+    // Inject field initializers at the beginning of constructor
+    if (!field_initializers.empty()) {
+        BlockStatement* body_block = static_cast<BlockStatement*>(constructor_body.get());
+        std::vector<std::unique_ptr<ASTNode>> new_statements;
+
+        // Add field initializers first
+        for (auto& field_init : field_initializers) {
+            new_statements.push_back(std::move(field_init));
+        }
+
+        // Then add original constructor statements
+        for (auto& stmt : body_block->get_statements()) {
+            new_statements.push_back(stmt->clone());
+        }
+
+        // Replace constructor body with new body including fields
+        constructor_body = std::make_unique<BlockStatement>(
+            std::move(new_statements),
+            Position{0, 0},
+            Position{0, 0}
+        );
+    }
+
     auto constructor_fn = ObjectFactory::create_js_function(
         class_name,
         constructor_params,

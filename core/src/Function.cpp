@@ -188,13 +188,30 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         //              << (this_value.is_null() ? "null" : this_value.is_undefined() ? "undefined" : "other") << std::endl;
         // }
 
-        // Set 'this' binding for ALL values including null and undefined
-        ctx.set_binding("this", this_value);
+        // Handle 'this' binding with proper undefined/null coercion
+        Value actual_this = this_value;
+
+        // ES5 spec: In non-strict mode, undefined/null thisArg becomes global object
+        if (!ctx.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
+            Object* global = ctx.get_global_object();
+            if (global) {
+                actual_this = Value(global);
+            }
+        }
+
+        // Set 'this' binding on Context object
+        if (actual_this.is_object() || actual_this.is_function()) {
+            Object* this_obj = actual_this.is_object() ? actual_this.as_object() : actual_this.as_function();
+            ctx.set_this_binding(this_obj);
+        }
+
+        // Set 'this' binding as variable for access in code
+        ctx.set_binding("this", actual_this);
 
         // SPECIAL CASE: For primitive values, also set a special binding that preserves the type
-        if (this_value.is_number() || this_value.is_string() || this_value.is_boolean() ||
-            this_value.is_null() || this_value.is_undefined()) {
-            ctx.set_binding("__primitive_this__", this_value);
+        if (actual_this.is_number() || actual_this.is_string() || actual_this.is_boolean() ||
+            actual_this.is_null() || actual_this.is_undefined()) {
+            ctx.set_binding("__primitive_this__", actual_this);
         }
         
         // Call native C++ function
@@ -232,9 +249,29 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     Context& function_context = *function_context_ptr;
 
     // Set up 'this' binding for JavaScript function
-    if (this_value.is_object() || this_value.is_function()) {
-        Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+    Value actual_this = this_value;
+
+    // ES5 spec: In non-strict mode, undefined/null thisArg becomes global object
+    if (!function_context.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
+        Object* global = function_context.get_global_object();
+        if (global) {
+            actual_this = Value(global);
+        }
+    }
+
+    // Set this binding on Context object
+    if (actual_this.is_object() || actual_this.is_function()) {
+        Object* this_obj = actual_this.is_object() ? actual_this.as_object() : actual_this.as_function();
         function_context.set_this_binding(this_obj);
+    }
+
+    // Also set 'this' as a variable binding so it can be accessed in code
+    // Use create_binding with overwrite=true to ensure it's set correctly
+    try {
+        function_context.create_binding("this", actual_this, true);
+    } catch (...) {
+        // If binding already exists, update it
+        function_context.set_binding("this", actual_this);
     }
 
     // CLOSURE FIX: Restore captured closure variables to function context
