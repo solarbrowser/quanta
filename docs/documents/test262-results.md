@@ -1,6 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
+- [December 18, 2025](#december-18-2025)
 - [December 5, 2025](#december-5-2025)
 - [December 3, 2025](#december-3-2025)
 - [December 2, 2025](#december-2-2025)
@@ -13,6 +14,23 @@
 ---
 
 ## Test History
+
+### December 18, 2025
+**Engine Version:** q120525c153l
+
+#### Overall Results
+
+| Metric | Count | % of Total | % of Executed |
+|--------|-------:|-----------:|---------------:|
+| **Total Tests** | 51,216 | 100.0% | - |
+| **Tests Run** | 35,697 | 69.7% | 100.00% |
+| **Passed** | 13,427 | 26.22% | **37.61%** |
+| **Failed** | 22,270 | 43.48% | 65.93% |
+| **Skipped** | 15,519 | 30.3% | - |
+
+**Test Duration:** 2944.7s
+**Average speed:** 17.4 tests/s
+
 ### December 5, 2025
 **Engine Version:** q120525c141
 
@@ -279,6 +297,7 @@ Intentionally skipped test categories:
 
 | Date | Engine Version | Tests Passed | Pass Rate (Executed) | Change |
 |------|----------------|--------------|---------------------|---------|
+| Dec 18, 2025 | q120525c153l | 13,161 | 37.61% | **+1266**  |
 | Dec 05, 2025 | q120525c141 | 12,161 | 34.07% | **+980**  |
 | Dec 03, 2025 | q120325c132 | 11,181 | 31.32% | **+870**  |
 | Dec 02, 2025 | q120125c126 | 10,311 | 28.88% | **+1,189**  |
@@ -289,6 +308,7 @@ Intentionally skipped test categories:
 | Nov 13, 2025 | q111325c86 | 5,745 | 16.1% | Initial |
 
 ### Key Milestones
+- ✅ **December 18, 2025:** (13427 passed, pass rate 37.61%)
 - ✅ **December 5, 2025:** (12161 passed, pass rate 34.07%)
 - ✅ **December 3, 2025:** (11,181 passed, pass rate 31.32%)
 - ✅ **December 2, 2025:** (10,311 passed, pass rate 28.88%)
