@@ -103,7 +103,6 @@ bool Object::has_own_property(const std::string& key) const {
 
 
 Value Object::get_property(const std::string& key) const {
-    
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
         
@@ -261,6 +260,28 @@ Value Object::get_property(const std::string& key) const {
     }
     
     if (this->get_type() == ObjectType::Array) {
+        // Special case: length is always computed, not from prototype
+        if (key == "length") {
+            return Value(static_cast<double>(get_length()));
+        }
+
+        // Check own properties first
+        Value own_result = get_own_property(key);
+        if (!own_result.is_undefined()) {
+            return own_result;
+        }
+
+        // Check prototype chain for overridden methods
+        Object* current = header_.prototype;
+        while (current) {
+            Value proto_result = current->get_own_property(key);
+            if (!proto_result.is_undefined()) {
+                return proto_result;
+            }
+            current = current->get_prototype();
+        }
+
+        // Only if not found in prototype chain, return native method
         if (key == "map" || key == "filter" || key == "reduce" || key == "forEach" ||
             key == "indexOf" || key == "slice" || key == "splice" || key == "push" ||
             key == "pop" || key == "shift" || key == "unshift" || key == "join" || key == "concat" || key == "toString" || key == "groupBy" ||
@@ -269,9 +290,6 @@ Value Object::get_property(const std::string& key) const {
             key == "findLast" || key == "findLastIndex" || key == "toSpliced" || key == "fill" ||
             key == "toSorted" || key == "with" || key == "at" || key == "toReversed") {
             return Value(ObjectFactory::create_array_method(key).release());
-        }
-        if (key == "length") {
-            return Value(static_cast<double>(get_length()));
         }
     }
     
@@ -402,28 +420,24 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     if (is_array_index(key, &index)) {
         return set_element(index, value);
     }
-    
+
     bool prop_exists = has_own_property(key);
     if (prop_exists) {
         PropertyDescriptor desc = get_property_descriptor(key);
         if (desc.is_data_descriptor() && !desc.is_writable()) {
             return false;
         }
-        
+
         if (header_.shape->has_property(key)) {
             auto info = header_.shape->get_property_info(key);
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
-                
-                
                 return true;
             }
         }
-        
+
         if (overflow_properties_) {
             (*overflow_properties_)[key] = value;
-            
-            
             return true;
         }
     }
