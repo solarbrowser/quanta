@@ -4,18 +4,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/HiddenClass.h"
-#include "../include/Value.h"
-#include "../include/Object.h"
+#include "quanta/HiddenClass.h"
+#include "quanta/Value.h"
+#include "quanta/Object.h"
 #include <iostream>
 #include <algorithm>
 #include <mutex>
 
 namespace Quanta {
 
-//=============================================================================
-// HiddenClass Implementation - Standard Object Optimization
-//=============================================================================
 
 std::atomic<HiddenClassID> HiddenClass::next_class_id_{1};
 
@@ -31,7 +28,6 @@ HiddenClass::HiddenClass(std::shared_ptr<HiddenClass> parent)
       access_count_(0), is_stable_(false), is_deprecated_(false), fast_indices_valid_(false) {
     
     if (parent_) {
-        // Copy properties from parent
         properties_ = parent_->properties_;
         property_map_ = parent_->property_map_;
     }
@@ -41,7 +37,6 @@ HiddenClass::HiddenClass(std::shared_ptr<HiddenClass> parent)
 }
 
 HiddenClass::~HiddenClass() {
-    // Cleanup
 }
 
 bool HiddenClass::has_property(const std::string& name) const {
@@ -69,18 +64,15 @@ const HiddenClassPropertyDescriptor* HiddenClass::get_property_descriptor(Proper
 }
 
 std::shared_ptr<HiddenClass> HiddenClass::add_property(const std::string& name, PropertyType type) {
-    // Check if property already exists
     if (has_property(name)) {
         return shared_from_this();
     }
     
-    // Check if we already have a transition for this property
     auto transition_it = transitions_.find(name);
     if (transition_it != transitions_.end()) {
         return transition_it->second;
     }
     
-    // Create new hidden class with the additional property
     auto new_class = std::make_shared<HiddenClass>(shared_from_this());
     
     PropertyIndex new_index = static_cast<PropertyIndex>(new_class->properties_.size());
@@ -91,7 +83,6 @@ std::shared_ptr<HiddenClass> HiddenClass::add_property(const std::string& name, 
     new_class->property_map_[name] = new_index;
     new_class->invalidate_fast_indices();
     
-    // Cache the transition
     transitions_[name] = new_class;
     mark_unstable();
     
@@ -106,16 +97,13 @@ std::shared_ptr<HiddenClass> HiddenClass::remove_property(const std::string& nam
         return shared_from_this();
     }
     
-    // Create new class without the property
     auto new_class = std::make_shared<HiddenClass>();
     
     PropertyIndex removed_index = get_property_index(name);
     
-    // Copy all properties except the removed one
     for (const auto& prop : properties_) {
         if (prop.name != name) {
             HiddenClassPropertyDescriptor new_desc = prop;
-            // Adjust indices for properties after the removed one
             if (prop.index > removed_index) {
                 new_desc.index--;
             }
@@ -139,10 +127,8 @@ std::shared_ptr<HiddenClass> HiddenClass::change_property_type(const std::string
         return shared_from_this();
     }
     
-    // Create new class with changed property type
     auto new_class = std::make_shared<HiddenClass>(shared_from_this());
     
-    // Update the property type
     for (auto& prop : new_class->properties_) {
         if (prop.name == name) {
             prop.type = new_type;
@@ -172,7 +158,6 @@ void HiddenClass::mark_property_hot(const std::string& name) {
 void HiddenClass::update_access_frequency() {
     access_count_++;
     
-    // Become stable after enough accesses without transitions
     if (access_count_ > 50 && transitions_.empty()) {
         mark_stable();
     }
@@ -183,16 +168,14 @@ void HiddenClass::optimize_property_layout() {
         return;
     }
     
-    // Sort properties by access frequency (hot properties first)
     std::sort(properties_.begin(), properties_.end(), 
               [](const HiddenClassPropertyDescriptor& a, const HiddenClassPropertyDescriptor& b) {
                   if (a.is_frequently_accessed != b.is_frequently_accessed) {
                       return a.is_frequently_accessed > b.is_frequently_accessed;
                   }
-                  return a.name < b.name; // Stable sort for determinism
+                  return a.name < b.name;
               });
     
-    // Update property indices and map
     property_map_.clear();
     for (size_t i = 0; i < properties_.size(); ++i) {
         properties_[i].index = static_cast<PropertyIndex>(i);
@@ -209,14 +192,12 @@ std::vector<PropertyIndex> HiddenClass::get_optimized_layout() const {
     std::vector<PropertyIndex> layout;
     layout.reserve(properties_.size());
     
-    // Hot properties first for better cache performance
     for (const auto& prop : properties_) {
         if (prop.is_frequently_accessed) {
             layout.push_back(prop.index);
         }
     }
     
-    // Then regular properties
     for (const auto& prop : properties_) {
         if (!prop.is_frequently_accessed) {
             layout.push_back(prop.index);
@@ -270,16 +251,12 @@ void HiddenClass::print_transitions() const {
     }
 }
 
-//=============================================================================
-// HiddenClassCache Implementation - Global class reuse optimization
-//=============================================================================
 
 HiddenClassCache::HiddenClassCache() 
     : cache_hits_(0), cache_misses_(0), total_lookups_(0) {
     
     std::cout << "�️  HIDDEN CLASS CACHE INITIALIZED" << std::endl;
     
-    // Pre-create common classes
     common_classes_["empty"] = std::make_shared<HiddenClass>();
 }
 
@@ -291,21 +268,18 @@ std::shared_ptr<HiddenClass> HiddenClassCache::get_or_create_class(const std::ve
     std::lock_guard<std::mutex> lock(cache_mutex_);
     total_lookups_++;
     
-    // Create a key from property names
     std::string cache_key;
     for (const auto& name : property_names) {
         if (!cache_key.empty()) cache_key += ",";
         cache_key += name;
     }
     
-    // Check if we have this pattern cached
     auto it = common_classes_.find(cache_key);
     if (it != common_classes_.end()) {
         cache_hits_++;
         return it->second;
     }
     
-    // Create new class with these properties
     auto hidden_class = std::make_shared<HiddenClass>();
     
     PropertyIndex index = 0;
@@ -315,7 +289,6 @@ std::shared_ptr<HiddenClass> HiddenClassCache::get_or_create_class(const std::ve
         hidden_class->property_map_[name] = desc.index;
     }
     
-    // Cache the new class
     common_classes_[cache_key] = hidden_class;
     cache_class(hidden_class);
     
@@ -335,7 +308,6 @@ std::shared_ptr<HiddenClass> HiddenClassCache::find_class(HiddenClassID class_id
         if (auto locked = it->second.lock()) {
             return locked;
         } else {
-            // Weak pointer expired, remove from cache
             class_cache_.erase(it);
         }
     }
@@ -369,7 +341,6 @@ void HiddenClassCache::cleanup_deprecated_classes() {
     
     size_t removed = 0;
     
-    // Remove expired weak pointers
     auto it = class_cache_.begin();
     while (it != class_cache_.end()) {
         if (it->second.expired()) {
@@ -418,9 +389,6 @@ HiddenClassCache& HiddenClassCache::get_instance() {
     return instance;
 }
 
-//=============================================================================
-// HiddenClassObject Implementation - Objects with standard optimization
-//=============================================================================
 
 HiddenClassObject::HiddenClassObject(std::shared_ptr<HiddenClass> hidden_class)
     : hidden_class_(hidden_class), last_accessed_index_(UINT32_MAX) {
@@ -440,7 +408,6 @@ HiddenClassObject::~HiddenClassObject() {
 bool HiddenClassObject::get_property(const std::string& name, Value& out_value) const {
     if (!hidden_class_) return false;
     
-    // Fast path: check if this is the same property we accessed last time
     if (name == last_accessed_name_ && last_accessed_index_ < property_values_.size()) {
         out_value = property_values_[last_accessed_index_];
         return true;
@@ -453,11 +420,9 @@ bool HiddenClassObject::get_property(const std::string& name, Value& out_value) 
     
     out_value = property_values_[index];
     
-    // Cache for next access
     last_accessed_name_ = name;
     last_accessed_index_ = index;
     
-    // Track hot properties
     hidden_class_->mark_property_hot(name);
     hidden_class_->update_access_frequency();
     
@@ -470,11 +435,9 @@ bool HiddenClassObject::set_property(const std::string& name, const Value& value
     PropertyIndex index = hidden_class_->get_property_index(name);
     
     if (index == UINT32_MAX) {
-        // Property doesn't exist - transition to new hidden class
         auto new_class = hidden_class_->add_property(name);
         transition_to_class(new_class);
         
-        // Now get the index in the new class
         index = hidden_class_->get_property_index(name);
         if (index == UINT32_MAX) return false;
     }
@@ -485,7 +448,6 @@ bool HiddenClassObject::set_property(const std::string& name, const Value& value
     
     property_values_[index] = value;
     
-    // Cache for next access
     last_accessed_name_ = name;
     last_accessed_index_ = index;
     
@@ -504,11 +466,9 @@ bool HiddenClassObject::delete_property(const std::string& name) {
         return false;
     }
     
-    // Transition to new class without this property
     auto new_class = hidden_class_->remove_property(name);
     transition_to_class(new_class);
     
-    // Remove the property value (this is simplified - real implementation would compact)
     PropertyIndex removed_index = hidden_class_->get_property_index(name);
     if (removed_index < property_values_.size()) {
         property_values_.erase(property_values_.begin() + removed_index);
@@ -521,7 +481,7 @@ Value HiddenClassObject::get_property_by_index(PropertyIndex index) const {
     if (index < property_values_.size()) {
         return property_values_[index];
     }
-    return Value(); // Undefined
+    return Value();
 }
 
 void HiddenClassObject::set_property_by_index(PropertyIndex index, const Value& value) {
@@ -542,14 +502,12 @@ void HiddenClassObject::transition_to_class(std::shared_ptr<HiddenClass> new_cla
     if (hidden_class_) {
         hidden_class_->add_instance();
         
-        // Resize property values if needed
         size_t needed_size = hidden_class_->get_property_count();
         if (property_values_.size() != needed_size) {
             property_values_.resize(needed_size);
         }
     }
     
-    // Invalidate access cache
     last_accessed_index_ = UINT32_MAX;
     last_accessed_name_.clear();
 }
@@ -595,9 +553,6 @@ void HiddenClassObject::print_object_layout() const {
     }
 }
 
-//=============================================================================
-// HiddenClassIntegration Implementation - Engine hooks
-//=============================================================================
 
 namespace HiddenClassIntegration {
 
@@ -614,24 +569,20 @@ void shutdown_hidden_classes() {
 std::shared_ptr<HiddenClass> create_class_for_object(Object* obj) {
     if (!obj) return nullptr;
     
-    // For now, return empty class - in full implementation would analyze object
     return HiddenClassCache::get_instance().get_empty_class();
 }
 
 void optimize_object_layout(Object* obj) {
-    // Placeholder for object optimization
     if (obj) {
         std::cout << " OPTIMIZING OBJECT LAYOUT" << std::endl;
     }
 }
 
 bool fast_property_get(Object* obj, const std::string& name, Value& out_value) {
-    // Placeholder for fast property access
     return false;
 }
 
 bool fast_property_set(Object* obj, const std::string& name, const Value& value) {
-    // Placeholder for fast property setting
     return false;
 }
 
@@ -651,6 +602,6 @@ void tune_optimization_thresholds() {
     std::cout << "OPTIMIZATION THRESHOLDS TUNED" << std::endl;
 }
 
-} // namespace HiddenClassIntegration
+}
 
-} // namespace Quanta
+}

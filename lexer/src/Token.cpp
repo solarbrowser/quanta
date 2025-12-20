@@ -4,18 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "Token.h"
+#include "quanta/Token.h"
 #include <sstream>
 #include <unordered_map>
 
 namespace Quanta {
 
-// Static token instance
 const Token TokenSequence::EOF_TOKEN_INSTANCE = Token(TokenType::EOF_TOKEN, Position());
 
-//=============================================================================
-// Position Implementation
-//=============================================================================
 
 std::string Position::to_string() const {
     std::ostringstream oss;
@@ -23,9 +19,6 @@ std::string Position::to_string() const {
     return oss.str();
 }
 
-//=============================================================================
-// Token Implementation
-//=============================================================================
 
 Token::Token() : type_(TokenType::EOF_TOKEN), numeric_value_(0), has_numeric_value_(false) {
 }
@@ -40,7 +33,6 @@ Token::Token(TokenType type, const std::string& value, const Position& start, co
 
 Token::Token(TokenType type, double numeric_value, const Position& start, const Position& end)
     : type_(type), start_(start), end_(end), numeric_value_(numeric_value), has_numeric_value_(true) {
-    // Convert numeric value to string
     std::ostringstream oss;
     oss << numeric_value;
     value_ = oss.str();
@@ -90,7 +82,6 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::BIGINT_LITERAL, "BIGINT"},
         {TokenType::UNDEFINED, "UNDEFINED"},
         
-        // Keywords
         {TokenType::BREAK, "BREAK"},
         {TokenType::CASE, "CASE"},
         {TokenType::CATCH, "CATCH"},
@@ -131,7 +122,6 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::OF, "OF"},
         {TokenType::STATIC, "STATIC"},
         
-        // Operators
         {TokenType::PLUS, "PLUS"},
         {TokenType::MINUS, "MINUS"},
         {TokenType::MULTIPLY, "MULTIPLY"},
@@ -164,14 +154,12 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::ARROW, "ARROW"},
         {TokenType::ELLIPSIS, "ELLIPSIS"},
         
-        // ES2020+ Operators
         {TokenType::OPTIONAL_CHAINING, "OPTIONAL_CHAINING"},
         {TokenType::NULLISH_COALESCING, "NULLISH_COALESCING"},
         {TokenType::NULLISH_ASSIGN, "NULLISH_ASSIGN"},
         {TokenType::LOGICAL_AND_ASSIGN, "LOGICAL_AND_ASSIGN"},
         {TokenType::LOGICAL_OR_ASSIGN, "LOGICAL_OR_ASSIGN"},
         
-        // Punctuation
         {TokenType::LEFT_PAREN, "LEFT_PAREN"},
         {TokenType::RIGHT_PAREN, "RIGHT_PAREN"},
         {TokenType::LEFT_BRACE, "LEFT_BRACE"},
@@ -269,7 +257,7 @@ int Token::get_precedence(TokenType type) {
         {TokenType::MULTIPLY_ASSIGN, 2},
         {TokenType::DIVIDE_ASSIGN, 2},
         {TokenType::MODULO_ASSIGN, 2},
-        {TokenType::QUESTION, 3}, // Conditional operator
+        {TokenType::QUESTION, 3},
         {TokenType::LOGICAL_OR, 4},
         {TokenType::LOGICAL_AND, 5},
         {TokenType::BITWISE_OR, 6},
@@ -293,7 +281,7 @@ int Token::get_precedence(TokenType type) {
         {TokenType::MULTIPLY, 13},
         {TokenType::DIVIDE, 13},
         {TokenType::MODULO, 13},
-        {TokenType::EXPONENT, 14} // Right associative
+        {TokenType::EXPONENT, 14}
     };
     
     auto it = precedence.find(type);
@@ -305,9 +293,6 @@ bool Token::is_right_associative(TokenType type) {
            is_assignment_operator(type);
 }
 
-//=============================================================================
-// TokenSequence Implementation
-//=============================================================================
 
 TokenSequence::TokenSequence() : position_(0) {
 }
@@ -375,4 +360,4 @@ std::string TokenSequence::to_string() const {
     return oss.str();
 }
 
-} // namespace Quanta
+}

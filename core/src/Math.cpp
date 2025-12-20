@@ -4,9 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/Math.h"
-#include "../include/Context.h"
-#include "../include/Object.h"
+#include "quanta/Math.h"
+#include "quanta/Context.h"
+#include "quanta/Object.h"
 #include <cmath>
 #include <algorithm>
 #include <random>
@@ -14,7 +14,6 @@
 #include <limits>
 #include <iostream>
 
-// Enable SIMD optimizations for math operations
 #ifdef __AVX2__
 #include <immintrin.h>
 #endif
@@ -24,17 +23,12 @@
 
 namespace Quanta {
 
-// Static member initialization
 bool Math::random_initialized_ = false;
 
-//=============================================================================
-// Math Constants and Setup
-//=============================================================================
 
 std::unique_ptr<Object> Math::create_math_object() {
     auto math_obj = std::make_unique<Object>();
     
-    // Add constants
     math_obj->set_property("E", Value(E));
     math_obj->set_property("LN2", Value(LN2));
     math_obj->set_property("LN10", Value(LN10));
@@ -44,8 +38,6 @@ std::unique_ptr<Object> Math::create_math_object() {
     math_obj->set_property("SQRT1_2", Value(SQRT1_2));
     math_obj->set_property("SQRT2", Value(SQRT2));
     
-    // Add methods as placeholder strings (to be replaced with actual native functions)
-    // These will be replaced with actual native functions when integrated with ObjectFactory
     math_obj->set_property("abs", Value("function abs() { [native code] }"));
     math_obj->set_property("acos", Value("function acos() { [native code] }"));
     math_obj->set_property("asin", Value("function asin() { [native code] }"));
@@ -65,7 +57,6 @@ std::unique_ptr<Object> Math::create_math_object() {
     math_obj->set_property("sqrt", Value("function sqrt() { [native code] }"));
     math_obj->set_property("tan", Value("function tan() { [native code] }"));
     
-    // ES6+ methods
     math_obj->set_property("trunc", Value("function trunc() { [native code] }"));
     math_obj->set_property("sign", Value("function sign() { [native code] }"));
     math_obj->set_property("cbrt", Value("function cbrt() { [native code] }"));
@@ -76,9 +67,6 @@ std::unique_ptr<Object> Math::create_math_object() {
     return math_obj;
 }
 
-//=============================================================================
-// Math Method Implementations
-//=============================================================================
 
 Value Math::abs(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
@@ -87,7 +75,6 @@ Value Math::abs(Context& ctx, const std::vector<Value>& args) {
 
     double value = safe_to_number(args[0]);
     if (std::isinf(value)) {
-        // Math.abs of any infinity should return positive infinity
         return Value::positive_infinity();
     }
     return Value(std::abs(value));
@@ -218,7 +205,7 @@ Value Math::pow(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::random(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     (void)args;
     
     if (!random_initialized_) {
@@ -268,9 +255,6 @@ Value Math::tan(Context& ctx, const std::vector<Value>& args) {
     return Value(std::tan(value));
 }
 
-//=============================================================================
-// ES6+ Math Methods
-//=============================================================================
 
 Value Math::trunc(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
@@ -290,7 +274,7 @@ Value Math::sign(Context& ctx, const std::vector<Value>& args) {
     if (std::isnan(value)) return Value(std::numeric_limits<double>::quiet_NaN());
     if (value > 0) return Value(1.0);
     if (value < 0) return Value(-1.0);
-    return Value(value); // +0 or -0
+    return Value(value);
 }
 
 Value Math::cbrt(Context& ctx, const std::vector<Value>& args) {
@@ -351,13 +335,9 @@ Value Math::imul(Context& ctx, const std::vector<Value>& args) {
     return Value(static_cast<double>(a * b));
 }
 
-//=============================================================================
-// ES2026 Enhanced Numeric Methods
-//=============================================================================
 
 Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
-    // Implements Kahan summation algorithm for more precise floating-point addition
+    (void)ctx;
     if (args.empty()) {
         return Value(0.0);
     }
@@ -367,35 +347,29 @@ Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
     
     try {
         for (const auto& arg : args) {
-            // Handle undefined, null, or invalid values safely
             if (arg.is_undefined() || arg.is_null()) {
-                continue; // Skip undefined/null values
+                continue;
             }
             
             double value = safe_to_number(arg);
             
-            // Check for NaN first
             if (std::isnan(value)) {
                 return Value(std::numeric_limits<double>::quiet_NaN());
             }
             
-            // Check for infinity
             if (std::isinf(value)) {
                 return Value(value);
             }
             
-            // Perform Kahan summation
             double y = value - compensation;
             double t = sum + y;
             compensation = (t - sum) - y;
             sum = t;
         }
     } catch (const std::exception& e) {
-        // Prevent segfault by catching any unexpected errors
         std::cout << "Math.sumPrecise: Error in calculation - " << e.what() << std::endl;
         return Value(std::numeric_limits<double>::quiet_NaN());
     } catch (...) {
-        // Catch any other errors
         std::cout << "Math.sumPrecise: Unknown error in calculation" << std::endl;
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -404,8 +378,7 @@ Value Math::sumPrecise(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::f16round(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
-    // Round to nearest 16-bit floating point representation
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -415,13 +388,12 @@ Value Math::f16round(Context& ctx, const std::vector<Value>& args) {
         return Value(value);
     }
     
-    // Simple approximation - in real implementation would use proper float16 conversion
     float f16_val = static_cast<float>(value);
     return Value(static_cast<double>(f16_val));
 }
 
 Value Math::log10(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -431,7 +403,7 @@ Value Math::log10(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::log2(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -441,7 +413,7 @@ Value Math::log2(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::log1p(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -451,7 +423,7 @@ Value Math::log1p(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::expm1(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -461,7 +433,7 @@ Value Math::expm1(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::acosh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -471,7 +443,7 @@ Value Math::acosh(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::asinh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -481,7 +453,7 @@ Value Math::asinh(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::atanh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -491,7 +463,7 @@ Value Math::atanh(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::cosh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -501,7 +473,7 @@ Value Math::cosh(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::sinh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -511,7 +483,7 @@ Value Math::sinh(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Math::tanh(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     if (args.empty()) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
@@ -520,16 +492,12 @@ Value Math::tanh(Context& ctx, const std::vector<Value>& args) {
     return Value(std::tanh(value));
 }
 
-//=============================================================================
-// Helper Functions
-//=============================================================================
 
 double Math::safe_to_number(const Value& value) {
     if (value.is_number()) {
         return value.to_number();
     }
     
-    // Try to convert other types to numbers (like JavaScript does)
     try {
         return value.to_number();
     } catch (...) {
@@ -549,4 +517,4 @@ void Math::initialize_random() {
     random_initialized_ = true;
 }
 
-} // namespace Quanta
+}

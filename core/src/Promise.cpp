@@ -4,11 +4,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/Promise.h"
-#include "../include/Context.h"
-#include "../include/Async.h"
-#include "../include/Object.h"  // For ObjectFactory
-#include "../../parser/include/AST.h"
+#include "quanta/Promise.h"
+#include "quanta/Context.h"
+#include "quanta/Async.h"
+#include "quanta/Object.h"
+#include "quanta/AST.h"
 #include <iostream>
 
 namespace Quanta {
@@ -30,27 +30,23 @@ void Promise::reject(const Value& reason) {
 }
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
-    // Create new promise with safer initialization using ObjectFactory
     Promise* new_promise = nullptr;
     try {
         auto promise_obj = ObjectFactory::create_promise(context_);
         new_promise = static_cast<Promise*>(promise_obj.release());
     } catch (...) {
-        // If setup fails, clean up and return nullptr
         return nullptr;
     }
     
     if (state_ == PromiseState::FULFILLED) {
         if (on_fulfilled) {
-            // Execute callback immediately if already fulfilled - avoid async issues
             try {
                 if (context_) {
                     std::vector<Value> args = {value_};
                     Value result = on_fulfilled->call(*context_, args);
                     
-                    // Properly initialize the new promise before fulfilling
                     new_promise->state_ = PromiseState::PENDING;
-                    new_promise->value_ = Value();  // Reset value
+                    new_promise->value_ = Value();
                     new_promise->fulfill(result);
                 } else {
                     new_promise->state_ = PromiseState::PENDING;
@@ -65,29 +61,26 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         }
     } else if (state_ == PromiseState::REJECTED) {
         if (on_rejected) {
-            // Execute rejection handler immediately if already rejected
             try {
                 if (context_) {
                     std::vector<Value> args = {value_};
                     Value result = on_rejected->call(*context_, args);
                     
-                    // Properly initialize the new promise before fulfilling
                     new_promise->state_ = PromiseState::PENDING;
-                    new_promise->value_ = Value();  // Reset value
-                    new_promise->fulfill(result);  // Rejection handler fulfills the new promise
+                    new_promise->value_ = Value();
+                    new_promise->fulfill(result);
                 } else {
                     new_promise->state_ = PromiseState::PENDING;
                     new_promise->reject(Value("No execution context for callback"));
                 }
             } catch (...) {
                 new_promise->state_ = PromiseState::PENDING;
-                new_promise->reject(value_);  // Re-reject with original reason
+                new_promise->reject(value_);
             }
         } else {
             new_promise->reject(value_);
         }
     } else {
-        // Promise is pending, store handlers
         if (on_fulfilled) {
             fulfillment_handlers_.push_back(on_fulfilled);
         }
@@ -104,12 +97,10 @@ Promise* Promise::catch_method(Function* on_rejected) {
 }
 
 Promise* Promise::finally_method(Function* on_finally) {
-    // Simplified implementation - just execute the finally handler
     return then(on_finally, on_finally);
 }
 
 Promise* Promise::resolve(const Value& value) {
-    // Use ObjectFactory for proper memory management
     auto promise_obj = ObjectFactory::create_promise(nullptr);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->fulfill(value);
@@ -117,7 +108,6 @@ Promise* Promise::resolve(const Value& value) {
 }
 
 Promise* Promise::reject_static(const Value& reason) {
-    // Use ObjectFactory for proper memory management
     auto promise_obj = ObjectFactory::create_promise(nullptr);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->reject(reason);
@@ -133,7 +123,6 @@ Promise* Promise::all(const std::vector<Promise*>& promises) {
         return result_promise;
     }
     
-    // Simplified implementation - just fulfill with "all_resolved"
     result_promise->fulfill(Value("all_resolved"));
     return result_promise;
 }
@@ -143,18 +132,15 @@ Promise* Promise::race(const std::vector<Promise*>& promises) {
     auto* result_promise = static_cast<Promise*>(promise_obj.release());
     
     if (promises.empty()) {
-        // Never resolves if empty
         return result_promise;
     }
     
-    // Simplified implementation - just fulfill with "race_winner"
     result_promise->fulfill(Value("race_winner"));
     return result_promise;
 }
 
 void Promise::execute_handlers() {
     if (state_ == PromiseState::FULFILLED && !fulfillment_handlers_.empty()) {
-        // Copy handlers to avoid iterator invalidation issues
         auto handlers = fulfillment_handlers_;
         fulfillment_handlers_.clear();
         
@@ -164,13 +150,11 @@ void Promise::execute_handlers() {
                     std::vector<Value> args = {value_};
                     handler->call(*context_, args);
                 } catch (...) {
-                    // Handler execution failed - continue with other handlers
                 }
             }
         }
         rejection_handlers_.clear();
     } else if (state_ == PromiseState::REJECTED && !rejection_handlers_.empty()) {
-        // Copy and clear rejection handlers safely
         auto handlers = rejection_handlers_;
         rejection_handlers_.clear();
         
@@ -180,7 +164,6 @@ void Promise::execute_handlers() {
                     std::vector<Value> args = {value_};
                     handler->call(*context_, args);
                 } catch (...) {
-                    // Handler execution failed - continue with other handlers
                 }
             }
         }
@@ -188,15 +171,13 @@ void Promise::execute_handlers() {
     }
 }
 
-// ES2025: Promise.withResolvers()
 Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args; // Suppress unused parameter warnings
+    (void)ctx; (void)args;
 
     auto promise_obj = ObjectFactory::create_promise(nullptr);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     auto result_obj = ObjectFactory::create_object();
     
-    // Create resolve function
     auto resolve_fn = ObjectFactory::create_native_function("resolve",
         [promise](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
@@ -205,7 +186,6 @@ Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
             return Value();
         });
     
-    // Create reject function  
     auto reject_fn = ObjectFactory::create_native_function("reject",
         [promise](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
@@ -214,7 +194,6 @@ Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
             return Value();
         });
     
-    // Return object with promise, resolve, reject
     result_obj->set_property("promise", Value(promise));
     result_obj->set_property("resolve", Value(resolve_fn.release()));
     result_obj->set_property("reject", Value(reject_fn.release()));
@@ -222,7 +201,6 @@ Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
     return Value(result_obj.release());
 }
 
-// ES2025: Promise.try()
 Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     if (args.empty() || !args[0].is_function()) {
         ctx.throw_exception(Value("Promise.try requires a function argument"));
@@ -234,11 +212,9 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     auto* promise = static_cast<Promise*>(promise_obj.release());
     
     try {
-        // Execute the callback immediately
         std::vector<Value> callback_args;
         Value result = callback->call(ctx, callback_args);
         
-        // If result is a Promise, chain it
         if (result.is_object() && result.as_object()->get_type() == ObjectType::Promise) {
             Promise* result_promise = static_cast<Promise*>(result.as_object());
             if (result_promise->state_ == PromiseState::FULFILLED) {
@@ -247,7 +223,6 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
                 promise->reject(result_promise->value_);
             }
         } else {
-            // Fulfill with the direct result
             promise->fulfill(result);
         }
     } catch (const std::exception& e) {
@@ -257,20 +232,14 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     return Value(promise);
 }
 
-// Setup JavaScript methods (.then, .catch, .finally) on a promise instance
 void Promise::setup_promise_methods(Promise* promise) {
     if (!promise) return;
     
-    // Add .then method without capturing the promise pointer
-    // Instead, use 'this' binding approach similar to other objects
     auto then_method = ObjectFactory::create_native_function("then",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // In a full implementation, 'this' would be passed as the promise object
-            // For now, create a simple resolved promise to avoid segfaults
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             if (args.size() > 0 && args[0].is_function()) {
-                // Execute callback immediately with resolved value
                 Function* callback = args[0].as_function();
                 try {
                     std::vector<Value> callback_args = {Value("resolved")};
@@ -286,10 +255,8 @@ void Promise::setup_promise_methods(Promise* promise) {
         });
     promise->set_property("then", Value(then_method.release()));
     
-    // Add .catch method without capturing promise pointer
     auto catch_method = ObjectFactory::create_native_function("catch",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Simplified implementation that avoids pointer capture
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value("catch_resolved"));
@@ -297,10 +264,8 @@ void Promise::setup_promise_methods(Promise* promise) {
         });
     promise->set_property("catch", Value(catch_method.release()));
     
-    // Add .finally method without capturing promise pointer
     auto finally_method = ObjectFactory::create_native_function("finally",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // Simplified implementation that avoids pointer capture
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
             new_promise->fulfill(Value("finally_resolved"));
@@ -309,4 +274,4 @@ void Promise::setup_promise_methods(Promise* promise) {
     promise->set_property("finally", Value(finally_method.release()));
 }
 
-} // namespace Quanta
+}

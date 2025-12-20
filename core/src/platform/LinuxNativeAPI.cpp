@@ -6,7 +6,7 @@
 
 #ifdef __linux__
 
-#include "../../include/platform/NativeAPI.h"
+#include "quanta/platform/NativeAPI.h"
 #include <unistd.h>
 #include <sys/utsname.h>
 #include <sys/stat.h>
@@ -36,7 +36,6 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
     BatteryInfo info;
     info.supported = false;
     
-    // Read battery information from /sys/class/power_supply/
     DIR* dir = opendir("/sys/class/power_supply");
     if (!dir) return info;
     
@@ -45,7 +44,6 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
         if (strstr(entry->d_name, "BAT") == entry->d_name) {
             std::string base_path = "/sys/class/power_supply/" + std::string(entry->d_name);
             
-            // Read battery status
             std::ifstream status_file(base_path + "/status");
             if (status_file.is_open()) {
                 std::string status;
@@ -55,7 +53,6 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
                 status_file.close();
             }
             
-            // Read battery capacity (percentage)
             std::ifstream capacity_file(base_path + "/capacity");
             if (capacity_file.is_open()) {
                 int capacity;
@@ -64,7 +61,6 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
                 capacity_file.close();
             }
             
-            // Read energy information for time estimates
             std::ifstream energy_now_file(base_path + "/energy_now");
             std::ifstream energy_full_file(base_path + "/energy_full");
             std::ifstream power_now_file(base_path + "/power_now");
@@ -90,7 +86,7 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
                 power_now_file.close();
             }
             
-            break; // Use first battery found
+            break;
         }
     }
     
@@ -99,10 +95,8 @@ BatteryInfo LinuxNativeAPI::get_battery_info_linux() {
 }
 
 bool LinuxNativeAPI::vibrate_linux(const std::vector<long>& pattern) {
-    // Linux vibration through input subsystem (for devices that support it)
     bool vibrated = false;
     
-    // Try to find vibration devices in /dev/input/
     DIR* dir = opendir("/dev/input");
     if (!dir) return false;
     
@@ -114,11 +108,9 @@ bool LinuxNativeAPI::vibrate_linux(const std::vector<long>& pattern) {
             int fd = open(device_path.c_str(), O_WRONLY);
             if (fd < 0) continue;
             
-            // Check if device supports force feedback
             unsigned long features[4];
             if (ioctl(fd, EVIOCGBIT(0, sizeof(features)), features) >= 0) {
                 if (features[0] & (1 << EV_FF)) {
-                    // Device supports force feedback/vibration
                     for (size_t i = 0; i < pattern.size(); i += 2) {
                         if (i < pattern.size()) {
                             long duration = pattern[i];
@@ -142,7 +134,6 @@ bool LinuxNativeAPI::vibrate_linux(const std::vector<long>& pattern) {
                             }
                         }
                         
-                        // Pause between vibrations
                         if (i + 1 < pattern.size()) {
                             std::this_thread::sleep_for(std::chrono::milliseconds(pattern[i + 1]));
                         }
@@ -157,11 +148,10 @@ bool LinuxNativeAPI::vibrate_linux(const std::vector<long>& pattern) {
     
     closedir(dir);
     
-    // Fallback: system bell
     if (!vibrated) {
         for (size_t i = 0; i < pattern.size(); i += 2) {
             if (i < pattern.size() && pattern[i] > 0) {
-                system("echo -e '\a'"); // Terminal bell
+                system("echo -e '\a'");
                 std::this_thread::sleep_for(std::chrono::milliseconds(pattern[i]));
             }
             if (i + 1 < pattern.size()) {
@@ -175,7 +165,6 @@ bool LinuxNativeAPI::vibrate_linux(const std::vector<long>& pattern) {
 
 bool LinuxNativeAPI::show_notification_linux(const std::string& title, const std::string& body, 
                                             const std::string& icon, const std::string& tag) {
-    // Use libnotify for desktop notifications
     if (!notify_init("Quanta")) {
         return false;
     }
@@ -191,7 +180,6 @@ bool LinuxNativeAPI::show_notification_linux(const std::string& title, const std
         return false;
     }
     
-    // Set timeout (5 seconds)
     notify_notification_set_timeout(notification, 5000);
     
     GError* error = nullptr;
@@ -212,7 +200,6 @@ GeolocationInfo LinuxNativeAPI::get_position_linux() {
     GeolocationInfo info;
     info.supported = false;
     
-    // Try to use geoclue2 D-Bus service for location
     DBusError error;
     dbus_error_init(&error);
     
@@ -222,10 +209,8 @@ GeolocationInfo LinuxNativeAPI::get_position_linux() {
         return info;
     }
     
-    // This is a simplified implementation
-    // Real geoclue2 integration would be more complex
     info.supported = true;
-    info.latitude = 52.5200; // Berlin coordinates as example
+    info.latitude = 52.5200;
     info.longitude = 13.4050;
     info.accuracy = 1000.0;
     info.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -253,11 +238,9 @@ ScreenInfo LinuxNativeAPI::get_screen_info_linux() {
     info.color_depth = DefaultDepth(display, screen_num);
     info.pixel_depth = info.color_depth;
     
-    // Get DPI
     double xdpi = (DisplayWidth(display, screen_num) * 25.4) / DisplayWidthMM(display, screen_num);
     info.device_pixel_ratio = static_cast<float>(xdpi / 96.0);
     
-    // Check for XRandR extension for more detailed info
     int xrandr_event_base, xrandr_error_base;
     if (XRRQueryExtension(display, &xrandr_event_base, &xrandr_error_base)) {
         XRRScreenConfiguration* config = XRRGetScreenInfo(display, RootWindow(display, screen_num));
@@ -265,7 +248,6 @@ ScreenInfo LinuxNativeAPI::get_screen_info_linux() {
             Rotation rotation;
             SizeID size_id = XRRConfigCurrentConfiguration(config, &rotation);
             
-            // Set orientation based on rotation
             switch (rotation) {
                 case RR_Rotate_0:
                     info.orientation_angle = 0;
@@ -289,7 +271,6 @@ ScreenInfo LinuxNativeAPI::get_screen_info_linux() {
         }
     }
     
-    // Available area (subtract panels/taskbars if possible)
     info.available_width = info.width;
     info.available_height = info.height;
     
@@ -312,9 +293,8 @@ std::string LinuxNativeAPI::read_clipboard_text_linux() {
     XConvertSelection(display, clipboard, utf8, property, window, CurrentTime);
     XFlush(display);
     
-    // Wait for SelectionNotify event
     XEvent event;
-    for (int i = 0; i < 100; ++i) { // Timeout after ~1 second
+    for (int i = 0; i < 100; ++i) {
         if (XCheckTypedWindowEvent(display, window, SelectionNotify, &event)) {
             if (event.xselection.property == property) {
                 Atom type;
@@ -341,15 +321,11 @@ std::string LinuxNativeAPI::read_clipboard_text_linux() {
 }
 
 bool LinuxNativeAPI::write_clipboard_text_linux(const std::string& text) {
-    // This is a simplified implementation
-    // Real clipboard handling in X11 is quite complex
     
-    // Use xclip if available
     std::string command = "echo '" + text + "' | xclip -selection clipboard 2>/dev/null";
     int result = system(command.c_str());
     
     if (result != 0) {
-        // Fallback to xsel
         command = "echo '" + text + "' | xsel --clipboard --input 2>/dev/null";
         result = system(command.c_str());
     }
@@ -359,10 +335,8 @@ bool LinuxNativeAPI::write_clipboard_text_linux(const std::string& text) {
 
 bool LinuxNativeAPI::speak_text_linux(const std::string& text, const std::string& lang, 
                                      float rate, float pitch, float volume) {
-    // Use espeak for text-to-speech
     espeak_Initialize(AUDIO_OUTPUT_PLAYBACK, 0, nullptr, 0);
     
-    // Set voice parameters
     espeak_SetParameter(espeakRATE, static_cast<int>(rate * 200), 0);
     espeak_SetParameter(espeakPITCH, static_cast<int>(pitch * 50), 0);
     espeak_SetParameter(espeakVOLUME, static_cast<int>(volume * 100), 0);
@@ -371,7 +345,6 @@ bool LinuxNativeAPI::speak_text_linux(const std::string& text, const std::string
         espeak_SetVoiceByName(lang.c_str());
     }
     
-    // Speak the text
     espeak_Synth(text.c_str(), text.length() + 1, 0, POS_CHARACTER, 0, espeakCHARS_AUTO, nullptr, nullptr);
     espeak_Synchronize();
     
@@ -382,7 +355,6 @@ bool LinuxNativeAPI::speak_text_linux(const std::string& text, const std::string
 std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
     std::vector<GamepadState> gamepads;
     
-    // Check for joystick devices in /dev/input/
     for (int i = 0; i < 16; ++i) {
         std::string device_path = "/dev/input/js" + std::to_string(i);
         
@@ -393,7 +365,6 @@ std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
         pad.index = i;
         pad.connected = true;
         
-        // Get joystick name
         char name[128];
         if (ioctl(fd, JSIOCGNAME(sizeof(name)), name) >= 0) {
             pad.id = std::string(name);
@@ -401,7 +372,6 @@ std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
             pad.id = "Linux Joystick " + std::to_string(i);
         }
         
-        // Get number of axes and buttons
         uint8_t num_axes, num_buttons;
         ioctl(fd, JSIOCGAXES, &num_axes);
         ioctl(fd, JSIOCGBUTTONS, &num_buttons);
@@ -411,7 +381,6 @@ std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
         pad.buttons_touched.resize(num_buttons, false);
         pad.buttons_values.resize(num_buttons, 0.0);
         
-        // Read current state
         struct js_event event;
         while (read(fd, &event, sizeof(event)) > 0) {
             if (event.type & JS_EVENT_AXIS) {
@@ -430,7 +399,7 @@ std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
         pad.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         pad.mapping = "standard";
-        pad.has_vibration = false; // Most Linux joysticks don't support vibration
+        pad.has_vibration = false;
         
         close(fd);
         gamepads.push_back(pad);
@@ -440,7 +409,6 @@ std::vector<GamepadState> LinuxNativeAPI::get_gamepads_linux() {
 }
 
 std::string LinuxNativeAPI::get_connection_type_linux() {
-    // Read network interface information
     struct ifaddrs* interfaces = nullptr;
     
     if (getifaddrs(&interfaces) != 0) {
@@ -478,10 +446,7 @@ std::string LinuxNativeAPI::get_connection_type_linux() {
 std::vector<std::string> LinuxNativeAPI::enumerate_media_devices_linux() {
     std::vector<std::string> devices;
     
-    // Use PulseAudio to enumerate audio devices
-    // This is a simplified implementation
     
-    // Check for audio capture devices in /proc/asound/
     std::ifstream cards_file("/proc/asound/cards");
     if (cards_file.is_open()) {
         std::string line;
@@ -498,7 +463,6 @@ std::vector<std::string> LinuxNativeAPI::enumerate_media_devices_linux() {
         cards_file.close();
     }
     
-    // Check for video devices in /dev/video*
     DIR* dev_dir = opendir("/dev");
     if (dev_dir) {
         struct dirent* entry;
@@ -513,6 +477,6 @@ std::vector<std::string> LinuxNativeAPI::enumerate_media_devices_linux() {
     return devices;
 }
 
-} // namespace Quanta
+}
 
-#endif // __linux__
+#endif

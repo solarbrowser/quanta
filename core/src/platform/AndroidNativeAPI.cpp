@@ -6,7 +6,7 @@
 
 #ifdef __ANDROID__
 
-#include "../../include/platform/NativeAPI.h"
+#include "quanta/platform/NativeAPI.h"
 #include <android/log.h>
 #include <android/sensor.h>
 #include <android/input.h>
@@ -21,11 +21,9 @@
 
 namespace Quanta {
 
-// Global JNI references - these would need to be initialized by the main Android app
 static JavaVM* g_jvm = nullptr;
 static jobject g_context = nullptr;
 
-// Helper function to get JNI environment
 JNIEnv* get_jni_env() {
     JNIEnv* env = nullptr;
     if (g_jvm) {
@@ -34,7 +32,6 @@ JNIEnv* get_jni_env() {
     return env;
 }
 
-// Helper function to call Java methods
 jobject call_java_method(const char* class_name, const char* method_name, const char* signature, ...) {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return nullptr;
@@ -67,7 +64,6 @@ BatteryInfo AndroidNativeAPI::get_battery_info_android() {
         return info;
     }
     
-    // Get BatteryManager through Android API
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -77,19 +73,16 @@ BatteryInfo AndroidNativeAPI::get_battery_info_android() {
     if (batteryManager) {
         jclass batteryManagerClass = env->FindClass("android/os/BatteryManager");
         
-        // Get battery level
         jmethodID getIntProperty = env->GetMethodID(batteryManagerClass, "getIntProperty", "(I)I");
         jfieldID levelProperty = env->GetStaticFieldID(batteryManagerClass, "BATTERY_PROPERTY_CAPACITY", "I");
         jint levelPropertyValue = env->GetStaticIntField(batteryManagerClass, levelProperty);
         jint level = env->CallIntMethod(batteryManager, getIntProperty, levelPropertyValue);
         info.level = static_cast<double>(level) / 100.0;
         
-        // Get charging status
         jfieldID statusProperty = env->GetStaticFieldID(batteryManagerClass, "BATTERY_PROPERTY_STATUS", "I");
         jint statusPropertyValue = env->GetStaticIntField(batteryManagerClass, statusProperty);
         jint status = env->CallIntMethod(batteryManager, getIntProperty, statusPropertyValue);
         
-        // BATTERY_STATUS_CHARGING = 2
         info.charging = (status == 2);
         
         env->DeleteLocalRef(batteryManagerClass);
@@ -108,7 +101,6 @@ bool AndroidNativeAPI::vibrate_android(const std::vector<long>& pattern) {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return false;
     
-    // Get Vibrator service
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -119,11 +111,9 @@ bool AndroidNativeAPI::vibrate_android(const std::vector<long>& pattern) {
         jclass vibratorClass = env->FindClass("android/os/Vibrator");
         
         if (pattern.size() == 1) {
-            // Single vibration
             jmethodID vibrateMethod = env->GetMethodID(vibratorClass, "vibrate", "(J)V");
             env->CallVoidMethod(vibrator, vibrateMethod, static_cast<jlong>(pattern[0]));
         } else if (pattern.size() > 1) {
-            // Pattern vibration
             jlongArray patternArray = env->NewLongArray(pattern.size());
             jlong* patternData = new jlong[pattern.size()];
             for (size_t i = 0; i < pattern.size(); ++i) {
@@ -132,7 +122,7 @@ bool AndroidNativeAPI::vibrate_android(const std::vector<long>& pattern) {
             env->SetLongArrayRegion(patternArray, 0, pattern.size(), patternData);
             
             jmethodID vibratePatternMethod = env->GetMethodID(vibratorClass, "vibrate", "([JI)V");
-            env->CallVoidMethod(vibrator, vibratePatternMethod, patternArray, -1); // -1 means no repeat
+            env->CallVoidMethod(vibrator, vibratePatternMethod, patternArray, -1);
             
             delete[] patternData;
             env->DeleteLocalRef(patternArray);
@@ -153,7 +143,6 @@ bool AndroidNativeAPI::show_notification_android(const std::string& title, const
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return false;
     
-    // Create notification using NotificationManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -161,14 +150,12 @@ bool AndroidNativeAPI::show_notification_android(const std::string& title, const
     jobject notificationManager = env->CallObjectMethod(g_context, getSystemService, notificationService);
     
     if (notificationManager) {
-        // Create NotificationCompat.Builder
         jclass builderClass = env->FindClass("androidx/core/app/NotificationCompat$Builder");
         jmethodID builderConstructor = env->GetMethodID(builderClass, "<init>", "(Landroid/content/Context;Ljava/lang/String;)V");
         
         jstring channelId = env->NewStringUTF("quanta_channel");
         jobject builder = env->NewObject(builderClass, builderConstructor, g_context, channelId);
         
-        // Set title and content
         jstring titleStr = env->NewStringUTF(title.c_str());
         jstring bodyStr = env->NewStringUTF(body.c_str());
         
@@ -178,18 +165,15 @@ bool AndroidNativeAPI::show_notification_android(const std::string& title, const
         
         env->CallObjectMethod(builder, setContentTitle, titleStr);
         env->CallObjectMethod(builder, setContentText, bodyStr);
-        env->CallObjectMethod(builder, setSmallIcon, 17301651); // android.R.drawable.ic_dialog_info
+        env->CallObjectMethod(builder, setSmallIcon, 17301651);
         
-        // Build notification
         jmethodID buildMethod = env->GetMethodID(builderClass, "build", "()Landroid/app/Notification;");
         jobject notification = env->CallObjectMethod(builder, buildMethod);
         
-        // Show notification
         jclass notificationManagerClass = env->FindClass("android/app/NotificationManager");
         jmethodID notify = env->GetMethodID(notificationManagerClass, "notify", "(ILandroid/app/Notification;)V");
         env->CallVoidMethod(notificationManager, notify, 1, notification);
         
-        // Cleanup
         env->DeleteLocalRef(titleStr);
         env->DeleteLocalRef(bodyStr);
         env->DeleteLocalRef(channelId);
@@ -216,7 +200,6 @@ GeolocationInfo AndroidNativeAPI::get_position_android() {
         return info;
     }
     
-    // Get LocationManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -224,11 +207,8 @@ GeolocationInfo AndroidNativeAPI::get_position_android() {
     jobject locationManager = env->CallObjectMethod(g_context, getSystemService, locationService);
     
     if (locationManager) {
-        // This is a simplified implementation - real implementation would need proper permissions
-        // and asynchronous location requests
         
-        // For demonstration, return approximate coordinates
-        info.latitude = 37.4220; // Mountain View, CA
+        info.latitude = 37.4220;
         info.longitude = -122.0841;
         info.accuracy = 1000.0;
         info.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -251,7 +231,6 @@ ScreenInfo AndroidNativeAPI::get_screen_info_android() {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return info;
     
-    // Get WindowManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -266,7 +245,6 @@ ScreenInfo AndroidNativeAPI::get_screen_info_android() {
         if (display) {
             jclass displayClass = env->FindClass("android/view/Display");
             
-            // Get display metrics
             jclass displayMetricsClass = env->FindClass("android/util/DisplayMetrics");
             jmethodID metricsConstructor = env->GetMethodID(displayMetricsClass, "<init>", "()V");
             jobject metrics = env->NewObject(displayMetricsClass, metricsConstructor);
@@ -274,7 +252,6 @@ ScreenInfo AndroidNativeAPI::get_screen_info_android() {
             jmethodID getMetrics = env->GetMethodID(displayClass, "getMetrics", "(Landroid/util/DisplayMetrics;)V");
             env->CallVoidMethod(display, getMetrics, metrics);
             
-            // Get dimensions
             jfieldID widthPixels = env->GetFieldID(displayMetricsClass, "widthPixels", "I");
             jfieldID heightPixels = env->GetFieldID(displayMetricsClass, "heightPixels", "I");
             jfieldID densityDpi = env->GetFieldID(displayMetricsClass, "densityDpi", "I");
@@ -284,28 +261,26 @@ ScreenInfo AndroidNativeAPI::get_screen_info_android() {
             info.height = env->GetIntField(metrics, heightPixels);
             info.device_pixel_ratio = env->GetFloatField(metrics, density);
             
-            // Available area (excluding status bar, navigation bar)
             info.available_width = info.width;
             info.available_height = info.height;
             
-            // Get orientation
             jmethodID getRotation = env->GetMethodID(displayClass, "getRotation", "()I");
             jint rotation = env->CallIntMethod(display, getRotation);
             
             switch (rotation) {
-                case 0: // Surface.ROTATION_0
+                case 0:
                     info.orientation_angle = 0;
                     info.orientation_type = "portrait-primary";
                     break;
-                case 1: // Surface.ROTATION_90
+                case 1:
                     info.orientation_angle = 90;
                     info.orientation_type = "landscape-primary";
                     break;
-                case 2: // Surface.ROTATION_180
+                case 2:
                     info.orientation_angle = 180;
                     info.orientation_type = "portrait-secondary";
                     break;
-                case 3: // Surface.ROTATION_270
+                case 3:
                     info.orientation_angle = 270;
                     info.orientation_type = "landscape-secondary";
                     break;
@@ -336,7 +311,6 @@ std::string AndroidNativeAPI::read_clipboard_text_android() {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return result;
     
-    // Get ClipboardManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -394,7 +368,6 @@ bool AndroidNativeAPI::write_clipboard_text_android(const std::string& text) {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return false;
     
-    // Get ClipboardManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -404,7 +377,6 @@ bool AndroidNativeAPI::write_clipboard_text_android(const std::string& text) {
     bool success = false;
     
     if (clipboardManager) {
-        // Create ClipData
         jclass clipDataClass = env->FindClass("android/content/ClipData");
         jmethodID newPlainText = env->GetStaticMethodID(clipDataClass, "newPlainText", 
                                                        "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;");
@@ -413,7 +385,6 @@ bool AndroidNativeAPI::write_clipboard_text_android(const std::string& text) {
         jstring textString = env->NewStringUTF(text.c_str());
         jobject clipData = env->CallStaticObjectMethod(clipDataClass, newPlainText, label, textString);
         
-        // Set primary clip
         jclass clipboardManagerClass = env->FindClass("android/content/ClipboardManager");
         jmethodID setPrimaryClip = env->GetMethodID(clipboardManagerClass, "setPrimaryClip", "(Landroid/content/ClipData;)V");
         env->CallVoidMethod(clipboardManager, setPrimaryClip, clipData);
@@ -439,27 +410,23 @@ bool AndroidNativeAPI::speak_text_android(const std::string& text, const std::st
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return false;
     
-    // Create TextToSpeech instance
     jclass ttsClass = env->FindClass("android/speech/tts/TextToSpeech");
     jmethodID ttsConstructor = env->GetMethodID(ttsClass, "<init>", "(Landroid/content/Context;Landroid/speech/tts/TextToSpeech$OnInitListener;)V");
     
-    // This is simplified - real implementation would need proper initialization callback
     jobject tts = env->NewObject(ttsClass, ttsConstructor, g_context, nullptr);
     
     if (tts) {
-        // Set speech parameters
         jmethodID setSpeechRate = env->GetMethodID(ttsClass, "setSpeechRate", "(F)I");
         jmethodID setPitch = env->GetMethodID(ttsClass, "setPitch", "(F)I");
         
         env->CallIntMethod(tts, setSpeechRate, rate);
         env->CallIntMethod(tts, setPitch, pitch);
         
-        // Speak text
         jmethodID speak = env->GetMethodID(ttsClass, "speak", "(Ljava/lang/CharSequence;ILandroid/os/Bundle;Ljava/lang/String;)I");
         jstring textString = env->NewStringUTF(text.c_str());
         jstring utteranceId = env->NewStringUTF("quanta_utterance");
         
-        env->CallIntMethod(tts, speak, textString, 0, nullptr, utteranceId); // QUEUE_FLUSH = 0
+        env->CallIntMethod(tts, speak, textString, 0, nullptr, utteranceId);
         
         env->DeleteLocalRef(textString);
         env->DeleteLocalRef(utteranceId);
@@ -474,13 +441,10 @@ bool AndroidNativeAPI::speak_text_android(const std::string& text, const std::st
 std::vector<GamepadState> AndroidNativeAPI::get_gamepads_android() {
     std::vector<GamepadState> gamepads;
     
-    // Android gamepad support would require input device enumeration
-    // This is a simplified placeholder implementation
     
     JNIEnv* env = get_jni_env();
     if (!env) return gamepads;
     
-    // Get InputManager to enumerate input devices
     jclass inputManagerClass = env->FindClass("android/hardware/input/InputManager");
     jmethodID getInstance = env->GetStaticMethodID(inputManagerClass, "getInstance", "()Landroid/hardware/input/InputManager;");
     jobject inputManager = env->CallStaticObjectMethod(inputManagerClass, getInstance);
@@ -502,13 +466,11 @@ std::vector<GamepadState> AndroidNativeAPI::get_gamepads_android() {
                     jmethodID getSources = env->GetMethodID(deviceClass, "getSources", "()I");
                     jint sources = env->CallIntMethod(device, getSources);
                     
-                    // Check if it's a gamepad (SOURCE_GAMEPAD = 0x00000401)
                     if (sources & 0x00000401) {
                         GamepadState pad;
                         pad.index = static_cast<int>(i);
                         pad.connected = true;
                         
-                        // Get device name
                         jmethodID getName = env->GetMethodID(deviceClass, "getName", "()Ljava/lang/String;");
                         jstring name = (jstring)env->CallObjectMethod(device, getName);
                         
@@ -522,12 +484,11 @@ std::vector<GamepadState> AndroidNativeAPI::get_gamepads_android() {
                         }
                         
                         pad.mapping = "standard";
-                        pad.has_vibration = false; // Most Android gamepads don't support vibration
+                        pad.has_vibration = false;
                         pad.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now().time_since_epoch()).count();
                         
-                        // Initialize with empty state (real implementation would read current state)
-                        pad.axes.resize(4, 0.0); // Left stick X/Y, Right stick X/Y
+                        pad.axes.resize(4, 0.0);
                         pad.buttons_pressed.resize(16, false);
                         pad.buttons_touched.resize(16, false);
                         pad.buttons_values.resize(16, 0.0);
@@ -558,7 +519,6 @@ std::string AndroidNativeAPI::get_connection_type_android() {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return connection_type;
     
-    // Get ConnectivityManager
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -576,13 +536,13 @@ std::string AndroidNativeAPI::get_connection_type_android() {
             jint type = env->CallIntMethod(networkInfo, getType);
             
             switch (type) {
-                case 0: // TYPE_MOBILE
+                case 0:
                     connection_type = "cellular";
                     break;
-                case 1: // TYPE_WIFI
+                case 1:
                     connection_type = "wifi";
                     break;
-                case 9: // TYPE_ETHERNET
+                case 9:
                     connection_type = "ethernet";
                     break;
                 default:
@@ -612,7 +572,6 @@ std::vector<std::string> AndroidNativeAPI::enumerate_media_devices_android() {
     JNIEnv* env = get_jni_env();
     if (!env || !g_context) return devices;
     
-    // Get AudioManager for audio devices
     jclass contextClass = env->FindClass("android/content/Context");
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     
@@ -620,15 +579,13 @@ std::vector<std::string> AndroidNativeAPI::enumerate_media_devices_android() {
     jobject audioManager = env->CallObjectMethod(g_context, getSystemService, audioService);
     
     if (audioManager) {
-        // Add default audio devices
         devices.push_back("audioinput:Built-in Microphone");
         devices.push_back("audiooutput:Built-in Speaker");
         
         env->DeleteLocalRef(audioManager);
     }
     
-    // Get CameraManager for video devices
-    if (android_get_device_api_level() >= 21) { // API 21+ for Camera2
+    if (android_get_device_api_level() >= 21) {
         jstring cameraService = env->NewStringUTF("camera");
         jobject cameraManager = env->CallObjectMethod(g_context, getSystemService, cameraService);
         
@@ -657,7 +614,6 @@ std::vector<std::string> AndroidNativeAPI::enumerate_media_devices_android() {
         
         env->DeleteLocalRef(cameraService);
     } else {
-        // Fallback for older Android versions
         devices.push_back("videoinput:Camera 0");
     }
     
@@ -667,6 +623,6 @@ std::vector<std::string> AndroidNativeAPI::enumerate_media_devices_android() {
     return devices;
 }
 
-} // namespace Quanta
+}
 
-#endif // __ANDROID__
+#endif

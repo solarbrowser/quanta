@@ -4,8 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/RegExp.h"
-#include "../include/Object.h"
+#include "quanta/RegExp.h"
+#include "quanta/Object.h"
 #include <iostream>
 #include <sstream>
 
@@ -20,7 +20,6 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
     try {
         regex_ = std::regex(pattern_, get_regex_flags());
     } catch (const std::regex_error& e) {
-        // For now, create a simple regex that matches nothing
         regex_ = std::regex("(?!)");
     }
 }
@@ -37,47 +36,39 @@ Value RegExp::exec(const std::string& str) {
     try {
         std::smatch match;
 
-        // For global flag, start search from lastIndex
         std::string::const_iterator start = str.begin();
         if (global_ && last_index_ > 0 && last_index_ < str.length()) {
             start = str.begin() + last_index_;
         } else if (global_ && last_index_ >= str.length()) {
-            // Reset lastIndex if beyond string
             last_index_ = 0;
-            return Value(); // null
+            return Value();
         }
 
         if (std::regex_search(start, str.end(), match, regex_)) {
-            // Calculate actual position in original string
             size_t actual_position = (start - str.begin()) + match.position();
 
-            // Update lastIndex for global flag
             if (global_) {
                 last_index_ = actual_position + match.length();
             }
 
-            // Create array-like object with match results
             auto result = new Object();
             result->set_property("0", Value(match[0].str()));
             result->set_property("index", Value(static_cast<double>(actual_position)));
             result->set_property("input", Value(str));
             result->set_property("length", Value(static_cast<double>(match.size())));
 
-            // Add captured groups
             for (size_t i = 1; i < match.size(); ++i) {
                 result->set_property(std::to_string(i), Value(match[i].str()));
             }
 
             return Value(result);
         } else if (global_) {
-            // Reset lastIndex when no more matches
             last_index_ = 0;
         }
     } catch (const std::regex_error& e) {
-        // Return null on error
     }
 
-    return Value(); // null
+    return Value();
 }
 
 std::string RegExp::to_string() const {
@@ -103,7 +94,6 @@ void RegExp::parse_flags(const std::string& flags) {
                 sticky_ = true;
                 break;
             default:
-                // Ignore unknown flags
                 break;
         }
     }
@@ -115,12 +105,9 @@ std::regex::flag_type RegExp::get_regex_flags() const {
     if (ignore_case_) {
         flags |= std::regex::icase;
     }
-    
-    if (multiline_) {
-        flags |= std::regex::multiline;
-    }
-    
+
+
     return flags;
 }
 
-} // namespace Quanta
+}

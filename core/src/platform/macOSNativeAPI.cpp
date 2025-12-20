@@ -6,7 +6,7 @@
 
 #if defined(__APPLE__) && !defined(TARGET_OS_IOS)
 
-#include "../../include/platform/NativeAPI.h"
+#include "quanta/platform/NativeAPI.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/ps/IOPowerSources.h>
@@ -32,7 +32,6 @@ BatteryInfo macOSNativeAPI::get_battery_info_macos() {
     BatteryInfo info;
     info.supported = false;
     
-    // Get power source information
     CFTypeRef powerSourcesInfo = IOPSCopyPowerSourcesInfo();
     if (!powerSourcesInfo) return info;
     
@@ -49,19 +48,16 @@ BatteryInfo macOSNativeAPI::get_battery_info_macos() {
         
         if (!description) continue;
         
-        // Check if this is a battery
         CFStringRef type = (CFStringRef)CFDictionaryGetValue(description, CFSTR(kIOPSTypeKey));
         if (!type || !CFEqual(type, CFSTR(kIOPSInternalBatteryType))) continue;
         
         info.supported = true;
         
-        // Get charging status
         CFStringRef powerSourceState = (CFStringRef)CFDictionaryGetValue(description, CFSTR(kIOPSPowerSourceStateKey));
         if (powerSourceState) {
             info.charging = CFEqual(powerSourceState, CFSTR(kIOPSACPowerValue));
         }
         
-        // Get battery level
         CFNumberRef currentCapacity = (CFNumberRef)CFDictionaryGetValue(description, CFSTR(kIOPSCurrentCapacityKey));
         CFNumberRef maxCapacity = (CFNumberRef)CFDictionaryGetValue(description, CFSTR(kIOPSMaxCapacityKey));
         
@@ -74,21 +70,20 @@ BatteryInfo macOSNativeAPI::get_battery_info_macos() {
             }
         }
         
-        // Get time remaining
         CFNumberRef timeToEmpty = (CFNumberRef)CFDictionaryGetValue(description, CFSTR(kIOPSTimeToEmptyKey));
         CFNumberRef timeToFullCharge = (CFNumberRef)CFDictionaryGetValue(description, CFSTR(kIOPSTimeToFullChargeKey));
         
         if (info.charging && timeToFullCharge) {
             int time;
             CFNumberGetValue(timeToFullCharge, kCFNumberIntType, &time);
-            info.charging_time = static_cast<double>(time * 60); // Convert minutes to seconds
+            info.charging_time = static_cast<double>(time * 60);
         } else if (!info.charging && timeToEmpty) {
             int time;
             CFNumberGetValue(timeToEmpty, kCFNumberIntType, &time);
             info.discharging_time = static_cast<double>(time * 60);
         }
         
-        break; // Use first battery found
+        break;
     }
     
     CFRelease(powerSourcesList);
@@ -97,26 +92,20 @@ BatteryInfo macOSNativeAPI::get_battery_info_macos() {
 }
 
 bool macOSNativeAPI::vibrate_macos(const std::vector<long>& pattern) {
-    // macOS doesn't have system-wide vibration, but we can use sound/haptic feedback for MacBooks with Force Touch
     
     for (size_t i = 0; i < pattern.size(); i += 2) {
         if (i < pattern.size()) {
             long duration = pattern[i];
             if (duration > 0) {
-                // Use AudioServicesPlaySystemSound for haptic feedback on supported devices
                 AudioServicesPlaySystemSoundWithCompletion(kSystemSoundID_Vibrate, ^{
-                    // Completion block
                 });
                 
-                // Fallback to system beep
                 NSBeep();
                 
-                // Wait for duration
                 std::this_thread::sleep_for(std::chrono::milliseconds(duration));
             }
         }
         
-        // Pause between vibrations
         if (i + 1 < pattern.size()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(pattern[i + 1]));
         }
@@ -128,26 +117,21 @@ bool macOSNativeAPI::vibrate_macos(const std::vector<long>& pattern) {
 bool macOSNativeAPI::show_notification_macos(const std::string& title, const std::string& body, 
                                             const std::string& icon, const std::string& tag) {
     @autoreleasepool {
-        // Use modern UserNotifications framework (macOS 10.14+)
         UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
         
-        // Request permission first
         [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
                                 completionHandler:^(BOOL granted, NSError * _Nullable error) {
             if (granted) {
-                // Create notification content
                 UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
                 content.title = [NSString stringWithUTF8String:title.c_str()];
                 content.body = [NSString stringWithUTF8String:body.c_str()];
                 content.sound = [UNNotificationSound defaultSound];
                 
-                // Create request
                 NSString* identifier = tag.empty() ? [[NSUUID UUID] UUIDString] : [NSString stringWithUTF8String:tag.c_str()];
                 UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                                         content:content
                                                                                         trigger:nil];
                 
-                // Schedule notification
                 [center addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error) {
                     if (error) {
                         NSLog(@"Notification error: %@", error.localizedDescription);
@@ -164,8 +148,6 @@ GeolocationInfo macOSNativeAPI::get_position_macos() {
     GeolocationInfo info;
     info.supported = true;
     
-    // This would require Core Location framework and proper authorization
-    // For demonstration, return San Francisco coordinates
     info.latitude = 37.7749;
     info.longitude = -122.4194;
     info.accuracy = 1000.0;
@@ -189,15 +171,12 @@ ScreenInfo macOSNativeAPI::get_screen_info_macos() {
             info.available_width = static_cast<int>(visibleFrame.size.width);
             info.available_height = static_cast<int>(visibleFrame.size.height);
             
-            // Get color depth
             NSWindowDepth depth = [mainScreen depth];
             info.color_depth = NSBitsPerPixelFromDepth(depth);
             info.pixel_depth = info.color_depth;
             
-            // Get device pixel ratio (Retina scaling)
             info.device_pixel_ratio = static_cast<float>([mainScreen backingScaleFactor]);
             
-            // macOS doesn't rotate like mobile devices
             info.orientation_angle = 0;
             info.orientation_type = info.width >= info.height ? "landscape-primary" : "portrait-primary";
         }
@@ -241,7 +220,6 @@ bool macOSNativeAPI::speak_text_macos(const std::string& text, const std::string
         AVSpeechUtterance* utterance = [AVSpeechUtterance speechUtteranceWithString:
                                        [NSString stringWithUTF8String:text.c_str()]];
         
-        // Set voice parameters
         utterance.rate = rate * AVSpeechUtteranceDefaultSpeechRate;
         utterance.pitchMultiplier = pitch;
         utterance.volume = volume;
@@ -263,16 +241,13 @@ bool macOSNativeAPI::speak_text_macos(const std::string& text, const std::string
 std::vector<GamepadState> macOSNativeAPI::get_gamepads_macos() {
     std::vector<GamepadState> gamepads;
     
-    // Use IOHIDManager to enumerate game controllers
     IOHIDManagerRef hidManager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     if (!hidManager) return gamepads;
     
-    // Set matching criteria for game controllers
     CFMutableDictionaryRef matchingDict = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, 
                                                                    &kCFTypeDictionaryKeyCallBacks, 
                                                                    &kCFTypeDictionaryValueCallBacks);
     
-    // Match joysticks and gamepads
     CFNumberRef usagePage = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &(int){kHIDPage_GenericDesktop});
     CFNumberRef usage1 = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &(int){kHIDUsage_GD_Joystick});
     CFNumberRef usage2 = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &(int){kHIDUsage_GD_GamePad});
@@ -299,7 +274,6 @@ std::vector<GamepadState> macOSNativeAPI::get_gamepads_macos() {
                 pad.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
                 
-                // Get device name
                 CFStringRef productName = (CFStringRef)IOHIDDeviceGetProperty(device, CFSTR(kIOHIDProductKey));
                 if (productName) {
                     char name[256];
@@ -310,9 +284,8 @@ std::vector<GamepadState> macOSNativeAPI::get_gamepads_macos() {
                 }
                 
                 pad.mapping = "standard";
-                pad.has_vibration = false; // Most controllers don't support vibration on macOS
+                pad.has_vibration = false;
                 
-                // Get elements (buttons, axes)
                 CFArrayRef elements = IOHIDDeviceCopyMatchingElements(device, NULL, kIOHIDOptionsTypeNone);
                 if (elements) {
                     CFIndex elementCount = CFArrayGetCount(elements);
@@ -355,7 +328,6 @@ std::vector<GamepadState> macOSNativeAPI::get_gamepads_macos() {
 std::string macOSNativeAPI::get_connection_type_macos() {
     std::string connection_type = "unknown";
     
-    // Use SystemConfiguration framework to check network status
     SCNetworkReachabilityRef reachability = SCNetworkReachabilityCreateWithName(kCFAllocatorDefault, "www.apple.com");
     if (reachability) {
         SCNetworkReachabilityFlags flags;
@@ -364,9 +336,7 @@ std::string macOSNativeAPI::get_connection_type_macos() {
                 if (flags & kSCNetworkReachabilityFlagsIsWWAN) {
                     connection_type = "cellular";
                 } else {
-                    // Check if it's WiFi or Ethernet
-                    // This is simplified - real implementation would check interface types
-                    connection_type = "wifi"; // Default assumption for macOS
+                    connection_type = "wifi";
                 }
             } else {
                 connection_type = "none";
@@ -383,7 +353,6 @@ std::vector<std::string> macOSNativeAPI::enumerate_media_devices_macos() {
     std::vector<std::string> devices;
     
     @autoreleasepool {
-        // Enumerate audio input devices
         AVAudioSession* session = [AVAudioSession sharedInstance];
         NSArray<AVAudioSessionPortDescription*>* inputs = [session availableInputs];
         
@@ -392,20 +361,18 @@ std::vector<std::string> macOSNativeAPI::enumerate_media_devices_macos() {
             devices.push_back("audioinput:" + deviceName);
         }
         
-        // Enumerate video capture devices
         NSArray<AVCaptureDevice*>* videoDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
         for (AVCaptureDevice* device in videoDevices) {
             std::string deviceName = std::string([[device localizedName] UTF8String]);
             devices.push_back("videoinput:" + deviceName);
         }
         
-        // Add default audio output
         devices.push_back("audiooutput:Default Audio Output");
     }
     
     return devices;
 }
 
-} // namespace Quanta
+}
 
-#endif // __APPLE__ && !TARGET_OS_IOS
+#endif

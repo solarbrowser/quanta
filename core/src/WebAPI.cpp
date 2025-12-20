@@ -11,18 +11,16 @@
  * to maintain compilation compatibility while Web APIs are moved to the interface system.
  */
 
-#include "../include/WebAPI.h"
-#include "Object.h"
-#include "../include/platform/NativeAPI.h"
+#include "quanta/WebAPI.h"
+#include "quanta/Object.h"
+#include "quanta/platform/NativeAPI.h"
 #include <iostream>
 
 namespace Quanta {
 
-// Static member initialization
 int WebAPI::timer_id_counter_ = 1;
 std::vector<std::chrono::time_point<std::chrono::steady_clock>> WebAPI::timer_times_;
 
-// Timer APIs - Basic stubs
 Value WebAPI::setTimeout(Context& ctx, const std::vector<Value>& args) {
     std::cout << "WARNING: setTimeout called but Web APIs not implemented. Use WebAPIInterface instead." << std::endl;
     return Value(timer_id_counter_++);
@@ -43,7 +41,6 @@ Value WebAPI::clearInterval(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Console API - Basic stub
 Value WebAPI::console_log(Context& ctx, const std::vector<Value>& args) {
     std::cout << "WARNING: console.log called but Web APIs not implemented. Use WebAPIInterface instead." << std::endl;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -54,7 +51,6 @@ Value WebAPI::console_log(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Add minimal stubs for other functions that might be referenced
 Value WebAPI::console_error(Context& ctx, const std::vector<Value>& args) {
     return console_log(ctx, args);
 }
@@ -83,8 +79,6 @@ Value WebAPI::console_timeEnd(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Add stubs for any other critical WebAPI functions that are still referenced
-// This prevents compilation errors while transitioning to the interface system
 
 Value WebAPI::document_getCookie(Context& ctx, const std::vector<Value>& args) {
     std::cout << "WARNING: document.getCookie called but Web APIs not implemented. Use WebAPIInterface instead." << std::endl;
@@ -96,4 +90,4 @@ Value WebAPI::document_setCookie(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-} // namespace Quanta
+}

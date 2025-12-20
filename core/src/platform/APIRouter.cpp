@@ -4,13 +4,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../../include/platform/APIRouter.h"
-#include "../../include/WebAPI.h"
+#include "quanta/platform/APIRouter.h"
+#include "quanta/WebAPI.h"
 #include <iostream>
 
 namespace Quanta {
 
-// Static member definitions
 APIRouter::RoutePreference APIRouter::default_preference_ = APIRouter::RoutePreference::PREFER_NATIVE;
 std::map<APIRouter::APICategory, APIRouter::RoutePreference> APIRouter::category_preferences_;
 bool APIRouter::initialized_ = false;
@@ -20,7 +19,6 @@ void APIRouter::initialize(RoutePreference default_preference) {
     
     default_preference_ = default_preference;
     
-    // Initialize native APIs if we might need them
     if (default_preference != RoutePreference::SIMULATED_ONLY) {
         NativeAPI::initialize_platform_apis();
     }
@@ -99,7 +97,6 @@ bool APIRouter::should_use_native(APICategory category) {
     }
 }
 
-// Simple implementations that just route to native APIs or return basic values
 Value APIRouter::get_battery_charging(Context& ctx, const std::vector<Value>& args) {
     if (should_use_native(APICategory::BATTERY)) {
         BatteryInfo info = NativeAPI::get_battery_info();
@@ -143,7 +140,6 @@ Value APIRouter::vibrate_device(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Implementations that show proper 'not available' errors instead of fallbacks
 Value APIRouter::get_battery_charging_time(Context& ctx, const std::vector<Value>& args) {
     ctx.throw_error("NotSupportedError: Battery charging time API is not available on this platform");
     return Value();
@@ -255,4 +251,4 @@ Value APIRouter::detect_capabilities(Context& ctx, const std::vector<Value>& arg
     return Value();
 }
 
-} // namespace Quanta
+}

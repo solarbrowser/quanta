@@ -67,40 +67,49 @@ Quanta has been tested against the official **Test262** ECMAScript test suite (5
 
 ### Building Quanta
 
-#### Prerequisites
-- C++17 compatible compiler (GCC/Clang/MSVC)
-- Make build system
-- Windows/Linux/macOS support
+Quanta uses **platform-native compilers** for optimal performance:
+- **Windows**: MSVC (Visual Studio) - Native Windows build
+- **Linux**: GCC - Native Linux build
+- **macOS**: Clang/AppleClang - Native macOS build
 
-#### Build Instructions
+#### Quick Start
 
-**Unix like Systems (Linux/macOS)**
+**Universal Build Script** (Recommended):
 ```bash
-# Clean build with parallel compilation
-make clean && make -j4
-
-# Debug build
-make debug
-
-# Release build (default)
-make
+./build.sh           # Build with Makefile
+./build.sh cmake     # Build with CMake
+./build.sh clean     # Clean all builds
 ```
 
-Unix systems can build Quanta smoothly with standard development tools.
+**Windows (Native MSVC)**:
+```cmd
+build-windows.bat    # MSVC
+```
+*Requires: Visual Studio 2019/2022 + CMake*
 
-**Windows**
-For Windows development, MSYS2 is required for compilation. Native Windows builds have not been tested yet. Binaries built with MSYS2 do not carry any GNU dependencies and run natively on Windows.
+**Linux/macOS**:
+```bash
+make -j$(nproc)      # Makefile build
+# or
+./build.sh cmake     # CMake build
+```
 
-1. Install MSYS2 from https://www.msys2.org/
-2. Install required packages:
-   ```bash
-   pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-make
-   ```
-3. Build using standard commands in MSYS2 terminal
+#### Build System Options
+
+1. **CMake** (Cross-platform, native compilers)
+   - Windows: MSVC with `/O2 /GL /LTCG` optimizations
+   - Linux: GCC with `-O3 -march=native`
+   - macOS: Clang with native optimizations
+
+2. **Makefile** (GCC/MinGW)
+   - Traditional make-based build
+   - Works on all platforms with GCC
 
 #### Build Outputs
-- `build/bin/quanta` - Main JavaScript executable (3.2MB)
-- `build/libquanta.a` - Static library (4.9MB)
+- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native)
+- **Windows MinGW**: `build/bin/quanta.exe`
+- **Linux/macOS**: `build/bin/quanta`
+- **Static Library**: `libquanta.a` or `quanta.lib` (MSVC)
 
 ### Testing
 

@@ -1,5 +1,6 @@
 # IDE and Editor files
 .vscode/
+.vs/
 .history/
 .cache/
 *.code-workspace

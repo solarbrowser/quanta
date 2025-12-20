@@ -4,15 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "DataView.h"
-#include "ArrayBuffer.h"
-#include "Context.h"
-#include "Error.h"
+#include "quanta/DataView.h"
+#include "quanta/ArrayBuffer.h"
+#include "quanta/Context.h"
+#include "quanta/Error.h"
 #include <algorithm>
 #include <sstream>
 #include <cmath>
 
-// Custom memory functions to avoid cstring linkage issues on Windows
 static void quanta_memcpy(void* dest, const void* src, size_t count) {
     const char* s = static_cast<const char*>(src);
     char* d = static_cast<char*>(dest);
@@ -23,9 +22,6 @@ static void quanta_memcpy(void* dest, const void* src, size_t count) {
 
 namespace Quanta {
 
-//=============================================================================
-// DataView Implementation
-//=============================================================================
 
 DataView::DataView(std::shared_ptr<ArrayBuffer> buffer)
     : Object(ObjectType::DataView), buffer_(buffer) {
@@ -39,8 +35,6 @@ DataView::DataView(std::shared_ptr<ArrayBuffer> buffer)
     byte_offset_ = 0;
     byte_length_ = buffer_->byte_length();
     
-    // Add methods directly to this instance - DISABLED due to compilation issues
-    // setup_methods();
 }
 
 DataView::DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset)
@@ -56,7 +50,6 @@ DataView::DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset)
     }
     
     byte_length_ = buffer_->byte_length() - byte_offset_;
-    // setup_methods();
 }
 
 DataView::DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t byte_length)
@@ -70,7 +63,6 @@ DataView::DataView(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size
     if (byte_offset + byte_length > buffer_->byte_length()) {
         throw std::range_error("DataView extends beyond ArrayBuffer bounds");
     }
-    // setup_methods();
 }
 
 bool DataView::validate_offset(size_t offset, size_t size) const {
@@ -87,7 +79,6 @@ uint8_t* DataView::get_data_ptr() const {
     return buffer_->data() + byte_offset_;
 }
 
-// Endianness conversion utilities
 uint16_t DataView::swap_bytes_16(uint16_t value) const {
     return ((value >> 8) & 0xFF) | ((value & 0xFF) << 8);
 }
@@ -110,7 +101,6 @@ uint64_t DataView::swap_bytes_64(uint64_t value) const {
            ((value & 0xFF) << 56);
 }
 
-// Template implementation for reading values
 template<typename T>
 T DataView::read_value(size_t offset, bool little_endian) const {
     if (!validate_offset(offset, sizeof(T))) {
@@ -125,11 +115,9 @@ T DataView::read_value(size_t offset, bool little_endian) const {
     T result;
     quanta_memcpy(&result, data + offset, sizeof(T));
     
-    // Handle endianness conversion for multi-byte types
     if constexpr (sizeof(T) > 1) {
-        bool is_big_endian = false; // Assume little-endian host for now
+        bool is_big_endian = false;
         if (little_endian != is_big_endian) {
-            // Need to swap bytes
             if constexpr (sizeof(T) == 2) {
                 uint16_t* ptr = reinterpret_cast<uint16_t*>(&result);
                 *ptr = swap_bytes_16(*ptr);
@@ -157,11 +145,9 @@ bool DataView::write_value(size_t offset, T value, bool little_endian) {
         return false;
     }
     
-    // Handle endianness conversion for multi-byte types
     if constexpr (sizeof(T) > 1) {
-        bool is_big_endian = false; // Assume little-endian host for now
+        bool is_big_endian = false;
         if (little_endian != is_big_endian) {
-            // Need to swap bytes
             if constexpr (sizeof(T) == 2) {
                 uint16_t* ptr = reinterpret_cast<uint16_t*>(&value);
                 *ptr = swap_bytes_16(*ptr);
@@ -179,7 +165,6 @@ bool DataView::write_value(size_t offset, T value, bool little_endian) {
     return true;
 }
 
-// 8-bit getters
 Value DataView::get_int8(size_t offset) const {
     return Value(static_cast<double>(read_value<int8_t>(offset, false)));
 }
@@ -188,7 +173,6 @@ Value DataView::get_uint8(size_t offset) const {
     return Value(static_cast<double>(read_value<uint8_t>(offset, false)));
 }
 
-// 16-bit getters
 Value DataView::get_int16(size_t offset, bool little_endian) const {
     return Value(static_cast<double>(read_value<int16_t>(offset, little_endian)));
 }
@@ -197,7 +181,6 @@ Value DataView::get_uint16(size_t offset, bool little_endian) const {
     return Value(static_cast<double>(read_value<uint16_t>(offset, little_endian)));
 }
 
-// 32-bit getters
 Value DataView::get_int32(size_t offset, bool little_endian) const {
     return Value(static_cast<double>(read_value<int32_t>(offset, little_endian)));
 }
@@ -206,7 +189,6 @@ Value DataView::get_uint32(size_t offset, bool little_endian) const {
     return Value(static_cast<double>(read_value<uint32_t>(offset, little_endian)));
 }
 
-// Float getters
 Value DataView::get_float32(size_t offset, bool little_endian) const {
     return Value(static_cast<double>(read_value<float>(offset, little_endian)));
 }
@@ -215,7 +197,6 @@ Value DataView::get_float64(size_t offset, bool little_endian) const {
     return Value(read_value<double>(offset, little_endian));
 }
 
-// 8-bit setters
 bool DataView::set_int8(size_t offset, int8_t value) {
     return write_value<int8_t>(offset, value, false);
 }
@@ -224,7 +205,6 @@ bool DataView::set_uint8(size_t offset, uint8_t value) {
     return write_value<uint8_t>(offset, value, false);
 }
 
-// 16-bit setters
 bool DataView::set_int16(size_t offset, int16_t value, bool little_endian) {
     return write_value<int16_t>(offset, value, little_endian);
 }
@@ -233,7 +213,6 @@ bool DataView::set_uint16(size_t offset, uint16_t value, bool little_endian) {
     return write_value<uint16_t>(offset, value, little_endian);
 }
 
-// 32-bit setters
 bool DataView::set_int32(size_t offset, int32_t value, bool little_endian) {
     return write_value<int32_t>(offset, value, little_endian);
 }
@@ -242,7 +221,6 @@ bool DataView::set_uint32(size_t offset, uint32_t value, bool little_endian) {
     return write_value<uint32_t>(offset, value, little_endian);
 }
 
-// Float setters
 bool DataView::set_float32(size_t offset, float value, bool little_endian) {
     return write_value<float>(offset, value, little_endian);
 }
@@ -252,7 +230,6 @@ bool DataView::set_float64(size_t offset, double value, bool little_endian) {
 }
 
 Value DataView::get_property(const std::string& key) const {
-    // Handle DataView properties
     if (key == "buffer") {
         return Value(buffer_.get());
     }
@@ -263,7 +240,6 @@ Value DataView::get_property(const std::string& key) const {
         return Value(static_cast<double>(byte_offset_));
     }
     
-    // Delegate to base class
     return Object::get_property(key);
 }
 
@@ -271,7 +247,6 @@ std::string DataView::to_string() const {
     return "[object DataView]";
 }
 
-// Static constructor
 Value DataView::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         ctx.throw_type_error("DataView constructor requires at least one argument");
@@ -291,7 +266,6 @@ Value DataView::constructor(Context& ctx, const std::vector<Value>& args) {
     
     ArrayBuffer* array_buffer = static_cast<ArrayBuffer*>(buffer_obj);
     auto shared_buffer = std::shared_ptr<ArrayBuffer>(array_buffer, [](ArrayBuffer*) {
-        // Don't delete - ArrayBuffer is managed elsewhere
     });
     
     try {
@@ -315,9 +289,6 @@ Value DataView::constructor(Context& ctx, const std::vector<Value>& args) {
     }
 }
 
-//=============================================================================
-// DataViewFactory Implementation
-//=============================================================================
 
 namespace DataViewFactory {
 
@@ -345,16 +316,11 @@ const DataView* as_data_view(const Object* obj) {
     return is_data_view(obj) ? static_cast<const DataView*>(obj) : nullptr;
 }
 
-} // namespace DataViewFactory
+}
 
-//=============================================================================
-// DataView Instance Setup
-//=============================================================================
 
 void DataView::setup_methods() {
-    // DISABLED - methods are now registered in Context.cpp prototype
     /*
-    // Helper lambda to get DataView from this binding
     auto get_dataview = [](Context& ctx) -> DataView* {
         Object* this_obj = ctx.get_this_binding();
         if (!this_obj || !this_obj->is_data_view()) {
@@ -363,7 +329,6 @@ void DataView::setup_methods() {
         return static_cast<DataView*>(this_obj);
     };
     
-    // Create bound methods for this instance
     auto get_int8_fn = ObjectFactory::create_native_function("getInt8", 
         [get_dataview](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
@@ -562,13 +527,8 @@ void DataView::setup_methods() {
     */
 }
 
-//=============================================================================
-// DataView JavaScript Method Implementations
-//=============================================================================
 
 DataView* DataView::get_this_dataview(Context& ctx) {
-    // In a real implementation, we'd get 'this' from the context
-    // For now, this is a placeholder
     return nullptr;
 }
 
@@ -578,8 +538,6 @@ Value DataView::js_get_int8(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    // This would normally get 'this' from context binding
-    // For now, return placeholder
     return Value(0.0);
 }
 
@@ -589,7 +547,6 @@ Value DataView::js_get_uint8(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    // Get 'this' binding (the DataView object)
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj || !this_obj->is_data_view()) {
         ctx.throw_type_error("getUint8 called on non-DataView object");
@@ -812,4 +769,4 @@ Value DataView::js_set_float64(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-} // namespace Quanta
+}

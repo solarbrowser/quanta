@@ -4,19 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "Symbol.h"
-#include "Context.h"
+#include "quanta/Symbol.h"
+#include "quanta/Context.h"
 #include <sstream>
 #include <atomic>
 
 namespace Quanta {
 
-// Static member initialization
 uint64_t Symbol::next_id_ = 1;
 std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;
 std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::global_registry_;
 
-// Well-known symbol names
 const std::string Symbol::ITERATOR = "Symbol.iterator";
 const std::string Symbol::ASYNC_ITERATOR = "Symbol.asyncIterator";
 const std::string Symbol::MATCH = "Symbol.match";
@@ -91,12 +89,9 @@ std::string Symbol::to_string() const {
 }
 
 std::string Symbol::to_property_key() const {
-    // For well-known symbols, use the description directly as property key
-    // This allows Symbol.species to map to "Symbol.species" string key
     if (!description_.empty() && description_.find("Symbol.") == 0) {
         return description_;
     }
-    // For regular symbols, return the full string representation
     return to_string();
 }
 
@@ -104,9 +99,8 @@ bool Symbol::equals(const Symbol* other) const {
     return other && id_ == other->id_;
 }
 
-// Built-in Symbol methods
 Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Unused parameter
+    (void)ctx;
     std::string description = "";
     if (!args.empty() && !args[0].is_undefined()) {
         description = args[0].to_string();
@@ -124,7 +118,6 @@ Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
     
     std::string key = args[0].to_string();
     Symbol* symbol = for_key(key);
-    // Create a new reference to avoid ownership issues
     return Value(symbol);
 }
 
@@ -137,15 +130,14 @@ Value Symbol::symbol_key_for(Context& ctx, const std::vector<Value>& args) {
     Symbol* symbol = args[0].as_symbol();
     std::string key = key_for(symbol);
     if (key.empty()) {
-        return Value(); // undefined
+        return Value();
     }
     return Value(key);
 }
 
 Value Symbol::symbol_to_string(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
-    // 'this' should be bound to the symbol
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_symbol()) {
         ctx.throw_exception(Value("Symbol.prototype.toString called on non-symbol"));
@@ -157,16 +149,15 @@ Value Symbol::symbol_to_string(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Symbol::symbol_value_of(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
-    // 'this' should be bound to the symbol
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_symbol()) {
         ctx.throw_exception(Value("Symbol.prototype.valueOf called on non-symbol"));
         return Value();
     }
     
-    return this_value; // Return the symbol itself
+    return this_value;
 }
 
-} // namespace Quanta
+}

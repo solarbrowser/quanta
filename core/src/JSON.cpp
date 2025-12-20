@@ -4,9 +4,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/JSON.h"
-#include "../include/Context.h"
-#include "../include/Error.h"
+#include "quanta/JSON.h"
+#include "quanta/Context.h"
+#include "quanta/Error.h"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -15,9 +15,6 @@
 
 namespace Quanta {
 
-//=============================================================================
-// JSON Main Methods
-//=============================================================================
 
 Value JSON::parse(const std::string& json_string, const ParseOptions& options) {
     Parser parser(json_string, options);
@@ -37,7 +34,6 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
     
     std::string json_string = args[0].to_string();
     
-    // Safety check: prevent empty or malformed strings
     if (json_string.empty()) {
         ctx.throw_syntax_error("JSON.parse: unexpected end of input");
         return Value();
@@ -59,19 +55,16 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    // Check for undefined at top level - should return undefined
     if (args[0].is_undefined()) {
         return Value();
     }
     
-    // Safety check: prevent complex objects from causing issues
     if (args[0].is_object() && !args[0].as_object()) {
         return Value("null");
     }
     
     StringifyOptions options;
     
-    // Handle optional indent parameter
     if (args.size() > 2 && !args[2].is_undefined()) {
         if (args[2].is_number()) {
             int indent_count = static_cast<int>(args[2].to_number());
@@ -88,25 +81,19 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         return Value(result);
     } catch (const std::exception& e) {
         ctx.throw_error("JSON.stringify error: " + std::string(e.what()));
-        return Value("null"); // Return valid JSON instead of undefined
+        return Value("null");
     }
 }
 
 std::unique_ptr<Object> JSON::create_json_object() {
     auto json_obj = std::make_unique<Object>();
     
-    // Add JSON.parse method
-    // Note: In a full implementation, these would be native functions
-    // For now, we'll set them as placeholder objects
     json_obj->set_property("parse", Value("function JSON.parse() { [native code] }"));
     json_obj->set_property("stringify", Value("function JSON.stringify() { [native code] }"));
     
     return json_obj;
 }
 
-//=============================================================================
-// JSON Parser Implementation
-//=============================================================================
 
 JSON::Parser::Parser(const std::string& json, const ParseOptions& options) 
     : json_(json), position_(0), line_(1), column_(1), depth_(0), options_(options) {
@@ -161,16 +148,16 @@ Value JSON::Parser::parse_value() {
 
 Value JSON::Parser::parse_object() {
     if (++depth_ > options_.max_depth) {
-        throw_syntax_error("Maximum nesting depth exceeded");
+        throw_syntax_error("nesting depth exceeded");
     }
     
-    advance(); // consume '{'
+    advance();
     skip_whitespace();
     
     auto obj = std::make_unique<Object>();
     
     if (current_char() == '}') {
-        advance(); // consume '}'
+        advance();
         depth_--;
         return Value(obj.release());
     }
@@ -178,7 +165,6 @@ Value JSON::Parser::parse_object() {
     while (true) {
         skip_whitespace();
         
-        // Parse key
         if (current_char() != '"') {
             throw_syntax_error("Expected string key in object");
         }
@@ -189,9 +175,8 @@ Value JSON::Parser::parse_object() {
         if (current_char() != ':') {
             throw_syntax_error("Expected ':' after object key");
         }
-        advance(); // consume ':'
+        advance();
         
-        // Parse value
         Value value = parse_value();
         obj->set_property(key, value);
         
@@ -199,13 +184,12 @@ Value JSON::Parser::parse_object() {
         char ch = current_char();
         
         if (ch == '}') {
-            advance(); // consume '}'
+            advance();
             break;
         } else if (ch == ',') {
-            advance(); // consume ','
+            advance();
             skip_whitespace();
             
-            // Handle trailing comma
             if (current_char() == '}') {
                 if (options_.allow_trailing_commas) {
                     advance();
@@ -225,17 +209,17 @@ Value JSON::Parser::parse_object() {
 
 Value JSON::Parser::parse_array() {
     if (++depth_ > options_.max_depth) {
-        throw_syntax_error("Maximum nesting depth exceeded");
+        throw_syntax_error("nesting depth exceeded");
     }
     
-    advance(); // consume '['
+    advance();
     skip_whitespace();
     
     auto arr = ObjectFactory::create_array(0);
     uint32_t index = 0;
     
     if (current_char() == ']') {
-        advance(); // consume ']'
+        advance();
         arr->set_property("length", Value(0.0));
         depth_--;
         return Value(arr.release());
@@ -249,13 +233,12 @@ Value JSON::Parser::parse_array() {
         char ch = current_char();
         
         if (ch == ']') {
-            advance(); // consume ']'
+            advance();
             break;
         } else if (ch == ',') {
-            advance(); // consume ','
+            advance();
             skip_whitespace();
             
-            // Handle trailing comma
             if (current_char() == ']') {
                 if (options_.allow_trailing_commas) {
                     advance();
@@ -280,7 +263,7 @@ Value JSON::Parser::parse_string() {
 }
 
 std::string JSON::Parser::parse_string_literal() {
-    advance(); // consume opening quote
+    advance();
     std::string result;
     
     while (!at_end() && current_char() != '"') {
@@ -305,7 +288,7 @@ std::string JSON::Parser::parse_string_literal() {
         throw_syntax_error("Unterminated string");
     }
     
-    advance(); // consume closing quote
+    advance();
     return result;
 }
 
@@ -324,11 +307,10 @@ std::string JSON::Parser::parse_escape_sequence() {
         case 't':  return "\t";
         case 'u': {
             uint32_t codepoint = parse_unicode_escape();
-            // Simple ASCII handling for now
             if (codepoint < 128) {
                 return std::string(1, static_cast<char>(codepoint));
             } else {
-                return "?"; // Placeholder for Unicode
+                return "?";
             }
         }
         default:
@@ -368,13 +350,11 @@ Value JSON::Parser::parse_number() {
 double JSON::Parser::parse_number_literal() {
     std::string number_str;
     
-    // Handle negative sign
     if (current_char() == '-') {
         number_str += current_char();
         advance();
     }
     
-    // Parse integer part
     if (current_char() == '0') {
         number_str += current_char();
         advance();
@@ -387,7 +367,6 @@ double JSON::Parser::parse_number_literal() {
         throw_syntax_error("Invalid number");
     }
     
-    // Parse decimal part
     if (!at_end() && current_char() == '.') {
         number_str += current_char();
         advance();
@@ -402,7 +381,6 @@ double JSON::Parser::parse_number_literal() {
         }
     }
     
-    // Parse exponent part
     if (!at_end() && (current_char() == 'e' || current_char() == 'E')) {
         number_str += current_char();
         advance();
@@ -496,9 +474,6 @@ bool JSON::Parser::is_hex_digit(char ch) const {
     return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F') || (ch >= 'a' && ch <= 'f');
 }
 
-//=============================================================================
-// JSON Stringifier Implementation
-//=============================================================================
 
 JSON::Stringifier::Stringifier(const StringifyOptions& options) 
     : options_(options), depth_(0) {
@@ -512,7 +487,6 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     if (value.is_null()) {
         return "null";
     } else if (value.is_undefined()) {
-        // undefined values in objects should be omitted
         return "null";
     } else if (value.is_boolean()) {
         return stringify_boolean(value.to_boolean());
@@ -541,16 +515,13 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     std::string result = "{";
     bool first = true;
     
-    // Get all enumerable property keys
     std::vector<std::string> keys = obj->get_enumerable_keys();
     
     for (const std::string& key : keys) {
-        // Skip internal properties
         if (key.substr(0, 2) == "__") continue;
         
         Value prop_value = obj->get_property(key);
         
-        // Skip functions and undefined values
         if (prop_value.is_function() || prop_value.is_undefined()) continue;
         
         if (!first) {
@@ -590,7 +561,6 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
     std::string result = "[";
     bool first = true;
     
-    // Get array length
     Value length_val = arr->get_property("length");
     uint32_t length = static_cast<uint32_t>(length_val.to_number());
     
@@ -677,12 +647,9 @@ std::string JSON::Stringifier::escape_string(const std::string& str) {
     return result;
 }
 
-//=============================================================================
-// JSON Utility Functions
-//=============================================================================
 
 bool JSON::is_whitespace(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
 }
 
-} // namespace Quanta
+}

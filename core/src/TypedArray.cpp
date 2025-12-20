@@ -4,15 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "TypedArray.h"
-#include "ArrayBuffer.h"
-#include "Context.h"
-#include "Error.h"
+#include "quanta/TypedArray.h"
+#include "quanta/ArrayBuffer.h"
+#include "quanta/Context.h"
+#include "quanta/Error.h"
 #include <algorithm>
 #include <sstream>
 #include <cmath>
 
-// Custom memory functions to avoid cstring linkage issues on Windows
 static void quanta_memcpy(void* dest, const void* src, size_t count) {
     const char* s = static_cast<const char*>(src);
     char* d = static_cast<char*>(dest);
@@ -31,9 +30,6 @@ static void quanta_memset(void* dest, int value, size_t count) {
 
 namespace Quanta {
 
-//=============================================================================
-// TypedArrayBase Implementation
-//=============================================================================
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
@@ -43,7 +39,6 @@ TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element)
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t length)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
       byte_offset_(0), length_(length) {
-    // Create a new ArrayBuffer for this TypedArray
     size_t byte_length = length * bytes_per_element;
     buffer_ = std::make_shared<ArrayBuffer>(byte_length);
 }
@@ -80,7 +75,6 @@ TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, std::sh
     validate_offset_and_length(buffer_byte_length, byte_offset, length);
     
     if (length == SIZE_MAX) {
-        // Calculate length from remaining buffer space
         if ((buffer_byte_length - byte_offset) % bytes_per_element_ != 0) {
             throw std::range_error("Remaining buffer space is not a multiple of element size");
         }
@@ -117,14 +111,12 @@ void TypedArrayBase::validate_offset_and_length(size_t buffer_byte_length, size_
 }
 
 Value TypedArrayBase::get_property(const std::string& key) const {
-    // Handle numeric indices
     char* end;
     unsigned long index = std::strtoul(key.c_str(), &end, 10);
     if (*end == '\0' && index < length_) {
         return get_element(static_cast<size_t>(index));
     }
     
-    // Handle standard properties
     if (key == "length") {
         return Value(static_cast<double>(length_));
     }
@@ -141,19 +133,16 @@ Value TypedArrayBase::get_property(const std::string& key) const {
         return Value(static_cast<double>(bytes_per_element_));
     }
     
-    // Delegate to base class
     return Object::get_property(key);
 }
 
 bool TypedArrayBase::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
-    // Handle numeric indices
     char* end;
     unsigned long index = std::strtoul(key.c_str(), &end, 10);
     if (*end == '\0' && index < length_) {
         return set_element(static_cast<size_t>(index), value);
     }
     
-    // For non-numeric properties, delegate to base class
     return Object::set_property(key, value, attrs);
 }
 
@@ -217,18 +206,13 @@ size_t TypedArrayBase::get_bytes_per_element(ArrayType type) {
 }
 
 Value TypedArrayBase::get_element(uint32_t index) const {
-    // Use the virtual get_element method from the derived class
     return get_element(static_cast<size_t>(index));
 }
 
 bool TypedArrayBase::set_element(uint32_t index, const Value& value) {
-    // Use the virtual set_element method from the derived class
     return set_element(static_cast<size_t>(index), value);
 }
 
-//=============================================================================
-// TypedArray<T> Template Implementation
-//=============================================================================
 
 template<typename T>
 TypedArray<T>::TypedArray(ArrayType type, size_t length) 
@@ -248,7 +232,7 @@ TypedArray<T>::TypedArray(ArrayType type, std::shared_ptr<ArrayBuffer> buffer, s
 template<typename T>
 T TypedArray<T>::get_typed_element(size_t index) const {
     if (!check_bounds(index)) {
-        return T{};  // Return zero-initialized value for out-of-bounds access
+        return T{};
     }
     
     uint8_t* data = get_data_ptr();
@@ -257,7 +241,6 @@ T TypedArray<T>::get_typed_element(size_t index) const {
     }
     
     T result;
-    // Use custom memcpy for safe unaligned access
     quanta_memcpy(&result, data + index * sizeof(T), sizeof(T));
     return result;
 }
@@ -273,7 +256,6 @@ bool TypedArray<T>::set_typed_element(size_t index, T value) {
         return false;
     }
     
-    // Use custom memcpy for safe unaligned access
     quanta_memcpy(data + index * sizeof(T), &value, sizeof(T));
     return true;
 }
@@ -303,7 +285,6 @@ bool TypedArray<T>::set_element(size_t index, const Value& value) {
         if (std::isnan(num_val)) {
             return set_typed_element(index, T{});
         }
-        // Handle integer conversion with proper bounds checking
         int64_t int_val = static_cast<int64_t>(num_val);
         int64_t min_val = std::numeric_limits<T>::min();
         int64_t max_val = std::numeric_limits<T>::max();
@@ -315,7 +296,6 @@ bool TypedArray<T>::set_element(size_t index, const Value& value) {
         if (std::isnan(num_val)) {
             return set_typed_element(index, T{});
         }
-        // Handle unsigned integer conversion
         uint64_t uint_val = static_cast<uint64_t>(std::max(0.0, num_val));
         uint64_t max_val = std::numeric_limits<T>::max();
         if (uint_val > max_val) uint_val = max_val;
@@ -323,9 +303,6 @@ bool TypedArray<T>::set_element(size_t index, const Value& value) {
     }
 }
 
-//=============================================================================
-// Explicit Template Instantiations
-//=============================================================================
 
 template class TypedArray<int8_t>;
 template class TypedArray<uint8_t>;
@@ -336,9 +313,6 @@ template class TypedArray<uint32_t>;
 template class TypedArray<float>;
 template class TypedArray<double>;
 
-//=============================================================================
-// Uint8ClampedArray Special Implementation
-//=============================================================================
 
 bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
     if (!check_bounds(index)) {
@@ -350,20 +324,15 @@ bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
         return set_typed_element(index, 0);
     }
     
-    // Clamp to [0, 255] range
     if (num_val < 0.0) {
         return set_typed_element(index, 0);
     } else if (num_val > 255.0) {
         return set_typed_element(index, 255);
     } else {
-        // Round to nearest integer
         return set_typed_element(index, static_cast<uint8_t>(std::round(num_val)));
     }
 }
 
-//=============================================================================
-// TypedArrayFactory Implementation
-//=============================================================================
 
 namespace TypedArrayFactory {
 
@@ -377,7 +346,6 @@ std::unique_ptr<TypedArrayBase> create_uint8_array(size_t length) {
 
 std::unique_ptr<TypedArrayBase> create_uint8_array_from_buffer(ArrayBuffer* buffer) {
     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {
-        // Don't delete - ArrayBuffer is managed elsewhere
     });
     return std::make_unique<Uint8Array>(shared_buffer);
 }
@@ -408,7 +376,6 @@ std::unique_ptr<TypedArrayBase> create_float32_array(size_t length) {
 
 std::unique_ptr<TypedArrayBase> create_float32_array_from_buffer(ArrayBuffer* buffer) {
     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {
-        // Don't delete - ArrayBuffer is managed elsewhere
     });
     return std::make_unique<Float32Array>(shared_buffer);
 }
@@ -457,6 +424,6 @@ const TypedArrayBase* as_typed_array(const Object* obj) {
     return is_typed_array(obj) ? static_cast<const TypedArrayBase*>(obj) : nullptr;
 }
 
-} // namespace TypedArrayFactory
+}
 
-} // namespace Quanta
+}

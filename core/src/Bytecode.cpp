@@ -4,25 +4,21 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/Bytecode.h"
-#include "../../parser/include/AST.h"
+#include "quanta/Bytecode.h"
+#include "quanta/AST.h"
 #include <iostream>
 #include <algorithm>
 #include <chrono>
 
 namespace Quanta {
 
-//=============================================================================
-// Simplified BytecodeCompiler Implementation
-//=============================================================================
 
 BytecodeCompiler::BytecodeCompiler() 
     : optimization_enabled_(true), next_register_(0) {
-    std::cout << "� BYTECODE COMPILER INITIALIZED" << std::endl;
+    std::cout << "BYTECODE COMPILER INITIALIZED" << std::endl;
 }
 
 BytecodeCompiler::~BytecodeCompiler() {
-    // Cleanup
 }
 
 std::unique_ptr<BytecodeFunction> BytecodeCompiler::compile(ASTNode* ast, const std::string& function_name) {
@@ -33,16 +29,13 @@ std::unique_ptr<BytecodeFunction> BytecodeCompiler::compile(ASTNode* ast, const 
     
     std::cout << "� BYTECODE COMPILATION: " << function_name << std::endl;
     
-    // Simple compilation - just create basic bytecode structure
     compile_node_simple(ast, function.get());
     
-    // Add return instruction if not present
     if (function->instructions.empty() || 
         function->instructions.back().instruction != BytecodeInstruction::RETURN) {
         function->emit(BytecodeInstruction::RETURN);
     }
     
-    // Apply optimizations if enabled
     if (optimization_enabled_) {
         optimize_bytecode(function.get(), 2);
     }
@@ -58,10 +51,8 @@ std::unique_ptr<BytecodeFunction> BytecodeCompiler::compile(ASTNode* ast, const 
 void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* function) {
     if (!node) return;
     
-    // For now, generate simple placeholder bytecode that demonstrates the system
     switch (node->get_type()) {
         case ASTNode::Type::BINARY_EXPRESSION: {
-            // Simple arithmetic compilation
             function->emit(BytecodeInstruction::LOAD_CONST, {
                 BytecodeOperand(BytecodeOperand::CONSTANT, function->add_constant(Value(1.0)))
             });
@@ -75,7 +66,6 @@ void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* func
         case ASTNode::Type::NUMBER_LITERAL:
         case ASTNode::Type::STRING_LITERAL:
         case ASTNode::Type::BOOLEAN_LITERAL: {
-            // Load literal value
             Context dummy_context(nullptr);
             Value value = node->evaluate(dummy_context);
             uint32_t const_idx = function->add_constant(value);
@@ -86,7 +76,6 @@ void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* func
         }
         
         case ASTNode::Type::CALL_EXPRESSION: {
-            // Simple function call
             function->emit(BytecodeInstruction::LOAD_CONST, {
                 BytecodeOperand(BytecodeOperand::CONSTANT, function->add_constant(Value("function")))
             });
@@ -97,7 +86,6 @@ void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* func
         }
         
         default: {
-            // For other node types, just compile recursively or emit NOP
             function->emit(BytecodeInstruction::NOP);
             break;
         }
@@ -109,7 +97,6 @@ void BytecodeCompiler::optimize_bytecode(BytecodeFunction* function, uint32_t le
     
     std::cout << "� BYTECODE OPTIMIZATION LEVEL " << level << ": " << function->function_name << std::endl;
     
-    // Simple optimization: remove NOP instructions
     auto it = std::remove_if(function->instructions.begin(), function->instructions.end(),
         [](const BytecodeOp& op) {
             return op.instruction == BytecodeInstruction::NOP;
@@ -120,9 +107,6 @@ void BytecodeCompiler::optimize_bytecode(BytecodeFunction* function, uint32_t le
     function->optimization_level = level;
 }
 
-//=============================================================================
-// Simplified BytecodeVM Implementation
-//=============================================================================
 
 BytecodeVM::BytecodeVM() : profiling_enabled_(true) {
     stack_.reserve(1024);
@@ -131,27 +115,23 @@ BytecodeVM::BytecodeVM() : profiling_enabled_(true) {
 }
 
 BytecodeVM::~BytecodeVM() {
-    // Cleanup
 }
 
 Value BytecodeVM::execute(BytecodeFunction* function, Context& context, const std::vector<Value>& args) {
     if (!function) return Value();
     
-    // Setup registers
     registers_.clear();
     registers_.resize(function->register_count, Value());
     
-    // Setup parameters
     for (size_t i = 0; i < args.size() && i < function->parameter_count; i++) {
         if (i < registers_.size()) {
             registers_[i] = args[i];
         }
     }
     
-    // Clear stack
     stack_.clear();
     
-    uint32_t pc = 0; // Program counter
+    uint32_t pc = 0;
     
     std::cout << " EXECUTING BYTECODE: " << function->function_name 
              << " (Level " << function->optimization_level << ")" << std::endl;
@@ -163,7 +143,6 @@ Value BytecodeVM::execute(BytecodeFunction* function, Context& context, const st
             execute_instruction_simple(op, function, context, pc);
             stats_.instructions_executed++;
             
-            // Check for return or halt
             if (op.instruction == BytecodeInstruction::RETURN ||
                 op.instruction == BytecodeInstruction::HALT) {
                 break;
@@ -176,7 +155,6 @@ Value BytecodeVM::execute(BytecodeFunction* function, Context& context, const st
         return Value();
     }
     
-    // Return top of stack or undefined
     return stack_.empty() ? Value() : pop();
 }
 
@@ -207,28 +185,23 @@ void BytecodeVM::execute_instruction_simple(const BytecodeOp& op, BytecodeFuncti
         }
         
         case BytecodeInstruction::CALL: {
-            // Simple function call simulation
             stats_.function_calls++;
-            push(Value(42.0)); // Dummy result
+            push(Value(42.0));
             break;
         }
         
         case BytecodeInstruction::RETURN: {
-            // Value is already on stack
             break;
         }
         
         case BytecodeInstruction::NOP:
-            // Do nothing
             break;
             
         default:
-            // Unknown instruction - just continue
             break;
     }
 }
 
-// Helper methods needed for compilation
 void BytecodeCompiler::compile_node(ASTNode* node, BytecodeFunction* function) {
     compile_node_simple(node, function);
 }
@@ -242,11 +215,9 @@ void BytecodeCompiler::compile_statement(ASTNode* node, BytecodeFunction* functi
 }
 
 void BytecodeCompiler::constant_folding_pass(BytecodeFunction* function) {
-    // Simple constant folding - placeholder
 }
 
 void BytecodeCompiler::dead_code_elimination_pass(BytecodeFunction* function) {
-    // Remove NOP instructions
     auto it = std::remove_if(function->instructions.begin(), function->instructions.end(),
         [](const BytecodeOp& op) {
             return op.instruction == BytecodeInstruction::NOP;
@@ -255,11 +226,9 @@ void BytecodeCompiler::dead_code_elimination_pass(BytecodeFunction* function) {
 }
 
 void BytecodeCompiler::peephole_optimization_pass(BytecodeFunction* function) {
-    // Placeholder for peephole optimizations
 }
 
 void BytecodeCompiler::hot_path_optimization_pass(BytecodeFunction* function) {
-    // Placeholder for hot path optimizations
 }
 
 Value BytecodeVM::execute_fast_add(const Value& left, const Value& right) {
@@ -286,9 +255,6 @@ void BytecodeVM::record_execution(BytecodeFunction* function, uint32_t pc) {
     function->hot_spots[pc]++;
 }
 
-//=============================================================================
-// BytecodeJITBridge Implementation
-//=============================================================================
 
 bool BytecodeJITBridge::should_jit_compile(BytecodeFunction* function) {
     if (!function) return false;
@@ -307,11 +273,11 @@ bool BytecodeJITBridge::compile_to_machine_code(BytecodeFunction* function) {
     if (!function || function->is_optimized) return false;
     
     std::cout << "� JIT COMPILING BYTECODE: " << function->function_name << std::endl;
-    
+
     function->is_optimized = true;
     function->optimization_level = 3;
     
     return true;
 }
 
-} // namespace Quanta
+}

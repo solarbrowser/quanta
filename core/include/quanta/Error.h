@@ -1,0 +1,119 @@
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ */
+
+#ifndef QUANTA_ERROR_H
+#define QUANTA_ERROR_H
+
+#include "quanta/Value.h"
+#include "quanta/Object.h"
+#include "quanta/CallStack.h"
+#include <string>
+#include <memory>
+
+namespace Quanta {
+
+/**
+ * JavaScript Error object implementation
+ * Supports all standard error types: Error, TypeError, ReferenceError, etc.
+ */
+class Error : public Object {
+public:
+    enum class Type {
+        Error,
+        TypeError,
+        ReferenceError,
+        SyntaxError,
+        RangeError,
+        URIError,
+        EvalError,
+        AggregateError
+    };
+
+private:
+    Type error_type_;
+    std::string message_;
+    std::string name_;
+    std::string stack_trace_;
+    int line_number_;
+    int column_number_;
+    std::string filename_;
+
+public:
+    Error(Type type = Type::Error, const std::string& message = "");
+    Error(Type type, const std::string& message, const std::string& filename, int line, int column);
+    
+    Error(const Error& other) = delete;
+    Error& operator=(const Error& other) = delete;
+    
+    virtual ~Error() = default;
+
+    Type get_error_type() const { return error_type_; }
+    const std::string& get_message() const { return message_; }
+    const std::string& get_name() const { return name_; }
+    const std::string& get_stack_trace() const { return stack_trace_; }
+    int get_line_number() const { return line_number_; }
+    int get_column_number() const { return column_number_; }
+    const std::string& get_filename() const { return filename_; }
+    
+    void set_message(const std::string& message) { message_ = message; }
+    void set_stack_trace(const std::string& stack) { stack_trace_ = stack; }
+    void set_location(const std::string& filename, int line, int column);
+    
+    std::string to_string() const;
+    
+    static std::unique_ptr<Error> create_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_type_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_reference_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_syntax_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_range_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_uri_error(const std::string& message = "");
+    static std::unique_ptr<Error> create_eval_error(const std::string& message = "");
+    
+    static void throw_error(const std::string& message = "");
+    static void throw_type_error(const std::string& message = "");
+    static void throw_reference_error(const std::string& message = "");
+    static void throw_syntax_error(const std::string& message = "");
+    static void throw_range_error(const std::string& message = "");
+    
+    void generate_stack_trace();
+    
+    static std::string type_to_name(Type type);
+    
+    static Value isError(Context& ctx, const std::vector<Value>& args);
+    
+private:
+    void initialize_properties();
+    void set_error_name();
+};
+
+/**
+ * JavaScript exception class for throwing errors
+ */
+class JavaScriptException : public std::exception {
+private:
+    std::unique_ptr<Error> error_;
+    std::string what_message_;
+
+public:
+    explicit JavaScriptException(std::unique_ptr<Error> error);
+    
+    const char* what() const noexcept override;
+    
+    const Error* get_error() const { return error_.get(); }
+    Error* get_error() { return error_.get(); }
+    
+    std::unique_ptr<Error> release_error() { return std::move(error_); }
+};
+
+#define JS_THROW_ERROR(msg) Error::throw_error(msg)
+#define JS_THROW_TYPE_ERROR(msg) Error::throw_type_error(msg)
+#define JS_THROW_REFERENCE_ERROR(msg) Error::throw_reference_error(msg)
+#define JS_THROW_SYNTAX_ERROR(msg) Error::throw_syntax_error(msg)
+#define JS_THROW_RANGE_ERROR(msg) Error::throw_range_error(msg)
+
+}
+
+#endif

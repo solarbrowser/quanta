@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/NodeJS.h"
+#include "quanta/NodeJS.h"
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -13,7 +13,6 @@
 #include <ctime>
 #include <cstdlib>
 
-// Minimal platform compatibility without problematic headers
 #ifdef _WIN32
     #include <stdlib.h>
     #include <stdio.h>
@@ -37,7 +36,6 @@
 
 namespace Quanta {
 
-// Utility function for path safety
 bool NodeJS::is_safe_path(const std::string& path) {
     return path.find("..") == std::string::npos && 
            path.find("//") == std::string::npos &&
@@ -66,7 +64,6 @@ std::string NodeJS::get_mime_type(const std::string& filename) {
     return "text/plain";
 }
 
-// File System API
 Value NodeJS::fs_readFile(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
     if (args.empty()) {
@@ -243,7 +240,6 @@ Value NodeJS::fs_statSync(Context& ctx, const std::vector<Value>& args) {
         return Value("Error: Unsafe path");
     }
     
-    // Simple stat implementation
     std::ifstream file(filename);
     if (file.good()) {
         file.seekg(0, std::ios::end);
@@ -266,13 +262,11 @@ Value NodeJS::fs_readdirSync(Context& ctx, const std::vector<Value>& args) {
         return Value("Error: Missing directory name");
     }
     
-    // Simple placeholder implementation
     auto files_array = ObjectFactory::create_array();
     files_array->push(Value("placeholder.txt"));
     return Value(files_array.release());
 }
 
-// Path API
 Value NodeJS::path_join(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
     if (args.empty()) {
@@ -368,7 +362,6 @@ Value NodeJS::path_normalize(Context& ctx, const std::vector<Value>& args) {
         return Value("");
     }
     
-    // Simple normalization - remove double slashes
     std::string path = args[0].to_string();
     std::string result;
     bool lastWasSlash = false;
@@ -410,7 +403,6 @@ Value NodeJS::path_isAbsolute(Context& ctx, const std::vector<Value>& args) {
 #endif
 }
 
-// HTTP API (placeholders)
 Value NodeJS::http_createServer(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     ctx.throw_error("NotImplementedError: HTTP server not implemented in this engine");
@@ -429,7 +421,6 @@ Value NodeJS::http_get(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// OS API
 Value NodeJS::os_platform(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args;
 #ifdef _WIN32
@@ -516,7 +507,6 @@ Value NodeJS::os_tmpdir(Context& ctx, const std::vector<Value>& args) {
     return Value(std::string(tmp));
 }
 
-// Process API
 Value NodeJS::process_exit(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
     int code = 0;
@@ -571,7 +561,6 @@ Value NodeJS::process_env_get(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Crypto API
 Value NodeJS::crypto_randomBytes(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
     int length = 16;
@@ -600,7 +589,6 @@ Value NodeJS::crypto_createHash(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
-// Util API
 Value NodeJS::util_format(Context& ctx, const std::vector<Value>& args) {
     (void)ctx;
     if (args.empty()) {
@@ -620,7 +608,6 @@ Value NodeJS::util_inspect(Context& ctx, const std::vector<Value>& args) {
     return Value(args[0].to_string());
 }
 
-// Events API
 Value NodeJS::events_EventEmitter(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args;
     auto emitter = ObjectFactory::create_object();
@@ -628,4 +615,4 @@ Value NodeJS::events_EventEmitter(Context& ctx, const std::vector<Value>& args) 
     return Value(emitter.release());
 }
 
-} // namespace Quanta
+}

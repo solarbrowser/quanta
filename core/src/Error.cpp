@@ -4,22 +4,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/Error.h"
-#include "../include/CallStack.h"
+#include "quanta/Error.h"
+#include "quanta/CallStack.h"
 #include <sstream>
 #include <iostream>
 
 namespace Quanta {
 
-//=============================================================================
-// Error Implementation
-//=============================================================================
 
 Error::Error(Type type, const std::string& message) 
     : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
       line_number_(0), column_number_(0) {
     set_error_name();
-    generate_stack_trace(); // Re-enabled with safety checks
+    generate_stack_trace();
     initialize_properties();
 }
 
@@ -27,7 +24,7 @@ Error::Error(Type type, const std::string& message, const std::string& filename,
     : Object(Object::ObjectType::Error), error_type_(type), message_(message), 
       line_number_(line), column_number_(column), filename_(filename) {
     set_error_name();
-    generate_stack_trace(); // Re-enabled with safety checks
+    generate_stack_trace();
     initialize_properties();
 }
 
@@ -36,11 +33,8 @@ void Error::set_error_name() {
 }
 
 void Error::initialize_properties() {
-    // Set standard Error properties
     set_property("name", Value(name_));
     
-    // Only set message property if message is not empty
-    // ECMAScript spec: message property should be non-enumerable
     if (!message_.empty()) {
         set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
@@ -85,15 +79,13 @@ void Error::generate_stack_trace() {
             oss << ": " << message_;
         }
         
-        // Get the call stack trace with safety checks
         try {
             CallStack& stack = CallStack::instance();
-            std::string stack_frames = stack.generate_stack_trace(20); // Limit to 20 frames
+            std::string stack_frames = stack.generate_stack_trace(20);
             
             if (!stack_frames.empty()) {
                 oss << "\n" << stack_frames;
             } else {
-                // Fallback to simple location info if no call stack is available
                 if (!filename_.empty()) {
                     oss << "\n    at " << filename_;
                     if (line_number_ > 0) {
@@ -105,7 +97,6 @@ void Error::generate_stack_trace() {
                 }
             }
         } catch (...) {
-            // If CallStack fails, use simple fallback
             if (!filename_.empty()) {
                 oss << "\n    at " << filename_;
                 if (line_number_ > 0) {
@@ -120,7 +111,6 @@ void Error::generate_stack_trace() {
         stack_trace_ = oss.str();
         set_property("stack", Value(stack_trace_));
     } catch (...) {
-        // Complete fallback - just set a simple stack trace
         stack_trace_ = name_ + (message_.empty() ? "" : ": " + message_);
         set_property("stack", Value(stack_trace_));
     }
@@ -140,9 +130,6 @@ std::string Error::type_to_name(Type type) {
     }
 }
 
-//=============================================================================
-// Static Factory Methods
-//=============================================================================
 
 std::unique_ptr<Error> Error::create_error(const std::string& message) {
     return std::make_unique<Error>(Type::Error, message);
@@ -172,9 +159,6 @@ std::unique_ptr<Error> Error::create_eval_error(const std::string& message) {
     return std::make_unique<Error>(Type::EvalError, message);
 }
 
-//=============================================================================
-// Exception Throwing Methods
-//=============================================================================
 
 void Error::throw_error(const std::string& message) {
     throw JavaScriptException(create_error(message));
@@ -196,9 +180,6 @@ void Error::throw_range_error(const std::string& message) {
     throw JavaScriptException(create_range_error(message));
 }
 
-//=============================================================================
-// JavaScriptException Implementation
-//=============================================================================
 
 JavaScriptException::JavaScriptException(std::unique_ptr<Error> error) 
     : error_(std::move(error)) {
@@ -209,13 +190,9 @@ const char* JavaScriptException::what() const noexcept {
     return what_message_.c_str();
 }
 
-//=============================================================================
-// ES2025 Static Methods
-//=============================================================================
 
-// ES2025: Error.isError()
 Value Error::isError(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; // Suppress unused parameter warning
+    (void)ctx;
     
     if (args.empty()) {
         return Value(false);
@@ -223,14 +200,12 @@ Value Error::isError(Context& ctx, const std::vector<Value>& args) {
     
     const Value& value = args[0];
     
-    // Check if the value is an object and has Error type
     if (value.is_object()) {
         Object* obj = value.as_object();
-        // Check if it's an Error object or inherits from Error
         return Value(obj->get_type() == Object::ObjectType::Error);
     }
     
     return Value(false);
 }
 
-} // namespace Quanta
+}

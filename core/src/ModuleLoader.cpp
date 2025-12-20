@@ -4,19 +4,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "ModuleLoader.h"
-#include "Engine.h"
-#include "Context.h"
-#include "Parser.h"
-#include "AST.h"
-#include "Lexer.h"
+#include "quanta/ModuleLoader.h"
+#include "quanta/Engine.h"
+#include "quanta/Context.h"
+#include "quanta/Parser.h"
+#include "quanta/AST.h"
+#include "quanta/Lexer.h"
 #include <fstream>
 #include <filesystem>
 #include <iostream>
 
 namespace Quanta {
 
-// Module implementation
 Module::Module(const std::string& id, const std::string& filename)
     : id_(id), filename_(filename), loaded_(false), loading_(false) {
 }
@@ -30,7 +29,7 @@ Value Module::get_export(const std::string& name) const {
     if (it != exports_.end()) {
         return it->second;
     }
-    return Value(); // undefined
+    return Value();
 }
 
 bool Module::has_export(const std::string& name) const {
@@ -50,9 +49,7 @@ void Module::set_context(std::unique_ptr<Context> context) {
     module_context_ = std::move(context);
 }
 
-// ModuleLoader implementation
 ModuleLoader::ModuleLoader(Engine* engine) : engine_(engine) {
-    // Add default search paths
     add_search_path("./");
     add_search_path("./node_modules/");
 }
@@ -61,19 +58,16 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     std::string resolved_path = resolve_module_path(module_id, from_path);
     std::string normalized_id = normalize_module_id(module_id, from_path);
     
-    // Check if module is already loaded
     auto it = modules_.find(normalized_id);
     if (it != modules_.end()) {
         return it->second.get();
     }
     
-    // Check for circular dependencies
     if (loading_modules_.find(normalized_id) != loading_modules_.end()) {
         std::cerr << "Circular dependency detected for module: " << normalized_id << std::endl;
         return nullptr;
     }
     
-    // Create and load the module
     auto module = create_module(normalized_id, resolved_path);
     if (!module) {
         return nullptr;
@@ -82,18 +76,15 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     Module* module_ptr = module.get();
     modules_[normalized_id] = std::move(module);
     
-    // Mark as loading to detect circular dependencies
     loading_modules_.insert(normalized_id);
     module_ptr->set_loading(true);
     
-    // Execute the module file
     if (!execute_module_file(module_ptr, resolved_path)) {
         loading_modules_.erase(normalized_id);
         modules_.erase(normalized_id);
         return nullptr;
     }
     
-    // Mark as loaded
     loading_modules_.erase(normalized_id);
     module_ptr->set_loading(false);
     module_ptr->set_loaded(true);
@@ -112,12 +103,10 @@ bool ModuleLoader::is_module_loaded(const std::string& module_id) const {
 }
 
 std::string ModuleLoader::resolve_module_path(const std::string& module_id, const std::string& from_path) {
-    // Handle relative paths
     if (is_relative_path(module_id)) {
         std::string base_path = from_path.empty() ? "./" : std::filesystem::path(from_path).parent_path().string() + "/";
         std::string resolved = join_paths(base_path, module_id);
         
-        // Try with .js extension
         if (file_exists(resolved)) {
             return resolved;
         }
@@ -129,7 +118,6 @@ std::string ModuleLoader::resolve_module_path(const std::string& module_id, cons
         }
     }
     
-    // Handle absolute paths
     if (is_absolute_path(module_id)) {
         if (file_exists(module_id)) {
             return module_id;
@@ -139,7 +127,6 @@ std::string ModuleLoader::resolve_module_path(const std::string& module_id, cons
         }
     }
     
-    // Search in module search paths
     for (const auto& search_path : module_search_paths_) {
         std::string candidate = join_paths(search_path, module_id);
         
@@ -154,7 +141,7 @@ std::string ModuleLoader::resolve_module_path(const std::string& module_id, cons
         }
     }
     
-    return module_id; // Return as-is if not found
+    return module_id;
 }
 
 void ModuleLoader::add_search_path(const std::string& path) {
@@ -162,16 +149,13 @@ void ModuleLoader::add_search_path(const std::string& path) {
 }
 
 Value ModuleLoader::import_from_module(const std::string& module_id, const std::string& import_name, const std::string& from_path) {
-    // std::cout << "import_from_module called: module='" << module_id << "', import='" << import_name << "', from='" << from_path << "'" << std::endl;
 
     Module* module = load_module(module_id, from_path);
     if (!module) {
-        // std::cout << "import_from_module: load_module failed" << std::endl;
-        return Value(); // undefined
+        return Value();
     }
 
     Value result = module->get_export(import_name);
-    // std::cout << "import_from_module: get_export('" << import_name << "') returned " << (result.is_function() ? "function" : (result.is_undefined() ? "undefined" : "other")) << std::endl;
     return result;
 }
 
@@ -182,10 +166,9 @@ Value ModuleLoader::import_default_from_module(const std::string& module_id, con
 Value ModuleLoader::import_namespace_from_module(const std::string& module_id, const std::string& from_path) {
     Module* module = load_module(module_id, from_path);
     if (!module) {
-        return Value(); // undefined
+        return Value();
     }
     
-    // Create an object with all exports
     auto exports_obj = std::make_shared<Object>();
     for (const auto& name : module->get_export_names()) {
         Value export_value = module->get_export(name);
@@ -209,7 +192,6 @@ std::unique_ptr<Module> ModuleLoader::create_module(const std::string& module_id
 }
 
 bool ModuleLoader::execute_module_file(Module* module, const std::string& filename) {
-    // Read the file
     std::string source = read_file(filename);
     if (source.empty()) {
         std::cerr << "Failed to read module file: " << filename << std::endl;
@@ -217,10 +199,8 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
     }
     
     try {
-        // Create module context
         auto module_context = std::make_unique<Context>(engine_);
         
-        // Add module-specific globals
         auto module_obj = std::make_shared<Object>();
         module_context->create_binding("module", Value(module_obj.get()));
         auto exports_obj = std::make_shared<Object>();
@@ -228,7 +208,6 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         module_context->create_binding("__filename", Value(filename));
         module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
         
-        // Parse and execute the module
         Lexer lexer(source);
         auto tokens = lexer.tokenize();
         TokenSequence token_sequence{tokens};
@@ -241,24 +220,16 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         
         module->set_context(std::move(module_context));
         
-        // Execute the module code
         ast->evaluate(*module->get_context());
         
-        // Extract exports from the module context
         Value exports_value = module->get_context()->get_binding("exports");
         if (exports_value.is_object()) {
             auto exports_obj = exports_value.as_object();
             
             auto keys = exports_obj->get_own_property_keys();
-            // std::cout << "ModuleLoader: Extracting " << keys.size() << " exports: ";
-            // for (const auto& key : keys) {
-            //     std::cout << "'" << key << "' ";
-            // }
-            // std::cout << std::endl;
 
             for (const auto& key : keys) {
                 Value prop_value = exports_obj->get_property(key);
-                // std::cout << "ModuleLoader: Adding export '" << key << "' (type: " << (prop_value.is_function() ? "function" : "other") << ")" << std::endl;
                 module->add_export(key, prop_value);
             }
         }
@@ -310,4 +281,4 @@ std::string ModuleLoader::read_file(const std::string& filename) {
     return content;
 }
 
-} // namespace Quanta
+}

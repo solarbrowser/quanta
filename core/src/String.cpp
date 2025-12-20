@@ -4,12 +4,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "String.h"
+#include "quanta/String.h"
 #include <unordered_map>
 
 namespace Quanta {
 
-// String interning cache
 static std::unordered_map<std::string, std::weak_ptr<std::string>> intern_cache_;
 
 String::String() : data_(std::make_shared<std::string>()), hash_(0), interned_(false) {
@@ -52,7 +51,6 @@ String String::intern(const std::string& str) {
         }
     }
     
-    // Create new interned string
     String result(str);
     result.interned_ = true;
     intern_cache_[str] = result.data_;
@@ -63,4 +61,4 @@ void String::calculate_hash() {
     hash_ = std::hash<std::string>{}(*data_);
 }
 
-} // namespace Quanta
+}

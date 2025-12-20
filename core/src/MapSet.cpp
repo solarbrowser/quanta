@@ -4,25 +4,21 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "MapSet.h"
-#include "Context.h"
-#include "Symbol.h"
-#include "Iterator.h"
-#include "../../parser/include/AST.h"
+#include "quanta/MapSet.h"
+#include "quanta/Context.h"
+#include "quanta/Symbol.h"
+#include "quanta/Iterator.h"
+#include "quanta/AST.h"
 #include <algorithm>
 #include <iostream>
 
 namespace Quanta {
 
-// Initialize static prototype references
 Object* Map::prototype_object = nullptr;
 Object* Set::prototype_object = nullptr;
 Object* WeakMap::prototype_object = nullptr;
 Object* WeakSet::prototype_object = nullptr;
 
-//=============================================================================
-// Map Implementation
-//=============================================================================
 
 Map::Map() : Object(ObjectType::Map), size_(0) {
 }
@@ -36,7 +32,7 @@ Value Map::get(const Value& key) const {
     if (it != entries_.end()) {
         return it->value;
     }
-    return Value(); // undefined
+    return Value();
 }
 
 void Map::set(const Value& key, const Value& value) {
@@ -112,20 +108,16 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
         });
 }
 
-// Map built-in methods
 Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
     auto map = std::make_unique<Map>();
     
-    // Set up prototype chain using static reference
     if (Map::prototype_object) {
         map->set_prototype(Map::prototype_object);
     }
     
-    // If iterable argument provided, populate map
     if (!args.empty() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
 
-        // Special case: Handle arrays directly (more reliable than iterator protocol)
         if (iterable->is_array()) {
             uint32_t length = iterable->get_length();
             for (uint32_t i = 0; i < length; i++) {
@@ -140,7 +132,6 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                 }
             }
         } else {
-            // Use iteration protocol for other iterables
             auto iterator = IterableUtils::get_iterator(args[0], ctx);
             if (iterator) {
                 while (true) {
@@ -149,7 +140,6 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                         break;
                     }
 
-                    // Each iteration value should be a [key, value] pair
                     if (result.value.is_object() && result.value.as_object()->is_array()) {
                         Object* pair = result.value.as_object();
                         if (pair->get_length() >= 2) {
@@ -158,7 +148,6 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                             map->set(key, value);
                         }
                     } else {
-                        // Invalid entry format - ignore or throw error
                         ctx.throw_exception(Value("Iterator value is not a [key, value] pair"));
                         break;
                     }
@@ -186,7 +175,7 @@ Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
     Value value = args.size() < 2 ? Value() : args[1];
     
     map->set(key, value);
-    return Value(obj); // Return the Map object for chaining
+    return Value(obj);
 }
 
 Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
@@ -243,7 +232,7 @@ Value Map::map_delete(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
@@ -259,11 +248,11 @@ Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
     
     Map* map = static_cast<Map*>(obj);
     map->clear();
-    return Value(); // undefined
+    return Value();
 }
 
 Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
@@ -280,7 +269,7 @@ Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
@@ -298,13 +287,10 @@ Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Map::setup_map_prototype(Context& ctx) {
-    // Create Map constructor
     auto map_constructor_fn = ObjectFactory::create_native_function("Map", map_constructor);
     
-    // Create Map.prototype
     auto map_prototype = ObjectFactory::create_object();
     
-    // Add methods to Map.prototype
     auto set_fn = ObjectFactory::create_native_function("set", map_set);
     auto get_fn = ObjectFactory::create_native_function("get", map_get);
     auto has_fn = ObjectFactory::create_native_function("has", map_has);
@@ -312,7 +298,6 @@ void Map::setup_map_prototype(Context& ctx) {
     auto clear_fn = ObjectFactory::create_native_function("clear", map_clear);
     auto size_fn = ObjectFactory::create_native_function("size", map_size_getter);
 
-    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
     map_prototype->set_property("set", Value(set_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     map_prototype->set_property("get", Value(get_fn.release()),
@@ -326,30 +311,23 @@ void Map::setup_map_prototype(Context& ctx) {
     map_prototype->set_property("size", Value(size_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
-    // Add entries, keys, values iterator methods
     auto entries_fn = ObjectFactory::create_native_function("entries", map_iterator_method, 0);
     map_prototype->set_property("entries", Value(entries_fn.get()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
-    // Add Symbol.iterator - same as entries per ES6 spec
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        // Symbol.iterator should be the same function object as entries
         map_prototype->set_property(iterator_symbol->to_string(), Value(entries_fn.release()),
             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     } else {
-        // If symbol not available, still release the function to avoid leak
         entries_fn.release();
     }
 
-    // Add Symbol.toStringTag to Map.prototype
     PropertyDescriptor map_tag_desc(Value(std::string("Map")), PropertyAttributes::Configurable);
     map_prototype->set_property_descriptor("Symbol.toStringTag", map_tag_desc);
 
-    // Store reference for constructor use
     Map::prototype_object = map_prototype.get();
 
-    // Map.groupBy (ES2024) - static method
     auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
@@ -363,7 +341,6 @@ void Map::setup_map_prototype(Context& ctx) {
                 throw std::runtime_error("Invalid arguments to Map.groupBy");
             }
 
-            // Create a new Map to hold grouped results
             auto result_map = std::make_unique<Map>();
             uint32_t length = iterable->get_length();
 
@@ -372,12 +349,10 @@ void Map::setup_map_prototype(Context& ctx) {
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), args[0] };
                 Value key = callback->call(ctx, callback_args);
 
-                // Get or create array for this key
                 Value group = result_map->get(key);
                 Object* group_array;
 
                 if (group.is_undefined()) {
-                    // Create new array for this key
                     auto new_array = ObjectFactory::create_array();
                     group_array = new_array.get();
                     result_map->set(key, Value(new_array.release()));
@@ -385,7 +360,6 @@ void Map::setup_map_prototype(Context& ctx) {
                     group_array = group.as_object();
                 }
 
-                // Add element to group
                 uint32_t group_length = group_array->get_length();
                 group_array->set_element(group_length, element);
                 group_array->set_length(group_length + 1);
@@ -399,9 +373,6 @@ void Map::setup_map_prototype(Context& ctx) {
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
 
-//=============================================================================
-// Set Implementation
-//=============================================================================
 
 Set::Set() : Object(ObjectType::Set), size_(0) {
 }
@@ -466,27 +437,22 @@ std::vector<Value>::const_iterator Set::find_value(const Value& value) const {
         });
 }
 
-// Set built-in methods
 Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
     auto set = std::make_unique<Set>();
     
-    // Set up prototype chain using static reference
     if (Set::prototype_object) {
         set->set_prototype(Set::prototype_object);
     }
     
-    // If iterable argument provided, populate set
     if (!args.empty() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
         if (iterable->is_array()) {
-            // Array case: add all elements
             uint32_t length = iterable->get_length();
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
                 set->add(element);
             }
         }
-        // Use iteration protocol for other iterables
         else {
             auto iterator = IterableUtils::get_iterator(args[0], ctx);
             if (iterator) {
@@ -496,7 +462,6 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
                         break;
                     }
                     
-                    // Add each iteration value to the set
                     set->add(result.value);
                 }
             }
@@ -521,7 +486,7 @@ Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
     Value value = args.empty() ? Value() : args[0];
     
     set->add(value);
-    return Value(obj); // Return the Set object for chaining
+    return Value(obj);
 }
 
 Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
@@ -559,7 +524,7 @@ Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
@@ -573,11 +538,11 @@ Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
     
     Set* set = static_cast<Set*>(obj);
     set->clear();
-    return Value(); // undefined
+    return Value();
 }
 
 Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
@@ -594,7 +559,7 @@ Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
@@ -612,20 +577,16 @@ Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Set::setup_set_prototype(Context& ctx) {
-    // Create Set constructor
     auto set_constructor_fn = ObjectFactory::create_native_function("Set", set_constructor);
     
-    // Create Set.prototype
     auto set_prototype = ObjectFactory::create_object();
     
-    // Add methods to Set.prototype
     auto add_fn = ObjectFactory::create_native_function("add", set_add);
     auto has_fn = ObjectFactory::create_native_function("has", set_has);
     auto delete_fn = ObjectFactory::create_native_function("delete", set_delete);
     auto clear_fn = ObjectFactory::create_native_function("clear", set_clear);
     auto size_fn = ObjectFactory::create_native_function("size", set_size_getter);
     
-    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
     set_prototype->set_property("add", Value(add_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     set_prototype->set_property("has", Value(has_fn.release()),
@@ -637,27 +598,21 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("size", Value(size_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
-    // Add Symbol.iterator method for Set iteration
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
         set_prototype->set_property(iterator_symbol->to_string(), Value(set_iterator_fn.release()));
     }
 
-    // Add Symbol.toStringTag to Set.prototype
     PropertyDescriptor set_tag_desc(Value(std::string("Set")), PropertyAttributes::Configurable);
     set_prototype->set_property_descriptor("Symbol.toStringTag", set_tag_desc);
 
-    // Store reference for constructor use
     Set::prototype_object = set_prototype.get();
 
     set_constructor_fn->set_property("prototype", Value(set_prototype.release()));
     ctx.create_binding("Set", Value(set_constructor_fn.release()));
 }
 
-//=============================================================================
-// WeakMap Implementation
-//=============================================================================
 
 WeakMap::WeakMap() : Object(ObjectType::WeakMap) {
 }
@@ -671,7 +626,7 @@ Value WeakMap::get(Object* key) const {
     if (it != entries_.end()) {
         return it->second;
     }
-    return Value(); // undefined
+    return Value();
 }
 
 void WeakMap::set(Object* key, const Value& value) {
@@ -688,19 +643,15 @@ bool WeakMap::delete_key(Object* key) {
 }
 
 void WeakMap::setup_weakmap_prototype(Context& ctx) {
-    // Create WeakMap constructor
     auto weakmap_constructor_fn = ObjectFactory::create_native_function("WeakMap", weakmap_constructor);
     
-    // Create WeakMap.prototype
     auto weakmap_prototype = ObjectFactory::create_object();
     
-    // Add methods to WeakMap.prototype
     auto set_fn = ObjectFactory::create_native_function("set", weakmap_set);
     auto get_fn = ObjectFactory::create_native_function("get", weakmap_get);
     auto has_fn = ObjectFactory::create_native_function("has", weakmap_has);
     auto delete_fn = ObjectFactory::create_native_function("delete", weakmap_delete);
     
-    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
     weakmap_prototype->set_property("set", Value(set_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     weakmap_prototype->set_property("get", Value(get_fn.release()),
@@ -710,16 +661,12 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     weakmap_prototype->set_property("delete", Value(delete_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
-    // Store reference for constructor use
     WeakMap::prototype_object = weakmap_prototype.get();
     
     weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()));
     ctx.create_binding("WeakMap", Value(weakmap_constructor_fn.release()));
 }
 
-//=============================================================================
-// WeakSet Implementation
-//=============================================================================
 
 WeakSet::WeakSet() : Object(ObjectType::WeakSet) {
 }
@@ -742,18 +689,14 @@ bool WeakSet::delete_value(Object* value) {
 }
 
 void WeakSet::setup_weakset_prototype(Context& ctx) {
-    // Create WeakSet constructor
     auto weakset_constructor_fn = ObjectFactory::create_native_function("WeakSet", weakset_constructor);
     
-    // Create WeakSet.prototype
     auto weakset_prototype = ObjectFactory::create_object();
     
-    // Add methods to WeakSet.prototype
     auto add_fn = ObjectFactory::create_native_function("add", weakset_add);
     auto has_fn = ObjectFactory::create_native_function("has", weakset_has);
     auto delete_fn = ObjectFactory::create_native_function("delete", weakset_delete);
     
-    // Set methods with proper property descriptors: { writable: true, enumerable: false, configurable: true }
     weakset_prototype->set_property("add", Value(add_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     weakset_prototype->set_property("has", Value(has_fn.release()),
@@ -761,19 +704,16 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     weakset_prototype->set_property("delete", Value(delete_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
-    // Store reference for constructor use
     WeakSet::prototype_object = weakset_prototype.get();
     
     weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()));
     ctx.create_binding("WeakSet", Value(weakset_constructor_fn.release()));
 }
 
-// WeakMap static methods
 Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     auto weakmap = std::make_unique<WeakMap>();
     
-    // Set up prototype chain using static reference
     if (WeakMap::prototype_object) {
         weakmap->set_prototype(WeakMap::prototype_object);
     }
@@ -888,12 +828,10 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
     return Value(false);
 }
 
-// WeakSet static methods
 Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     auto weakset = std::make_unique<WeakSet>();
     
-    // Set up prototype chain using static reference
     if (WeakSet::prototype_object) {
         weakset->set_prototype(WeakSet::prototype_object);
     }
@@ -982,4 +920,4 @@ Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
     return Value(false);
 }
 
-} // namespace Quanta
+}

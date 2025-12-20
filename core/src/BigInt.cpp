@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "BigInt.h"
+#include "quanta/BigInt.h"
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>
@@ -12,9 +12,6 @@
 
 namespace Quanta {
 
-//=============================================================================
-// Constructors
-//=============================================================================
 
 BigInt::BigInt() : is_negative_(false) {
     digits_.push_back(0);
@@ -53,7 +50,6 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         return;
     }
 
-    // Detect number base
     int base = 10;
     if (start + 1 < str.length() && str[start] == '0') {
         char prefix = str[start + 1];
@@ -69,18 +65,15 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
         }
     }
 
-    // Parse number string
     digits_.push_back(0);
 
     for (size_t i = start; i < str.length(); ++i) {
         char c = str[i];
 
-        // Skip numeric separators
         if (c == '_') {
             continue;
         }
 
-        // Convert character to digit value
         int digit_value;
         if (c >= '0' && c <= '9') {
             digit_value = c - '0';
@@ -92,12 +85,10 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
             throw std::invalid_argument("Invalid BigInt string: " + str);
         }
 
-        // Check if digit is valid for the base
         if (digit_value >= base) {
             throw std::invalid_argument("Invalid BigInt string: " + str);
         }
 
-        // Multiply current value by base and add digit
         uint64_t carry = digit_value;
         for (auto& digit : digits_) {
             uint64_t temp = static_cast<uint64_t>(digit) * base + carry;
@@ -114,17 +105,12 @@ BigInt::BigInt(const std::string& str) : is_negative_(false) {
     normalize();
 }
 
-//=============================================================================
-// Helper Methods
-//=============================================================================
 
 void BigInt::normalize() {
-    // Remove leading zeros
     while (digits_.size() > 1 && digits_.back() == 0) {
         digits_.pop_back();
     }
     
-    // If result is zero, ensure positive
     if (digits_.size() == 1 && digits_[0] == 0) {
         is_negative_ = false;
     }
@@ -144,9 +130,6 @@ int BigInt::compare_absolute(const BigInt& other) const {
     return 0;
 }
 
-//=============================================================================
-// Arithmetic Operations
-//=============================================================================
 
 BigInt BigInt::operator+(const BigInt& other) const {
     BigInt result = *this;
@@ -156,21 +139,16 @@ BigInt BigInt::operator+(const BigInt& other) const {
 
 BigInt& BigInt::operator+=(const BigInt& other) {
     if (is_negative_ == other.is_negative_) {
-        // Same sign: add absolute values
         add_positive(other);
     } else {
-        // Different signs: subtract absolute values
         int cmp = compare_absolute(other);
         if (cmp == 0) {
-            // Equal absolute values: result is zero
             digits_.clear();
             digits_.push_back(0);
             is_negative_ = false;
         } else if (cmp > 0) {
-            // |this| > |other|: result has sign of this
             subtract_positive(other);
         } else {
-            // |this| < |other|: result has sign of other
             BigInt temp = other;
             temp.subtract_positive(*this);
             *this = std::move(temp);
@@ -211,7 +189,6 @@ BigInt& BigInt::operator-=(const BigInt& other) {
 }
 
 void BigInt::subtract_positive(const BigInt& other) {
-    // Assumes |this| >= |other|
     uint32_t borrow = 0;
     
     for (size_t i = 0; i < digits_.size(); ++i) {
@@ -253,9 +230,6 @@ BigInt BigInt::operator*(const BigInt& other) const {
     return result;
 }
 
-//=============================================================================
-// Unary Operations
-//=============================================================================
 
 BigInt BigInt::operator-() const {
     if (is_zero()) return *this;
@@ -269,9 +243,6 @@ BigInt BigInt::operator+() const {
     return *this;
 }
 
-//=============================================================================
-// Comparison Operations
-//=============================================================================
 
 bool BigInt::operator==(const BigInt& other) const {
     return is_negative_ == other.is_negative_ && digits_ == other.digits_;
@@ -302,19 +273,15 @@ bool BigInt::operator>=(const BigInt& other) const {
     return !(*this < other);
 }
 
-//=============================================================================
-// Conversion Methods
-//=============================================================================
 
 std::string BigInt::to_string() const {
     if (is_zero()) return "0";
     
     std::string result;
     BigInt temp = *this;
-    temp.is_negative_ = false;  // Work with absolute value
+    temp.is_negative_ = false;
     
     while (!temp.is_zero()) {
-        // Divide by 10 and get remainder
         uint32_t remainder = 0;
         for (size_t i = temp.digits_.size(); i > 0; --i) {
             uint64_t dividend = (static_cast<uint64_t>(remainder) << 32) + temp.digits_[i-1];
@@ -341,7 +308,7 @@ double BigInt::to_double() const {
     
     for (uint32_t digit : digits_) {
         result += digit * base;
-        base *= 4294967296.0; // 2^32
+        base *= 4294967296.0;
     }
     
     return is_negative_ ? -result : result;
@@ -355,12 +322,9 @@ bool BigInt::is_zero() const {
     return digits_.size() == 1 && digits_[0] == 0;
 }
 
-//=============================================================================
-// Static Methods
-//=============================================================================
 
 BigInt BigInt::from_string(const std::string& str) {
     return BigInt(str);
 }
 
-} // namespace Quanta
+}

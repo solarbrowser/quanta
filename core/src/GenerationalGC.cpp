@@ -4,21 +4,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/GenerationalGC.h"
+#include "quanta/GenerationalGC.h"
 #include <iostream>
 #include <algorithm>
 #include <cstdlib>
 
 namespace Quanta {
 
-//=============================================================================
-// MemoryRegion Implementation - Generational Memory Management
-//=============================================================================
 
 MemoryRegion::MemoryRegion(Generation gen, size_t size) 
     : generation_(gen), total_size_(size), used_size_(0) {
     
-    // Allocate memory region (using malloc for compatibility)
     memory_start_ = std::malloc(size);
     if (!memory_start_) {
         throw std::bad_alloc();
@@ -40,22 +36,18 @@ MemoryRegion::~MemoryRegion() {
 }
 
 GCObjectHeader* MemoryRegion::allocate(size_t size) {
-    // Align size to 8 bytes
     size_t aligned_size = (size + 7) & ~7;
     
     if (!can_allocate(aligned_size + sizeof(GCObjectHeader))) {
-        return nullptr; // Out of memory
+        return nullptr;
     }
     
-    // Allocate header + object space
     GCObjectHeader* header = static_cast<GCObjectHeader*>(allocation_pointer_);
     void* object_space = static_cast<char*>(allocation_pointer_) + sizeof(GCObjectHeader);
     
-    // Initialize header (object will be set later)
     new (header) GCObjectHeader(nullptr, aligned_size);
     header->generation = generation_;
     
-    // Update allocation pointer
     allocation_pointer_ = static_cast<char*>(allocation_pointer_) + sizeof(GCObjectHeader) + aligned_size;
     used_size_ += sizeof(GCObjectHeader) + aligned_size;
     
@@ -95,11 +87,9 @@ size_t MemoryRegion::sweep_objects() {
         GCObjectHeader* header = *it;
         
         if (!header->is_marked) {
-            // Object is not marked - collect it
             collected++;
             it = objects_.erase(it);
         } else {
-            // Reset mark for next GC cycle
             header->is_marked = false;
             header->age++;
             ++it;
@@ -110,7 +100,6 @@ size_t MemoryRegion::sweep_objects() {
 }
 
 void MemoryRegion::compact_memory() {
-    // Simple compaction - in a full implementation this would be more sophisticated
     std::cout << "�️  COMPACTING " 
              << (generation_ == Generation::YOUNG ? "YOUNG" : 
                  generation_ == Generation::OLD ? "OLD" : "PERMANENT")
@@ -128,22 +117,16 @@ void MemoryRegion::print_statistics() const {
     std::cout << "  Object Count: " << objects_.size() << std::endl;
 }
 
-//=============================================================================
-// RememberedSet Implementation - Inter-generational Reference Tracking
-//=============================================================================
 
 RememberedSet::RememberedSet() {
-    // Initialize
 }
 
 RememberedSet::~RememberedSet() {
-    // Cleanup
 }
 
 void RememberedSet::add_reference(GCObjectHeader* from, GCObjectHeader* to) {
     if (!from || !to) return;
     
-    // Track references from older to younger generations
     if (from->generation == Generation::OLD && to->generation == Generation::YOUNG) {
         old_to_young_refs_.insert(from);
         from->is_remembered = true;
@@ -205,9 +188,6 @@ void RememberedSet::print_statistics() const {
     std::cout << "  Permanent -> Old References: " << permanent_to_old_refs_.size() << std::endl;
 }
 
-//=============================================================================
-// GenerationalGC Implementation - Main Garbage Collector
-//=============================================================================
 
 GenerationalGC::GenerationalGC() : GenerationalGC(GCConfig()) {
 }
@@ -215,12 +195,10 @@ GenerationalGC::GenerationalGC() : GenerationalGC(GCConfig()) {
 GenerationalGC::GenerationalGC(const GCConfig& config) 
     : config_(config), gc_in_progress_(false), write_barrier_enabled_(true) {
     
-    // Create memory regions
     young_generation_ = std::make_unique<MemoryRegion>(Generation::YOUNG, config_.young_generation_size);
     old_generation_ = std::make_unique<MemoryRegion>(Generation::OLD, config_.old_generation_size);
     permanent_generation_ = std::make_unique<MemoryRegion>(Generation::PERMANENT, config_.permanent_generation_size);
     
-    // Create remembered set
     remembered_set_ = std::make_unique<RememberedSet>();
     
     last_gc_time_ = std::chrono::steady_clock::now();
@@ -232,7 +210,6 @@ GenerationalGC::GenerationalGC(const GCConfig& config)
 }
 
 GenerationalGC::~GenerationalGC() {
-    // Cleanup
 }
 
 GCObjectHeader* GenerationalGC::allocate_object(size_t size, Generation preferred_gen) {
@@ -240,7 +217,6 @@ GCObjectHeader* GenerationalGC::allocate_object(size_t size, Generation preferre
     
     GCObjectHeader* header = nullptr;
     
-    // Try to allocate in preferred generation
     switch (preferred_gen) {
         case Generation::YOUNG:
             header = young_generation_->allocate(size);
@@ -261,7 +237,6 @@ GCObjectHeader* GenerationalGC::allocate_object(size_t size, Generation preferre
     if (header) {
         stats_.total_allocation_bytes += size;
         
-        // Check if GC is needed
         if (should_trigger_minor_gc() || should_trigger_major_gc()) {
             collect_auto();
         }
@@ -273,7 +248,6 @@ GCObjectHeader* GenerationalGC::allocate_object(size_t size, Generation preferre
 void GenerationalGC::deallocate_object(GCObjectHeader* header) {
     if (!header) return;
     
-    // Remove from appropriate generation
     switch (header->generation) {
         case Generation::YOUNG:
             young_generation_->remove_object(header);
@@ -312,14 +286,13 @@ void GenerationalGC::remove_context(Context* ctx) {
 
 void GenerationalGC::collect_minor() {
     if (gc_in_progress_.exchange(true)) {
-        return; // GC already in progress
+        return;
     }
     
     auto start_time = std::chrono::steady_clock::now();
     
     std::cout << "� MINOR GC STARTED (Young Generation)" << std::endl;
     
-    // Mark and sweep young generation only
     mark_phase(Generation::YOUNG);
     sweep_phase(Generation::YOUNG);
     size_t collected = young_generation_->sweep_objects();
@@ -340,14 +313,13 @@ void GenerationalGC::collect_minor() {
 
 void GenerationalGC::collect_major() {
     if (gc_in_progress_.exchange(true)) {
-        return; // GC already in progress
+        return;
     }
     
     auto start_time = std::chrono::steady_clock::now();
     
     std::cout << "� MAJOR GC STARTED (All Generations)" << std::endl;
     
-    // Mark and sweep all generations
     mark_phase(Generation::PERMANENT);
     sweep_phase(Generation::PERMANENT);
     size_t collected = young_generation_->sweep_objects() + old_generation_->sweep_objects() + permanent_generation_->sweep_objects();
@@ -379,7 +351,6 @@ void GenerationalGC::write_barrier(Object* from, Object* to) {
         return;
     }
     
-    // Get object headers (simplified - in real implementation would be more efficient)
     GCObjectHeader* from_header = get_object_header(from);
     GCObjectHeader* to_header = get_object_header(to);
     
@@ -402,7 +373,6 @@ void GenerationalGC::promote_object(GCObjectHeader* header) {
     }
     
     if (header->age >= config_.promotion_age_threshold) {
-        // Promote to old generation
         header->generation = Generation::OLD;
         young_generation_->remove_object(header);
         old_generation_->add_object(header);
@@ -456,13 +426,11 @@ void GenerationalGC::analyze_allocation_patterns() const {
 }
 
 void GenerationalGC::tune_gc_parameters() {
-    // Adaptive tuning based on performance metrics
     double young_utilization = young_generation_->get_utilization();
     double old_utilization = old_generation_->get_utilization();
     
     if (stats_.minor_gc_count > 10 && stats_.average_minor_gc_time_ms > 50.0) {
-        // Minor GCs are taking too long - increase young generation size
-        if (config_.young_generation_size < 32 * 1024 * 1024) { // Max 32MB
+        if (config_.young_generation_size < 32 * 1024 * 1024) {
             config_.young_generation_size *= 1.5;
             std::cout << "� GC TUNING: Increased young generation size to " 
                      << (config_.young_generation_size / 1024 / 1024) << " MB" << std::endl;
@@ -470,8 +438,7 @@ void GenerationalGC::tune_gc_parameters() {
     }
     
     if (old_utilization > 0.95) {
-        // Old generation is nearly full - increase size
-        if (config_.old_generation_size < 128 * 1024 * 1024) { // Max 128MB
+        if (config_.old_generation_size < 128 * 1024 * 1024) {
             config_.old_generation_size *= 1.2;
             std::cout << "� GC TUNING: Increased old generation size to " 
                      << (config_.old_generation_size / 1024 / 1024) << " MB" << std::endl;
@@ -484,9 +451,7 @@ GenerationalGC& GenerationalGC::get_instance() {
     return instance;
 }
 
-// Private implementation methods
 void GenerationalGC::mark_phase(Generation max_generation) {
-    // Simplified mark phase - mark all objects in generations up to max_generation
     if (max_generation >= Generation::YOUNG) {
         young_generation_->mark_objects();
     }
@@ -525,7 +490,6 @@ void GenerationalGC::compact_phase(Generation generation) {
 }
 
 void GenerationalGC::promotion_phase() {
-    // Check young generation objects for promotion
     const auto& young_objects = young_generation_->get_objects();
     
     for (GCObjectHeader* header : young_objects) {
@@ -536,30 +500,23 @@ void GenerationalGC::promotion_phase() {
 }
 
 Generation GenerationalGC::get_object_generation(Object* obj) const {
-    // Simplified - would need more efficient lookup in real implementation
-    return Generation::YOUNG; // Default
+    return Generation::YOUNG;
 }
 
 GCObjectHeader* GenerationalGC::get_object_header(Object* obj) const {
-    // Simplified - would need efficient object->header mapping in real implementation
     return nullptr;
 }
 
-//=============================================================================
-// GCObjectAllocator Implementation - GC-aware allocation
-//=============================================================================
 
 GCObjectAllocator::GCObjectAllocator() : gc_(&GenerationalGC::get_instance()) {
     std::cout << "� GC OBJECT ALLOCATOR INITIALIZED" << std::endl;
 }
 
 GCObjectAllocator::~GCObjectAllocator() {
-    // Cleanup
 }
 
 void GCObjectAllocator::deallocate_object(Object* obj) {
     if (obj) {
-        // Get header and deallocate through GC
         GCObjectHeader* header = gc_->get_object_header(obj);
         if (header) {
             gc_->deallocate_object(header);
@@ -580,9 +537,6 @@ GCObjectAllocator& GCObjectAllocator::get_instance() {
     return instance;
 }
 
-//=============================================================================
-// GCIntegration Implementation - Engine hooks
-//=============================================================================
 
 void GCIntegration::initialize_gc() {
     GenerationalGC& gc = GenerationalGC::get_instance();
@@ -597,7 +551,6 @@ void GCIntegration::shutdown_gc() {
 }
 
 void GCIntegration::on_object_allocation(Object* obj) {
-    // Hook for automatic GC triggering
     GenerationalGC& gc = GenerationalGC::get_instance();
     if (gc.should_trigger_minor_gc()) {
         gc.collect_minor();
@@ -633,4 +586,4 @@ void GCIntegration::optimize_gc_timing() {
     gc.analyze_allocation_patterns();
 }
 
-} // namespace Quanta
+}

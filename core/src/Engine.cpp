@@ -4,24 +4,24 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "Engine.h"
-#include "Value.h"
-#include "JSON.h"
-#include "Math.h"
-#include "Date.h"
-#include "Symbol.h"
-#include "NodeJS.h"
-#include "Promise.h"
-#include "Error.h"
-#include "Generator.h"
-#include "MapSet.h"
-#include "Iterator.h"
-#include "Async.h"
-#include "ProxyReflect.h"
-#include "../../parser/include/AST.h"
-#include "../../parser/include/Parser.h"
-#include "../../lexer/include/Lexer.h"
-#include "FastBytecode.h"
+#include "quanta/Engine.h"
+#include "quanta/Value.h"
+#include "quanta/JSON.h"
+#include "quanta/Math.h"
+#include "quanta/Date.h"
+#include "quanta/Symbol.h"
+#include "quanta/NodeJS.h"
+#include "quanta/Promise.h"
+#include "quanta/Error.h"
+#include "quanta/Generator.h"
+#include "quanta/MapSet.h"
+#include "quanta/Iterator.h"
+#include "quanta/Async.h"
+#include "quanta/ProxyReflect.h"
+#include "quanta/AST.h"
+#include "quanta/Parser.h"
+#include "quanta/Lexer.h"
+#include "quanta/FastBytecode.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -31,16 +31,10 @@
 
 namespace Quanta {
 
-//=============================================================================
-// Engine Implementation
-//=============================================================================
 
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
-    // Initialize JIT compiler
-    // JIT compiler removed (was simulation)
     
-    // Initialize garbage collector
     garbage_collector_ = std::make_unique<GarbageCollector>();
     
     config_.strict_mode = false;
@@ -70,22 +64,13 @@ bool Engine::initialize() {
     }
     
     try {
-        // Starting initialization
         
-        // Create global context
-        // Creating global context
         global_context_ = ContextFactory::create_global_context(this);
-        // Global context created
         
-        // Initialize module loader
-        // Initializing module loader
         module_loader_ = std::make_unique<ModuleLoader>(this);
-        // Module loader initialized
         
-        // Initialize memory pools for object allocation
         ObjectFactory::initialize_memory_pools();
         
-        // Setup built-in functions and objects
         setup_built_in_functions();
         setup_built_in_objects();
         setup_error_types();
@@ -93,8 +78,7 @@ bool Engine::initialize() {
        
         initialized_ = true;
         
-        // Initialize Test262 harness by loading external bootstrap file
-        std::string bootstrap_path = "core/src/test262_bootstrap.js"; // DONT DELETE THIS FILE, THIS IS REQUIRED FOR TEST262, IT CONTAINS INJECTIONS THAT NEED TO RUN TEST262 SUITE!!!
+        std::string bootstrap_path = "core/src/test262_bootstrap.js";
         std::ifstream bootstrap_file(bootstrap_path);
         if (bootstrap_file.is_open()) {
             std::ostringstream buffer;
@@ -104,10 +88,8 @@ bool Engine::initialize() {
             Result bootstrap_result = execute(test262_bootstrap, "<test262-harness>");
             if (!bootstrap_result.success) {
                 std::cerr << "[WARN] Test262 harness initialization failed: " << bootstrap_result.error_message << std::endl;
-                // Don't fail engine init if bootstrap fails - it's optional
             }
         }
-        // Engine initialization complete
         return true;
     } catch (const std::exception& e) {
         std::cerr << " Engine initialization failed: " << e.what() << std::endl;
@@ -120,7 +102,6 @@ void Engine::shutdown() {
         return;
     }
     
-    // Clean up resources
     global_context_.reset();
     
     initialized_ = false;
@@ -155,14 +136,11 @@ Engine::Result Engine::evaluate(const std::string& expression) {
     }
     
     try {
-        // Create lexer and parser for expression evaluation
         Lexer lexer(expression);
         Parser parser(lexer.tokenize());
         
-        // Try to parse as a program first (to handle statements in eval)
         auto program_ast = parser.parse_program();
         if (program_ast && program_ast->get_statements().size() > 0) {
-            // Successfully parsed as a program, evaluate it
             Value result = program_ast->evaluate(*global_context_);
 
             if (global_context_->has_exception()) {
@@ -173,14 +151,12 @@ Engine::Result Engine::evaluate(const std::string& expression) {
 
             return Result(result);
         } else {
-            // Failed to parse as program, try as expression
             Parser expr_parser(lexer.tokenize());
             auto expr_ast = expr_parser.parse_expression();
             if (!expr_ast) {
                 return Result("Parse error: Failed to parse expression");
             }
 
-            // Standard AST evaluation for expressions
             if (global_context_) {
                 Value result = expr_ast->evaluate(*global_context_);
 
@@ -227,17 +203,14 @@ bool Engine::has_global_property(const std::string& name) {
 }
 
 void Engine::register_function(const std::string& name, std::function<Value(const std::vector<Value>&)> func) {
-    // Allow registration during initialization
     if (!global_context_) return;
     
-    // Create a native function with the actual implementation
     auto native_func = ObjectFactory::create_native_function(name, 
         [func](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Suppress unused parameter warning
+            (void)ctx;
             return func(args);
         });
     
-    // Store the function as a global property
     set_global_property(name, Value(native_func.release()));
 }
 
@@ -327,15 +300,11 @@ std::string Engine::get_memory_stats() const {
 void Engine::inject_dom(Object* document) {
     if (!initialized_) return;
     
-    // Inject DOM object into global scope
     set_global_property("document", Value(document));
     
-    // Setup basic DOM globals
-    // setup_browser_globals(); // Removed - use WebAPIInterface instead
 }
 
 void Engine::setup_nodejs_apis() {
-    // Node.js File System API
     auto fs_obj = std::make_unique<Object>();
     
     auto fs_readFile = ObjectFactory::create_native_function("readFile", NodeJS::fs_readFile);
@@ -348,7 +317,6 @@ void Engine::setup_nodejs_apis() {
     auto fs_stat = ObjectFactory::create_native_function("stat", NodeJS::fs_stat);
     auto fs_readdir = ObjectFactory::create_native_function("readdir", NodeJS::fs_readdir);
     
-    // Sync versions
     auto fs_readFileSync = ObjectFactory::create_native_function("readFileSync", NodeJS::fs_readFileSync);
     auto fs_writeFileSync = ObjectFactory::create_native_function("writeFileSync", NodeJS::fs_writeFileSync);
     auto fs_existsSync = ObjectFactory::create_native_function("existsSync", NodeJS::fs_existsSync);
@@ -374,7 +342,6 @@ void Engine::setup_nodejs_apis() {
     
     set_global_property("fs", Value(fs_obj.release()));
     
-    // Node.js Path API
     auto path_obj = std::make_unique<Object>();
     
     auto path_join = ObjectFactory::create_native_function("join", NodeJS::path_join);
@@ -395,7 +362,6 @@ void Engine::setup_nodejs_apis() {
     
     set_global_property("path", Value(path_obj.release()));
     
-    // Node.js OS API
     auto os_obj = std::make_unique<Object>();
     
     auto os_platform = ObjectFactory::create_native_function("platform", NodeJS::os_platform);
@@ -414,7 +380,6 @@ void Engine::setup_nodejs_apis() {
     
     set_global_property("os", Value(os_obj.release()));
     
-    // Node.js Process API
     auto process_obj = std::make_unique<Object>();
     
     auto process_exit = ObjectFactory::create_native_function("exit", NodeJS::process_exit);
@@ -427,7 +392,6 @@ void Engine::setup_nodejs_apis() {
     
     set_global_property("process", Value(process_obj.release()));
     
-    // Node.js Crypto API
     auto crypto_obj = std::make_unique<Object>();
     
     auto crypto_randomBytes = ObjectFactory::create_native_function("randomBytes", NodeJS::crypto_randomBytes);
@@ -438,14 +402,9 @@ void Engine::setup_nodejs_apis() {
     
     set_global_property("crypto", Value(crypto_obj.release()));
     
-    // JSON object is now registered in Context.cpp for proper scope binding
     
-    // Date object is now registered in Context.cpp for proper scope binding
 }
 
-//=============================================================================
-// Static Factory Functions for backward compatibility (optional)
-//=============================================================================
 
 namespace EngineFactory {
 
@@ -474,22 +433,16 @@ Engine* create_engine_raw(const Engine::Config& config) {
     return nullptr;
 }
 
-} // namespace EngineFactory
+}
 
-//=============================================================================
-// Engine - Missing Function Stubs
-//=============================================================================
 
 void Engine::setup_global_object() {
-    // Stub - global object setup
 }
 
 void Engine::setup_built_in_objects() {
-    // Stub - built-in objects like Array, Object etc.
 }
 
 void Engine::setup_built_in_functions() {
-    // Register eval() function
     register_function("eval", [this](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value();
@@ -501,19 +454,16 @@ void Engine::setup_built_in_functions() {
         }
         
         try {
-            // Execute the code in the current context
             Result result = execute(code);
             if (result.success) {
                 return result.value;
             } else {
-                // For syntax errors, throw directly without EvalError wrapping
                 throw std::runtime_error("SyntaxError: " + result.error_message);
             }
         } catch (const std::runtime_error& e) {
-            // Check if this is already a SyntaxError - if so, don't wrap it
             std::string error_msg = e.what();
             if (error_msg.find("SyntaxError:") == 0) {
-                throw e; // Re-throw as-is
+                throw e;
             }
             throw std::runtime_error("EvalError: " + error_msg);
         } catch (const std::exception& e) {
@@ -521,7 +471,6 @@ void Engine::setup_built_in_functions() {
         }
     });
     
-    // Register parseInt() function
     register_function("parseInt", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value::nan();
@@ -529,7 +478,6 @@ void Engine::setup_built_in_functions() {
         
         std::string str = args[0].to_string();
         
-        // Trim leading whitespace
         size_t start = 0;
         while (start < str.length() && std::isspace(str[start])) {
             start++;
@@ -539,7 +487,6 @@ void Engine::setup_built_in_functions() {
             return Value::nan();
         }
         
-        // Handle radix parameter
         int radix = 10;
         if (args.size() > 1) {
             double r = args[1].to_number();
@@ -548,7 +495,6 @@ void Engine::setup_built_in_functions() {
             }
         }
         
-        // Check if string starts with a valid digit for the given radix
         char first_char = str[start];
         bool has_valid_start = false;
         
@@ -569,7 +515,6 @@ void Engine::setup_built_in_functions() {
         try {
             size_t pos;
             long result = std::stol(str.substr(start), &pos, radix);
-            // Check if we parsed at least one character
             if (pos == 0) {
                 return Value::nan();
             }
@@ -579,7 +524,6 @@ void Engine::setup_built_in_functions() {
         }
     });
     
-    // Register parseFloat() function  
     register_function("parseFloat", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value::nan();
@@ -587,7 +531,6 @@ void Engine::setup_built_in_functions() {
         
         std::string str = args[0].to_string();
         
-        // Trim leading whitespace
         size_t start = 0;
         while (start < str.length() && std::isspace(str[start])) {
             start++;
@@ -597,7 +540,6 @@ void Engine::setup_built_in_functions() {
             return Value::nan();
         }
         
-        // Check if string starts with a valid character for a float
         char first_char = str[start];
         if (!std::isdigit(first_char) && first_char != '.' && 
             first_char != '+' && first_char != '-') {
@@ -607,7 +549,6 @@ void Engine::setup_built_in_functions() {
         try {
             size_t pos;
             double result = std::stod(str.substr(start), &pos);
-            // Check if we parsed at least one character
             if (pos == 0) {
                 return Value::nan();
             }
@@ -617,7 +558,6 @@ void Engine::setup_built_in_functions() {
         }
     });
     
-    // Register isNaN() function
     register_function("isNaN", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value(true);
@@ -627,7 +567,6 @@ void Engine::setup_built_in_functions() {
         return Value(std::isnan(num));
     });
     
-    // Register isFinite() function
     register_function("isFinite", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value(false);
@@ -639,22 +578,18 @@ void Engine::setup_built_in_functions() {
 }
 
 void Engine::setup_error_types() {
-    // Stub - Error, TypeError, ReferenceError etc.
 }
 
 void Engine::initialize_gc() {
-    // Stub - garbage collector initialization
 }
 
 void Engine::register_web_apis() {
-    // Stub - this was removed, use WebAPIInterface instead
 }
 
 Engine::Result Engine::execute_internal(const std::string& source, const std::string& filename) {
     try {
         execution_count_++;
         
-        // Try bytecode VM first if available
         FastBytecodeVM vm;
         bool compiled = vm.compile_direct(source);
         
@@ -663,11 +598,9 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             return Result(result);
         }
         
-        // Fallback: Traditional AST approach
         Lexer lexer(source);
         auto tokens = lexer.tokenize();
         
-        // Check for lexer errors
         if (lexer.has_errors()) {
             const auto& errors = lexer.get_errors();
             std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
@@ -677,7 +610,6 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         Parser parser(tokens);
         auto program = parser.parse_program();
         
-        // Check for parser errors
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
             std::string error_msg = errors.empty() ? "Parse error" : errors[0].message;
@@ -688,14 +620,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             return Result("Parse error in " + filename);
         }
         
-        // Check for simple patterns that can be optimized
         if (is_simple_mathematical_loop(program.get())) {
             return execute_optimized_mathematical_loop(program.get());
         }
         
-        // Standard AST evaluation
         if (global_context_) {
-            // Set the current filename for stack traces
             global_context_->set_current_filename(filename);
             
             Value result = program->evaluate(*global_context_);
@@ -718,38 +647,22 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
     }
 }
 
-//=============================================================================
-// HIGH PERFORMANCE Mathematical Loop Optimization
-//=============================================================================
 
 bool Engine::is_simple_mathematical_loop(ASTNode* ast) {
-    // Disable C++ optimization to ensure proper JavaScript execution
-    // This allows Test262 and other JavaScript tests to run correctly
     return false;
 }
 
 Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
-    // DIRECT C++ EXECUTION - Bypass all JavaScript interpretation
-    // This gives us 1000x performance boost for simple mathematical loops
     
-    std::cout << "OPTIMIZED C++ CALCULATION: Executing mathematical loop directly" << std::endl;
+    std::cout << "C++ CALCULATION: Executing mathematical loop directly" << std::endl;
     
-    // For now, implement a hardcoded optimization for the most common pattern:
-    // for (var i = 0; i < N; i++) { result += i + 1; }
     
-    // Extract loop bounds (simplified pattern matching)
-    // In a real implementation, this would analyze the AST structure
     
-    // Hardcoded for our test case: 100M iterations
-    int64_t n = 100000000; // 100 million
+    int64_t n = 100000000;
     int64_t result = 0;
     
-    // OPTIMIZED C++ loop - no JavaScript overhead
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Optimized mathematical computation using Gauss formula
-    // Sum of 1 to N = N*(N+1)/2, but our loop does i+1, so sum of 1 to N+1 - 1 = (N+1)*(N+2)/2 - 1
-    // Actually our loop: sum(i+1) for i=0 to N-1 = sum(j) for j=1 to N = N*(N+1)/2
     result = ((int64_t)n * ((int64_t)n + 1)) / 2;
     
     auto end = std::chrono::high_resolution_clock::now();
@@ -759,7 +672,6 @@ Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
               << duration.count() << "ms" << std::endl;
     std::cout << "PERFORMANCE: " << (n / (duration.count() + 1) * 1000) << " ops/sec" << std::endl;
     
-    // Update global variables to match JavaScript behavior
     if (global_context_) {
         global_context_->set_binding("result", Value(static_cast<double>(result)));
         global_context_->set_binding("i", Value(static_cast<double>(n)));
@@ -768,22 +680,13 @@ Engine::Result Engine::execute_optimized_mathematical_loop(ASTNode* ast) {
     return Engine::Result(Value(static_cast<double>(result)));
 }
 
-// High-performance minimal setup - Optimized startup
 void Engine::setup_minimal_globals() {
-    // Only setup absolute minimum for INSTANT startup!
-    // Everything else is lazy-loaded on first use
     
-    // Critical global object - bare minimum
     global_context_->create_binding("console", Value(), false);
     
-    // Math object is already registered in Context.cpp
     
-    // SKIP ALL HEAVY INITIALIZATION!
-    // Built-ins, errors, functions are loaded on-demand
-    // This gives us high-performance microsecond startup times!
 }
 
-// ES6 Default Export Registry Implementation
 void Engine::register_default_export(const std::string& filename, const Value& value) {
     default_exports_registry_[filename] = value;
 }
@@ -793,14 +696,13 @@ Value Engine::get_default_export(const std::string& filename) {
     if (it != default_exports_registry_.end()) {
         return it->second;
     }
-    return Value(); // undefined
+    return Value();
 }
 
 bool Engine::has_default_export(const std::string& filename) {
     return default_exports_registry_.find(filename) != default_exports_registry_.end();
 }
 
-// Debug/Stats Methods
 void Engine::force_gc() {
     if (garbage_collector_) {
         garbage_collector_->collect_garbage();
@@ -818,4 +720,4 @@ std::string Engine::get_jit_stats() const {
     return "JIT Stats: Simulation code removed";
 }
 
-} // namespace Quanta
+}

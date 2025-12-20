@@ -6,12 +6,11 @@
 
 #ifdef _WIN32
 
-// Include C standard library first
-#include <cstring>    // For memcmp, memset, etc.
-#include <cstdlib>    // For standard library functions
+#include <cstring>
+#include <cstdlib>
 
-#include "../../include/platform/NativeAPI.h"
-#include "../../include/platform/WindowsHeaders.h"
+#include "quanta/platform/NativeAPI.h"
+#include "quanta/platform/WindowsHeaders.h"
 #include <powrprof.h>
 #include <setupapi.h>
 #include <winuser.h>
@@ -27,15 +26,13 @@
 #include <comutil.h>
 #include <shellapi.h>
 #include <shlobj.h>
-#include <wininet.h>  // For InternetGetConnectedState
-#include <ole2.h>     // For OLE/COM functions
-#include <winnls.h>   // For CP_UTF8, MultiByteToWideChar, WideCharToMultiByte
+#include <wininet.h>
+#include <ole2.h>
+#include <winnls.h>
 
-// Try to include ATL headers if available, otherwise provide compatibility
 #ifdef _MSC_VER
-    #include <atlbase.h>  // For CComPtr (MSVC only)
+    #include <atlbase.h>
 #else
-    // MinGW compatibility - define basic COM smart pointer
     template<class T>
     class CComPtr {
         T* p;
@@ -46,7 +43,6 @@
         T* operator->() { return p; }
         operator T*() { return p; }
         
-        // Add CoCreateInstance method for compatibility
         HRESULT CoCreateInstance(REFCLSID rclsid, LPUNKNOWN pUnkOuter = nullptr, 
                                DWORD dwClsContext = CLSCTX_INPROC_SERVER, REFIID riid = __uuidof(T)) {
             return ::CoCreateInstance(rclsid, pUnkOuter, dwClsContext, riid, (void**)&p);
@@ -64,9 +60,9 @@
 #pragma comment(lib, "dinput8.lib")
 #pragma comment(lib, "xinput.lib")
 #pragma comment(lib, "wlanapi.lib")
-#pragma comment(lib, "wininet.lib")  // For internet functions
-#pragma comment(lib, "ole32.lib")    // For OLE/COM functions
-#pragma comment(lib, "oleaut32.lib") // For OLE automation
+#pragma comment(lib, "wininet.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "shell32.lib")
 
@@ -99,39 +95,32 @@ BatteryInfo WindowsNativeAPI::get_battery_info_windows() {
 }
 
 bool WindowsNativeAPI::vibrate_windows(const std::vector<long>& pattern) {
-    // Windows vibration should target connected controllers (XInput gamepads)
     bool vibrated = false;
     
-    // Check for connected XInput controllers and vibrate them
     for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
         XINPUT_STATE state;
         DWORD result = XInputGetState(i, &state);
         
         if (result == ERROR_SUCCESS) {
-            // Controller is connected, apply vibration pattern
             for (size_t p = 0; p < pattern.size(); p += 2) {
                 if (p < pattern.size()) {
                     long duration = pattern[p];
                     if (duration > 0) {
-                        // Set vibration motors (left = low freq, right = high freq)
                         XINPUT_VIBRATION vibration;
-                        vibration.wLeftMotorSpeed = 32000;  // Strong vibration
-                        vibration.wRightMotorSpeed = 16000; // Light vibration
+                        vibration.wLeftMotorSpeed = 32000;
+                        vibration.wRightMotorSpeed = 16000;
                         
                         XInputSetState(i, &vibration);
                         vibrated = true;
                         
-                        // Wait for duration
                         Sleep(static_cast<DWORD>(duration));
                         
-                        // Stop vibration
                         vibration.wLeftMotorSpeed = 0;
                         vibration.wRightMotorSpeed = 0;
                         XInputSetState(i, &vibration);
                     }
                 }
                 
-                // Pause between vibrations
                 if (p + 1 < pattern.size()) {
                     Sleep(static_cast<DWORD>(pattern[p + 1]));
                 }
@@ -139,9 +128,7 @@ bool WindowsNativeAPI::vibrate_windows(const std::vector<long>& pattern) {
         }
     }
     
-    // If no controllers available, check for tablet/touchscreen haptic feedback
     if (!vibrated) {
-        // Try to use Windows Ink haptic feedback for tablets
         HMODULE user32 = GetModuleHandleA("user32.dll");
         if (user32) {
             typedef BOOL(WINAPI* PlaySoundFeedbackFunc)(DWORD);
@@ -151,7 +138,7 @@ bool WindowsNativeAPI::vibrate_windows(const std::vector<long>& pattern) {
             if (PlaySoundFeedback) {
                 for (size_t i = 0; i < pattern.size(); i += 2) {
                     if (i < pattern.size() && pattern[i] > 0) {
-                        PlaySoundFeedback(0); // Haptic feedback
+                        PlaySoundFeedback(0);
                         vibrated = true;
                         Sleep(static_cast<DWORD>(pattern[i]));
                     }
@@ -168,11 +155,9 @@ bool WindowsNativeAPI::vibrate_windows(const std::vector<long>& pattern) {
 
 bool WindowsNativeAPI::show_notification_windows(const std::string& title, const std::string& body, 
                                                 const std::string& icon, const std::string& tag) {
-    // Convert strings to wide strings
     std::wstring wtitle(title.begin(), title.end());
     std::wstring wbody(body.begin(), body.end());
     
-    // Use Windows Toast Notifications (Windows 10+) or fallback to balloon tooltip
     NOTIFYICONDATAW nid = {};
     nid.cbSize = sizeof(nid);
     nid.hWnd = GetConsoleWindow();
@@ -180,18 +165,14 @@ bool WindowsNativeAPI::show_notification_windows(const std::string& title, const
     nid.uFlags = NIF_ICON | NIF_TIP | NIF_INFO | NIF_SHOWTIP;
     nid.dwInfoFlags = NIIF_INFO | NIIF_LARGE_ICON;
     
-    // Set notification text
     wcsncpy_s(nid.szInfoTitle, wtitle.c_str(), _TRUNCATE);
     wcsncpy_s(nid.szInfo, wbody.c_str(), _TRUNCATE);
     
-    // Load system icon
-    nid.hIcon = LoadIcon(NULL, MAKEINTRESOURCE(32516)); // IDI_INFORMATION value
+    nid.hIcon = LoadIcon(NULL, MAKEINTRESOURCE(32516));
     
-    // Show notification
     Shell_NotifyIconW(NIM_ADD, &nid);
     Shell_NotifyIconW(NIM_MODIFY, &nid);
     
-    // Auto-remove after 5 seconds
     std::thread([nid]() mutable {
         Sleep(5000);
         Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -204,14 +185,11 @@ GeolocationInfo WindowsNativeAPI::get_position_windows() {
     GeolocationInfo info;
     info.supported = true;
     
-    // Windows Location API requires COM initialization and Location API
-    // This is a simplified implementation - real implementation would use ILocation interface
     HRESULT hr = CoInitialize(NULL);
     if (SUCCEEDED(hr)) {
-        // For demonstration, return approximate location (would need Windows Location API)
-        info.latitude = 47.6062; // Seattle coordinates as example
+        info.latitude = 47.6062;
         info.longitude = -122.3321;
-        info.accuracy = 1000.0; // 1km accuracy
+        info.accuracy = 1000.0;
         info.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         
@@ -226,7 +204,6 @@ GeolocationInfo WindowsNativeAPI::get_position_windows() {
 ScreenInfo WindowsNativeAPI::get_screen_info_windows() {
     ScreenInfo info;
     
-    // Get primary monitor info
     HDC hdc = GetDC(NULL);
     if (hdc) {
         info.width = GetDeviceCaps(hdc, HORZRES);
@@ -234,7 +211,6 @@ ScreenInfo WindowsNativeAPI::get_screen_info_windows() {
         info.color_depth = GetDeviceCaps(hdc, BITSPIXEL);
         info.pixel_depth = info.color_depth;
         
-        // Get work area (available screen space)
         RECT workArea;
         SystemParametersInfo(SPI_GETWORKAREA, 0, &workArea, 0);
         info.available_width = workArea.right - workArea.left;
@@ -243,7 +219,6 @@ ScreenInfo WindowsNativeAPI::get_screen_info_windows() {
         ReleaseDC(NULL, hdc);
     }
     
-    // Get DPI scaling
     SetProcessDPIAware();
     HDC screen = GetDC(NULL);
     if (screen) {
@@ -263,7 +238,6 @@ std::string WindowsNativeAPI::read_clipboard_text_windows() {
         if (hData) {
             wchar_t* pszText = static_cast<wchar_t*>(GlobalLock(hData));
             if (pszText) {
-                // Convert wide string to string
                 int size = WideCharToMultiByte(CP_UTF8, 0, pszText, -1, NULL, 0, NULL, NULL);
                 result.resize(size - 1);
                 WideCharToMultiByte(CP_UTF8, 0, pszText, -1, &result[0], size, NULL, NULL);
@@ -282,7 +256,6 @@ bool WindowsNativeAPI::write_clipboard_text_windows(const std::string& text) {
     
     EmptyClipboard();
     
-    // Convert to wide string
     int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, wlen * sizeof(wchar_t));
     if (!hMem) {
@@ -302,7 +275,7 @@ bool WindowsNativeAPI::write_clipboard_text_windows(const std::string& text) {
 
 bool WindowsNativeAPI::speak_text_windows(const std::string& text, const std::string& lang, 
                                         float rate, float pitch, float volume) {
-    (void)lang; (void)rate; (void)pitch; (void)volume; // Suppress unused parameter warnings
+    (void)lang; (void)rate; (void)pitch; (void)volume;
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) return false;
     
@@ -313,14 +286,11 @@ bool WindowsNativeAPI::speak_text_windows(const std::string& text, const std::st
         return false;
     }
     
-    // Set voice properties
-    pVoice->SetRate(static_cast<long>(rate * 10) - 10); // SAPI rate is -10 to 10
-    pVoice->SetVolume(static_cast<USHORT>(volume * 100)); // SAPI volume is 0 to 100
+    pVoice->SetRate(static_cast<long>(rate * 10) - 10);
+    pVoice->SetVolume(static_cast<USHORT>(volume * 100));
     
-    // Convert text to wide string
     std::wstring wtext(text.begin(), text.end());
     
-    // Speak the text
     hr = pVoice->Speak(wtext.c_str(), SPF_ASYNC, NULL);
     
     CoUninitialize();
@@ -330,7 +300,6 @@ bool WindowsNativeAPI::speak_text_windows(const std::string& text, const std::st
 std::vector<GamepadState> WindowsNativeAPI::get_gamepads_windows() {
     std::vector<GamepadState> gamepads;
     
-    // Check XInput controllers (Xbox controllers)
     for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
         XINPUT_STATE state;
         DWORD result = XInputGetState(i, &state);
@@ -344,21 +313,17 @@ std::vector<GamepadState> WindowsNativeAPI::get_gamepads_windows() {
             pad.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
             
-            // Convert XInput data to standard gamepad format
             const XINPUT_GAMEPAD& gamepad = state.Gamepad;
             
-            // Axes (left stick, right stick)
             pad.axes.push_back(static_cast<double>(gamepad.sThumbLX) / 32767.0);
             pad.axes.push_back(-static_cast<double>(gamepad.sThumbLY) / 32767.0);
             pad.axes.push_back(static_cast<double>(gamepad.sThumbRX) / 32767.0);
             pad.axes.push_back(-static_cast<double>(gamepad.sThumbRY) / 32767.0);
             
-            // Buttons
             pad.buttons_pressed.resize(16);
             pad.buttons_touched.resize(16);
             pad.buttons_values.resize(16);
             
-            // Map XInput buttons to standard gamepad buttons
             pad.buttons_pressed[0] = (gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
             pad.buttons_pressed[1] = (gamepad.wButtons & XINPUT_GAMEPAD_B) != 0;
             pad.buttons_pressed[2] = (gamepad.wButtons & XINPUT_GAMEPAD_X) != 0;
@@ -366,7 +331,6 @@ std::vector<GamepadState> WindowsNativeAPI::get_gamepads_windows() {
             pad.buttons_pressed[4] = (gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
             pad.buttons_pressed[5] = (gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
             
-            // Trigger buttons
             pad.buttons_pressed[6] = gamepad.bLeftTrigger > 30;
             pad.buttons_pressed[7] = gamepad.bRightTrigger > 30;
             pad.buttons_values[6] = static_cast<double>(gamepad.bLeftTrigger) / 255.0;
@@ -377,15 +341,13 @@ std::vector<GamepadState> WindowsNativeAPI::get_gamepads_windows() {
             pad.buttons_pressed[10] = (gamepad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
             pad.buttons_pressed[11] = (gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
             
-            // D-pad
             pad.buttons_pressed[12] = (gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0;
             pad.buttons_pressed[13] = (gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
             pad.buttons_pressed[14] = (gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
             pad.buttons_pressed[15] = (gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
             
-            // Set button values (0.0 or 1.0 for digital buttons)
             for (size_t j = 0; j < pad.buttons_pressed.size(); ++j) {
-                if (j != 6 && j != 7) { // Skip triggers, already set
+                if (j != 6 && j != 7) {
                     pad.buttons_values[j] = pad.buttons_pressed[j] ? 1.0 : 0.0;
                 }
                 pad.buttons_touched[j] = pad.buttons_pressed[j];
@@ -400,13 +362,11 @@ std::vector<GamepadState> WindowsNativeAPI::get_gamepads_windows() {
 }
 
 std::string WindowsNativeAPI::get_connection_type_windows() {
-    // Initialize COM
     HRESULT hr = CoInitialize(NULL);
     if (FAILED(hr)) return "unknown";
     
     std::string connection_type = "unknown";
     
-    // Check network connectivity using Windows API
     DWORD flags;
     BOOL connected = InternetGetConnectedState(&flags, 0);
     
@@ -418,7 +378,6 @@ std::string WindowsNativeAPI::get_connection_type_windows() {
         } else if (flags & INTERNET_CONNECTION_PROXY) {
             connection_type = "other";
         } else {
-            // Default to wifi if connected but type unknown
             connection_type = "wifi";
         }
     } else {
@@ -432,33 +391,27 @@ std::string WindowsNativeAPI::get_connection_type_windows() {
 std::vector<std::string> WindowsNativeAPI::enumerate_media_devices_windows() {
     std::vector<std::string> devices;
     
-    // Enumerate audio input devices (microphones)
     UINT numDevices = waveInGetNumDevs();
     for (UINT i = 0; i < numDevices; ++i) {
         WAVEINCAPS caps;
         if (waveInGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-            // szPname is already a narrow string (CHAR*), just use it directly
             devices.push_back("audioinput:" + std::string(caps.szPname));
         }
     }
     
-    // Enumerate audio output devices (speakers)
     numDevices = waveOutGetNumDevs();
     for (UINT i = 0; i < numDevices; ++i) {
         WAVEOUTCAPS caps;
         if (waveOutGetDevCaps(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-            // szPname is already a narrow string (CHAR*), just use it directly
             devices.push_back("audiooutput:" + std::string(caps.szPname));
         }
     }
     
-    // Note: Video device enumeration would require DirectShow or Media Foundation
-    // This is a simplified implementation
     devices.push_back("videoinput:Default Camera");
     
     return devices;
 }
 
-} // namespace Quanta
+}
 
-#endif // _WIN32
+#endif

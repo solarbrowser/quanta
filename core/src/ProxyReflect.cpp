@@ -4,16 +4,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "ProxyReflect.h"
-#include "Context.h"
-#include "../../parser/include/AST.h"
+#include "quanta/ProxyReflect.h"
+#include "quanta/Context.h"
+#include "quanta/AST.h"
 #include <iostream>
 
 namespace Quanta {
 
-//=============================================================================
-// Proxy Implementation
-//=============================================================================
 
 Proxy::Proxy(Object* target, Object* handler) 
     : Object(ObjectType::Proxy), target_(target), handler_(handler) {
@@ -29,7 +26,6 @@ Value Proxy::get_trap(const Value& key) {
         return parsed_handler_.get(key);
     }
     
-    // Default behavior
     return target_->get_property(key.to_string());
 }
 
@@ -42,7 +38,6 @@ bool Proxy::set_trap(const Value& key, const Value& value) {
         return parsed_handler_.set(key, value);
     }
     
-    // Default behavior
     return target_->set_property(key.to_string(), value);
 }
 
@@ -55,7 +50,6 @@ bool Proxy::has_trap(const Value& key) {
         return parsed_handler_.has(key);
     }
     
-    // Default behavior
     return target_->has_property(key.to_string());
 }
 
@@ -68,7 +62,6 @@ bool Proxy::delete_trap(const Value& key) {
         return parsed_handler_.deleteProperty(key);
     }
     
-    // Default behavior
     return target_->delete_property(key.to_string());
 }
 
@@ -81,7 +74,6 @@ std::vector<std::string> Proxy::own_keys_trap() {
         return parsed_handler_.ownKeys();
     }
     
-    // Default behavior
     return target_->get_own_property_keys();
 }
 
@@ -94,7 +86,6 @@ Value Proxy::get_prototype_of_trap() {
         return parsed_handler_.getPrototypeOf(Value());
     }
     
-    // Default behavior
     Object* proto = target_->get_prototype();
     return proto ? Value(proto) : Value::null();
 }
@@ -108,7 +99,6 @@ bool Proxy::set_prototype_of_trap(Object* proto) {
         return parsed_handler_.setPrototypeOf(proto);
     }
     
-    // Default behavior
     target_->set_prototype(proto);
     return true;
 }
@@ -122,7 +112,6 @@ bool Proxy::is_extensible_trap() {
         return parsed_handler_.isExtensible();
     }
     
-    // Default behavior
     return target_->is_extensible();
 }
 
@@ -135,7 +124,6 @@ bool Proxy::prevent_extensions_trap() {
         return parsed_handler_.preventExtensions();
     }
     
-    // Default behavior
     target_->prevent_extensions();
     return true;
 }
@@ -149,7 +137,6 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
         return parsed_handler_.getOwnPropertyDescriptor(key);
     }
     
-    // Default behavior
     return target_->get_property_descriptor(key.to_string());
 }
 
@@ -162,7 +149,6 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
         return parsed_handler_.defineProperty(key, desc);
     }
     
-    // Default behavior
     return target_->set_property_descriptor(key.to_string(), desc);
 }
 
@@ -175,10 +161,8 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
         return parsed_handler_.apply(args);
     }
     
-    // Default behavior - call the target function
     if (target_->is_function()) {
         Function* func = static_cast<Function*>(target_);
-        // Create a dummy context for the call
         Context dummy_ctx(nullptr);
         return func->call(dummy_ctx, args, this_value);
     }
@@ -195,10 +179,8 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
         return parsed_handler_.construct(args);
     }
     
-    // Default behavior - construct with the target function
     if (target_->is_function()) {
         Function* func = static_cast<Function*>(target_);
-        // Create a dummy context for the call
         Context dummy_ctx(nullptr);
         return func->construct(dummy_ctx, args);
     }
@@ -211,44 +193,22 @@ void Proxy::parse_handler() {
         return;
     }
     
-    // Basic trap parsing - enable get trap for now
     Value get_method = handler_->get_property("get");
     if (get_method.is_function()) {
         Function* get_fn = get_method.as_function();
         parsed_handler_.get = [get_fn, this](const Value& key) -> Value {
-            // Try to call the get trap safely
             try {
                 Context dummy_ctx(nullptr);
                 std::vector<Value> args = {Value(target_), key};
                 return get_fn->call(dummy_ctx, args);
             } catch (...) {
-                // If trap fails, fall back to default behavior
                 return target_->get_property(key.to_string());
             }
         };
     }
     
-    // Value set_method = handler_->get_property("set");
-    // if (set_method.is_function()) {
-    //     Function* set_fn = set_method.as_function();
-    //     parsed_handler_.set = [set_fn](const Value& key, const Value& value) -> bool {
-    //         Context dummy_ctx(nullptr);
-    //         Value result = set_fn->call(dummy_ctx, {key, value});
-    //         return result.to_boolean();
-    //     };
-    // }
     
-    // Value has_method = handler_->get_property("has");
-    // if (has_method.is_function()) {
-    //     Function* has_fn = has_method.as_function();
-    //     parsed_handler_.has = [has_fn](const Value& key) -> bool {
-    //         Context dummy_ctx(nullptr);
-    //         Value result = has_fn->call(dummy_ctx, {key});
-    //         return result.to_boolean();
-    //     };
-    // }
     
-    // Parse other handler methods similarly...
 }
 
 void Proxy::revoke() {
@@ -263,14 +223,12 @@ void Proxy::throw_if_revoked(Context& ctx) const {
     }
 }
 
-//  PROXY OBJECT METHOD OVERRIDES - TRAP INTEGRATION 
 
 Value Proxy::get_property(const std::string& key) const {
     if (is_revoked()) {
         throw std::runtime_error("Proxy has been revoked");
     }
     
-    // Use the get trap method which already handles traps properly
     return const_cast<Proxy*>(this)->get_trap(Value(key));
 }
 
@@ -310,16 +268,14 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
     auto proxy = std::make_unique<Proxy>(target, handler);
     Proxy* proxy_ptr = proxy.get();
     
-    // Create revoke function
     auto revoke_fn = ObjectFactory::create_native_function("revoke", 
         [proxy_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; // Unused parameter
-            (void)args; // Unused parameter
+            (void)ctx;
+            (void)args;
             proxy_ptr->revoke();
             return Value();
         });
     
-    // Create result object
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("proxy", Value(proxy.release()));
     result_obj->set_property("revoke", Value(revoke_fn.release()));
@@ -328,19 +284,14 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Proxy::setup_proxy(Context& ctx) {
-    // Create Proxy constructor
     auto proxy_constructor_fn = ObjectFactory::create_native_function("Proxy", proxy_constructor);
     
-    // Add Proxy.revocable
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
     
     ctx.register_built_in_object("Proxy", proxy_constructor_fn.release());
 }
 
-//=============================================================================
-// Reflect Implementation
-//=============================================================================
 
 Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
@@ -356,7 +307,7 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     std::string key = args.size() > 1 ? to_property_key(args[1]) : "";
     Value receiver = args.size() > 2 ? args[2] : args[0];
     
-    (void)receiver; // Unused for now
+    (void)receiver;
     
     return target->get_property(key);
 }
@@ -376,7 +327,7 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     Value value = args[2];
     Value receiver = args.size() > 3 ? args[3] : args[0];
     
-    (void)receiver; // Unused for now
+    (void)receiver;
     
     bool result = target->set_property(key, value);
     return Value(result);
@@ -509,7 +460,6 @@ Value Reflect::reflect_apply(Context& ctx, const std::vector<Value>& args) {
     Function* target = args[0].as_function();
     Value this_value = args[1];
     
-    // Convert arguments array to vector
     std::vector<Value> apply_args;
     if (args[2].is_object()) {
         Object* args_obj = args[2].as_object();
@@ -537,7 +487,6 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     
     Function* target = args[0].as_function();
     
-    // Convert arguments array to vector
     std::vector<Value> construct_args;
     if (args[1].is_object()) {
         Object* args_obj = args[1].as_object();
@@ -582,7 +531,6 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
     
     std::string key = to_property_key(args[1]);
     
-    // Parse property descriptor from third argument
     if (!args[2].is_object()) {
         ctx.throw_exception(Value("TypeError: Property descriptor must be an object"));
         return Value(false);
@@ -591,7 +539,6 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
     Object* desc_obj = args[2].as_object();
     PropertyDescriptor prop_desc;
     
-    // Handle getter (accessor descriptor)
     if (desc_obj->has_own_property("get")) {
         Value getter = desc_obj->get_property("get");
         if (getter.is_function()) {
@@ -599,7 +546,6 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
         }
     }
     
-    // Handle setter (accessor descriptor)
     if (desc_obj->has_own_property("set")) {
         Value setter = desc_obj->get_property("set");
         if (setter.is_function()) {
@@ -607,37 +553,30 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
         }
     }
     
-    // Handle value (data descriptor)
     if (desc_obj->has_own_property("value")) {
         Value value = desc_obj->get_property("value");
         prop_desc.set_value(value);
     }
     
-    // Handle writable attribute
     if (desc_obj->has_own_property("writable")) {
         prop_desc.set_writable(desc_obj->get_property("writable").to_boolean());
     }
     
-    // Handle enumerable attribute
     if (desc_obj->has_own_property("enumerable")) {
         prop_desc.set_enumerable(desc_obj->get_property("enumerable").to_boolean());
     }
     
-    // Handle configurable attribute
     if (desc_obj->has_own_property("configurable")) {
         prop_desc.set_configurable(desc_obj->get_property("configurable").to_boolean());
     }
     
-    // Set the property descriptor and return success/failure
     bool success = target->set_property_descriptor(key, prop_desc);
     return Value(success);
 }
 
 void Reflect::setup_reflect(Context& ctx) {
-    // Create Reflect object
     auto reflect_obj = ObjectFactory::create_object();
     
-    // Add Reflect methods
     auto get_fn = ObjectFactory::create_native_function("get", reflect_get);
     auto set_fn = ObjectFactory::create_native_function("set", reflect_set);
     auto has_fn = ObjectFactory::create_native_function("has", reflect_has);
@@ -683,12 +622,10 @@ std::string Reflect::to_property_key(const Value& value) {
 }
 
 PropertyDescriptor Reflect::to_property_descriptor(const Value& value) {
-    // Simplified implementation
     return PropertyDescriptor(value);
 }
 
 Value Reflect::from_property_descriptor(const PropertyDescriptor& desc) {
-    // Simplified implementation
     auto desc_obj = ObjectFactory::create_object();
     desc_obj->set_property("value", desc.get_value());
     desc_obj->set_property("writable", Value(desc.is_writable()));
@@ -697,4 +634,4 @@ Value Reflect::from_property_descriptor(const PropertyDescriptor& desc) {
     return Value(desc_obj.release());
 }
 
-} // namespace Quanta
+}

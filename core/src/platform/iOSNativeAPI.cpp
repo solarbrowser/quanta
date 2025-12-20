@@ -6,7 +6,7 @@
 
 #if defined(__APPLE__) && defined(TARGET_OS_IOS)
 
-#include "../../include/platform/NativeAPI.h"
+#include "quanta/platform/NativeAPI.h"
 #include <UIKit/UIKit.h>
 #include <CoreLocation/CoreLocation.h>
 #include <UserNotifications/UserNotifications.h>
@@ -52,7 +52,6 @@ BatteryInfo iOSNativeAPI::get_battery_info_ios() {
                 break;
         }
         
-        // iOS doesn't provide time estimates directly
         info.charging_time = INFINITY;
         info.discharging_time = INFINITY;
     }
@@ -62,27 +61,22 @@ BatteryInfo iOSNativeAPI::get_battery_info_ios() {
 
 bool iOSNativeAPI::vibrate_ios(const std::vector<long>& pattern) {
     @autoreleasepool {
-        // iOS supports vibration through AudioToolbox
         for (size_t i = 0; i < pattern.size(); i += 2) {
             if (i < pattern.size()) {
                 long duration = pattern[i];
                 if (duration > 0) {
-                    // Use haptic feedback for modern devices
                     if (@available(iOS 10.0, *)) {
                         UIImpactFeedbackGenerator* generator = [[UIImpactFeedbackGenerator alloc] 
                                                                initWithStyle:UIImpactFeedbackStyleMedium];
                         [generator impactOccurred];
                     } else {
-                        // Fallback to system vibration
                         AudioServicesPlaySystemSound(kSystemSoundID_Vibrate);
                     }
                     
-                    // Wait for duration
                     std::this_thread::sleep_for(std::chrono::milliseconds(duration));
                 }
             }
             
-            // Pause between vibrations
             if (i + 1 < pattern.size()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(pattern[i + 1]));
             }
@@ -98,24 +92,20 @@ bool iOSNativeAPI::show_notification_ios(const std::string& title, const std::st
         if (@available(iOS 10.0, *)) {
             UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
             
-            // Request permission
             [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge)
                                     completionHandler:^(BOOL granted, NSError * _Nullable error) {
                 if (granted) {
-                    // Create notification content
                     UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
                     content.title = [NSString stringWithUTF8String:title.c_str()];
                     content.body = [NSString stringWithUTF8String:body.c_str()];
                     content.sound = [UNNotificationSound defaultSound];
                     
-                    // Create request
                     NSString* identifier = tag.empty() ? [[NSUUID UUID] UUIDString] : 
                                           [NSString stringWithUTF8String:tag.c_str()];
                     UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:identifier
                                                                                             content:content
                                                                                             trigger:nil];
                     
-                    // Schedule notification
                     [center addNotificationRequest:request withCompletionHandler:^(NSError * _Nullable error) {
                         if (error) {
                             NSLog(@"Notification error: %@", error.localizedDescription);
@@ -124,7 +114,6 @@ bool iOSNativeAPI::show_notification_ios(const std::string& title, const std::st
                 }
             }];
         } else {
-            // Fallback to older iOS versions (deprecated)
             UILocalNotification* notification = [[UILocalNotification alloc] init];
             notification.alertTitle = [NSString stringWithUTF8String:title.c_str()];
             notification.alertBody = [NSString stringWithUTF8String:body.c_str()];
@@ -141,9 +130,7 @@ GeolocationInfo iOSNativeAPI::get_position_ios() {
     GeolocationInfo info;
     info.supported = true;
     
-    // This would require Core Location framework and proper authorization
-    // For demonstration, return approximate coordinates
-    info.latitude = 37.7749; // San Francisco
+    info.latitude = 37.7749;
     info.longitude = -122.4194;
     info.accuracy = 1000.0;
     info.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -164,7 +151,6 @@ ScreenInfo iOSNativeAPI::get_screen_info_ios() {
         info.height = static_cast<int>(bounds.size.height * scale);
         info.device_pixel_ratio = static_cast<float>(scale);
         
-        // Available area (excluding status bar, home indicator, etc.)
         UIWindow* keyWindow = nil;
         if (@available(iOS 13.0, *)) {
             for (UIWindowScene* windowScene in [UIApplication sharedApplication].connectedScenes) {
@@ -186,7 +172,6 @@ ScreenInfo iOSNativeAPI::get_screen_info_ios() {
             info.available_height = info.height;
         }
         
-        // Get orientation
         UIInterfaceOrientation orientation = [UIApplication sharedApplication].statusBarOrientation;
         switch (orientation) {
             case UIInterfaceOrientationPortrait:
@@ -250,7 +235,6 @@ bool iOSNativeAPI::speak_text_ios(const std::string& text, const std::string& la
         AVSpeechUtterance* utterance = [AVSpeechUtterance speechUtteranceWithString:
                                        [NSString stringWithUTF8String:text.c_str()]];
         
-        // Set voice parameters
         utterance.rate = rate * AVSpeechUtteranceDefaultSpeechRate;
         utterance.pitchMultiplier = pitch;
         utterance.volume = volume;
@@ -287,24 +271,19 @@ std::vector<GamepadState> iOSNativeAPI::get_gamepads_ios() {
                 pad.timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
                 
-                // Check for extended gamepad (most common)
                 if (controller.extendedGamepad) {
                     GCExtendedGamepad* gamepad = controller.extendedGamepad;
                     
-                    // Left thumbstick
                     pad.axes.push_back(static_cast<double>(gamepad.leftThumbstick.xAxis.value));
                     pad.axes.push_back(-static_cast<double>(gamepad.leftThumbstick.yAxis.value));
                     
-                    // Right thumbstick
                     pad.axes.push_back(static_cast<double>(gamepad.rightThumbstick.xAxis.value));
                     pad.axes.push_back(-static_cast<double>(gamepad.rightThumbstick.yAxis.value));
                     
-                    // Buttons (16 buttons for standard mapping)
                     pad.buttons_pressed.resize(16, false);
                     pad.buttons_touched.resize(16, false);
                     pad.buttons_values.resize(16, 0.0);
                     
-                    // Face buttons (A, B, X, Y)
                     pad.buttons_pressed[0] = gamepad.buttonA.isPressed;
                     pad.buttons_values[0] = static_cast<double>(gamepad.buttonA.value);
                     pad.buttons_touched[0] = gamepad.buttonA.isPressed;
@@ -321,7 +300,6 @@ std::vector<GamepadState> iOSNativeAPI::get_gamepads_ios() {
                     pad.buttons_values[3] = static_cast<double>(gamepad.buttonY.value);
                     pad.buttons_touched[3] = gamepad.buttonY.isPressed;
                     
-                    // Shoulder buttons
                     pad.buttons_pressed[4] = gamepad.leftShoulder.isPressed;
                     pad.buttons_values[4] = static_cast<double>(gamepad.leftShoulder.value);
                     pad.buttons_touched[4] = gamepad.leftShoulder.isPressed;
@@ -330,7 +308,6 @@ std::vector<GamepadState> iOSNativeAPI::get_gamepads_ios() {
                     pad.buttons_values[5] = static_cast<double>(gamepad.rightShoulder.value);
                     pad.buttons_touched[5] = gamepad.rightShoulder.isPressed;
                     
-                    // Triggers
                     pad.buttons_pressed[6] = gamepad.leftTrigger.value > 0.1f;
                     pad.buttons_values[6] = static_cast<double>(gamepad.leftTrigger.value);
                     pad.buttons_touched[6] = gamepad.leftTrigger.value > 0.0f;
@@ -339,7 +316,6 @@ std::vector<GamepadState> iOSNativeAPI::get_gamepads_ios() {
                     pad.buttons_values[7] = static_cast<double>(gamepad.rightTrigger.value);
                     pad.buttons_touched[7] = gamepad.rightTrigger.value > 0.0f;
                     
-                    // D-pad
                     if (gamepad.dpad) {
                         pad.buttons_pressed[12] = gamepad.dpad.up.isPressed;
                         pad.buttons_values[12] = static_cast<double>(gamepad.dpad.up.value);
@@ -359,7 +335,6 @@ std::vector<GamepadState> iOSNativeAPI::get_gamepads_ios() {
                     }
                 }
                 
-                // Check for haptic support
                 pad.has_vibration = (controller.haptics != nil);
                 
                 gamepads.push_back(pad);
@@ -374,7 +349,6 @@ std::string iOSNativeAPI::get_connection_type_ios() {
     std::string connection_type = "unknown";
     
     @autoreleasepool {
-        // Use CoreTelephony to check network type
         CTTelephonyNetworkInfo* networkInfo = [[CTTelephonyNetworkInfo alloc] init];
         
         if (@available(iOS 12.0, *)) {
@@ -382,7 +356,7 @@ std::string iOSNativeAPI::get_connection_type_ios() {
                 NSString* radioTech = networkInfo.serviceCurrentRadioAccessTechnology.allValues.firstObject;
                 
                 if ([radioTech isEqualToString:CTRadioAccessTechnologyLTE] ||
-                    [radioTech isEqualToString:@"CTRadioAccessTechnology5GNR"]) { // 5G
+                    [radioTech isEqualToString:@"CTRadioAccessTechnology5GNR"]) {
                     connection_type = "cellular";
                 } else if ([radioTech isEqualToString:CTRadioAccessTechnologyWCDMA] ||
                           [radioTech isEqualToString:CTRadioAccessTechnologyHSDPA] ||
@@ -399,9 +373,7 @@ std::string iOSNativeAPI::get_connection_type_ios() {
             }
         }
         
-        // Check for WiFi (simplified - would need more complex network checking)
         if (connection_type == "unknown") {
-            // If not cellular and connected, assume WiFi
             connection_type = "wifi";
         }
     }
@@ -413,7 +385,6 @@ std::vector<std::string> iOSNativeAPI::enumerate_media_devices_ios() {
     std::vector<std::string> devices;
     
     @autoreleasepool {
-        // Enumerate audio input devices
         AVAudioSession* session = [AVAudioSession sharedInstance];
         NSArray<AVAudioSessionPortDescription*>* inputs = [session availableInputs];
         
@@ -422,20 +393,18 @@ std::vector<std::string> iOSNativeAPI::enumerate_media_devices_ios() {
             devices.push_back("audioinput:" + deviceName);
         }
         
-        // Enumerate cameras
         NSArray<AVCaptureDevice*>* videoDevices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
         for (AVCaptureDevice* device in videoDevices) {
             std::string deviceName = std::string([[device localizedName] UTF8String]);
             devices.push_back("videoinput:" + deviceName);
         }
         
-        // Add audio output
         devices.push_back("audiooutput:Default Audio Output");
     }
     
     return devices;
 }
 
-} // namespace Quanta
+}
 
-#endif // __APPLE__ && TARGET_OS_IOS
+#endif

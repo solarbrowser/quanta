@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../../include/platform/NativeAPI.h"
+#include "quanta/platform/NativeAPI.h"
 #include <thread>
 #include <chrono>
 #include <map>
@@ -15,7 +15,13 @@
 #include <cstdlib>
 #include <string>
 
+#ifdef _MSC_VER
+    #define popen _popen
+    #define pclose _pclose
+#endif
+
 #if defined(_WIN32) && !defined(__MINGW32__)
+#define NOMINMAX
 #include <windows.h>
 #include <xinput.h>
 #pragma comment(lib, "xinput.lib")
@@ -23,7 +29,6 @@
 
 namespace Quanta {
 
-// Static member definitions
 Platform NativeAPI::current_platform_ = Platform::UNKNOWN;
 DeviceInfo NativeAPI::device_info_;
 bool NativeAPI::initialized_ = false;
@@ -108,19 +113,16 @@ uint32_t NativeAPI::get_device_capabilities() {
     return get_device_info().supported_capabilities;
 }
 
-// Simplified implementations that just return default values for now
 BatteryInfo NativeAPI::get_battery_info() {
     BatteryInfo info;
     
 #if defined(_WIN32) && !defined(__MINGW32__)
-    // Windows battery detection using GetSystemPowerStatus
     std::cout << " Getting Windows battery information..." << std::endl;
     
     SYSTEM_POWER_STATUS powerStatus;
     if (GetSystemPowerStatus(&powerStatus)) {
         info.supported = true;
         
-        // Battery charging status
         if (powerStatus.ACLineStatus == 1) {
             info.charging = true;
             std::cout << " AC Power: Connected (charging)" << std::endl;
@@ -128,36 +130,32 @@ BatteryInfo NativeAPI::get_battery_info() {
             info.charging = false;
             std::cout << " AC Power: Disconnected (battery)" << std::endl;
         } else {
-            info.charging = false; // Unknown AC status
+            info.charging = false;
             std::cout << " AC Power: Unknown status" << std::endl;
         }
         
-        // Battery level (percentage)
-        if (powerStatus.BatteryLifePercent != 255) { // 255 means unknown
+        if (powerStatus.BatteryLifePercent != 255) {
             info.level = powerStatus.BatteryLifePercent / 100.0;
             std::cout << " Battery Level: " << powerStatus.BatteryLifePercent << "%" << std::endl;
         } else {
-            info.level = 1.0; // Unknown, assume full
+            info.level = 1.0;
             std::cout << " Battery Level: Unknown" << std::endl;
         }
         
-        // Battery life time (remaining time when on battery)
-        if (powerStatus.BatteryLifeTime != 0xFFFFFFFF) { // -1 means unknown
-            info.discharging_time = powerStatus.BatteryLifeTime; // seconds
+        if (powerStatus.BatteryLifeTime != 0xFFFFFFFF) {
+            info.discharging_time = powerStatus.BatteryLifeTime;
             std::cout << "⏱ Remaining Time: " << (powerStatus.BatteryLifeTime / 60) << " minutes" << std::endl;
         } else {
-            info.discharging_time = 0; // Unknown
+            info.discharging_time = 0;
             std::cout << " Remaining Time: Unknown" << std::endl;
         }
         
-        // Charging time estimation (Windows doesn't provide this directly)
         if (info.charging && info.level < 1.0) {
-            // Estimate based on current level (very rough approximation)
             double remaining_capacity = 1.0 - info.level;
-            info.charging_time = remaining_capacity * 3600; // Assume 1 hour per 100%
+            info.charging_time = remaining_capacity * 3600;
             std::cout << " Estimated Charge Time: " << (info.charging_time / 60) << " minutes" << std::endl;
         } else {
-            info.charging_time = 0; // Not charging or already full
+            info.charging_time = 0;
         }
         
         std::cout << " Battery API supported on this Windows device" << std::endl;
@@ -167,7 +165,6 @@ BatteryInfo NativeAPI::get_battery_info() {
         DWORD error = GetLastError();
         std::cout << "   - Windows Error Code: " << error << std::endl;
         
-        // Check if this is a desktop without battery
         if (error == ERROR_FILE_NOT_FOUND || error == ERROR_DEVICE_NOT_AVAILABLE) {
             std::cout << "   - This appears to be a desktop system without battery" << std::endl;
             info.supported = false;
@@ -176,14 +173,11 @@ BatteryInfo NativeAPI::get_battery_info() {
         }
     }
 #elif defined(_WIN32) && defined(__MINGW32__)
-    // MSYS2/MinGW build - Windows battery API not available  
     std::cout << " Windows battery API disabled in MSYS2/MinGW build" << std::endl;
     info.supported = false;
 #else
-    // Linux/Unix battery detection
     std::cout << " Checking Linux battery support..." << std::endl;
     
-    // Check for battery in /sys/class/power_supply/
     std::ifstream battery_present("/sys/class/power_supply/BAT0/present");
     if (battery_present.is_open()) {
         std::string present;
@@ -194,7 +188,6 @@ BatteryInfo NativeAPI::get_battery_info() {
             info.supported = true;
             std::cout << " Battery detected in /sys/class/power_supply/BAT0" << std::endl;
             
-            // Read capacity
             std::ifstream capacity_file("/sys/class/power_supply/BAT0/capacity");
             if (capacity_file.is_open()) {
                 int capacity;
@@ -204,7 +197,6 @@ BatteryInfo NativeAPI::get_battery_info() {
                 std::cout << " Battery Level: " << capacity << "%" << std::endl;
             }
             
-            // Read charging status
             std::ifstream status_file("/sys/class/power_supply/BAT0/status");
             if (status_file.is_open()) {
                 std::string status;
@@ -228,7 +220,7 @@ BatteryInfo NativeAPI::get_battery_info() {
 }
 
 bool NativeAPI::vibrate(const std::vector<long>& pattern) {
-    (void)pattern; // Suppress unused parameter warning
+    (void)pattern;
     return false;
 }
 
@@ -238,7 +230,7 @@ bool NativeAPI::cancel_vibration() {
 
 bool NativeAPI::show_notification(const std::string& title, const std::string& body, 
                                  const std::string& icon, const std::string& tag) {
-    (void)title; (void)body; (void)icon; (void)tag; // Suppress unused parameter warnings
+    (void)title; (void)body; (void)icon; (void)tag;
     return false;
 }
 
@@ -251,12 +243,12 @@ std::string NativeAPI::get_notification_permission() {
 }
 
 bool NativeAPI::close_notification(const std::string& tag) {
-    (void)tag; // Suppress unused parameter warning
+    (void)tag;
     return true;
 }
 
 GeolocationInfo NativeAPI::get_current_position(bool high_accuracy) {
-    (void)high_accuracy; // Suppress unused parameter warning
+    (void)high_accuracy;
     GeolocationInfo info;
     info.supported = false;
     return info;
@@ -265,12 +257,12 @@ GeolocationInfo NativeAPI::get_current_position(bool high_accuracy) {
 int NativeAPI::watch_position(std::function<void(const GeolocationInfo&)> success_callback,
                              std::function<void(const std::string&)> error_callback,
                              bool high_accuracy) {
-    (void)success_callback; (void)error_callback; (void)high_accuracy; // Suppress unused parameter warnings
+    (void)success_callback; (void)error_callback; (void)high_accuracy;
     return -1;
 }
 
 bool NativeAPI::clear_watch_position(int watch_id) {
-    (void)watch_id; // Suppress unused parameter warning
+    (void)watch_id;
     return false;
 }
 
@@ -278,10 +270,8 @@ ScreenInfo NativeAPI::get_screen_info() {
     ScreenInfo info;
     
 #if defined(_WIN32) && !defined(__MINGW32__)
-    // Get real Windows screen information
     std::cout << " Getting Windows screen information..." << std::endl;
     
-    // Get primary display dimensions
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     int workAreaWidth = GetSystemMetrics(SM_CXFULLSCREEN);
@@ -293,24 +283,21 @@ ScreenInfo NativeAPI::get_screen_info() {
         info.available_width = workAreaWidth;
         info.available_height = workAreaHeight;
         
-        // Get real color depth
         HDC hdc = GetDC(NULL);
         if (hdc) {
             info.color_depth = GetDeviceCaps(hdc, BITSPIXEL) * GetDeviceCaps(hdc, PLANES);
             info.pixel_depth = info.color_depth;
             
-            // Get DPI for device pixel ratio
             int dpiX = GetDeviceCaps(hdc, LOGPIXELSX);
-            info.device_pixel_ratio = dpiX / 96.0f; // 96 DPI is standard
+            info.device_pixel_ratio = dpiX / 96.0f;
             
             ReleaseDC(NULL, hdc);
         } else {
-            info.color_depth = 24; // Reasonable fallback
+            info.color_depth = 24;
             info.pixel_depth = 24;
             info.device_pixel_ratio = 1.0f;
         }
         
-        // Determine orientation
         info.orientation_type = (screenWidth > screenHeight) ? "landscape" : "portrait";
         
         std::cout << " Screen: " << info.width << "x" << info.height 
@@ -320,14 +307,11 @@ ScreenInfo NativeAPI::get_screen_info() {
         throw std::runtime_error("Screen information not available");
     }
 #elif defined(_WIN32) && defined(__MINGW32__)
-    // MSYS2/MinGW build - Windows screen API not available
     std::cout << " Windows screen API disabled in MSYS2/MinGW build" << std::endl;
     throw std::runtime_error("Screen information not available in MSYS2/MinGW build");
 #else
-    // Linux/Unix screen detection
     std::cout << " Attempting Linux screen detection..." << std::endl;
     
-    // Try to get display info from environment or X11
     const char* display = getenv("DISPLAY");
     if (display) {
         std::cout << " X11 screen detection not implemented" << std::endl;
@@ -342,7 +326,7 @@ ScreenInfo NativeAPI::get_screen_info() {
 }
 
 bool NativeAPI::lock_screen_orientation(const std::string& orientation) {
-    (void)orientation; // Suppress unused parameter warning
+    (void)orientation;
     return false;
 }
 
@@ -355,13 +339,13 @@ std::string NativeAPI::read_clipboard_text() {
 }
 
 bool NativeAPI::write_clipboard_text(const std::string& text) {
-    (void)text; // Suppress unused parameter warning
+    (void)text;
     return false;
 }
 
 bool NativeAPI::speak_text(const std::string& text, const std::string& lang,
                           float rate, float pitch, float volume) {
-    (void)text; (void)lang; (void)rate; (void)pitch; (void)volume; // Suppress unused parameter warnings
+    (void)text; (void)lang; (void)rate; (void)pitch; (void)volume;
     return false;
 }
 
@@ -371,16 +355,13 @@ std::vector<GamepadState> NativeAPI::get_gamepads() {
 #if defined(_WIN32) && !defined(__MINGW32__)
     std::cout << " Scanning for Windows XInput controllers..." << std::endl;
     
-    // Check all 4 possible XInput controller slots
     for (DWORD i = 0; i < XUSER_MAX_COUNT; i++) {
         XINPUT_STATE state;
         ZeroMemory(&state, sizeof(XINPUT_STATE));
         
-        // Get the state of the controller
         DWORD result = XInputGetState(i, &state);
         
         if (result == ERROR_SUCCESS) {
-            // Controller is connected
             GamepadState gamepad;
             gamepad.index = static_cast<int>(i);
             gamepad.connected = true;
@@ -389,7 +370,6 @@ std::vector<GamepadState> NativeAPI::get_gamepads() {
             gamepad.mapping = "standard";
             gamepad.has_vibration = true;
             
-            // Get controller capabilities to determine device name
             XINPUT_CAPABILITIES caps;
             ZeroMemory(&caps, sizeof(XINPUT_CAPABILITIES));
             if (XInputGetCapabilities(i, XINPUT_FLAG_GAMEPAD, &caps) == ERROR_SUCCESS) {
@@ -402,68 +382,57 @@ std::vector<GamepadState> NativeAPI::get_gamepads() {
                 gamepad.id = "Xbox Controller " + std::to_string(i);
             }
             
-            // Map XInput buttons to standard gamepad layout
-            // Buttons array: [A, B, X, Y, LB, RB, LT, RT, Back, Start, LS, RS, DPad-Up, DPad-Down, DPad-Left, DPad-Right]
             gamepad.buttons_pressed.resize(16, false);
             gamepad.buttons_touched.resize(16, false);
             gamepad.buttons_values.resize(16, 0.0);
             
             WORD buttons = state.Gamepad.wButtons;
             
-            // Face buttons
-            gamepad.buttons_pressed[0] = (buttons & XINPUT_GAMEPAD_A) != 0;           // A
-            gamepad.buttons_pressed[1] = (buttons & XINPUT_GAMEPAD_B) != 0;           // B  
-            gamepad.buttons_pressed[2] = (buttons & XINPUT_GAMEPAD_X) != 0;           // X
-            gamepad.buttons_pressed[3] = (buttons & XINPUT_GAMEPAD_Y) != 0;           // Y
+            gamepad.buttons_pressed[0] = (buttons & XINPUT_GAMEPAD_A) != 0;
+            gamepad.buttons_pressed[1] = (buttons & XINPUT_GAMEPAD_B) != 0;
+            gamepad.buttons_pressed[2] = (buttons & XINPUT_GAMEPAD_X) != 0;
+            gamepad.buttons_pressed[3] = (buttons & XINPUT_GAMEPAD_Y) != 0;
             
-            // Shoulder buttons
-            gamepad.buttons_pressed[4] = (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;  // LB
-            gamepad.buttons_pressed[5] = (buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0; // RB
+            gamepad.buttons_pressed[4] = (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+            gamepad.buttons_pressed[5] = (buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
             
-            // Triggers (analog, converted to digital)
             float leftTrigger = state.Gamepad.bLeftTrigger / 255.0f;
             float rightTrigger = state.Gamepad.bRightTrigger / 255.0f;
-            gamepad.buttons_pressed[6] = leftTrigger > 0.1f;                          // LT
-            gamepad.buttons_pressed[7] = rightTrigger > 0.1f;                         // RT
+            gamepad.buttons_pressed[6] = leftTrigger > 0.1f;
+            gamepad.buttons_pressed[7] = rightTrigger > 0.1f;
             gamepad.buttons_values[6] = leftTrigger;
             gamepad.buttons_values[7] = rightTrigger;
             
-            // Menu buttons
-            gamepad.buttons_pressed[8] = (buttons & XINPUT_GAMEPAD_BACK) != 0;        // Back/Select
-            gamepad.buttons_pressed[9] = (buttons & XINPUT_GAMEPAD_START) != 0;       // Start/Menu
+            gamepad.buttons_pressed[8] = (buttons & XINPUT_GAMEPAD_BACK) != 0;
+            gamepad.buttons_pressed[9] = (buttons & XINPUT_GAMEPAD_START) != 0;
             
-            // Stick buttons
-            gamepad.buttons_pressed[10] = (buttons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;  // Left stick click
-            gamepad.buttons_pressed[11] = (buttons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0; // Right stick click
+            gamepad.buttons_pressed[10] = (buttons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+            gamepad.buttons_pressed[11] = (buttons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
             
-            // D-Pad
-            gamepad.buttons_pressed[12] = (buttons & XINPUT_GAMEPAD_DPAD_UP) != 0;     // D-Pad Up
-            gamepad.buttons_pressed[13] = (buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;   // D-Pad Down
-            gamepad.buttons_pressed[14] = (buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;   // D-Pad Left
-            gamepad.buttons_pressed[15] = (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;  // D-Pad Right
+            gamepad.buttons_pressed[12] = (buttons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+            gamepad.buttons_pressed[13] = (buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+            gamepad.buttons_pressed[14] = (buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+            gamepad.buttons_pressed[15] = (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
             
-            // Set button values (0.0 or 1.0 for digital buttons)
             for (size_t j = 0; j < gamepad.buttons_pressed.size(); j++) {
-                if (j != 6 && j != 7) { // Skip triggers (already set above)
+                if (j != 6 && j != 7) {
                     gamepad.buttons_values[j] = gamepad.buttons_pressed[j] ? 1.0 : 0.0;
                 }
                 gamepad.buttons_touched[j] = gamepad.buttons_pressed[j];
             }
             
-            // Analog sticks - convert from -32768 to 32767 range to -1.0 to 1.0
             gamepad.axes.resize(4);
             
-            // Apply deadzone to prevent drift
             auto applyDeadzone = [](SHORT value, SHORT deadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE) -> float {
                 if (abs(value) < deadzone) return 0.0f;
                 float normalized = (value - (value > 0 ? deadzone : -deadzone)) / (32767.0f - deadzone);
                 return std::max(-1.0f, std::min(1.0f, normalized));
             };
             
-            gamepad.axes[0] = applyDeadzone(state.Gamepad.sThumbLX);  // Left stick X
-            gamepad.axes[1] = -applyDeadzone(state.Gamepad.sThumbLY); // Left stick Y (inverted)
-            gamepad.axes[2] = applyDeadzone(state.Gamepad.sThumbRX);  // Right stick X  
-            gamepad.axes[3] = -applyDeadzone(state.Gamepad.sThumbRY); // Right stick Y (inverted)
+            gamepad.axes[0] = applyDeadzone(state.Gamepad.sThumbLX);
+            gamepad.axes[1] = -applyDeadzone(state.Gamepad.sThumbLY);
+            gamepad.axes[2] = applyDeadzone(state.Gamepad.sThumbRX);
+            gamepad.axes[3] = -applyDeadzone(state.Gamepad.sThumbRY);
             
             gamepads.push_back(gamepad);
             
@@ -495,11 +464,9 @@ std::vector<GamepadState> NativeAPI::get_gamepads() {
         std::cout << " Found " << gamepads.size() << " connected controller(s)" << std::endl;
     }
 #elif defined(_WIN32) && defined(__MINGW32__)
-    // MSYS2/MinGW build - XInput not available  
     std::cout << " XInput gamepad support disabled in MSYS2/MinGW build" << std::endl;
     std::cout << "   - Use build-native-windows.bat for full XInput support" << std::endl;
 #else
-    // Linux/macOS gamepad support would go here
     std::cout << " Gamepad API not implemented for this platform" << std::endl;
 #endif
     
@@ -522,16 +489,13 @@ NetworkInfo NativeAPI::get_network_info() {
     NetworkInfo info;
     
 #ifdef _WIN32
-    // Windows network information using WMI and native APIs
     std::cout << " Getting Windows network information..." << std::endl;
     
-    // Check if online using simple ping test
     std::string pingCommand = "ping -n 1 8.8.8.8 >nul 2>&1";
     int pingResult = system(pingCommand.c_str());
     info.online = (pingResult == 0);
     
     if (info.online) {
-        // Get network adapter information using PowerShell with better speed detection
         std::string networkCommand = "powershell -Command \"& {"
             "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1 | ForEach-Object {"
                 "Write-Host ('TYPE:' + $_.MediaType);"
@@ -551,7 +515,7 @@ NetworkInfo NativeAPI::get_network_info() {
             char buffer[256];
             while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
                 std::string line(buffer);
-                line.erase(line.find_last_not_of(" \n\r\t") + 1); // trim
+                line.erase(line.find_last_not_of(" \n\r\t") + 1);
                 
                 if (line.find("TYPE:") == 0) {
                     std::string mediaType = line.substr(5);
@@ -564,12 +528,11 @@ NetworkInfo NativeAPI::get_network_info() {
                     }
                 } else if (line.find("LINKSPEED:") == 0) {
                     std::string speedStr = line.substr(10);
-                    // Parse different speed formats: "1 Gbps", "100 Mbps", "10000000000" (bps)
                     if (speedStr.find("Gbps") != std::string::npos) {
                         try {
-                            double speed = std::stod(speedStr) * 1000; // Convert Gbps to Mbps
+                            double speed = std::stod(speedStr) * 1000;
                             info.downlink = speed;
-                            info.uplink = speed * 0.1; // Estimate upload as 10% of download
+                            info.uplink = speed * 0.1;
                         } catch (...) {}
                     } else if (speedStr.find("Mbps") != std::string::npos) {
                         try {
@@ -578,15 +541,14 @@ NetworkInfo NativeAPI::get_network_info() {
                             info.uplink = speed * 0.1;
                         } catch (...) {}
                     } else {
-                        // Try to parse as raw bps number
                         try {
-                            double speed = std::stod(speedStr) / 1000000.0; // Convert bps to Mbps
+                            double speed = std::stod(speedStr) / 1000000.0;
                             info.downlink = speed;
                             info.uplink = speed * 0.1;
                         } catch (...) {
                             std::cout << " Could not parse network speed from: " << speedStr << std::endl;
-                            info.downlink = 0.0; // Unknown speed
-                            info.uplink = 0.0;   // Unknown speed
+                            info.downlink = 0.0;
+                            info.uplink = 0.0;
                         }
                     }
                 } else if (line.find("NAME:") == 0) {
@@ -600,7 +562,6 @@ NetworkInfo NativeAPI::get_network_info() {
             pclose(pipe);
         }
         
-        // Estimate effective type based on speed
         if (info.downlink >= 1000) {
             info.effective_type = "5g";
         } else if (info.downlink >= 100) {
@@ -613,16 +574,14 @@ NetworkInfo NativeAPI::get_network_info() {
             info.effective_type = "slow-2g";
         }
         
-        // Estimate RTT based on connection type
         if (info.connection_type == "ethernet") {
-            info.rtt = 5.0; // Very low latency
+            info.rtt = 5.0;
         } else if (info.connection_type == "wifi") {
-            info.rtt = 20.0; // Low latency
+            info.rtt = 20.0;
         } else {
-            info.rtt = 100.0; // Higher latency for other connections
+            info.rtt = 100.0;
         }
         
-        // Default values for Windows
         info.signal_strength = (info.connection_type == "wifi") ? 85 : 100;
         info.supported = true;
         
@@ -641,7 +600,6 @@ NetworkInfo NativeAPI::get_network_info() {
         info.supported = true;
     }
 #else
-    // Linux/Unix network information
     std::ifstream routeFile("/proc/net/route");
     if (routeFile.is_open()) {
         std::string line;
@@ -658,11 +616,10 @@ NetworkInfo NativeAPI::get_network_info() {
     
     if (info.online) {
         std::cout << " Linux network detection not fully implemented" << std::endl;
-        // Try to detect connection type from network interfaces
         std::ifstream wireless("/proc/net/wireless");
         if (wireless.is_open()) {
             std::string line;
-            std::getline(wireless, line); // Skip header
+            std::getline(wireless, line);
             if (std::getline(wireless, line) && !line.empty()) {
                 info.connection_type = "wifi";
                 std::cout << " Detected WiFi connection" << std::endl;
@@ -671,15 +628,14 @@ NetworkInfo NativeAPI::get_network_info() {
         }
         
         if (info.connection_type.empty()) {
-            info.connection_type = "ethernet"; // Assume wired if no wireless
+            info.connection_type = "ethernet";
             std::cout << " Assuming ethernet connection" << std::endl;
         }
         
-        // Set unknown values instead of fake ones
         info.effective_type = "unknown";
-        info.downlink = 0.0;  // Speed unknown
-        info.uplink = 0.0;    // Speed unknown  
-        info.rtt = 0.0;       // RTT unknown
+        info.downlink = 0.0;
+        info.uplink = 0.0;
+        info.rtt = 0.0;
         info.supported = true;
         
         std::cout << " Network speed detection not implemented for Linux" << std::endl;
@@ -693,10 +649,8 @@ DeviceOrientationInfo NativeAPI::get_device_orientation() {
     DeviceOrientationInfo info;
     
 #ifdef _WIN32
-    // Windows sensor detection using WMI
     std::cout << " Getting Windows device orientation..." << std::endl;
     
-    // Check for orientation sensor using PowerShell
     std::string sensorCommand = "powershell -Command \"& {"
         "Get-WmiObject -Namespace 'root\\wmi' -Class 'MSAcpi_ThermalZoneTemperature' -ErrorAction SilentlyContinue | Measure-Object | Select-Object -ExpandProperty Count;"
         "Get-CimInstance -ClassName 'Win32_PnPEntity' | Where-Object {$_.Name -like '*accelerometer*' -or $_.Name -like '*gyroscope*' -or $_.Name -like '*orientation*'} | Measure-Object | Select-Object -ExpandProperty Count;"
@@ -718,17 +672,14 @@ DeviceOrientationInfo NativeAPI::get_device_orientation() {
     }
     
     if (hasSensors) {
-        // Simulate sensor data for now (real implementation would use Windows.Devices.Sensors)
         std::cout << " Orientation sensors detected" << std::endl;
         
-        // Get current time for timestamp
         auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
             
-        // For desktop, simulate stable horizontal position with slight variations
-        info.alpha = 0.0;   // No compass rotation for desktop
-        info.beta = 0.0;    // Flat (no front-to-back tilt)  
-        info.gamma = 0.0;   // Flat (no side-to-side tilt)
+        info.alpha = 0.0;
+        info.beta = 0.0;
+        info.gamma = 0.0;
         info.absolute = false;
         info.timestamp = now;
         info.supported = true;
@@ -739,8 +690,6 @@ DeviceOrientationInfo NativeAPI::get_device_orientation() {
         info.supported = false;
     }
 #else
-    // Linux/Unix orientation detection
-    // Check for /sys/class/input/ devices or /dev/input/event* for accelerometer
     std::ifstream inputDevices("/proc/bus/input/devices");
     if (inputDevices.is_open()) {
         std::string line;
@@ -770,7 +719,6 @@ DeviceMotionInfo NativeAPI::get_device_motion() {
 #ifdef _WIN32
     std::cout << " Getting Windows device motion data..." << std::endl;
     
-    // Check for motion sensors (accelerometer + gyroscope)
     DeviceOrientationInfo orientationInfo = get_device_orientation();
     info.supported = orientationInfo.supported;
     
@@ -778,22 +726,19 @@ DeviceMotionInfo NativeAPI::get_device_motion() {
         auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
             
-        // For desktop, simulate minimal motion (stable device)
         info.acceleration_x = 0.0;
         info.acceleration_y = 0.0;
         info.acceleration_z = 0.0;
         
-        // Include gravity (desktop assumed horizontal, gravity downward)
         info.acceleration_including_gravity_x = 0.0;
         info.acceleration_including_gravity_y = 0.0;
-        info.acceleration_including_gravity_z = 9.81; // Standard gravity
+        info.acceleration_including_gravity_z = 9.81;
         
-        // No rotation for stable desktop
         info.rotation_rate_alpha = 0.0;
         info.rotation_rate_beta = 0.0;
         info.rotation_rate_gamma = 0.0;
         
-        info.interval = 16.0; // ~60 FPS
+        info.interval = 16.0;
         info.timestamp = now;
         
         std::cout << " Motion: accel=(" << info.acceleration_x << "," << info.acceleration_y << "," << info.acceleration_z << ") m/s²" << std::endl;
@@ -813,14 +758,12 @@ bool NativeAPI::has_motion_sensor() {
     return info.supported;
 }
 
-// Platform-specific initialization functions (empty for now)
 void NativeAPI::initialize_windows_apis() {}
 void NativeAPI::initialize_linux_apis() {}
 void NativeAPI::initialize_macos_apis() {}
 void NativeAPI::initialize_android_apis() {}
 void NativeAPI::initialize_ios_apis() {}
 
-// Placeholder implementations for APIs not yet implemented
 std::vector<uint8_t> NativeAPI::read_clipboard_data(const std::string& mime_type) { (void)mime_type; return {}; }
 bool NativeAPI::write_clipboard_data(const std::string& mime_type, const std::vector<uint8_t>& data) { (void)mime_type; (void)data; return false; }
 std::vector<uint8_t> NativeAPI::read_file(const std::string& path) { (void)path; return {}; }
@@ -843,13 +786,11 @@ bool NativeAPI::gamepad_vibrate(int gamepad_index, double strong_magnitude, doub
               << " (Strong: " << strong_magnitude << ", Weak: " << weak_magnitude 
               << ", Duration: " << duration << "ms)" << std::endl;
     
-    // Validate gamepad index
     if (gamepad_index < 0 || gamepad_index >= XUSER_MAX_COUNT) {
         std::cout << " Invalid gamepad index: " << gamepad_index << std::endl;
         return false;
     }
     
-    // Check if controller is connected
     XINPUT_STATE state;
     ZeroMemory(&state, sizeof(XINPUT_STATE));
     if (XInputGetState(gamepad_index, &state) != ERROR_SUCCESS) {
@@ -857,28 +798,22 @@ bool NativeAPI::gamepad_vibrate(int gamepad_index, double strong_magnitude, doub
         return false;
     }
     
-    // Clamp magnitudes to valid range (0.0 - 1.0)
     strong_magnitude = std::max(0.0, std::min(1.0, strong_magnitude));
     weak_magnitude = std::max(0.0, std::min(1.0, weak_magnitude));
     
-    // Convert to XInput format (0-65535)
     XINPUT_VIBRATION vibration;
-    vibration.wLeftMotorSpeed = static_cast<WORD>(strong_magnitude * 65535);  // Low-frequency rumble
-    vibration.wRightMotorSpeed = static_cast<WORD>(weak_magnitude * 65535);   // High-frequency rumble
+    vibration.wLeftMotorSpeed = static_cast<WORD>(strong_magnitude * 65535);
+    vibration.wRightMotorSpeed = static_cast<WORD>(weak_magnitude * 65535);
     
-    // Set vibration
     DWORD result = XInputSetState(gamepad_index, &vibration);
     
     if (result == ERROR_SUCCESS) {
         std::cout << " Vibration started on controller " << gamepad_index << std::endl;
         
-        // If duration is specified, schedule vibration stop
         if (duration > 0) {
-            // Create a thread to stop vibration after duration
             std::thread([gamepad_index, duration]() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(duration));
                 
-                // Stop vibration
                 XINPUT_VIBRATION stop_vibration;
                 stop_vibration.wLeftMotorSpeed = 0;
                 stop_vibration.wRightMotorSpeed = 0;
@@ -895,7 +830,6 @@ bool NativeAPI::gamepad_vibrate(int gamepad_index, double strong_magnitude, doub
         return false;
     }
 #elif defined(_WIN32) && defined(__MINGW32__)
-    // MSYS2/MinGW build - XInput vibration not available
     std::cout << " XInput gamepad vibration disabled in MSYS2/MinGW build" << std::endl;
     (void)gamepad_index; (void)strong_magnitude; (void)weak_magnitude; (void)duration;
     return false;
@@ -929,4 +863,4 @@ bool NativeAPI::has_camera() { return false; }
 bool NativeAPI::has_microphone() { return false; }
 bool NativeAPI::register_battery_change_callback(std::function<void(const BatteryInfo&)> callback) { (void)callback; return false; }
 
-} // namespace Quanta
+}

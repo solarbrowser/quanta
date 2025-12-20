@@ -4,20 +4,18 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "../include/ArrayBuffer.h"
-#include "../include/Context.h"
+#include "quanta/ArrayBuffer.h"
+#include "quanta/Context.h"
 #include <algorithm>
 #include <new>
 #include <stdexcept>
 
-// Platform-specific includes for memory allocation
 #ifdef _WIN32
     #include <malloc.h>
 #else
     #include <cstdlib>
 #endif
 
-// Manual memory functions to avoid linkage issues
 extern "C" {
     static void* quanta_memcpy(void* dest, const void* src, size_t n) {
         char* d = (char*)dest;
@@ -39,15 +37,11 @@ extern "C" {
 
 namespace Quanta {
 
-//=============================================================================
-// ArrayBuffer Implementation
-//=============================================================================
 
 ArrayBuffer::ArrayBuffer(size_t byte_length)
     : Object(ObjectType::ArrayBuffer), byte_length_(byte_length), 
       max_byte_length_(byte_length), is_detached_(false), is_resizable_(false) {
     allocate_buffer(byte_length);
-    // initialize_properties(); // Disabled - properties set in Context.cpp lambda
 }
 
 ArrayBuffer::ArrayBuffer(size_t byte_length, size_t max_byte_length)
@@ -56,8 +50,7 @@ ArrayBuffer::ArrayBuffer(size_t byte_length, size_t max_byte_length)
     if (byte_length > max_byte_length) {
         throw std::invalid_argument("byte_length cannot exceed max_byte_length");
     }
-    allocate_buffer(max_byte_length); // Allocate maximum size
-    // initialize_properties(); // Disabled - properties set in Context.cpp lambda
+    allocate_buffer(max_byte_length);
 }
 
 ArrayBuffer::ArrayBuffer(const uint8_t* source, size_t byte_length)
@@ -67,7 +60,6 @@ ArrayBuffer::ArrayBuffer(const uint8_t* source, size_t byte_length)
     if (source && data_) {
         quanta_memcpy(data_.get(), source, byte_length);
     }
-    // initialize_properties(); // Disabled - properties set in Context.cpp lambda
 }
 
 ArrayBuffer::~ArrayBuffer() {
@@ -81,11 +73,9 @@ void ArrayBuffer::allocate_buffer(size_t byte_length) {
     }
     
     try {
-        // Allocate aligned memory for optimal performance
         uint8_t* raw_ptr = allocate_aligned(byte_length);
         data_ = std::unique_ptr<uint8_t[]>(raw_ptr);
         
-        // Zero-initialize the buffer
         quanta_memset(data_.get(), 0, byte_length);
     } catch (const std::bad_alloc&) {
         throw std::runtime_error("ArrayBuffer allocation failed: out of memory");
@@ -94,12 +84,10 @@ void ArrayBuffer::allocate_buffer(size_t byte_length) {
 
 uint8_t* ArrayBuffer::allocate_aligned(size_t size, size_t alignment) {
     #ifdef _WIN32
-        // Windows aligned allocation
         void* ptr = _aligned_malloc(size, alignment);
         if (!ptr) throw std::bad_alloc();
         return static_cast<uint8_t*>(ptr);
     #else
-        // POSIX aligned allocation
         void* ptr = nullptr;
         if (posix_memalign(&ptr, alignment, size) != 0) {
             throw std::bad_alloc();
@@ -141,7 +129,6 @@ bool ArrayBuffer::check_bounds(size_t offset, size_t count) const {
         return false;
     }
     
-    // Check for overflow
     if (offset + count < offset || offset + count > byte_length_) {
         return false;
     }
@@ -154,7 +141,6 @@ std::unique_ptr<ArrayBuffer> ArrayBuffer::slice(size_t start, size_t end) const 
         return nullptr;
     }
     
-    // Handle negative indices and defaults
     if (end == SIZE_MAX) {
         end = byte_length_;
     }
@@ -179,11 +165,8 @@ bool ArrayBuffer::resize(size_t new_byte_length) {
         return false;
     }
     
-    // For simplicity, we don't actually resize the underlying buffer
-    // Just update the logical length (real implementation would optimize this)
     byte_length_ = new_byte_length;
     
-    // Update property
     set_property("byteLength", Value(static_cast<double>(byte_length_)));
     
     return true;
@@ -197,7 +180,6 @@ void ArrayBuffer::detach() {
     is_detached_ = true;
     detach_all_views();
     
-    // Update properties
     set_property("byteLength", Value(0.0));
 }
 
@@ -215,20 +197,16 @@ void ArrayBuffer::unregister_view(TypedArrayBase* view) {
 }
 
 void ArrayBuffer::detach_all_views() {
-    // In a full implementation, this would notify all TypedArray views
-    // that their buffer has been detached
     attached_views_.clear();
 }
 
 void ArrayBuffer::initialize_properties() {
-    // Set up ArrayBuffer properties
     set_property("byteLength", Value(static_cast<double>(byte_length_)));
     set_property("maxByteLength", Value(static_cast<double>(max_byte_length_)));
     set_property("resizable", Value(is_resizable_));
 }
 
 Value ArrayBuffer::get_property(const std::string& key) const {
-    // Override property access to return correct values from C++ members
     if (key == "byteLength") {
         return Value(static_cast<double>(byte_length_));
     } else if (key == "maxByteLength") {
@@ -239,7 +217,6 @@ Value ArrayBuffer::get_property(const std::string& key) const {
         return Value(true);
     }
     
-    // Fall back to base class property access for other properties
     return Object::get_property(key);
 }
 
@@ -248,14 +225,8 @@ std::string ArrayBuffer::to_string() const {
 }
 
 void ArrayBuffer::mark_references() const {
-    // For now, just mark the base object properties
-    // In a full GC implementation, this would mark references for garbage collection
-    // Object::mark_references(); // Base class method not implemented
 }
 
-//=============================================================================
-// JavaScript API Methods
-//=============================================================================
 
 Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
@@ -270,7 +241,6 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
 
     double length_double = args[0].as_number();
 
-    // Check for NaN and Infinity
     if (std::isnan(length_double) || std::isinf(length_double)) {
         ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
         return Value();
@@ -283,15 +253,13 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
     
     size_t byte_length = static_cast<size_t>(length_double);
     
-    // Check for maximum safe size (1GB for now)
     const size_t MAX_SAFE_SIZE = 1024 * 1024 * 1024;
     if (byte_length > MAX_SAFE_SIZE) {
-        ctx.throw_range_error("ArrayBuffer size exceeds maximum allowed size");
+        ctx.throw_range_error("ArrayBuffer size exceeds allowed size");
         return Value();
     }
     
     try {
-        // Handle resizable ArrayBuffer (experimental)
         if (args.size() > 1 && args[1].is_object()) {
             Object* options = args[1].as_object();
             Value max_byte_length_val = options->get_property("maxByteLength");
@@ -308,7 +276,6 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
             }
         }
         
-        // Standard fixed-size ArrayBuffer
         auto buffer = std::make_unique<ArrayBuffer>(byte_length);
         return Value(buffer.release());
     } catch (const std::exception& e) {
@@ -318,7 +285,6 @@ Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args) {
-    // Get 'this' ArrayBuffer
     Value this_val = ctx.get_binding("this");
     if (!this_val.is_object()) {
         ctx.throw_error("ArrayBuffer.prototype.slice called on non-object");
@@ -327,7 +293,6 @@ Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args)
 
     Object* this_obj = this_val.as_object();
 
-    // Get byteLength property
     Value byte_length_val = this_obj->get_property("byteLength");
     if (!byte_length_val.is_number()) {
         ctx.throw_error("Invalid ArrayBuffer");
@@ -336,7 +301,6 @@ Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args)
 
     size_t byte_length = static_cast<size_t>(byte_length_val.as_number());
 
-    // Get start and end indices
     int32_t start = 0;
     if (!args.empty()) {
         double start_arg = args[0].to_number();
@@ -351,21 +315,16 @@ Value ArrayBuffer::prototype_slice(Context& ctx, const std::vector<Value>& args)
                           : std::min(static_cast<size_t>(end_arg), byte_length);
     }
 
-    // Calculate new length
     size_t new_length = std::max(0, end - start);
 
-    // Create new ArrayBuffer
     auto new_buffer = std::make_unique<ArrayBuffer>(new_length);
 
-    // Copy data (simplified - would need access to actual buffer data)
-    // For now, just return empty buffer of correct size
 
     return Value(new_buffer.release());
 }
 
 Value ArrayBuffer::get_byteLength(Context& ctx, const std::vector<Value>& args) {
     (void)args;
-    // Get 'this' ArrayBuffer
     Value this_val = ctx.get_binding("this");
     if (!this_val.is_object()) {
         return Value(0.0);
@@ -373,13 +332,10 @@ Value ArrayBuffer::get_byteLength(Context& ctx, const std::vector<Value>& args) 
 
     Object* this_obj = this_val.as_object();
 
-    // Try to get byteLength property
     if (this_obj->has_property("byteLength")) {
         return this_obj->get_property("byteLength");
     }
 
-    // For ArrayBuffer objects, try to get the internal byte_length_
-    // This would require access to the ArrayBuffer internal state
     return Value(0.0);
 }
 
@@ -392,14 +348,9 @@ Value ArrayBuffer::isView(Context& ctx, const std::vector<Value>& args) {
         return Value(false);
     }
     
-    // For now, return false to avoid segfault
-    // TODO: Implement proper TypedArray detection when TypedArrays are implemented
     return Value(false);
 }
 
-//=============================================================================
-// ArrayBufferFactory Implementation
-//=============================================================================
 
 namespace ArrayBufferFactory {
 
@@ -423,22 +374,15 @@ std::unique_ptr<ArrayBuffer> from_vector(const std::vector<uint8_t>& vec) {
     return std::make_unique<ArrayBuffer>(vec.data(), vec.size());
 }
 
-} // namespace ArrayBufferFactory
+}
 
-//=============================================================================
-// SharedArrayBuffer Implementation
-//=============================================================================
 
 SharedArrayBuffer::SharedArrayBuffer(size_t byte_length) 
     : ArrayBuffer(byte_length) {
-    // Override the object type
-    // TODO: This would need proper architecture changes to support ObjectType changes post-construction
 }
 
 Value SharedArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
-    // For now, just create a regular ArrayBuffer
-    // Full SharedArrayBuffer implementation would require threading support
     return ArrayBuffer::constructor(ctx, args);
 }
 
-} // namespace Quanta
+}

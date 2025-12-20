@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "Lexer.h"
+#include "quanta/Lexer.h"
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
@@ -12,7 +12,6 @@
 
 namespace Quanta {
 
-// Static keyword mapping
 const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"break", TokenType::BREAK},
     {"case", TokenType::CASE},
@@ -53,16 +52,12 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"from", TokenType::FROM},
     {"of", TokenType::OF},
     {"static", TokenType::STATIC},
-    // NOTE: "target" is NOT a reserved keyword in JavaScript
-    // It's only special in "new.target" context, which is handled separately
-    // {"target", TokenType::TARGET},  // REMOVED - causes false syntax errors
     {"true", TokenType::BOOLEAN},
     {"false", TokenType::BOOLEAN},
     {"null", TokenType::NULL_LITERAL},
     {"undefined", TokenType::UNDEFINED}
 };
 
-// Single character tokens
 const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
     {'(', TokenType::LEFT_PAREN},
     {')', TokenType::RIGHT_PAREN},
@@ -73,14 +68,10 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
     {';', TokenType::SEMICOLON},
     {',', TokenType::COMMA},
     {':', TokenType::COLON},
-    // {'?', TokenType::QUESTION}, // Now handled in read_operator for ?. and ?? support
     {'~', TokenType::BITWISE_NOT},
     {'#', TokenType::HASH}
 };
 
-//=============================================================================
-// Lexer Implementation
-//=============================================================================
 
 Lexer::Lexer(const std::string& source)
     : source_(source), position_(0), current_position_(1, 1, 0), last_token_type_(TokenType::EOF_TOKEN) {
@@ -90,7 +81,6 @@ Lexer::Lexer(const std::string& source)
     options_.allow_reserved_words = false;
     options_.strict_mode = false;
     
-    // Skip UTF-8 BOM if present (EF BB BF)
     if (source_.size() >= 3 && 
         static_cast<unsigned char>(source_[0]) == 0xEF &&
         static_cast<unsigned char>(source_[1]) == 0xBB &&
@@ -102,7 +92,6 @@ Lexer::Lexer(const std::string& source)
 
 Lexer::Lexer(const std::string& source, const LexerOptions& options)
     : source_(source), position_(0), current_position_(1, 1, 0), options_(options), last_token_type_(TokenType::EOF_TOKEN) {
-    // Skip UTF-8 BOM if present (EF BB BF)
     if (source_.size() >= 3 && 
         static_cast<unsigned char>(source_[0]) == 0xEF &&
         static_cast<unsigned char>(source_[1]) == 0xBB &&
@@ -119,15 +108,12 @@ TokenSequence Lexer::tokenize() {
     while (!at_end()) {
         Token token = next_token();
 
-        // Update last token type for context-aware lexing (regex vs division)
-        // Only update for non-whitespace/comment tokens
         if (token.get_type() != TokenType::WHITESPACE &&
             token.get_type() != TokenType::COMMENT &&
             token.get_type() != TokenType::NEWLINE) {
             last_token_type_ = token.get_type();
         }
 
-        // Check for "use strict" directive at the beginning
         if (!strict_mode_detected && tokens.empty() && 
             token.get_type() == TokenType::STRING && 
             token.get_value() == "use strict") {
@@ -135,7 +121,6 @@ TokenSequence Lexer::tokenize() {
             strict_mode_detected = true;
         }
         
-        // Skip whitespace and comments if requested
         if ((options_.skip_whitespace && token.get_type() == TokenType::WHITESPACE) ||
             (options_.skip_comments && token.get_type() == TokenType::COMMENT)) {
             continue;
@@ -148,7 +133,6 @@ TokenSequence Lexer::tokenize() {
         }
     }
     
-    // Ensure we have an EOF token
     if (tokens.empty() || tokens.back().get_type() != TokenType::EOF_TOKEN) {
         tokens.emplace_back(TokenType::EOF_TOKEN, current_position_);
     }
@@ -164,7 +148,6 @@ Token Lexer::next_token() {
     Position start = current_position_;
     char ch = current_char();
     
-    // Skip whitespace if not tracking it
     if (is_whitespace(ch)) {
         if (options_.skip_whitespace) {
             skip_whitespace();
@@ -175,13 +158,11 @@ Token Lexer::next_token() {
         }
     }
     
-    // Line terminators
     if (is_line_terminator(ch)) {
         advance();
         return create_token(TokenType::NEWLINE, start);
     }
     
-    // Comments and regex literals
     if (ch == '/') {
         char next = peek_char();
         if (next == '/') {
@@ -191,37 +172,30 @@ Token Lexer::next_token() {
         } else if (can_be_regex_literal()) {
             return read_regex();
         }
-        // Fall through to operator parsing
     }
     
-    // Numbers
     if (is_digit(ch) || (ch == '.' && is_digit(peek_char()))) {
         return read_number();
     }
     
-    // Strings
     if (ch == '"' || ch == '\'') {
         return read_string(ch);
     }
     
-    // Template literals
     if (ch == '`') {
         return read_template_literal();
     }
     
-    // Identifiers and keywords
     if (is_identifier_start(ch)) {
         return read_identifier();
     }
     
-    // Single character tokens
     auto single_it = single_char_tokens_.find(ch);
     if (single_it != single_char_tokens_.end()) {
         advance();
         return create_token(single_it->second, start);
     }
     
-    // Operators
     return read_operator();
 }
 
@@ -229,18 +203,14 @@ void Lexer::reset(size_t position) {
     position_ = std::min(position, source_.length());
     current_position_ = Position(1, 1, position_);
     
-    // Recalculate line and column
     for (size_t i = 0; i < position_; ++i) {
         if (source_[i] == '\n') {
             current_position_.line++;
             current_position_.column = 1;
         } else if (source_[i] == '\r') {
-            // Handle CR: if next char is LF, it's CRLF, just skip CR
             if (i + 1 < source_.length() && source_[i + 1] == '\n') {
-                // CRLF sequence, don't increment line yet (LF will do it)
                 continue;
             } else {
-                // Standalone CR (Mac-style), treat as line terminator
                 current_position_.line++;
                 current_position_.column = 1;
             }
@@ -282,12 +252,9 @@ void Lexer::advance_position(char ch) {
         current_position_.line++;
         current_position_.column = 1;
     } else if (ch == '\r') {
-        // Handle CR: check if next char is LF (CRLF)
         if (position_ < source_.length() && source_[position_] == '\n') {
-            // CRLF sequence, don't increment line yet (LF will do it)
             current_position_.column++;
         } else {
-            // Standalone CR (Mac-style), treat as line terminator
             current_position_.line++;
             current_position_.column = 1;
         }
@@ -313,23 +280,19 @@ Token Lexer::read_identifier() {
     std::string value;
     bool contains_unicode_escapes = false;
     
-    // Check if first character is valid (not a digit)
     char first = current_char();
     if (std::isdigit(first)) {
         add_error("Invalid identifier: identifier cannot start with a digit");
         return create_token(TokenType::INVALID, value, start);
     }
     
-    // Handle first character (which could be a unicode escape)
     if (current_char() == '\\' && peek_char() == 'u') {
         contains_unicode_escapes = true;
-        advance(); // consume '\'
-        advance(); // consume 'u'
+        advance();
+        advance();
         
-        // Parse unicode escape sequence
         if (current_char() == '{') {
-            // \u{...} format
-            advance(); // consume '{'
+            advance();
             std::string hex_digits;
             while (!at_end() && current_char() != '}' && hex_digits.length() < 6) {
                 if (is_hex_digit(current_char())) {
@@ -344,32 +307,25 @@ Token Lexer::read_identifier() {
                 add_error("Invalid unicode escape sequence in identifier");
                 return create_token(TokenType::INVALID, value, start);
             }
-            advance(); // consume '}'
+            advance();
             
-            // Convert hex to character (simplified - just handle ASCII range)
-            if (hex_digits == "61") value += 'a';  // \u{61} = 'a'
-            else if (hex_digits == "6C") value += 'l';  // \u{6C} = 'l'
-            else if (hex_digits == "73") value += 's';  // \u{73} = 's'
-            else if (hex_digits == "65") value += 'e';  // \u{65} = 'e'
-            else if (hex_digits == "6F") value += 'o';  // \u{6F} = 'o'
+            if (hex_digits == "61") value += 'a';
+            else if (hex_digits == "6C") value += 'l';
+            else if (hex_digits == "73") value += 's';
+            else if (hex_digits == "65") value += 'e';
+            else if (hex_digits == "6F") value += 'o';
             else {
-                // For other hex values, convert to actual character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                // Convert Unicode codepoint to UTF-8
                 if (codepoint <= 0x7F) {
-                    // ASCII range (1 byte)
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
-                    // 2-byte UTF-8
                     value += static_cast<char>(0xC0 | (codepoint >> 6));
                     value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else if (codepoint <= 0xFFFF) {
-                    // 3-byte UTF-8
                     value += static_cast<char>(0xE0 | (codepoint >> 12));
                     value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
                     value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else if (codepoint <= 0x10FFFF) {
-                    // 4-byte UTF-8
                     value += static_cast<char>(0xF0 | (codepoint >> 18));
                     value += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
                     value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
@@ -380,7 +336,6 @@ Token Lexer::read_identifier() {
                 }
             }
         } else {
-            // \uHHHH format
             std::string hex_digits;
             for (int i = 0; i < 4 && !at_end(); i++) {
                 if (is_hex_digit(current_char())) {
@@ -392,24 +347,18 @@ Token Lexer::read_identifier() {
                 }
             }
             
-            // Convert hex to character (simplified)
             if (hex_digits == "0061") value += 'a';
             else if (hex_digits == "006C") value += 'l';
             else if (hex_digits == "0073") value += 's';
             else if (hex_digits == "0065") value += 'e';
             else {
-                // For other 4-digit hex values, convert to actual character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                // Convert Unicode codepoint to UTF-8
                 if (codepoint <= 0x7F) {
-                    // ASCII range (1 byte)
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
-                    // 2-byte UTF-8
                     value += static_cast<char>(0xC0 | (codepoint >> 6));
                     value += static_cast<char>(0x80 | (codepoint & 0x3F));
                 } else if (codepoint <= 0xFFFF) {
-                    // 3-byte UTF-8
                     value += static_cast<char>(0xE0 | (codepoint >> 12));
                     value += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
                     value += static_cast<char>(0x80 | (codepoint & 0x3F));
@@ -423,17 +372,15 @@ Token Lexer::read_identifier() {
         value += advance();
     }
     
-    // Continue reading identifier characters
     while (!at_end() && (is_identifier_part(current_char()) || 
                         (current_char() == '\\' && peek_char() == 'u'))) {
         if (current_char() == '\\' && peek_char() == 'u') {
             contains_unicode_escapes = true;
-            advance(); // consume '\'
-            advance(); // consume 'u'
+            advance();
+            advance();
             
-            // Parse unicode escape (same logic as above)
             if (current_char() == '{') {
-                advance(); // consume '{'
+                advance();
                 std::string hex_digits;
                 while (!at_end() && current_char() != '}' && hex_digits.length() < 6) {
                     if (is_hex_digit(current_char())) {
@@ -448,11 +395,9 @@ Token Lexer::read_identifier() {
                     add_error("Invalid unicode escape sequence in identifier");
                     return create_token(TokenType::INVALID, value, start);
                 }
-                advance(); // consume '}'
+                advance();
                 
-                // Convert hex to character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                // Convert Unicode codepoint to UTF-8
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -472,7 +417,6 @@ Token Lexer::read_identifier() {
                     return create_token(TokenType::INVALID, value, start);
                 }
             } else {
-                // \uHHHH format
                 std::string hex_digits;
                 for (int i = 0; i < 4 && !at_end(); i++) {
                     if (is_hex_digit(current_char())) {
@@ -484,9 +428,7 @@ Token Lexer::read_identifier() {
                     }
                 }
                 
-                // Convert 4-digit hex to character
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
-                // Convert Unicode codepoint to UTF-8
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -506,19 +448,12 @@ Token Lexer::read_identifier() {
         }
     }
     
-    // Determine token type
     TokenType type = lookup_keyword(value);
 
-    // NOTE: Identifiers with unicode escapes that resolve to keywords are allowed
-    // in certain contexts (e.g., member expressions: obj.bre\u0061k)
-    // The parser will handle context-specific validation
-    // So we always return IDENTIFIER for escaped identifiers, even if they match keywords
     if (contains_unicode_escapes && type != TokenType::IDENTIFIER) {
-        // Override keyword type to IDENTIFIER for unicode-escaped identifiers
         type = TokenType::IDENTIFIER;
     }
 
-    // In strict mode, forbid using reserved words as identifiers
     if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
         add_error("SyntaxError: Unexpected reserved word '" + value + "' in strict mode");
         return create_token(TokenType::INVALID, value, start);
@@ -532,43 +467,37 @@ Token Lexer::read_number() {
     size_t start_pos = position_;
     double value = 0.0;
     
-    // Handle different number formats
     if (current_char() == '0') {
         char next = peek_char();
         if (next == 'x' || next == 'X') {
-            advance(); // '0'
-            advance(); // 'x'
-            // Check if we have at least one hex digit
+            advance();
+            advance();
             if (at_end() || !is_hex_digit(current_char())) {
                 add_error("SyntaxError: Invalid hex literal - missing digits");
                 return create_token(TokenType::INVALID, start);
             }
             value = parse_hex_literal();
         } else if (next == 'b' || next == 'B') {
-            advance(); // '0'
-            advance(); // 'b'
-            // Check if we have at least one binary digit
+            advance();
+            advance();
             if (at_end() || !is_binary_digit(current_char())) {
                 add_error("SyntaxError: Invalid binary literal - missing digits");
                 return create_token(TokenType::INVALID, start);
             }
             size_t error_count_before = errors_.size();
             value = parse_binary_literal();
-            // Check if parse_binary_literal added any errors
             if (errors_.size() > error_count_before) {
                 return create_token(TokenType::INVALID, start);
             }
         } else if (next == 'o' || next == 'O') {
-            advance(); // '0'
-            advance(); // 'o'
-            // Check if we have at least one octal digit
+            advance();
+            advance();
             if (at_end() || !is_octal_digit(current_char())) {
                 add_error("SyntaxError: Invalid octal literal - missing digits");
                 return create_token(TokenType::INVALID, start);
             }
             value = parse_octal_literal();
         } else if (std::isdigit(next)) {
-            // Legacy octal literal (0123) - forbidden in strict mode
             if (options_.strict_mode) {
                 add_error("SyntaxError: Octal literals are not allowed in strict mode");
                 return create_token(TokenType::INVALID, start);
@@ -581,11 +510,9 @@ Token Lexer::read_number() {
         value = parse_decimal_literal();
     }
     
-    // Check for BigInt literal (ends with 'n')
     if (!at_end() && current_char() == 'n') {
-        advance(); // consume 'n'
-        // Extract the string representation for BigInt construction
-        size_t length = position_ - start_pos - 1; // -1 to exclude 'n'
+        advance();
+        size_t length = position_ - start_pos - 1;
         std::string bigint_str = source_.substr(start_pos, length);
         return create_token(TokenType::BIGINT_LITERAL, bigint_str, start);
     }
@@ -595,7 +522,7 @@ Token Lexer::read_number() {
 
 Token Lexer::read_string(char quote) {
     Position start = current_position_;
-    advance(); // Skip opening quote
+    advance();
     
     std::string value = parse_string_literal(quote);
     
@@ -604,26 +531,23 @@ Token Lexer::read_string(char quote) {
         return create_token(TokenType::INVALID, start);
     }
     
-    advance(); // Skip closing quote
+    advance();
     return create_token(TokenType::STRING, value, start);
 }
 
 Token Lexer::read_template_literal() {
     Position start = current_position_;
-    advance(); // Skip opening `
+    advance();
     
     std::string value;
     bool has_expressions = false;
     
     while (!at_end() && current_char() != '`') {
         if (current_char() == '$' && peek_char() == '{') {
-            // Found expression start - this indicates a template with expressions
             has_expressions = true;
-            // For now, just include the ${} in the text - the parser will handle it
-            value += advance(); // $
-            value += advance(); // {
+            value += advance();
+            value += advance();
             
-            // Read until matching }
             int brace_count = 1;
             while (!at_end() && brace_count > 0) {
                 char ch = advance();
@@ -643,16 +567,15 @@ Token Lexer::read_template_literal() {
         return create_token(TokenType::INVALID, start);
     }
     
-    advance(); // Skip closing `
+    advance();
     
-    // For now, return TEMPLATE_LITERAL token - the parser will parse expressions
     return create_token(TokenType::TEMPLATE_LITERAL, value, start);
 }
 
 Token Lexer::read_single_line_comment() {
     Position start = current_position_;
-    advance(); // '/'
-    advance(); // '/'
+    advance();
+    advance();
     
     std::string value;
     while (!at_end() && !is_line_terminator(current_char())) {
@@ -664,14 +587,14 @@ Token Lexer::read_single_line_comment() {
 
 Token Lexer::read_multi_line_comment() {
     Position start = current_position_;
-    advance(); // '/'
-    advance(); // '*'
+    advance();
+    advance();
     
     std::string value;
     while (!at_end()) {
         if (current_char() == '*' && peek_char() == '/') {
-            advance(); // '*'
-            advance(); // '/'
+            advance();
+            advance();
             break;
         }
         value += advance();
@@ -723,8 +646,6 @@ Token Lexer::read_operator() {
             return create_token(TokenType::MULTIPLY, start);
             
         case '/':
-            // Check if this should be a regex literal based on context
-            // Regex can appear after: =, (, [, {, ,, ;, !, &, |, ?, :, +, -, *, /, %, <, >, return, throw, new, typeof, void, delete
             if (is_regex_context()) {
                 return read_regex();
             }
@@ -879,12 +800,9 @@ Token Lexer::read_operator() {
 
 bool Lexer::is_identifier_start(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
-    // ASCII letters, underscore, dollar, backslash for unicode escapes
     if (std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\') {
         return true;
     }
-    // UTF-8 multi-byte sequence start (0x80-0xFF indicates Unicode character)
-    // This allows Greek letters (π), Cyrillic, Chinese, etc.
     if (uch >= 0x80) {
         return true;
     }
@@ -893,11 +811,9 @@ bool Lexer::is_identifier_start(char ch) const {
 
 bool Lexer::is_identifier_part(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
-    // ASCII alphanumeric, underscore, dollar
     if (std::isalnum(ch) || ch == '_' || ch == '$') {
         return true;
     }
-    // UTF-8 continuation byte or multi-byte sequence start
     if (uch >= 0x80) {
         return true;
     }
@@ -921,10 +837,7 @@ bool Lexer::is_octal_digit(char ch) const {
 }
 
 bool Lexer::is_regex_context() const {
-    // Determine if '/' should be interpreted as regex based on last token
-    // Regex can appear after these tokens:
     switch (last_token_type_) {
-        // Operators that can precede regex
         case TokenType::ASSIGN:
         case TokenType::PLUS_ASSIGN:
         case TokenType::MINUS_ASSIGN:
@@ -954,7 +867,6 @@ bool Lexer::is_regex_context() const {
         case TokenType::STRICT_EQUAL:
         case TokenType::STRICT_NOT_EQUAL:
 
-        // Keywords that can precede regex
         case TokenType::RETURN:
         case TokenType::THROW:
         case TokenType::NEW:
@@ -964,7 +876,6 @@ bool Lexer::is_regex_context() const {
         case TokenType::IN:
         case TokenType::INSTANCEOF:
 
-        // Start of file
         case TokenType::EOF_TOKEN:
             return true;
 
@@ -976,15 +887,10 @@ bool Lexer::is_regex_context() const {
 bool Lexer::is_whitespace(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
 
-    // ES5.1 Section 7.2: WhiteSpace
-    // ASCII whitespace
     if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
         return true;
     }
 
-    // Non-breaking space (NBSP) - U+00A0 (encoded as 0xC2 0xA0 in UTF-8)
-    // But in char-by-char processing, we see 0xC2 followed by 0xA0
-    // For now, treat 0xA0 as whitespace when seen
     if (uch == 0xC2 || uch == 0xA0) {
         return true;
     }
@@ -999,28 +905,25 @@ bool Lexer::is_line_terminator(char ch) const {
 double Lexer::parse_decimal_literal() {
     std::string number_str;
     
-    // Parse integer part
     while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
-            advance(); // skip underscore (numeric separator)
+            advance();
         } else {
-            number_str += advance(); // add digit
+            number_str += advance();
         }
     }
     
-    // Parse decimal part
     if (!at_end() && current_char() == '.') {
         number_str += advance();
         while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
             if (current_char() == '_') {
-                advance(); // skip underscore (numeric separator)
+                advance();
             } else {
-                number_str += advance(); // add digit
+                number_str += advance();
             }
         }
     }
     
-    // Parse exponent
     if (!at_end() && (current_char() == 'e' || current_char() == 'E')) {
         number_str += advance();
         if (!at_end() && (current_char() == '+' || current_char() == '-')) {
@@ -1028,9 +931,9 @@ double Lexer::parse_decimal_literal() {
         }
         while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
             if (current_char() == '_') {
-                advance(); // skip underscore (numeric separator)
+                advance();
             } else {
-                number_str += advance(); // add digit
+                number_str += advance();
             }
         }
     }
@@ -1042,7 +945,7 @@ double Lexer::parse_hex_literal() {
     double value = 0.0;
     while (!at_end() && (is_hex_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
-            advance(); // skip underscore (numeric separator)
+            advance();
             continue;
         }
 
@@ -1064,17 +967,16 @@ double Lexer::parse_binary_literal() {
     double value = 0.0;
     while (!at_end()) {
         if (current_char() == '_') {
-            advance(); // skip underscore (numeric separator)
+            advance();
             continue;
         } else if (is_binary_digit(current_char())) {
             char ch = advance();
             value = value * 2 + (ch - '0');
         } else if (std::isdigit(current_char())) {
-            // Invalid digit in binary literal (like 2-9)
             add_error("SyntaxError: Invalid digit in binary literal");
-            return 0.0; // Will be handled by INVALID token
+            return 0.0;
         } else {
-            break; // End of number
+            break;
         }
     }
     return value;
@@ -1084,7 +986,7 @@ double Lexer::parse_octal_literal() {
     double value = 0.0;
     while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
-            advance(); // skip underscore (numeric separator)
+            advance();
             continue;
         }
 
@@ -1095,13 +997,12 @@ double Lexer::parse_octal_literal() {
 }
 
 double Lexer::parse_legacy_octal_literal() {
-    // Parse legacy octal (0123 format)
     double value = 0.0;
-    advance(); // skip the initial '0'
+    advance();
     
     while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
-            advance(); // skip underscore (numeric separator)
+            advance();
             continue;
         }
 
@@ -1126,7 +1027,7 @@ std::string Lexer::parse_string_literal(char quote) {
 }
 
 std::string Lexer::parse_escape_sequence() {
-    advance(); // Skip backslash
+    advance();
     
     if (at_end()) {
         add_error("Unexpected end of input in escape sequence");
@@ -1152,7 +1053,6 @@ std::string Lexer::parse_escape_sequence() {
 }
 
 std::string Lexer::parse_hex_escape() {
-    // \xHH format
     if (remaining() < 2) {
         add_error("Invalid hex escape sequence");
         return "";
@@ -1179,19 +1079,16 @@ std::string Lexer::parse_hex_escape() {
 }
 
 std::string Lexer::parse_unicode_escape() {
-    // \uHHHH format (simplified)
     if (remaining() < 4) {
         add_error("Invalid unicode escape sequence");
         return "";
     }
     
-    // For now, just skip the unicode characters
     advance(); advance(); advance(); advance();
-    return "?"; // Placeholder
+    return "?";
 }
 
 void Lexer::add_error(const std::string& message) {
-    // For SyntaxError messages, format them more cleanly for test262 compatibility
     if (message.find("SyntaxError:") == 0) {
         errors_.push_back(message);
     } else {
@@ -1210,18 +1107,9 @@ bool Lexer::is_reserved_word(const std::string& word) const {
 }
 
 bool Lexer::can_be_regex_literal() const {
-    // Simple heuristic: regex literals can appear after:
-    // - assignment operators (=, +=, -=, etc.)
-    // - comparison operators (==, !=, <, >, etc.)
-    // - logical operators (&&, ||, !)
-    // - control flow keywords (if, for, while, return, etc.)
-    // - opening parentheses, brackets, braces
-    // - commas, semicolons
-    // - beginning of input
     
     if (position_ == 0) return true;
     
-    // Look backwards to find the last non-whitespace character
     size_t pos = position_ - 1;
     while (pos > 0 && (is_whitespace(source_[pos]) || is_line_terminator(source_[pos]))) {
         pos--;
@@ -1231,7 +1119,6 @@ bool Lexer::can_be_regex_literal() const {
     
     char prev_char = source_[pos];
     
-    // Check for characters that typically precede regex literals
     return prev_char == '=' || prev_char == '(' || prev_char == '[' || 
            prev_char == '{' || prev_char == ',' || prev_char == ';' || 
            prev_char == ':' || prev_char == '!' || prev_char == '&' || 
@@ -1243,16 +1130,14 @@ bool Lexer::can_be_regex_literal() const {
 
 Token Lexer::read_regex() {
     Position start = current_position_;
-    advance(); // consume initial '/'
+    advance();
     
     std::string pattern;
     
-    // Read the pattern until we find the closing '/'
     while (!at_end() && current_char() != '/') {
         char ch = current_char();
         
         if (ch == '\\') {
-            // Handle escape sequences
             pattern += ch;
             advance();
             if (!at_end()) {
@@ -1260,7 +1145,6 @@ Token Lexer::read_regex() {
                 advance();
             }
         } else if (ch == '\n' || ch == '\r') {
-            // Regex literals cannot contain unescaped newlines
             add_error("Unterminated regex literal");
             return create_token(TokenType::INVALID, start);
         } else {
@@ -1274,13 +1158,11 @@ Token Lexer::read_regex() {
         return create_token(TokenType::INVALID, start);
     }
     
-    advance(); // consume closing '/'
+    advance();
     
-    // Read flags
     std::string flags;
     while (!at_end() && is_identifier_part(current_char())) {
         char flag = current_char();
-        // Valid regex flags: g, i, m, s, u, y
         if (flag == 'g' || flag == 'i' || flag == 'm' || 
             flag == 's' || flag == 'u' || flag == 'y') {
             flags += flag;
@@ -1290,9 +1172,8 @@ Token Lexer::read_regex() {
         }
     }
     
-    // Create the regex token with the full regex string
     std::string regex_value = "/" + pattern + "/" + flags;
     return create_token(TokenType::REGEX, regex_value, start);
 }
 
-} // namespace Quanta
+}

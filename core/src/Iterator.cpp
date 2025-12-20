@@ -4,25 +4,21 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "Iterator.h"
-#include "Context.h"
-#include "Symbol.h"
-#include "MapSet.h"
-#include "../../parser/include/AST.h"
+#include "quanta/Iterator.h"
+#include "quanta/Context.h"
+#include "quanta/Symbol.h"
+#include "quanta/MapSet.h"
+#include "quanta/AST.h"
 #include <iostream>
 
 namespace Quanta {
 
-//=============================================================================
-// Iterator Implementation
-//=============================================================================
 
 Iterator::Iterator(NextFunction next_fn) 
     : Object(ObjectType::Custom), next_fn_(next_fn), done_(false) {
-    // Set up the next method on this iterator instance
     auto next_method = ObjectFactory::create_native_function("next", 
         [this](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args; // Unused parameter
+            (void)args;
             auto result = this->next();
             return Iterator::create_iterator_result(result.value, result.done);
         });
@@ -31,15 +27,13 @@ Iterator::Iterator(NextFunction next_fn)
 
 Iterator::Iterator() 
     : Object(ObjectType::Custom), done_(false) {
-    // Default constructor - next_fn_ will be set later
 }
 
 void Iterator::set_next_function(NextFunction next_fn) {
     next_fn_ = next_fn;
-    // Set up the next method on this iterator instance
     auto next_method = ObjectFactory::create_native_function("next", 
         [this](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args; // Unused parameter
+            (void)args;
             auto result = this->next();
             return Iterator::create_iterator_result(result.value, result.done);
         });
@@ -60,7 +54,7 @@ Iterator::IteratorResult Iterator::next() {
 }
 
 Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
@@ -124,27 +118,22 @@ Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Iterator::setup_iterator_prototype(Context& ctx) {
-    // Create Iterator.prototype
     auto iterator_prototype = ObjectFactory::create_object();
     
-    // Add next method
     auto next_fn = ObjectFactory::create_native_function("next", iterator_next);
     iterator_prototype->set_property("next", Value(next_fn.release()));
     
-    // Add return method
     auto return_fn = ObjectFactory::create_native_function("return", iterator_return);
     iterator_prototype->set_property("return", Value(return_fn.release()));
     
-    // Add throw method
     auto throw_fn = ObjectFactory::create_native_function("throw", iterator_throw);
     iterator_prototype->set_property("throw", Value(throw_fn.release()));
     
-    // Add Symbol.iterator method (iterators are iterable)
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto self_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
             [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args; // Unused parameter
+                (void)args;
                 return ctx.get_binding("this");
             });
         iterator_prototype->set_property(iterator_symbol->to_string(), Value(self_iterator_fn.release()));
@@ -160,9 +149,6 @@ Value Iterator::create_iterator_result(const Value& value, bool done) {
     return Value(result_obj.release());
 }
 
-//=============================================================================
-// ArrayIterator Implementation
-//=============================================================================
 
 ArrayIterator::ArrayIterator(Object* array, Kind kind) 
     : Iterator([this]() { return this->next_impl(); }), array_(array), kind_(kind), index_(0) {
@@ -207,19 +193,15 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
     return IteratorResult(Value(), true);
 }
 
-//=============================================================================
-// StringIterator Implementation
-//=============================================================================
 
 StringIterator::StringIterator(const std::string& str) 
     : Iterator(), string_(str), position_(0) {
-    // Use a static method to avoid lambda capture issues
     auto next_method = ObjectFactory::create_native_function("next", StringIterator::string_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
 }
 
 Iterator::IteratorResult StringIterator::next() {
-    return next_impl(); // Call the implementation directly
+    return next_impl();
 }
 
 Iterator::IteratorResult StringIterator::next_impl() {
@@ -227,58 +209,49 @@ Iterator::IteratorResult StringIterator::next_impl() {
         return IteratorResult(Value(), true);
     }
     
-    // Simple character iteration (not Unicode-aware for now)
     std::string character(1, string_[position_++]);
     return IteratorResult(Value(character), false);
 }
 
 Value StringIterator::string_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Suppress unused warning
+    (void)args;
     
-    // Get the 'this' binding from the context
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
         ctx.throw_exception(Value("StringIterator next() called without proper this binding"));
         return Value();
     }
     
-    // Ensure it's actually a StringIterator
     if (this_obj->get_type() != Object::ObjectType::Custom) {
         ctx.throw_exception(Value("StringIterator next() called on non-iterator object"));
         return Value();
     }
     
     StringIterator* string_iter = static_cast<StringIterator*>(this_obj);
-    auto result = string_iter->next();  // Call next() not next_impl()
+    auto result = string_iter->next();
     return Iterator::create_iterator_result(result.value, result.done);
 }
 
-//=============================================================================
-// MapIterator Implementation
-//=============================================================================
 
 MapIterator::MapIterator(Map* map, Kind kind) 
     : Iterator(), map_(map), kind_(kind), index_(0) {
-    // Use a static method to avoid lambda capture issues
     auto next_method = ObjectFactory::create_native_function("next", MapIterator::map_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
 }
 
 Iterator::IteratorResult MapIterator::next() {
-    return next_impl(); // Call the implementation directly
+    return next_impl();
 }
 
 Value MapIterator::map_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
-    // Get the 'this' binding from the context
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
         ctx.throw_exception(Value("MapIterator next() called without proper this binding"));
         return Value();
     }
     
-    // Ensure it's actually a MapIterator
     if (this_obj->get_type() != Object::ObjectType::Custom) {
         ctx.throw_exception(Value("MapIterator next() called on non-iterator object"));
         return Value();
@@ -300,7 +273,7 @@ Iterator::IteratorResult MapIterator::next_impl() {
     }
     
     auto& entry = entries[index_];
-    index_++; // Increment after getting the entry
+    index_++;
     
     switch (kind_) {
         case Kind::Keys:
@@ -320,32 +293,26 @@ Iterator::IteratorResult MapIterator::next_impl() {
     return IteratorResult(Value(), true);
 }
 
-//=============================================================================
-// SetIterator Implementation
-//=============================================================================
 
 SetIterator::SetIterator(Set* set, Kind kind) 
     : Iterator(), set_(set), kind_(kind), index_(0) {
-    // Use a static method to avoid lambda capture issues
     auto next_method = ObjectFactory::create_native_function("next", SetIterator::set_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
 }
 
 Iterator::IteratorResult SetIterator::next() {
-    return next_impl(); // Call the implementation directly
+    return next_impl();
 }
 
 Value SetIterator::set_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args; // Unused parameter
+    (void)args;
     
-    // Get the 'this' binding from the context
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
         ctx.throw_exception(Value("SetIterator next() called without proper this binding"));
         return Value();
     }
     
-    // Ensure it's actually a SetIterator
     if (this_obj->get_type() != Object::ObjectType::Custom) {
         ctx.throw_exception(Value("SetIterator next() called on non-iterator object"));
         return Value();
@@ -371,7 +338,6 @@ Iterator::IteratorResult SetIterator::next_impl() {
     size_t old_index = index_;
     index_++;
     
-    // Add some basic bounds checking
     if (old_index >= values.size()) {
         return IteratorResult(Value(), true);
     }
@@ -391,9 +357,6 @@ Iterator::IteratorResult SetIterator::next_impl() {
     return IteratorResult(Value(), true);
 }
 
-//=============================================================================
-// IterableUtils Implementation
-//=============================================================================
 
 namespace IterableUtils {
 
@@ -429,7 +392,6 @@ std::unique_ptr<Iterator> get_iterator(const Value& value, Context& ctx) {
         return nullptr;
     }
     
-    // Call the iterator method
     Function* iterator_fn = iterator_method.as_function();
     Value iterator_result = iterator_fn->call(ctx, {}, value);
     
@@ -483,7 +445,6 @@ void for_of_loop(const Value& iterable,
 }
 
 void setup_array_iterator_methods(Context& ctx) {
-    // Get Array.prototype
     Value array_constructor = ctx.get_binding("Array");
     if (!array_constructor.is_function()) {
         return;
@@ -497,10 +458,9 @@ void setup_array_iterator_methods(Context& ctx) {
     
     Object* array_proto = array_prototype.as_object();
     
-    // Add keys() method
     auto keys_fn = ObjectFactory::create_native_function("keys",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args; // Unused parameter
+            (void)args;
             Object* array = ctx.get_this_binding();
             if (!array) {
                 ctx.throw_exception(Value("Array.prototype.keys called on non-object"));
@@ -510,10 +470,9 @@ void setup_array_iterator_methods(Context& ctx) {
             return Value(iterator.release());
         });
     
-    // Add values() method
     auto values_fn = ObjectFactory::create_native_function("values",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args; // Unused parameter
+            (void)args;
             Object* array = ctx.get_this_binding();
             if (!array) {
                 ctx.throw_exception(Value("Array.prototype.values called on non-object"));
@@ -523,10 +482,9 @@ void setup_array_iterator_methods(Context& ctx) {
             return Value(iterator.release());
         });
     
-    // Add entries() method
     auto entries_fn = ObjectFactory::create_native_function("entries",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args; // Unused parameter
+            (void)args;
             Object* array = ctx.get_this_binding();
             if (!array) {
                 ctx.throw_exception(Value("Array.prototype.entries called on non-object"));
@@ -540,12 +498,11 @@ void setup_array_iterator_methods(Context& ctx) {
     array_proto->set_property("values", Value(values_fn.release()));
     array_proto->set_property("entries", Value(entries_fn.release()));
     
-    // Add Symbol.iterator method (default to values)
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto default_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
             [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args; // Unused parameter
+                (void)args;
                 Object* array = ctx.get_this_binding();
                 if (!array) {
                     ctx.throw_exception(Value("Array.prototype[Symbol.iterator] called on non-object"));
@@ -560,7 +517,6 @@ void setup_array_iterator_methods(Context& ctx) {
 }
 
 void setup_string_iterator_methods(Context& ctx) {
-    // Get String.prototype
     Value string_constructor = ctx.get_binding("String");
     if (!string_constructor.is_function()) {
         return;
@@ -574,12 +530,11 @@ void setup_string_iterator_methods(Context& ctx) {
     
     Object* string_proto = string_prototype.as_object();
     
-    // Add Symbol.iterator method
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
             [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args; // Unused parameter
+                (void)args;
                 Value this_value = ctx.get_binding("this");
                 std::string str = this_value.to_string();
                 
@@ -592,15 +547,11 @@ void setup_string_iterator_methods(Context& ctx) {
 }
 
 void setup_map_iterator_methods(Context& ctx) {
-    // Implementation would be similar to array iterator methods
-    // but for Map objects
 }
 
 void setup_set_iterator_methods(Context& ctx) {
-    // Implementation would be similar to array iterator methods
-    // but for Set objects
 }
 
-} // namespace IterableUtils
+}
 
-} // namespace Quanta
+}

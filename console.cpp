@@ -4,13 +4,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "core/include/Engine.h"
-#include "core/include/Async.h"
-#include "core/include/Generator.h"
-#include "core/include/Iterator.h"
-#include "core/include/ProxyReflect.h"
-#include "lexer/include/Lexer.h"
-#include "parser/include/Parser.h"
+#include "quanta/Engine.h"
+#include "quanta/Async.h"
+#include "quanta/Generator.h"
+#include "quanta/Iterator.h"
+#include "quanta/ProxyReflect.h"
+#include "quanta/Lexer.h"
+#include "quanta/Parser.h"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -22,7 +22,6 @@
 #include <conio.h>
 #endif
 
-// Optional readline support for better UX
 #ifdef USE_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -30,7 +29,6 @@
 
 using namespace Quanta;
 
-// ANSI color codes for better terminal output - disabled for test262 compatibility
 static const std::string RESET = "";
 static const std::string BOLD = "";
 static const std::string RED = "";
@@ -45,22 +43,17 @@ private:
     std::unique_ptr<Engine> engine_;
     
 public:
-    // Helper function to detect if content uses ES6 module syntax
     bool has_es6_module_syntax(const std::string& content) {
-        // Simple detection: look for import/export statements at the beginning of lines
         std::istringstream stream(content);
         std::string line;
         
         while (std::getline(stream, line)) {
-            // Trim leading whitespace
             size_t start = line.find_first_not_of(" \t\r\n");
             if (start == std::string::npos) continue;
             
             std::string trimmed = line.substr(start);
             
-            // Check for import/export statements
             if (trimmed.substr(0, 6) == "import" || trimmed.substr(0, 6) == "export") {
-                // Make sure it's actually a keyword, not part of a string/comment
                 if (trimmed.length() == 6 || std::isspace(trimmed[6]) || trimmed[6] == '{' || trimmed[6] == '*') {
                     return true;
                 }
@@ -73,23 +66,20 @@ private:
     
 public:
     QuantaConsole() {
-        // Initialize engine with optimized configuration
         engine_ = std::make_unique<Engine>();
-        bool init_result = engine_->initialize();  // Minimal lazy init!
+        bool init_result = engine_->initialize();
         
         if (!init_result) {
             std::cout << "Engine initialization failed!" << std::endl;
         }
     }
     
-    // Execute file as ES6 module (silent mode for test262 compatibility)
     bool execute_as_module(const std::string& filename, bool silent = false) {
         try {
             if (!silent) {
                 std::cout << CYAN << "Auto-detected ES6 module syntax - loading as module..." << RESET << std::endl;
             }
 
-            // Use the module loader to load and execute the file
             ModuleLoader* module_loader = engine_->get_module_loader();
             if (!module_loader) {
                 if (!silent) {
@@ -98,7 +88,6 @@ public:
                 return false;
             }
 
-            // Load the module (this will execute it)
             Module* module = module_loader->load_module(filename, "");
             if (module) {
                 if (!silent) {
@@ -120,7 +109,6 @@ public:
         }
     }
     
-    // for faster responses we are not not using this
     void print_banner() {
         std::cout << CYAN << BOLD;
         std::cout << "╔═══════════════════════════════════════════════════════════════╗\n";
@@ -192,10 +180,8 @@ public:
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
             if (!result.success) {
-                // Display Node.js-style error message with file path and line number
                 std::cout << RED;
 
-                // Show the filename and location if available
                 if (filename != "<console>" && (result.line_number > 0 || result.column_number > 0)) {
                     std::cout << filename;
                     if (result.line_number > 0) {
@@ -207,21 +193,14 @@ public:
                     std::cout << "\n";
                 }
 
-                // Show the error message
                 std::cout << result.error_message << RESET << std::endl;
                 return false;
             }
             
-            // Only show result if it's not undefined and result display is enabled
-            // For file execution (show_result=false), never show expression results
-            // Only show result if it's not undefined and result display is enabled
-            // For file execution (show_result=false), never show expression results
             if (show_result && !result.value.is_undefined()) {
                 std::cout << GREEN << result.value.to_string() << RESET << std::endl;
             }
             
-            // Optional: Show execution time
-            //std::cout << "Execution time: " << duration.count() << "ms" << std::endl;
             
             return true;
         } catch (const std::exception& e) {
@@ -232,14 +211,13 @@ public:
     
     void clear_screen() {
         std::cout << "\033[2J\033[H";
-        // Fast mode - no banner
     }
     
     std::string get_input() {
 #ifdef USE_READLINE
         std::string prompt = GREEN + ">> " + RESET;
         char* line = readline(prompt.c_str());
-        if (!line) return ""; // EOF
+        if (!line) return "";
         
         std::string input(line);
         if (!input.empty()) {
@@ -251,24 +229,22 @@ public:
         std::cout << GREEN << ">> " << RESET;
         std::string input;
         if (!std::getline(std::cin, input)) {
-            return ""; // EOF
+            return "";
         }
         return input;
 #endif
     }
     
     void run() {
-        // Fast mode - no banner
         
         std::string input;
         while (true) {
             input = get_input();
             
             if (input.empty()) {
-                break; // EOF
+                break;
             }
             
-            // Handle commands
             if (input[0] == '.') {
                 std::istringstream iss(input);
                 std::string command;
@@ -304,7 +280,6 @@ public:
                     std::cout << "Type " << BOLD << ".help" << RESET << " for available commands.\n";
                 }
             } else {
-                // Evaluate as expression/statement
                 evaluate_expression(input);
             }
         }
@@ -316,7 +291,6 @@ int main(int argc, char* argv[]) {
         
         QuantaConsole console;
         
-        // Check for -c flag for direct code execution
         bool execute_code = false;
         std::string code_to_execute;
         std::string filename;
@@ -325,34 +299,26 @@ int main(int argc, char* argv[]) {
             std::string arg = argv[i];
 
             if (arg == "-c" && i + 1 < argc) {
-                // -c flag: execute the next argument as code
                 execute_code = true;
                 code_to_execute = argv[i + 1];
-                i++; // Skip the next argument since we consumed it
+                i++;
                 continue;
             } else if (arg.find("--") == 0) {
-                // Skip known Node.js/V8 flags that test262 might pass
                 continue;
             } else if (filename.empty()) {
-                // First non-flag argument is the filename
                 filename = arg;
             }
         }
         
-        // If -c flag provided, execute the code directly
         if (execute_code) {
             bool success = console.evaluate_expression(code_to_execute, false, true);
 
-            // Process any pending async tasks
             EventLoop::instance().process_microtasks();
 
             return success ? 0 : 1;
         }
 
-        // If file argument provided, execute it instead of interactive mode
         if (!filename.empty()) {
-            // Show banner for file execution too
-            // Fast mode - no banner
             
             std::ifstream file(filename);
             if (!file.is_open()) {
@@ -364,17 +330,13 @@ int main(int argc, char* argv[]) {
             buffer << file.rdbuf();
             std::string content = buffer.str();
             
-            // Auto-detect ES6 module syntax and choose execution method
             bool success = false;
             if (console.has_es6_module_syntax(content)) {
-                // Execute as ES6 module (silent for test262)
                 success = console.execute_as_module(filename, true);
             } else {
-                // Execute as regular script
                 success = console.evaluate_expression(content, false, false, filename);
             }
             
-            // Process any pending async tasks
             EventLoop::instance().process_microtasks();
             
             return success ? 0 : 1;
