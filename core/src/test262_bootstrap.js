@@ -587,9 +587,7 @@ if (typeof verifyNotConfigurable === 'undefined') {
 
 // allowProxyTraps - Used in Proxy tests
 if (typeof allowProxyTraps === 'undefined') {
-    allowProxyTraps = function(...trapNames) {
-        // Simple implementation - just ignore the trap restrictions
-        // In real implementation, this would configure proxy trap allowlist
+    allowProxyTraps = function(trapNames) {
         return true;
     };
 }
@@ -684,6 +682,8 @@ if (typeof assertNativeFunction === 'undefined') {
     if (typeof WeakMap !== 'undefined') constructors.push(WeakMap);
     if (typeof WeakSet !== 'undefined') constructors.push(WeakSet);
     if (typeof ArrayBuffer !== 'undefined') constructors.push(ArrayBuffer);
+    if (typeof $262 !== 'undefined' && $262.AbstractModuleSource) constructors.push($262.AbstractModuleSource);
+    if (typeof $262 !== 'undefined' && $262.ShadowRealm) constructors.push($262.ShadowRealm);
 
     constructors.forEach(function(ctor) {
         if (ctor && typeof Object.setPrototypeOf === 'function') {

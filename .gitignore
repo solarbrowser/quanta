@@ -22,6 +22,7 @@
 
 # Build directories and artifacts
 build/
+build-cmake/
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
