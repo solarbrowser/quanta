@@ -5601,9 +5601,25 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 
 
 Value ForStatement::evaluate(Context& ctx) {
-    
+
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+        auto* jit = ctx.get_engine()->get_jit_compiler();
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        Value jit_result;
+        if (jit->try_execute_jit(this, ctx, jit_result)) {
+            auto end = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            jit->record_execution(this, elapsed);
+            return jit_result;
+        }
+
+        jit->record_execution(this, 0);
+    }
+
     ctx.push_block_scope();
-    
+
     Value result;
     try {
         if (init_) {

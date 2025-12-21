@@ -34,9 +34,10 @@ namespace Quanta {
 
 Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
-    
+
     garbage_collector_ = std::make_unique<GarbageCollector>();
-    
+    jit_compiler_ = std::make_unique<JITCompiler>();
+
     config_.strict_mode = false;
     config_.enable_jit = true;
     config_.enable_optimizations = true;
@@ -48,9 +49,13 @@ Engine::Engine() : initialized_(false), execution_count_(0),
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
-Engine::Engine(const Config& config) 
+Engine::Engine(const Config& config)
     : config_(config), initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
+
+    garbage_collector_ = std::make_unique<GarbageCollector>();
+    jit_compiler_ = std::make_unique<JITCompiler>();
+
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
@@ -717,7 +722,28 @@ std::string Engine::get_gc_stats() const {
 }
 
 std::string Engine::get_jit_stats() const {
-    return "JIT Stats: Simulation code removed";
+    if (!jit_compiler_) {
+        return "JIT Stats: Not initialized";
+    }
+
+    const auto& stats = jit_compiler_->get_stats();
+
+    std::string result = "=== JIT Compiler Statistics ===\n";
+    result += "Total Compilations: " + std::to_string(stats.total_compilations) + "\n";
+    result += "  Bytecode: " + std::to_string(stats.bytecode_compilations) + "\n";
+    result += "  Optimized: " + std::to_string(stats.optimized_compilations) + "\n";
+    result += "  Machine Code: " + std::to_string(stats.machine_code_compilations) + "\n";
+    result += "\nCache Performance:\n";
+    result += "  Hits: " + std::to_string(stats.cache_hits) + "\n";
+    result += "  Misses: " + std::to_string(stats.cache_misses) + "\n";
+    result += "  Hit Ratio: " + std::to_string(stats.get_cache_hit_ratio() * 100.0) + "%\n";
+
+    if (stats.total_jit_time_ns > 0) {
+        result += "\nPerformance:\n";
+        result += "  Speedup: " + std::to_string(stats.get_speedup()) + "x\n";
+    }
+
+    return result;
 }
 
 }

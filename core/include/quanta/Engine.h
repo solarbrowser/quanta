@@ -12,6 +12,7 @@
 #include "quanta/Context.h"
 #include "quanta/ModuleLoader.h"
 #include "quanta/GC.h"
+#include "quanta/JIT.h"
 #include "quanta/AST.h"
 #include <string>
 #include <memory>
@@ -59,9 +60,10 @@ private:
     Config config_;
     std::unique_ptr<Context> global_context_;
     std::unique_ptr<ModuleLoader> module_loader_;
-    
+
     std::unique_ptr<GarbageCollector> garbage_collector_;
-    
+    std::unique_ptr<JITCompiler> jit_compiler_;
+
     bool initialized_;
     uint64_t execution_count_;
     
@@ -119,6 +121,7 @@ public:
     std::string get_gc_stats() const;
     
     class GarbageCollector* get_garbage_collector() const { return garbage_collector_.get(); }
+    class JITCompiler* get_jit_compiler() const { return jit_compiler_.get(); }
     
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);
