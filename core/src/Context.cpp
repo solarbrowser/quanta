@@ -4122,11 +4122,22 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(0.0);
             return Value(args[0].to_number());
         });
-    number_constructor->set_property("MAX_VALUE", Value(std::numeric_limits<double>::max()));
-    number_constructor->set_property("MIN_VALUE", Value(5e-324));
-    number_constructor->set_property("NaN", Value(std::numeric_limits<double>::quiet_NaN()));
-    number_constructor->set_property("POSITIVE_INFINITY", Value(std::numeric_limits<double>::infinity()));
-    number_constructor->set_property("NEGATIVE_INFINITY", Value(-std::numeric_limits<double>::infinity()));
+    PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("MAX_VALUE", max_value_desc);
+    PropertyDescriptor min_value_desc(Value(5e-324), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("MIN_VALUE", min_value_desc);
+    PropertyDescriptor nan_desc(Value(std::numeric_limits<double>::quiet_NaN()), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("NaN", nan_desc);
+    PropertyDescriptor pos_inf_desc(Value(std::numeric_limits<double>::infinity()), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("POSITIVE_INFINITY", pos_inf_desc);
+    PropertyDescriptor neg_inf_desc(Value(-std::numeric_limits<double>::infinity()), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("NEGATIVE_INFINITY", neg_inf_desc);
+    PropertyDescriptor epsilon_desc(Value(2.220446049250313e-16), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("EPSILON", epsilon_desc);
+    PropertyDescriptor max_safe_desc(Value(9007199254740991.0), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("MAX_SAFE_INTEGER", max_safe_desc);
+    PropertyDescriptor min_safe_desc(Value(-9007199254740991.0), PropertyAttributes::None);
+    number_constructor->set_property_descriptor("MIN_SAFE_INTEGER", min_safe_desc);
     
     auto isInteger_fn = ObjectFactory::create_native_function("isInteger",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4167,7 +4178,19 @@ void Context::initialize_built_ins() {
             return Value(val > -MAX_FINITE && val < MAX_FINITE);
         }, 1);
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()));
-    
+
+    auto isSafeInteger_fn = ObjectFactory::create_native_function("isSafeInteger",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(false);
+            if (!args[0].is_number()) return Value(false);
+            double num = args[0].to_number();
+            if (!std::isfinite(num)) return Value(false);
+            if (std::floor(num) != num) return Value(false);
+            const double MAX_SAFE = 9007199254740991.0;
+            return Value(num >= -MAX_SAFE && num <= MAX_SAFE);
+        }, 1);
+    number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()));
+
     auto numberParseFloat_fn = ObjectFactory::create_native_function("parseFloat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {

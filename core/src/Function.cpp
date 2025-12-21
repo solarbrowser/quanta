@@ -36,9 +36,11 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
     
     this->set_property("prototype", Value(prototype_));
-    
-    this->set_property("name", Value(name_));
-    this->set_property("length", Value(static_cast<double>(parameters_.size())));
+
+    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
+    this->set_property_descriptor("name", name_desc);
+    PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
+    this->set_property_descriptor("length", length_desc);
     
 }
 
@@ -57,13 +59,11 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
     
     this->set_property("prototype", Value(prototype_));
-    
-    this->set_property("name", Value(name_));
-    this->set_property("length", Value(static_cast<double>(parameters_.size())));
-    
-    Object::set_property("name", Value(name_), PropertyAttributes::Default);
-    Object::set_property("length", Value(static_cast<double>(parameters_.size())), PropertyAttributes::Default);
-    Object::set_property("prototype", Value(prototype_), PropertyAttributes::Default);
+
+    PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
+    this->set_property_descriptor("name", name_desc);
+    PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
+    this->set_property_descriptor("length", length_desc);
 }
 
 Function::Function(const std::string& name,
