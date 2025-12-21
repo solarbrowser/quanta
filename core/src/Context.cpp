@@ -1356,8 +1356,12 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(false);
             return Value(args[0].is_object() && args[0].as_object()->is_array());
         }, 1);
-    array_constructor->set_property("isArray", Value(isArray_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    
+    // Note: Using set_property with explicit attrs since built-in function properties need Writable | Configurable
+    // Default for Function::set_property is None, so we must explicitly pass attrs
+    Function* isArray_ptr = isArray_fn.release();
+    PropertyAttributes isArray_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    array_constructor->set_property("isArray", Value(isArray_ptr), isArray_attrs);
+
     auto from_fn = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(ObjectFactory::create_array().release());
@@ -1419,7 +1423,9 @@ void Context::initialize_built_ins() {
             result->set_property("length", Value(static_cast<double>(length)));
             return Value(result);
         }, 1);
-    array_constructor->set_property("from", Value(from_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    Function* from_ptr = from_fn.release();
+    PropertyAttributes from_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    array_constructor->set_property("from", Value(from_ptr), from_attrs);
     
     auto of_fn = ObjectFactory::create_native_function("of",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1448,7 +1454,9 @@ void Context::initialize_built_ins() {
             result->set_property("length", Value(static_cast<double>(args.size())));
             return Value(result);
         }, 0);
-    array_constructor->set_property("of", Value(of_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    Function* of_ptr = of_fn.release();
+    PropertyAttributes of_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    array_constructor->set_property("of", Value(of_ptr), of_attrs);
 
     auto fromAsync_fn = ObjectFactory::create_native_function("fromAsync",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4590,11 +4598,11 @@ void Context::initialize_built_ins() {
     register_built_in_object("JSON", json_object.release());
     
     auto math_object = std::make_unique<Object>();
-    
-    math_object->set_property("PI", Value(3.141592653589793),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("E", Value(2.718281828459045),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
+
+    PropertyDescriptor pi_desc(Value(3.141592653589793), PropertyAttributes::None);
+    math_object->set_property_descriptor("PI", pi_desc);
+    PropertyDescriptor e_desc(Value(2.718281828459045), PropertyAttributes::None);
+    math_object->set_property_descriptor("E", e_desc);
 
     auto store_fn = [](std::unique_ptr<Function> func) -> Function* {
         Function* ptr = func.get();
@@ -4929,18 +4937,18 @@ void Context::initialize_built_ins() {
         }, 1);
     math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
-    math_object->set_property("LN10", Value(2.302585092994046),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("LN2", Value(0.6931471805599453),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("LOG10E", Value(0.4342944819032518),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("LOG2E", Value(1.4426950408889634),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("SQRT1_2", Value(0.7071067811865476),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
-    math_object->set_property("SQRT2", Value(1.4142135623730951),
-        static_cast<PropertyAttributes>(PropertyAttributes::None));
+    PropertyDescriptor ln10_desc(Value(2.302585092994046), PropertyAttributes::None);
+    math_object->set_property_descriptor("LN10", ln10_desc);
+    PropertyDescriptor ln2_desc(Value(0.6931471805599453), PropertyAttributes::None);
+    math_object->set_property_descriptor("LN2", ln2_desc);
+    PropertyDescriptor log10e_desc(Value(0.4342944819032518), PropertyAttributes::None);
+    math_object->set_property_descriptor("LOG10E", log10e_desc);
+    PropertyDescriptor log2e_desc(Value(1.4426950408889634), PropertyAttributes::None);
+    math_object->set_property_descriptor("LOG2E", log2e_desc);
+    PropertyDescriptor sqrt1_2_desc(Value(0.7071067811865476), PropertyAttributes::None);
+    math_object->set_property_descriptor("SQRT1_2", sqrt1_2_desc);
+    PropertyDescriptor sqrt2_desc(Value(1.4142135623730951), PropertyAttributes::None);
+    math_object->set_property_descriptor("SQRT2", sqrt2_desc);
 
     PropertyDescriptor math_tag_desc(Value(std::string("Math")), PropertyAttributes::Configurable);
     math_object->set_property_descriptor("Symbol.toStringTag", math_tag_desc);

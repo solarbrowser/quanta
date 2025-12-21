@@ -445,11 +445,19 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     if (!is_extensible()) {
         return false;
     }
-    
+
+    // Store non-default attrs in descriptor map (shape may use cached transitions with wrong attrs)
+    if (attrs != PropertyAttributes::Default) {
+        if (!descriptors_) {
+            descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+        }
+        (*descriptors_)[key] = PropertyDescriptor(value, attrs);
+    }
+
     if (store_in_shape(key, value, attrs)) {
         return true;
     }
-    
+
     return store_in_overflow(key, value);
 }
 
@@ -586,25 +594,28 @@ std::vector<uint32_t> Object::get_element_indices() const {
 }
 
 PropertyDescriptor Object::get_property_descriptor(const std::string& key) const {
+    // Check descriptor map first (takes precedence over shape attrs)
     if (descriptors_) {
         auto it = descriptors_->find(key);
         if (it != descriptors_->end()) {
             return it->second;
         }
     }
-    
+
+    // Property not in descriptor map, check if it exists and get attrs from shape
     if (has_own_property(key)) {
         Value value = get_own_property(key);
         PropertyAttributes attrs = PropertyAttributes::Default;
-        
+
+        // Check shape for attrs (for properties stored in shape)
         if (header_.shape->has_property(key)) {
             auto info = header_.shape->get_property_info(key);
             attrs = info.attributes;
         }
-        
+
         return PropertyDescriptor(value, attrs);
     }
-    
+
     return PropertyDescriptor();
 }
 

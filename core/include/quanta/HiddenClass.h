@@ -91,7 +91,7 @@ public:
     const HiddenClassPropertyDescriptor* get_property_descriptor(const std::string& name) const;
     const HiddenClassPropertyDescriptor* get_property_descriptor(PropertyIndex index) const;
     
-    std::shared_ptr<HiddenClass> add_property(const std::string& name, PropertyType type = PropertyType::DATA);
+    std::shared_ptr<HiddenClass> add_property(const std::string& name, PropertyType type = PropertyType::DATA, HiddenClassPropertyAttributes attrs = HiddenClassPropertyAttributes::DEFAULT);
     std::shared_ptr<HiddenClass> remove_property(const std::string& name);
     std::shared_ptr<HiddenClass> change_property_type(const std::string& name, PropertyType new_type);
     

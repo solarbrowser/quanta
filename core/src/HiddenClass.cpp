@@ -63,32 +63,33 @@ const HiddenClassPropertyDescriptor* HiddenClass::get_property_descriptor(Proper
     return nullptr;
 }
 
-std::shared_ptr<HiddenClass> HiddenClass::add_property(const std::string& name, PropertyType type) {
+std::shared_ptr<HiddenClass> HiddenClass::add_property(const std::string& name, PropertyType type, HiddenClassPropertyAttributes attrs) {
     if (has_property(name)) {
         return shared_from_this();
     }
-    
+
     auto transition_it = transitions_.find(name);
     if (transition_it != transitions_.end()) {
         return transition_it->second;
     }
-    
+
     auto new_class = std::make_shared<HiddenClass>(shared_from_this());
-    
+
     PropertyIndex new_index = static_cast<PropertyIndex>(new_class->properties_.size());
     HiddenClassPropertyDescriptor desc(name, new_index);
     desc.type = type;
-    
+    desc.attributes = attrs;
+
     new_class->properties_.push_back(desc);
     new_class->property_map_[name] = new_index;
     new_class->invalidate_fast_indices();
-    
+
     transitions_[name] = new_class;
     mark_unstable();
-    
-    std::cout << "➕ PROPERTY ADDED: '" << name << "' to class " << class_id_ 
+
+    std::cout << "➕ PROPERTY ADDED: '" << name << "' to class " << class_id_
              << " -> new class " << new_class->class_id_ << std::endl;
-    
+
     return new_class;
 }
 
