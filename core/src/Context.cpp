@@ -2781,6 +2781,27 @@ void Context::initialize_built_ins() {
     PropertyDescriptor array_tag_desc(Value(std::string("Array")), PropertyAttributes::Configurable);
     array_proto_ptr->set_property_descriptor("Symbol.toStringTag", array_tag_desc);
 
+    Symbol* unscopables_symbol = Symbol::get_well_known(Symbol::UNSCOPABLES);
+    if (unscopables_symbol) {
+        auto unscopables_obj = ObjectFactory::create_object();
+        unscopables_obj->set_prototype(nullptr);
+        unscopables_obj->set_property("at", Value(true));
+        unscopables_obj->set_property("copyWithin", Value(true));
+        unscopables_obj->set_property("entries", Value(true));
+        unscopables_obj->set_property("fill", Value(true));
+        unscopables_obj->set_property("find", Value(true));
+        unscopables_obj->set_property("findIndex", Value(true));
+        unscopables_obj->set_property("findLast", Value(true));
+        unscopables_obj->set_property("findLastIndex", Value(true));
+        unscopables_obj->set_property("flat", Value(true));
+        unscopables_obj->set_property("flatMap", Value(true));
+        unscopables_obj->set_property("includes", Value(true));
+        unscopables_obj->set_property("keys", Value(true));
+        unscopables_obj->set_property("values", Value(true));
+        PropertyDescriptor unscopables_desc(Value(unscopables_obj.release()), PropertyAttributes::Configurable);
+        array_proto_ptr->set_property_descriptor(unscopables_symbol->get_description(), unscopables_desc);
+    }
+
     array_constructor->set_property("prototype", Value(array_prototype.release()), PropertyAttributes::None);
 
     auto array_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
