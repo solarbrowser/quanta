@@ -9,6 +9,7 @@
 
 #include "quanta/Value.h"
 #include "quanta/Object.h"
+#include "quanta/GC.h"
 #include <vector>
 #include <unordered_map>
 #include <string>
@@ -22,6 +23,7 @@ class StackFrame;
 class Environment;
 class Error;
 class WebAPIInterface;
+class GarbageCollector;
 
 /**
  * JavaScript execution context
@@ -78,7 +80,10 @@ private:
     std::string current_filename_;
     
     WebAPIInterface* web_api_interface_;
-    
+
+    // Garbage collector for memory management
+    GarbageCollector* gc_;  // Points to engine's GC (not owned)
+
     static uint32_t next_context_id_;
 
 public:
@@ -170,6 +175,21 @@ public:
     WebAPIInterface* get_web_api_interface() const { return web_api_interface_; }
     bool has_web_api(const std::string& name) const;
     Value call_web_api(const std::string& name, const std::vector<Value>& args);
+
+    // Garbage collector access
+    GarbageCollector* get_gc() const { return gc_; }
+    void register_object(Object* obj, size_t size = 0);
+    void trigger_gc();
+
+    // Helper to release and auto-register objects with GC
+    template<typename T>
+    T* track(std::unique_ptr<T> obj) {
+        T* raw_ptr = obj.release();
+        if (raw_ptr) {
+            register_object(static_cast<Object*>(raw_ptr), sizeof(T));
+        }
+        return raw_ptr;
+    }
 
 private:
     void initialize_global_context();

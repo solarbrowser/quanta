@@ -10,6 +10,7 @@
 *.tmp
 *.swp
 *.swo
+*.backup
 
 # Compiled binaries and libraries
 *.o

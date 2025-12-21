@@ -46,13 +46,14 @@ static std::vector<std::unique_ptr<Function>> g_owned_native_functions;
 uint32_t Context::next_context_id_ = 1;
 
 
-Context::Context(Engine* engine, Type type) 
+Context::Context(Engine* engine, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
-      execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false), 
-      return_value_(), has_return_value_(false), has_break_(false), has_continue_(false), 
-      strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr) {
-    
+      execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
+      return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
+      strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr),
+      gc_(engine ? engine->get_garbage_collector() : nullptr) {
+
     if (type == Type::Global) {
         initialize_global_context();
     }
@@ -62,11 +63,14 @@ Context::Context(Engine* engine, Context* parent, Type type)
     : type_(type), state_(State::Running), context_id_(next_context_id_++),
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
-      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false), 
-      has_break_(false), has_continue_(false), strict_mode_(parent ? parent->strict_mode_ : false), 
-      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"), 
-      web_api_interface_(parent ? parent->web_api_interface_ : nullptr) {
-    
+      current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
+      has_break_(false), has_continue_(false), strict_mode_(parent ? parent->strict_mode_ : false),
+      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"),
+      web_api_interface_(parent ? parent->web_api_interface_ : nullptr),
+      gc_(engine ? engine->get_garbage_collector() : nullptr) {
+
+    // Use engine's GC (shared across all contexts)
+
     if (parent) {
         built_in_objects_ = parent->built_in_objects_;
         built_in_functions_ = parent->built_in_functions_;
@@ -5801,8 +5805,6 @@ void Context::initialize_built_ins() {
 
     aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()));
 
-    aggregate_error_constructor->set_property("name", Value("AggregateError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-
     if (error_ctor) {
         aggregate_error_constructor->set_prototype(error_ctor);
     }
@@ -7524,6 +7526,48 @@ void Context::setup_global_bindings() {
     
     lexical_environment_->create_binding("console", Value(console_obj.release()), false);
 
+    // GC object with stats(), collect(), heapSize() methods
+    auto gc_obj = ObjectFactory::create_object();
+
+    auto gc_obj_stats_fn = ObjectFactory::create_native_function("stats",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (!ctx.get_gc()) return Value();
+
+            const auto& stats = ctx.get_gc()->get_statistics();
+            auto stats_obj = ObjectFactory::create_object();
+
+            stats_obj->set_property("totalAllocations", Value(static_cast<double>(stats.total_allocations)));
+            stats_obj->set_property("totalDeallocations", Value(static_cast<double>(stats.total_deallocations)));
+            stats_obj->set_property("totalCollections", Value(static_cast<double>(stats.total_collections)));
+            stats_obj->set_property("bytesAllocated", Value(static_cast<double>(stats.bytes_allocated)));
+            stats_obj->set_property("bytesFreed", Value(static_cast<double>(stats.bytes_freed)));
+            stats_obj->set_property("currentMemory", Value(static_cast<double>(stats.bytes_allocated - stats.bytes_freed)));
+            stats_obj->set_property("peakMemoryUsage", Value(static_cast<double>(stats.peak_memory_usage)));
+
+            return Value(stats_obj.release());
+        }, 0);
+
+    auto gc_obj_collect_fn = ObjectFactory::create_native_function("collect",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.get_gc()) {
+                ctx.get_gc()->collect_garbage();
+            }
+            return Value();
+        }, 0);
+
+    auto gc_obj_heap_size_fn = ObjectFactory::create_native_function("heapSize",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.get_gc()) {
+                return Value(static_cast<double>(ctx.get_gc()->get_heap_size()));
+            }
+            return Value();
+        }, 0);
+
+    gc_obj->set_property("stats", Value(gc_obj_stats_fn.release()));
+    gc_obj->set_property("collect", Value(gc_obj_collect_fn.release()));
+    gc_obj->set_property("heapSize", Value(gc_obj_heap_size_fn.release()));
+
+    lexical_environment_->create_binding("gc", Value(gc_obj.release()), false);
 
     auto gc_stats_fn = ObjectFactory::create_native_function("gcStats",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -8878,6 +8922,19 @@ void Context::register_typed_array_constructors() {
         }
     }
 
+}
+
+// Garbage collector integration
+void Context::register_object(Object* obj, size_t size) {
+    if (gc_ && obj) {
+        gc_->register_object(obj, size);
+    }
+}
+
+void Context::trigger_gc() {
+    if (gc_) {
+        gc_->collect_garbage();
+    }
 }
 
 }

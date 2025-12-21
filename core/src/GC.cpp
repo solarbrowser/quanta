@@ -63,28 +63,28 @@ void GarbageCollector::register_object(Object* obj, size_t size) {
     if (collection_mode_ == CollectionMode::Automatic && should_trigger_gc()) {
         static auto last_gc_time = std::chrono::high_resolution_clock::now();
         auto now = std::chrono::high_resolution_clock::now();
-        auto time_since_last = std::chrono::duration_cast<std::chrono::microseconds>(now - last_gc_time);
-        
+        auto time_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_gc_time);
+
         if (ultra_fast_gc_) {
-            if (time_since_last.count() > 500) {
-                if (young_generation_.size() > 50) {
+            if (time_since_last.count() > 100) {
+                if (young_generation_.size() > 2000) {
                     if (parallel_collection_) {
                         std::thread([this]() { collect_young_generation_parallel(); }).detach();
                     } else {
                         collect_young_generation_ultra_fast();
                     }
                     last_gc_time = now;
-                } else if (young_generation_.size() > 150) {
+                } else if (young_generation_.size() > 5000) {
                     force_ultra_fast_collection();
                     last_gc_time = now;
                 }
             }
         } else {
-            if (time_since_last.count() > 5000) {
-                if (young_generation_.size() > 75) {
+            if (time_since_last.count() > 200) {
+                if (young_generation_.size() > 5000) {
                     collect_young_generation();
                     last_gc_time = now;
-                } else if (young_generation_.size() > 200) {
+                } else if (young_generation_.size() > 10000) {
                     collect_garbage();
                     last_gc_time = now;
                 }
@@ -222,41 +222,41 @@ bool GarbageCollector::should_trigger_gc() const {
     size_t current_heap_size = get_heap_size();
     
     if (ultra_fast_gc_) {
-        
+
         if (current_heap_size > heap_size_limit_ * gc_trigger_ratio_) {
             return true;
         }
-        
-        if (young_generation_.size() > 50) {
+
+        if (young_generation_.size() > 2000) {
             return true;
         }
-        
-        if (managed_objects_.size() > 300) {
+
+        if (managed_objects_.size() > 5000) {
             return true;
         }
-        
-        if (stats_.total_allocations % 100 == 0 && stats_.total_allocations > 0) {
+
+        if (stats_.total_allocations % 5000 == 0 && stats_.total_allocations > 0) {
             return true;
         }
-        
+
         if (current_heap_size > young_generation_threshold_ * 2) {
             return true;
         }
-        
+
     } else {
         if (current_heap_size > heap_size_limit_ * gc_trigger_ratio_) {
             return true;
         }
-        
-        if (young_generation_.size() > 150) {
+
+        if (young_generation_.size() > 5000) {
             return true;
         }
-        
-        if (managed_objects_.size() > 750) {
+
+        if (managed_objects_.size() > 10000) {
             return true;
         }
-        
-        if (stats_.total_allocations % 1000 == 0 && stats_.total_allocations > 0) {
+
+        if (stats_.total_allocations % 10000 == 0 && stats_.total_allocations > 0) {
             return true;
         }
     }
@@ -502,7 +502,7 @@ void GarbageCollector::cleanup_weak_references() {
 void GarbageCollector::gc_thread_main() {
     while (!stop_gc_thread_) {
         if (ultra_fast_gc_) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
             
             if (should_trigger_gc()) {
                 if (parallel_collection_) {
