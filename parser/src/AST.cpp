@@ -246,7 +246,27 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 
 
 Value BinaryExpression::evaluate(Context& ctx) {
-    
+    // JIT: Try to execute with JIT compiler for hot arithmetic operations
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+        auto* jit = ctx.get_engine()->get_jit_compiler();
+
+        // Record execution for hotspot detection
+        auto start = std::chrono::high_resolution_clock::now();
+
+        // Try JIT execution
+        Value jit_result;
+        if (jit->try_execute_jit(this, ctx, jit_result)) {
+            // JIT executed successfully
+            auto end = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            jit->record_execution(this, elapsed);
+            return jit_result;
+        }
+
+        // JIT not ready yet, record execution and fall back to interpreter
+        jit->record_execution(this, 0);
+    }
+
     if (operator_ == Operator::ASSIGN || 
         operator_ == Operator::PLUS_ASSIGN ||
         operator_ == Operator::MINUS_ASSIGN ||
@@ -6132,9 +6152,30 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 
 
 Value WhileStatement::evaluate(Context& ctx) {
+    // JIT: Try to execute with JIT compiler
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+        auto* jit = ctx.get_engine()->get_jit_compiler();
+
+        // Record execution for hotspot detection
+        auto start = std::chrono::high_resolution_clock::now();
+
+        // Try JIT execution
+        Value jit_result;
+        if (jit->try_execute_jit(this, ctx, jit_result)) {
+            // JIT executed successfully
+            auto end = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            jit->record_execution(this, elapsed);
+            return jit_result;
+        }
+
+        // JIT not ready yet, record execution and fall back to interpreter
+        jit->record_execution(this, 0);
+    }
+
     int safety_counter = 0;
     const int max_iterations = 1000000000;
-    
+
     try {
         while (true) {
             if (++safety_counter > max_iterations) {

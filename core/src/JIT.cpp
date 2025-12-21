@@ -193,7 +193,8 @@ bool JITCompiler::compile_to_optimized(ASTNode* node) {
 
     auto bc_it = bytecode_cache_.find(node);
     if (bc_it == bytecode_cache_.end()) {
-        return false; 
+        return false;
+    }
 
     auto hs_it = hotspots_.find(node);
     if (hs_it == hotspots_.end()) {
@@ -440,6 +441,62 @@ void MachineCodeGenerator::emit_add_rax_rbx() {
 
 void MachineCodeGenerator::emit_ret() {
     // ret
+}
+
+// Function JIT compilation
+bool JITCompiler::compile_function(Function* func) {
+    if (!func) return false;
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    CompiledBytecode compiled;
+    compiled.tier = JITTier::Bytecode;
+    compiled.compile_time = start;
+
+    // For now, just create a simple NOP bytecode
+    // TODO: Compile function body AST to bytecode
+    compiled.instructions.push_back(BytecodeOp(BytecodeInstruction::NOP));
+
+    function_bytecode_cache_[func] = compiled;
+    stats_.total_compilations++;
+    stats_.bytecode_compilations++;
+
+    return true;
+}
+
+bool JITCompiler::try_execute_jit_function(Function* func, Context& ctx, const std::vector<Value>& args, Value& result) {
+    if (!enabled_ || !func) return false;
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    // Check machine code cache
+    auto mc_it = function_machine_code_cache_.find(func);
+    if (mc_it != function_machine_code_cache_.end()) {
+        stats_.cache_hits++;
+        // TODO: Execute machine code
+        // For now, fall through to bytecode
+    }
+
+    // Check bytecode cache
+    auto bc_it = function_bytecode_cache_.find(func);
+    if (bc_it != function_bytecode_cache_.end()) {
+        stats_.cache_hits++;
+        result = execute_bytecode(bc_it->second, ctx);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+        stats_.total_jit_time_ns += elapsed;
+
+        return true;
+    }
+
+    stats_.cache_misses++;
+    return false;
+}
+
+void JITCompiler::invalidate_function(Function* func) {
+    function_bytecode_cache_.erase(func);
+    function_machine_code_cache_.erase(func);
 }
 
 } // namespace Quanta
