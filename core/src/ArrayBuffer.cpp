@@ -229,17 +229,15 @@ void ArrayBuffer::mark_references() const {
 
 
 Value ArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {
-    if (args.empty()) {
-        ctx.throw_type_error("ArrayBuffer constructor requires at least one argument");
-        return Value();
-    }
-    
-    if (!args[0].is_number()) {
-        ctx.throw_type_error("ArrayBuffer size must be a number");
-        return Value();
-    }
+    double length_double = 0.0;
 
-    double length_double = args[0].as_number();
+    if (!args.empty()) {
+        if (!args[0].is_number()) {
+            ctx.throw_type_error("ArrayBuffer size must be a number");
+            return Value();
+        }
+        length_double = args[0].as_number();
+    }
 
     if (std::isnan(length_double) || std::isinf(length_double)) {
         ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");

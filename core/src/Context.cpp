@@ -6858,17 +6858,15 @@ void Context::initialize_built_ins() {
 
     auto arraybuffer_constructor = ObjectFactory::create_native_function("ArrayBuffer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_type_error("ArrayBuffer constructor requires at least one argument");
-                return Value();
+            double length_double = 0.0;
+
+            if (!args.empty()) {
+                if (!args[0].is_number()) {
+                    ctx.throw_type_error("ArrayBuffer size must be a number");
+                    return Value();
+                }
+                length_double = args[0].as_number();
             }
-            
-            if (!args[0].is_number()) {
-                ctx.throw_type_error("ArrayBuffer size must be a number");
-                return Value();
-            }
-            
-            double length_double = args[0].as_number();
             if (length_double < 0 || length_double != std::floor(length_double)) {
                 ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
                 return Value();
