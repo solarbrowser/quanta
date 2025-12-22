@@ -105,7 +105,7 @@ make -j$(nproc)      # Makefile build
    - Works on all platforms with GCC
 
 #### Build Outputs
-- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native)
+- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native) * REPL not works on release mode ⚠️⚠️⚠️⚠️⚠️⚠️
 - **Windows MinGW**: `build/bin/quanta.exe`
 - **Linux/macOS**: `build/bin/quanta`
 - **Static Library**: `libquanta.a` or `quanta.lib` (MSVC)
