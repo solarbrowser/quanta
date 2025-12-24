@@ -133,7 +133,7 @@ make -j$(nproc)      # Makefile build
 - **2025 Q3**: Engine foundations (parser, lexer, core modules)
 - **2025 Q4**: Modern JavaScript features implementation, testing and ECMAScript compatibility verification
 - **2026 Q1 & Q2**: Performance optimizations and improvements, testing and ECMAScript compatibility verification
-- **2026 May**: Production release
+- **2026, 24th of June**: Production release
 
 ### Milestones
 - [x] Modular architecture implementation
