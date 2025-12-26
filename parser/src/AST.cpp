@@ -2344,6 +2344,22 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
 }
 
 Value CallExpression::evaluate(Context& ctx) {
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+        auto* jit = ctx.get_engine()->get_jit_compiler();
+
+        auto start = std::chrono::high_resolution_clock::now();
+
+        Value jit_result;
+        if (jit->try_execute_jit(this, ctx, jit_result)) {
+            auto end = std::chrono::high_resolution_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+            jit->record_execution(this, elapsed);
+            return jit_result;
+        }
+
+        jit->record_execution(this, 0);
+    }
+
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         return handle_member_expression_call(ctx);
     }
