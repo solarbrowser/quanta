@@ -15,30 +15,24 @@
 #include <sys/mman.h>
 #endif
 namespace Quanta {
+
+extern thread_local int loop_depth;
+
 extern "C" int64_t jit_read_variable(Context* ctx, const char* name) {
-    std::cout << "[JIT-HELPER] Called with ctx=" << (void*)ctx << ", name=" << (void*)name << std::endl;
     if (!ctx || !name) {
-        std::cout << "[JIT-HELPER] ERROR: null ctx or name!" << std::endl;
         return 0;
     }
-    std::cout << "[JIT-HELPER] Reading variable: " << name << std::endl;
     Value val = ctx->get_binding(name);
     if (val.is_number()) {
-        int64_t result = static_cast<int64_t>(val.as_number());
-        std::cout << "[JIT-HELPER] Found: " << name << " = " << result << std::endl;
-        return result;
+        return static_cast<int64_t>(val.as_number());
     }
-    std::cout << "[JIT-HELPER] WARNING: " << name << " is not a number!" << std::endl;
     return 0;
 }
 extern "C" void jit_write_variable(Context* ctx, const char* name, int64_t value) {
-    std::cout << "[JIT-HELPER] Writing variable: " << name << " = " << value << std::endl;
     if (!ctx || !name) {
-        std::cout << "[JIT-HELPER] ERROR: null ctx or name!" << std::endl;
         return;
     }
     ctx->set_binding(name, Value(static_cast<double>(value)));
-    std::cout << "[JIT-HELPER]  Variable written: " << name << " = " << value << std::endl;
 }
 JITCompiler::JITCompiler()
     : enabled_(true),
@@ -124,18 +118,25 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
     if (!enabled_ || !node) return false;
     auto start = std::chrono::high_resolution_clock::now();
     auto mc_it = machine_code_cache_.find(node);
-    if (mc_it != machine_code_cache_.end()) {
+    if (mc_it != machine_code_cache_.end() && loop_depth == 0) {
         stats_.cache_hits++;
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
             BinaryExpression* binop = static_cast<BinaryExpression*>(node);
             std::cout << "[JIT-CACHE-HIT] Executing BinaryExpression operator "
                      << static_cast<int>(binop->get_operator()) << " at " << (void*)node << std::endl;
         }
+        std::cout << "[JIT] Calling execute_machine_code..." << std::endl;
+        std::cout.flush();
         result = execute_machine_code(mc_it->second, ctx, nullptr, 0);
+        std::cout << "[JIT] execute_machine_code returned, result=" << result.to_string() << std::endl;
+        std::cout.flush();
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         stats_.total_jit_time_ns += elapsed;
         std::cout << "[JIT]  EXECUTED NATIVE x86-64! Result: " << result.to_string() << std::endl;
+        std::cout.flush();
+        std::cout << "[JIT] Returning true from try_execute_jit..." << std::endl;
+        std::cout.flush();
         return true;
     } else {
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
@@ -273,6 +274,11 @@ bool JITCompiler::compile_to_machine_code(ASTNode* node) {
     if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
         std::cout << "[JIT-LOOP] ForStatement detected! Analyzing for loop unrolling..." << std::endl;
         ForStatement* for_stmt = static_cast<ForStatement*>(node);
+
+        if (for_stmt->is_nested_loop()) {
+            std::cout << "[JIT-LOOP] Nested loop detected, skipping machine code compilation" << std::endl;
+            return false;
+        }
 
         MachineCodeGenerator loop_generator;
         LoopAnalysis analysis = loop_generator.analyze_loop(for_stmt);
@@ -417,9 +423,18 @@ Value JITCompiler::execute_machine_code(const CompiledMachineCode& compiled, Con
     std::cout << std::endl;
     typedef int64_t (*JITFunction)(Context*);
     JITFunction jit_func = reinterpret_cast<JITFunction>(compiled.code_ptr);
+    std::cout << "[JIT-EXEC] About to call JIT function..." << std::endl;
+    std::cout.flush();
     int64_t result = jit_func(&ctx);
+    std::cout << "[JIT-EXEC] JIT function call returned!" << std::endl;
+    std::cout.flush();
     std::cout << "[JIT-EXEC] Native code returned: " << result << std::endl;
-    return Value(static_cast<double>(result));
+    std::cout << "[JIT-EXEC] Creating Value from result..." << std::endl;
+    std::cout.flush();
+    Value return_value = Value(static_cast<double>(result));
+    std::cout << "[JIT-EXEC] Returning value: " << return_value.to_string() << std::endl;
+    std::cout.flush();
+    return return_value;
 }
 void JITCompiler::clear_cache() {
     bytecode_cache_.clear();
@@ -3051,16 +3066,20 @@ void MachineCodeGenerator::finalize_strings(uint8_t* base_ptr) {
     }
 }
 void MachineCodeGenerator::emit_prologue() {
-    emit_byte(0x55);
-    emit_byte(0x48);
-    emit_byte(0x89);
-    emit_byte(0xE5);
+    emit_byte(0x55);                          // push rbp
+    emit_byte(0x48); emit_byte(0x89); emit_byte(0xE5);  // mov rbp, rsp
+    #ifdef _WIN32
+    // Allocate 40 bytes: 32 for shadow space + 8 for alignment
+    emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x28);  // sub rsp, 40
+    #endif
 }
 void MachineCodeGenerator::emit_epilogue() {
-    emit_byte(0x48);
-    emit_byte(0x89);
-    emit_byte(0xEC);
-    emit_byte(0x5D);
+    #ifdef _WIN32
+    // Deallocate shadow space
+    emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x28);  // add rsp, 40
+    #endif
+    emit_byte(0x48); emit_byte(0x89); emit_byte(0xEC);  // mov rsp, rbp
+    emit_byte(0x5D);                          // pop rbp
 }
 void MachineCodeGenerator::emit_mov_rax_imm(int64_t value) {
     std::cout << "[EMIT] mov rax, " << value << std::endl;

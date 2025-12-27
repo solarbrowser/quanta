@@ -46,6 +46,13 @@ static std::unordered_map<std::string, Value> g_object_function_map;
 
 static std::unordered_map<const Context*, std::string> g_this_variable_map;
 
+thread_local int loop_depth = 0;
+
+struct LoopDepthGuard {
+    LoopDepthGuard() { loop_depth++; }
+    ~LoopDepthGuard() { loop_depth--; }
+};
+
 
 Value NumberLiteral::evaluate(Context& ctx) {
     (void)ctx;
@@ -247,7 +254,8 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 
 Value BinaryExpression::evaluate(Context& ctx) {
     // JIT: Try to execute with JIT compiler for hot arithmetic operations
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+    // Skip JIT when inside any loop to avoid nested loop issues
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && loop_depth == 0) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         // Record execution for hotspot detection
@@ -5637,8 +5645,16 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 
 
 Value ForStatement::evaluate(Context& ctx) {
+    LoopDepthGuard guard;
 
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
+    bool nested_scenario = (loop_depth > 1) || is_nested_loop();
+
+    if (nested_scenario) {
+        std::cout << "[LOOP-DEBUG] Nested loop scenario detected (depth=" << loop_depth
+                  << "), JIT disabled" << std::endl;
+    }
+
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         auto start = std::chrono::high_resolution_clock::now();
@@ -5648,6 +5664,7 @@ Value ForStatement::evaluate(Context& ctx) {
             auto end = std::chrono::high_resolution_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
             jit->record_execution(this, elapsed);
+            loop_depth--;
             return jit_result;
         }
 
@@ -5723,10 +5740,12 @@ Value ForStatement::evaluate(Context& ctx) {
         result = Value();
     } catch (...) {
         ctx.pop_block_scope();
+        loop_depth--;
         throw;
     }
-    
+
     ctx.pop_block_scope();
+    loop_depth--;
     return result;
 }
 
@@ -5742,12 +5761,32 @@ std::string ForStatement::to_string() const {
     return oss.str();
 }
 
+bool ForStatement::is_nested_loop() const {
+    if (!body_) return false;
+
+    if (body_->get_type() == Type::FOR_STATEMENT) {
+        return true;
+    }
+
+    if (body_->get_type() == Type::BLOCK_STATEMENT) {
+        BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+        const auto& statements = block->get_statements();
+        for (const auto& stmt : statements) {
+            if (stmt && stmt->get_type() == Type::FOR_STATEMENT) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 bool ForStatement::can_optimize_as_simple_loop() const {
-    
+
     if (!init_ || !test_ || !update_ || !body_) {
         return false;
     }
-    
+
     return true;
 }
 

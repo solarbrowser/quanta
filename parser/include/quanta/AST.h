@@ -768,7 +768,8 @@ public:
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_update() const { return update_.get(); }
     ASTNode* get_body() const { return body_.get(); }
-    
+
+    bool is_nested_loop() const;
     bool can_optimize_as_simple_loop() const;
     Value execute_optimized_loop(Context& ctx) const;
     
