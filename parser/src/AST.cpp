@@ -46,12 +46,28 @@ static std::unordered_map<std::string, Value> g_object_function_map;
 
 static std::unordered_map<const Context*, std::string> g_this_variable_map;
 
-thread_local int loop_depth = 0;
+namespace {
+    thread_local int loop_depth = 0;
+}
 
-struct LoopDepthGuard {
-    LoopDepthGuard() { loop_depth++; }
-    ~LoopDepthGuard() { loop_depth--; }
-};
+int get_loop_depth() {
+    return loop_depth;
+}
+
+void increment_loop_depth() {
+    loop_depth++;
+}
+
+void decrement_loop_depth() {
+    loop_depth--;
+}
+
+namespace {
+    struct LoopDepthGuard {
+        LoopDepthGuard() { increment_loop_depth(); }
+        ~LoopDepthGuard() { decrement_loop_depth(); }
+    };
+}
 
 
 Value NumberLiteral::evaluate(Context& ctx) {
@@ -255,7 +271,7 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 Value BinaryExpression::evaluate(Context& ctx) {
     // JIT: Try to execute with JIT compiler for hot arithmetic operations
     // Skip JIT when inside any loop to avoid nested loop issues
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && loop_depth == 0) {
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && get_loop_depth() == 0) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         // Record execution for hotspot detection
@@ -5647,10 +5663,10 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 Value ForStatement::evaluate(Context& ctx) {
     LoopDepthGuard guard;
 
-    bool nested_scenario = (loop_depth > 1) || is_nested_loop();
+    bool nested_scenario = (get_loop_depth() > 1) || is_nested_loop();
 
     if (nested_scenario) {
-        std::cout << "[LOOP-DEBUG] Nested loop scenario detected (depth=" << loop_depth
+        std::cout << "[LOOP-DEBUG] Nested loop scenario detected (depth=" << get_loop_depth()
                   << "), JIT disabled" << std::endl;
     }
 

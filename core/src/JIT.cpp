@@ -16,8 +16,6 @@
 #endif
 namespace Quanta {
 
-extern thread_local int loop_depth;
-
 extern "C" int64_t jit_read_variable(Context* ctx, const char* name) {
     if (!ctx || !name) {
         return 0;
@@ -118,7 +116,10 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
     if (!enabled_ || !node) return false;
     auto start = std::chrono::high_resolution_clock::now();
     auto mc_it = machine_code_cache_.find(node);
-    if (mc_it != machine_code_cache_.end() && loop_depth == 0) {
+    if (get_loop_depth() > 0) {
+        std::cout << "[JIT-LOOP-SKIP] Skipping machine code (loop_depth=" << get_loop_depth() << ")" << std::endl;
+    }
+    if (mc_it != machine_code_cache_.end() && get_loop_depth() == 0) {
         stats_.cache_hits++;
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
             BinaryExpression* binop = static_cast<BinaryExpression*>(node);

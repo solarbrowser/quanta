@@ -1709,6 +1709,10 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
+int get_loop_depth();
+void increment_loop_depth();
+void decrement_loop_depth();
+
 }
 
 #endif
