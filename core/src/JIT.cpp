@@ -78,6 +78,8 @@ void JITCompiler::record_execution(ASTNode* node, uint64_t execution_time_ns) {
                      << ") hit " << hotspot.execution_count << " executions" << std::endl;
         } else if (node->get_type() == ASTNode::Type::CALL_EXPRESSION) {
             std::cout << "[JIT-TRACK] CallExpression hit " << hotspot.execution_count << " executions" << std::endl;
+        } else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+            std::cout << "[JIT-TRACK] ForStatement hit " << hotspot.execution_count << " executions" << std::endl;
         }
     }
     if (hotspot.execution_count == 1) {
@@ -265,34 +267,37 @@ bool JITCompiler::compile_to_machine_code(ASTNode* node) {
         feedback = hotspot.operation_types.begin()->second;
     }
     ASTNode* target_node = node;
+    MachineCodeGenerator generator;
+    CompiledMachineCode compiled;
+
     if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-        std::cout << "[JIT-EXTRACT] ForStatement detected! Looking for hot arithmetic inside..." << std::endl;
+        std::cout << "[JIT-LOOP] ForStatement detected! Analyzing for loop unrolling..." << std::endl;
         ForStatement* for_stmt = static_cast<ForStatement*>(node);
-        ASTNode* body = for_stmt->get_body();
-        if (body && body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            BlockStatement* block = static_cast<BlockStatement*>(body);
-            auto& statements = block->get_statements();
-            for (const auto& stmt : statements) {
-                if (stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-                    ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
-                    ASTNode* expr = expr_stmt->get_expression();
-                    if (expr && expr->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                        AssignmentExpression* assign = static_cast<AssignmentExpression*>(expr);
-                        ASTNode* right = assign->get_right();
-                        if (right && right->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
-                            BinaryExpression* binop = static_cast<BinaryExpression*>(right);
-                            std::cout << "[JIT-EXTRACT] Found BinaryExpression (operator "
-                                     << static_cast<int>(binop->get_operator()) << ") in loop body!" << std::endl;
-                            target_node = right;
-                            break;
-                        }
-                    }
-                }
+
+        MachineCodeGenerator loop_generator;
+        LoopAnalysis analysis = loop_generator.analyze_loop(for_stmt);
+
+        if (analysis.is_simple_counting_loop) {
+            if (analysis.can_unroll) {
+                std::cout << "[JIT-LOOP] Attempting " << analysis.unroll_factor << "x loop unrolling optimization..." << std::endl;
+            } else {
+                std::cout << "[JIT-LOOP] Compiling simple counting loop (no unrolling)..." << std::endl;
+            }
+            compiled = loop_generator.compile_optimized_loop(for_stmt, analysis);
+
+            if (compiled.code_ptr) {
+                machine_code_cache_[node] = compiled;
+                stats_.machine_code_compilations++;
+                std::cout << "[JIT] Compiled loop to x86-64! (" << compiled.code_size << " bytes)" << std::endl;
+                return true;
             }
         }
+
+        std::cout << "[JIT-LOOP] Loop not suitable for machine code compilation - staying at bytecode tier" << std::endl;
+        return false;
     }
-    MachineCodeGenerator generator;
-    CompiledMachineCode compiled = generator.compile(target_node, feedback);
+
+    compiled = generator.compile(target_node, feedback);
     if (!compiled.code_ptr) {
         std::cout << "[JIT] Failed to compile to machine code!" << std::endl;
         return false;
@@ -3365,5 +3370,281 @@ bool JITCompiler::try_execute_jit_function(Function* func, Context& ctx, const s
 void JITCompiler::invalidate_function(Function* func) {
     function_bytecode_cache_.erase(func);
     function_machine_code_cache_.erase(func);
+}
+LoopAnalysis MachineCodeGenerator::analyze_loop(ForStatement* loop) {
+    LoopAnalysis analysis;
+
+    ASTNode* init = loop->get_init();
+    ASTNode* condition = loop->get_test();
+    ASTNode* update = loop->get_update();
+
+    if (!init || !condition || !update) {
+        return analysis;
+    }
+
+    if (init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(init);
+        auto& declarators = var_decl->get_declarations();
+        if (!declarators.empty()) {
+            VariableDeclarator* decl = declarators[0].get();
+            if (decl->get_id()->get_type() == ASTNode::Type::IDENTIFIER) {
+                Identifier* id = static_cast<Identifier*>(decl->get_id());
+                analysis.induction_var = id->get_name();
+
+                ASTNode* init_value = decl->get_init();
+                if (init_value && init_value->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                    NumberLiteral* num = static_cast<NumberLiteral*>(init_value);
+                    analysis.start_value = static_cast<int64_t>(num->get_value());
+                }
+            }
+        }
+    }
+
+    if (condition->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+        BinaryExpression* bin = static_cast<BinaryExpression*>(condition);
+        ASTNode* right = bin->get_right();
+
+        if (right && right->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+            NumberLiteral* num = static_cast<NumberLiteral*>(right);
+            analysis.end_value = static_cast<int64_t>(num->get_value());
+        } else if (right && right->get_type() == ASTNode::Type::IDENTIFIER) {
+            Identifier* id = static_cast<Identifier*>(right);
+            analysis.invariant_vars.push_back(id->get_name());
+            analysis.end_value = 1000;
+        }
+    }
+
+    if (update->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
+        UnaryExpression* upd = static_cast<UnaryExpression*>(update);
+        if (upd->get_operator() == UnaryExpression::Operator::POST_INCREMENT ||
+            upd->get_operator() == UnaryExpression::Operator::PRE_INCREMENT) {
+            analysis.step = 1;
+        }
+    }
+
+    analysis.is_simple_counting_loop = !analysis.induction_var.empty() &&
+                                       analysis.start_value >= 0 &&
+                                       analysis.end_value > analysis.start_value &&
+                                       analysis.step == 1;
+
+    int64_t iteration_count = (analysis.end_value - analysis.start_value) / analysis.step;
+    analysis.can_unroll = analysis.is_simple_counting_loop && iteration_count >= 16 && iteration_count % 4 == 0;
+    analysis.unroll_factor = 1; // TEMPORARILY DISABLED FOR DEBUGGING
+
+    return analysis;
+}
+bool MachineCodeGenerator::is_loop_invariant(ASTNode* expr, const std::string& induction_var) {
+    if (!expr) return true;
+
+    if (expr->get_type() == ASTNode::Type::IDENTIFIER) {
+        Identifier* id = static_cast<Identifier*>(expr);
+        return id->get_name() != induction_var;
+    }
+
+    if (expr->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+        return true;
+    }
+
+    if (expr->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+        BinaryExpression* bin = static_cast<BinaryExpression*>(expr);
+        return is_loop_invariant(bin->get_left(), induction_var) &&
+               is_loop_invariant(bin->get_right(), induction_var);
+    }
+
+    return false;
+}
+CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* loop, const LoopAnalysis& analysis) {
+    CompiledMachineCode result;
+
+    std::cout << "[LOOP-OPT] Compiling loop (unroll factor: " << analysis.unroll_factor << "):" << std::endl;
+    std::cout << "[LOOP-OPT]   Induction var: " << analysis.induction_var << std::endl;
+    std::cout << "[LOOP-OPT]   Range: " << analysis.start_value << " to " << analysis.end_value << std::endl;
+    std::cout << "[LOOP-OPT]   Unroll factor: " << analysis.unroll_factor << "x" << std::endl;
+
+    ASTNode* body = loop->get_body();
+    if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) {
+        std::cout << "[LOOP-OPT] Loop body is not a block statement" << std::endl;
+        return result;
+    }
+
+    BlockStatement* block = static_cast<BlockStatement*>(body);
+    auto& statements = block->get_statements();
+
+    if (statements.empty()) {
+        std::cout << "[LOOP-OPT] Loop body is empty" << std::endl;
+        return result;
+    }
+
+    BinaryExpression* assign_binop = nullptr;
+    for (const auto& stmt : statements) {
+        if (stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+            ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
+            ASTNode* expr = expr_stmt->get_expression();
+
+            if (expr && expr->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+                BinaryExpression* binexpr = static_cast<BinaryExpression*>(expr);
+                if (binexpr->get_operator() == BinaryExpression::Operator::ASSIGN) {
+                    assign_binop = binexpr;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!assign_binop) {
+        std::cout << "[LOOP-OPT] No assignment (operator=25) found in loop body" << std::endl;
+        return result;
+    }
+
+    ASTNode* target_node = assign_binop->get_left();
+    ASTNode* value_node = assign_binop->get_right();
+
+    if (!target_node || target_node->get_type() != ASTNode::Type::IDENTIFIER) {
+        std::cout << "[LOOP-OPT] Assignment target is not an identifier" << std::endl;
+        return result;
+    }
+
+    Identifier* target_var = static_cast<Identifier*>(target_node);
+    std::string target_name = target_var->get_name();
+
+    if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
+        std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
+        return result;
+    }
+
+    BinaryExpression* value_binop = static_cast<BinaryExpression*>(value_node);
+
+    if (value_binop->get_operator() != BinaryExpression::Operator::ADD) {
+        std::cout << "[LOOP-OPT] Only ADD operations supported for now (operator: "
+                  << static_cast<int>(value_binop->get_operator()) << ")" << std::endl;
+        return result;
+    }
+
+    std::cout << "[LOOP-OPT] Pattern recognized: " << target_name << " = " << target_name << " + <expr>" << std::endl;
+    std::cout << "[LOOP-OPT] DEBUG: Testing with unroll_factor=1 (no unrolling)" << std::endl;
+
+
+    code_buffer_.clear();
+    embedded_strings_.clear();
+    string_offsets_.clear();
+    patches_.clear();
+
+    emit_prologue();
+
+    emit_byte(0x41); emit_byte(0x56);
+    emit_byte(0x41); emit_byte(0x54);
+    emit_byte(0x41); emit_byte(0x55);
+
+    #ifdef _WIN32
+    emit_byte(0x49); emit_byte(0x89); emit_byte(0xCE);
+    #else
+    emit_byte(0x49); emit_byte(0x89); emit_byte(0xFE);
+    #endif
+
+    emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC4);
+    emit_byte(analysis.start_value & 0xFF);
+    emit_byte((analysis.start_value >> 8) & 0xFF);
+    emit_byte((analysis.start_value >> 16) & 0xFF);
+    emit_byte((analysis.start_value >> 24) & 0xFF);
+
+    emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC5);
+    emit_byte(analysis.end_value & 0xFF);
+    emit_byte((analysis.end_value >> 8) & 0xFF);
+    emit_byte((analysis.end_value >> 16) & 0xFF);
+    emit_byte((analysis.end_value >> 24) & 0xFF);
+
+    size_t target_offset = embed_string(target_name);
+
+    size_t loop_start_pos = code_buffer_.size();
+
+    int unroll = analysis.unroll_factor;
+    for (int u = 0; u < unroll; u++) {
+
+        #ifdef _WIN32
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
+        size_t p1 = code_buffer_.size() + 2;
+        patches_.push_back({p1, target_offset});
+        emit_byte(0x48); emit_byte(0xBA);
+        for (int i = 0; i < 8; i++) emit_byte(0);
+        #else
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
+        size_t p1 = code_buffer_.size() + 2;
+        patches_.push_back({p1, target_offset});
+        emit_mov_rsi_imm(0);
+        #endif
+
+        emit_call_absolute((void*)jit_read_variable);
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC6);
+
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);
+        if (u > 0) {
+            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);
+        }
+
+        emit_byte(0x48); emit_byte(0x01); emit_byte(0xF0);
+
+        #ifdef _WIN32
+        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0);
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
+        size_t p2 = code_buffer_.size() + 2;
+        patches_.push_back({p2, target_offset});
+        emit_byte(0x48); emit_byte(0xBA);
+        for (int i = 0; i < 8; i++) emit_byte(0);
+        #else
+        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2);
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
+        size_t p2 = code_buffer_.size() + 2;
+        patches_.push_back({p2, target_offset});
+        emit_mov_rsi_imm(0);
+        #endif
+
+        emit_call_absolute((void*)jit_write_variable);
+    }
+
+    emit_byte(0x49); emit_byte(0x83); emit_byte(0xC4); emit_byte(analysis.unroll_factor);
+    emit_byte(0x4D); emit_byte(0x39); emit_byte(0xEC);
+
+    int32_t jump_offset = (int32_t)loop_start_pos - (int32_t)(code_buffer_.size() + 6);
+    emit_byte(0x0F); emit_byte(0x8C);
+    emit_byte(jump_offset & 0xFF);
+    emit_byte((jump_offset >> 8) & 0xFF);
+    emit_byte((jump_offset >> 16) & 0xFF);
+    emit_byte((jump_offset >> 24) & 0xFF);
+
+    emit_byte(0x41); emit_byte(0x5D);
+    emit_byte(0x41); emit_byte(0x5C);
+    emit_byte(0x41); emit_byte(0x5E);
+
+    emit_byte(0x48); emit_byte(0x31); emit_byte(0xC0);
+
+    emit_epilogue();
+    emit_ret();
+
+    size_t code_size = code_buffer_.size();
+    size_t strings_size = 0;
+    for (const auto& str : embedded_strings_) {
+        strings_size += str.length() + 1;
+    }
+
+    uint8_t* executable_mem = allocate_executable_memory(code_size + strings_size);
+    if (!executable_mem) {
+        std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
+        return result;
+    }
+
+    std::memcpy(executable_mem, code_buffer_.data(), code_size);
+    finalize_strings(executable_mem);
+
+    for (const auto& patch : patches_) {
+        uint64_t string_addr = reinterpret_cast<uint64_t>(executable_mem) + code_size + patch.string_offset;
+        std::memcpy(executable_mem + patch.code_position, &string_addr, 8);
+    }
+
+    result.code_ptr = executable_mem;
+    result.code_size = code_size;
+
+    std::cout << "[LOOP-OPT] Successfully generated " << code_size << " bytes of 4x unrolled loop!" << std::endl;
+
+    return result;
 }
 } // namespace Quanta

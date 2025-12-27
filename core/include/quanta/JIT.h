@@ -16,6 +16,7 @@ namespace Quanta {
 class ASTNode;
 class Context;
 class Function;
+class ForStatement;
 enum class JITTier {
     Interpreter,
     Bytecode,
@@ -118,6 +119,16 @@ struct CompiledBytecode {
         return variable_names.size() - 1;
     }
 };
+struct LoopAnalysis {
+    std::string induction_var;
+    int64_t start_value = 0;
+    int64_t end_value = 0;
+    int64_t step = 1;
+    std::vector<std::string> invariant_vars;
+    bool is_simple_counting_loop = false;
+    bool can_unroll = false;
+    int unroll_factor = 1;
+};
 struct CompiledMachineCode {
     uint8_t* code_ptr = nullptr;
     size_t code_size = 0;
@@ -194,6 +205,9 @@ public:
     CompiledMachineCode compile(ASTNode* node, const TypeFeedback& feedback);
     CompiledMachineCode compile_function(Function* func, const TypeFeedback& feedback);
     void free_code(CompiledMachineCode& compiled);
+    LoopAnalysis analyze_loop(ForStatement* loop);
+    bool is_loop_invariant(ASTNode* expr, const std::string& induction_var);
+    CompiledMachineCode compile_optimized_loop(ForStatement* loop, const LoopAnalysis& analysis);
 private:
     std::vector<uint8_t> code_buffer_;
     std::unordered_map<std::string, size_t> string_offsets_;
