@@ -117,7 +117,7 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
     auto start = std::chrono::high_resolution_clock::now();
     auto mc_it = machine_code_cache_.find(node);
     if (get_loop_depth() > 0) {
-        std::cout << "[JIT-LOOP-SKIP] Skipping machine code (loop_depth=" << get_loop_depth() << ")" << std::endl;
+        std::cout << "[JIT-LOOP-SKIP] Skipping machine code inside loop (loop_depth=" << get_loop_depth() << ")" << std::endl;
     }
     if (mc_it != machine_code_cache_.end() && get_loop_depth() == 0) {
         stats_.cache_hits++;
@@ -3448,8 +3448,17 @@ LoopAnalysis MachineCodeGenerator::analyze_loop(ForStatement* loop) {
                                        analysis.step == 1;
 
     int64_t iteration_count = (analysis.end_value - analysis.start_value) / analysis.step;
-    analysis.can_unroll = analysis.is_simple_counting_loop && iteration_count >= 16 && iteration_count % 4 == 0;
-    analysis.unroll_factor = 1; // TEMPORARILY DISABLED FOR DEBUGGING
+
+    if (analysis.is_simple_counting_loop && iteration_count >= 32 && iteration_count % 8 == 0) {
+        analysis.can_unroll = true;
+        analysis.unroll_factor = 8;
+    } else if (analysis.is_simple_counting_loop && iteration_count >= 16 && iteration_count % 4 == 0) {
+        analysis.can_unroll = true;
+        analysis.unroll_factor = 4;
+    } else {
+        analysis.can_unroll = false;
+        analysis.unroll_factor = 1;
+    }
 
     return analysis;
 }

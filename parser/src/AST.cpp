@@ -270,7 +270,7 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 
 Value BinaryExpression::evaluate(Context& ctx) {
     // JIT: Try to execute with JIT compiler for hot arithmetic operations
-    // Skip JIT when inside any loop to avoid nested loop issues
+    // Skip JIT when inside any loop to avoid machine code execution issues
     if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && get_loop_depth() == 0) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
