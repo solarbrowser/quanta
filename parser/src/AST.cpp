@@ -4254,6 +4254,19 @@ Value MemberExpression::evaluate(Context& ctx) {
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
+        // Numeric array index access
+        if (__builtin_expect(prop_value.is_number(), 1)) {
+            double index_double = prop_value.as_number();
+            if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
+                uint32_t index = static_cast<uint32_t>(index_double);
+
+                Value element = obj->get_element(index);
+                if (!element.is_undefined()) {
+                    return element;
+                }
+            }
+        }
+
         std::string prop_name;
         if (prop_value.is_symbol()) {
             prop_name = prop_value.as_symbol()->get_description();
