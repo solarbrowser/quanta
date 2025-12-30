@@ -4193,6 +4193,10 @@ Value MemberExpression::evaluate(Context& ctx) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
 
+            if (cached_object_ptr_ == obj && cached_offset_ != UINT32_MAX) {
+                return obj->get_property_by_offset(cached_offset_);
+            }
+
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
             if (desc.is_accessor_descriptor() && desc.has_getter()) {
                 Object* getter = desc.get_getter();
@@ -4204,6 +4208,15 @@ Value MemberExpression::evaluate(Context& ctx) {
                     }
                 }
                 return Value();
+            }
+
+            Shape* shape = obj->get_shape();
+            if (shape) {
+                auto info = shape->get_property_info(prop_name);
+                if (info.offset != UINT32_MAX) {
+                    cached_object_ptr_ = obj;
+                    cached_offset_ = info.offset;
+                }
             }
 
             return obj->get_property(prop_name);

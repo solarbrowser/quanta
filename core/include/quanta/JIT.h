@@ -70,6 +70,45 @@ struct CallSiteFeedback {
         }
     }
 };
+
+struct PropertyCache {
+    void* cached_object_ptr = nullptr;
+    void* cached_shape_ptr = nullptr;
+    std::string property_name;
+    uint32_t cached_offset = UINT32_MAX;
+    uint32_t hit_count = 0;
+    uint32_t miss_count = 0;
+    Value cached_value; 
+
+    bool check_monomorphic_hit(void* obj_ptr, void* shape_ptr) const {
+        return cached_object_ptr == obj_ptr && cached_shape_ptr == shape_ptr && cached_offset != UINT32_MAX;
+    }
+
+    bool check_simple_hit(void* obj_ptr) const {
+        return cached_object_ptr == obj_ptr && cached_offset != UINT32_MAX;
+    }
+
+    void record_hit() { hit_count++; }
+    void record_miss() { miss_count++; }
+
+    void update(void* obj_ptr, void* shape_ptr, const std::string& prop_name, uint32_t offset) {
+        cached_object_ptr = obj_ptr;
+        cached_shape_ptr = shape_ptr;
+        property_name = prop_name;
+        cached_offset = offset;
+    }
+
+    void invalidate() {
+        cached_object_ptr = nullptr;
+        cached_shape_ptr = nullptr;
+        cached_offset = UINT32_MAX;
+    }
+
+    double get_hit_ratio() const {
+        uint32_t total = hit_count + miss_count;
+        return total > 0 ? (100.0 * hit_count / total) : 0.0;
+    }
+};
 struct HotspotInfo {
     ASTNode* node = nullptr;
     uint32_t execution_count = 0;
@@ -158,6 +197,10 @@ public:
     void clear_cache();
     void invalidate_node(ASTNode* node);
     void invalidate_function(Function* func);
+
+    // Inline cache for property access
+    PropertyCache* get_property_cache(ASTNode* node);
+    void print_property_cache_stats() const;
     struct Stats {
         uint32_t total_compilations = 0;
         uint32_t bytecode_compilations = 0;
@@ -191,6 +234,7 @@ private:
     std::unordered_map<ASTNode*, CompiledMachineCode> machine_code_cache_;
     std::unordered_map<Function*, CompiledBytecode> function_bytecode_cache_;
     std::unordered_map<Function*, CompiledMachineCode> function_machine_code_cache_;
+    std::unordered_map<ASTNode*, PropertyCache> property_cache_;
     Stats stats_;
     Value execute_bytecode(const CompiledBytecode& compiled, Context& ctx);
     Value execute_machine_code(const CompiledMachineCode& compiled, Context& ctx, const Value* args, size_t argc);

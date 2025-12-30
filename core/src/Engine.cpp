@@ -743,6 +743,10 @@ std::string Engine::get_jit_stats() const {
         result += "  Speedup: " + std::to_string(stats.get_speedup()) + "x\n";
     }
 
+    if (jit_compiler_) {
+        jit_compiler_->print_property_cache_stats();
+    }
+
     return result;
 }
 

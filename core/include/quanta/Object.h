@@ -183,6 +183,17 @@ public:
     
     Shape* get_shape() const { return header_.shape; }
     void transition_shape(const std::string& key, PropertyAttributes attrs);
+
+    inline Value get_property_by_offset_unchecked(uint32_t offset) const {
+        return properties_[offset];
+    }
+
+    inline Value get_property_by_offset(uint32_t offset) const {
+        if (offset < properties_.size()) {
+            return properties_[offset];
+        }
+        return Value();
+    }
     
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);

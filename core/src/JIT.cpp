@@ -56,6 +56,7 @@ JITCompiler::~JITCompiler() {
     }
     std::cout << "[JIT] JIT Compiler shutdown. Final stats:" << std::endl;
     print_stats();
+    print_property_cache_stats();
 }
 void JITCompiler::record_execution(ASTNode* node, uint64_t execution_time_ns) {
     if (!enabled_ || !node) return;
@@ -3676,4 +3677,41 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
 
     return result;
 }
+
+PropertyCache* JITCompiler::get_property_cache(ASTNode* node) {
+    if (!node) return nullptr;
+    return &property_cache_[node];
+}
+
+void JITCompiler::print_property_cache_stats() const {
+    std::cout << "\n=== Property Inline Cache Statistics ===" << std::endl;
+    uint32_t total_hits = 0;
+    uint32_t total_misses = 0;
+    uint32_t cached_sites = 0;
+
+    for (const auto& entry : property_cache_) {
+        if (entry.second.hit_count + entry.second.miss_count > 0) {
+            cached_sites++;
+            total_hits += entry.second.hit_count;
+            total_misses += entry.second.miss_count;
+
+            if (entry.second.hit_count > 10) {
+                std::cout << "  [IC] Property: " << entry.second.property_name
+                          << " hits=" << entry.second.hit_count
+                          << " misses=" << entry.second.miss_count
+                          << " ratio=" << entry.second.get_hit_ratio() << "%" << std::endl;
+            }
+        }
+    }
+
+    std::cout << "\nTotal cache sites: " << cached_sites << std::endl;
+    std::cout << "Total hits: " << total_hits << std::endl;
+    std::cout << "Total misses: " << total_misses << std::endl;
+    if (total_hits + total_misses > 0) {
+        double ratio = 100.0 * total_hits / (total_hits + total_misses);
+        std::cout << "Overall hit ratio: " << ratio << "%" << std::endl;
+    }
+    std::cout << "========================================\n" << std::endl;
+}
+
 } // namespace Quanta

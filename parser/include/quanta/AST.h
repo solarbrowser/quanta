@@ -540,16 +540,22 @@ private:
     std::unique_ptr<ASTNode> property_;
     bool computed_;
 
+    mutable void* cached_object_ptr_ = nullptr;
+    mutable void* cached_shape_ptr_ = nullptr;
+    mutable uint32_t cached_offset_ = UINT32_MAX;
+    mutable uint32_t cache_hit_count_ = 0;
+    mutable uint32_t cache_miss_count_ = 0;
+
 public:
-    MemberExpression(std::unique_ptr<ASTNode> object, std::unique_ptr<ASTNode> property, 
+    MemberExpression(std::unique_ptr<ASTNode> object, std::unique_ptr<ASTNode> property,
                     bool computed, const Position& start, const Position& end)
-        : ASTNode(Type::MEMBER_EXPRESSION, start, end), 
+        : ASTNode(Type::MEMBER_EXPRESSION, start, end),
           object_(std::move(object)), property_(std::move(property)), computed_(computed) {}
-    
+
     ASTNode* get_object() const { return object_.get(); }
     ASTNode* get_property() const { return property_.get(); }
     bool is_computed() const { return computed_; }
-    
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
