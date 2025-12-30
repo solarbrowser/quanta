@@ -255,13 +255,15 @@ public:
 class Identifier : public ASTNode {
 private:
     std::string name_;
+    mutable Value cached_value_;
+    mutable bool cache_valid_ = false;
 
 public:
     Identifier(const std::string& name, const Position& start, const Position& end)
         : ASTNode(Type::IDENTIFIER, start, end), name_(name) {}
-    
+
     const std::string& get_name() const { return name_; }
-    
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

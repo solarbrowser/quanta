@@ -238,24 +238,40 @@ Value Identifier::evaluate(Context& ctx) {
         Value super_constructor = ctx.get_binding("__super__");
         return super_constructor;
     }
-    
+
+    static const std::set<std::string> cacheable_globals = {
+        "console", "Math", "JSON", "Array", "Object", "String", "Number",
+        "Boolean", "RegExp", "Error", "Date", "Infinity", "NaN", "undefined"
+    };
+
+    if (cacheable_globals.find(name_) != cacheable_globals.end()) {
+        if (__builtin_expect(cache_valid_, 1)) {
+            return cached_value_;
+        }
+    }
 
     if (!ctx.has_binding(name_)) {
         static const std::set<std::string> known_globals = {
-            "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number", 
+            "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number",
             "Boolean", "RegExp", "Error", "TypeError", "ReferenceError", "SyntaxError",
             "undefined", "null", "true", "false", "Infinity", "NaN", "isNaN", "isFinite",
-            "parseInt", "parseFloat", "decodeURI", "decodeURIComponent", "encodeURI", 
+            "parseInt", "parseFloat", "decodeURI", "decodeURIComponent", "encodeURI",
             "encodeURIComponent", "globalThis", "window", "global", "self"
         };
-        
+
         if (known_globals.find(name_) == known_globals.end()) {
             ctx.throw_reference_error("'" + name_ + "' is not defined");
             return Value();
         }
     }
-    
+
     Value result = ctx.get_binding(name_);
+
+    if (cacheable_globals.find(name_) != cacheable_globals.end() && !cache_valid_) {
+        cached_value_ = result;
+        cache_valid_ = true;
+    }
+
     return result;
 }
 

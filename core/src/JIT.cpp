@@ -2752,8 +2752,51 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_epilogue();
                             emit_ret();
                             std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.abs x86-64!" << std::endl;
+                        } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                            // Math.abs with literal (e.g., Math.abs(5))
+                            NumberLiteral* num_lit = static_cast<NumberLiteral*>(arg0);
+                            double num = num_lit->get_value();
+                            double abs_result = num < 0 ? -num : num;
+
+                            std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
+                            emit_prologue();
+
+                            // Emit constant result
+                            int64_t result_bits;
+                            std::memcpy(&result_bits, &abs_result, sizeof(double));
+                            emit_mov_rax_imm(result_bits);
+
+                            emit_epilogue();
+                            emit_ret();
+                            std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
+                        } else if (arg0->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
+                            // Math.abs with unary expression (e.g., Math.abs(-5))
+                            UnaryExpression* unary = static_cast<UnaryExpression*>(arg0);
+                            if (unary->get_operator() == UnaryExpression::Operator::MINUS &&
+                                unary->get_operand()->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                                NumberLiteral* num_lit = static_cast<NumberLiteral*>(unary->get_operand());
+                                double num = -num_lit->get_value();  // Apply unary minus
+                                double abs_result = num < 0 ? -num : num;
+
+                                std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
+                                emit_prologue();
+
+                                // Emit constant result
+                                int64_t result_bits;
+                                std::memcpy(&result_bits, &abs_result, sizeof(double));
+                                emit_mov_rax_imm(result_bits);
+
+                                emit_epilogue();
+                                emit_ret();
+                                std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
+                            } else {
+                                std::cout << "[JIT-INLINE]   Math.abs: unsupported unary expression" << std::endl;
+                                result.code_ptr = nullptr;
+                                result.code_size = 0;
+                                return result;
+                            }
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.abs: argument not an identifier" << std::endl;
+                            std::cout << "[JIT-INLINE]   Math.abs: argument not an identifier or literal" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -2881,8 +2924,28 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_epilogue();
                             emit_ret();
                             std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.max x86-64!" << std::endl;
+                        } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL &&
+                                   arg1->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                            // Math.max with literals (e.g., Math.max(1, 2))
+                            NumberLiteral* num0_lit = static_cast<NumberLiteral*>(arg0);
+                            NumberLiteral* num1_lit = static_cast<NumberLiteral*>(arg1);
+                            double num0 = num0_lit->get_value();
+                            double num1 = num1_lit->get_value();
+                            double max_result = (num0 > num1) ? num0 : num1;
+
+                            std::cout << "[JIT-INLINE]  INLINING Math.max(" << num0 << ", " << num1 << ") = " << max_result << std::endl;
+                            emit_prologue();
+
+                            // Emit constant result
+                            int64_t result_bits;
+                            std::memcpy(&result_bits, &max_result, sizeof(double));
+                            emit_mov_rax_imm(result_bits);
+
+                            emit_epilogue();
+                            emit_ret();
+                            std::cout << "[JIT-INLINE]  Generated constant Math.max" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.max: arguments not both identifiers" << std::endl;
+                            std::cout << "[JIT-INLINE]   Math.max: arguments not both identifiers or literals" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -2940,8 +3003,28 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_epilogue();
                             emit_ret();
                             std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.min x86-64!" << std::endl;
+                        } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL &&
+                                   arg1->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                            // Math.min with literals (e.g., Math.min(3, 7))
+                            NumberLiteral* num0_lit = static_cast<NumberLiteral*>(arg0);
+                            NumberLiteral* num1_lit = static_cast<NumberLiteral*>(arg1);
+                            double num0 = num0_lit->get_value();
+                            double num1 = num1_lit->get_value();
+                            double min_result = (num0 < num1) ? num0 : num1;
+
+                            std::cout << "[JIT-INLINE]  INLINING Math.min(" << num0 << ", " << num1 << ") = " << min_result << std::endl;
+                            emit_prologue();
+
+                            // Emit constant result
+                            int64_t result_bits;
+                            std::memcpy(&result_bits, &min_result, sizeof(double));
+                            emit_mov_rax_imm(result_bits);
+
+                            emit_epilogue();
+                            emit_ret();
+                            std::cout << "[JIT-INLINE]  Generated constant Math.min" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.min: arguments not both identifiers" << std::endl;
+                            std::cout << "[JIT-INLINE]   Math.min: arguments not both identifiers or literals" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
