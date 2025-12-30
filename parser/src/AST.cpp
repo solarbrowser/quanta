@@ -4193,8 +4193,13 @@ Value MemberExpression::evaluate(Context& ctx) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
 
-            if (__builtin_expect(cached_object_ptr_ == obj && cached_offset_ != UINT32_MAX, 1)) {
-                return obj->get_property_by_offset_unchecked(cached_offset_);
+            Shape* shape = obj->get_shape();
+
+            // Polymorphic inline cache 
+            for (uint8_t i = 0; i < ic_size_; i++) {
+                if (__builtin_expect(ic_cache_[i].shape_ptr == shape, 1)) {
+                    return obj->get_property_by_offset_unchecked(ic_cache_[i].offset);
+                }
             }
 
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
@@ -4210,13 +4215,17 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value();
             }
 
-            Shape* shape = obj->get_shape();
             if (__builtin_expect(shape != nullptr, 1)) {
                 auto info = shape->get_property_info(prop_name);
                 if (__builtin_expect(info.offset != UINT32_MAX, 1)) {
-                    cached_object_ptr_ = obj;
-                    cached_shape_ptr_ = shape;
-                    cached_offset_ = info.offset;
+                    if (ic_size_ < 4) {
+                        ic_cache_[ic_size_].shape_ptr = shape;
+                        ic_cache_[ic_size_].offset = info.offset;
+                        ic_size_++;
+                    } else {
+                        ic_cache_[3].shape_ptr = shape;
+                        ic_cache_[3].offset = info.offset;
+                    }
                 }
             }
 
