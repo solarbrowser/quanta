@@ -4209,6 +4209,11 @@ Value MemberExpression::evaluate(Context& ctx) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
 
+            // fast path: Array length access
+            if (__builtin_expect(prop_name == "length" && obj->is_array(), 1)) {
+                return Value(static_cast<double>(obj->get_length()));
+            }
+
             Shape* shape = obj->get_shape();
 
             // Polymorphic inline cache 
@@ -4251,10 +4256,24 @@ Value MemberExpression::evaluate(Context& ctx) {
     
     if (object_value.is_object() && computed_) {
         Object* obj = object_value.as_object();
+
+        // ufp: Constant array index 
+        if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
+            NumberLiteral* num_lit = static_cast<NumberLiteral*>(property_.get());
+            double index_double = num_lit->get_value();
+            if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
+                uint32_t index = static_cast<uint32_t>(index_double);
+                Value element = obj->get_element(index);
+                if (!element.is_undefined()) {
+                    return element;
+                }
+            }
+        }
+
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
-        // Numeric array index access
+        // fp: Variable array index 
         if (__builtin_expect(prop_value.is_number(), 1)) {
             double index_double = prop_value.as_number();
             if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
