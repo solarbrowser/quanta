@@ -4211,9 +4211,9 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
 
             Shape* shape = obj->get_shape();
-            if (shape) {
+            if (__builtin_expect(shape != nullptr, 1)) {
                 auto info = shape->get_property_info(prop_name);
-                if (info.offset != UINT32_MAX) {
+                if (__builtin_expect(info.offset != UINT32_MAX, 1)) {
                     cached_object_ptr_ = obj;
                     cached_shape_ptr_ = shape;
                     cached_offset_ = info.offset;
