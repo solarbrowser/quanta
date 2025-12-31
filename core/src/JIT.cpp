@@ -3193,14 +3193,22 @@ void MachineCodeGenerator::emit_prologue() {
     emit_byte(0x55);                          // push rbp
     emit_byte(0x48); emit_byte(0x89); emit_byte(0xE5);  // mov rbp, rsp
     #ifdef _WIN32
-    // Allocate 40 bytes: 32 for shadow space + 8 for alignment
-    emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x28);  // sub rsp, 40
+    // Save non-volatile registers that we'll use (R12, R13)
+    emit_byte(0x41); emit_byte(0x54);  // push r12
+    emit_byte(0x41); emit_byte(0x55);  // push r13
+    // Allocate 48 bytes: 32 for shadow space + 8 for Context + 8 for alignment
+    emit_byte(0x48); emit_byte(0x83); emit_byte(0xEC); emit_byte(0x30);  // sub rsp, 48
+    // Save Context pointer (RCX) to our stack frame [rbp-8]
+    emit_byte(0x48); emit_byte(0x89); emit_byte(0x4D); emit_byte(0xF8);  // mov [rbp-8], rcx
     #endif
 }
 void MachineCodeGenerator::emit_epilogue() {
     #ifdef _WIN32
-    // Deallocate shadow space
-    emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x28);  // add rsp, 40
+    // Deallocate shadow space + context storage
+    emit_byte(0x48); emit_byte(0x83); emit_byte(0xC4); emit_byte(0x30);  // add rsp, 48
+    // Restore non-volatile registers (in reverse order)
+    emit_byte(0x41); emit_byte(0x5D);  // pop r13
+    emit_byte(0x41); emit_byte(0x5C);  // pop r12
     #endif
     emit_byte(0x48); emit_byte(0x89); emit_byte(0xEC);  // mov rsp, rbp
     emit_byte(0x5D);                          // pop rbp
@@ -3680,8 +3688,17 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     }
 
     std::cout << "[LOOP-OPT] Pattern recognized: " << target_name << " = " << target_name << " + <expr>" << std::endl;
-    std::cout << "[LOOP-OPT] DEBUG: Testing with unroll_factor=1 (no unrolling)" << std::endl;
 
+    // ULTRA FAST PATH: Pure register loop for simple increment (sum = sum + 1)
+    bool is_pure_increment = false;
+    ASTNode* right_operand = value_binop->get_right();
+    if (right_operand && right_operand->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+        NumberLiteral* num = static_cast<NumberLiteral*>(right_operand);
+        if (num->get_value() == 1.0) {
+            is_pure_increment = true;
+            std::cout << "[LOOP-OPT] ufp: Pure increment detected! Using register-only loop!" << std::endl;
+        }
+    }
 
     code_buffer_.clear();
     embedded_strings_.clear();
@@ -3689,6 +3706,122 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     patches_.clear();
 
     emit_prologue();
+
+    if (is_pure_increment) {
+        // REGISTER ALLOCATION:
+        // r12 = accumulator (sum)
+        // r13 = loop counter (i)
+
+        std::cout << "[REGISTER-ALLOC] r12 = " << target_name << " (accumulator)" << std::endl;
+        std::cout << "[REGISTER-ALLOC] r13 = " << analysis.induction_var << " (loop counter)" << std::endl;
+
+        emit_byte(0x4D); emit_byte(0x31); emit_byte(0xE4);  // xor r12, r12
+
+        // Initialize r13 = start_value (loop counter)
+        emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC5);
+        emit_byte(analysis.start_value & 0xFF);
+        emit_byte((analysis.start_value >> 8) & 0xFF);
+        emit_byte((analysis.start_value >> 16) & 0xFF);
+        emit_byte((analysis.start_value >> 24) & 0xFF);
+
+        // Align loop start to 16-byte boundary for CPU fetch optimization
+        while (code_buffer_.size() % 16 != 0) {
+            emit_byte(0x90);  // nop
+        }
+        std::cout << "[LOOP-ALIGN] Loop aligned to 16-byte boundary at offset " << code_buffer_.size() << std::endl;
+
+        // Loop start
+        size_t loop_start_pos = code_buffer_.size();
+
+        std::cout << "[LOOP-UNROLL] 8x OPTIMAL UNROLL" << std::endl;
+
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+        emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
+
+        // i += 8
+        emit_byte(0x49); emit_byte(0x83); emit_byte(0xC5); emit_byte(0x08);  // add r13, 8
+
+        // Compare i with end_value
+        emit_byte(0x49); emit_byte(0x81); emit_byte(0xFD);  // cmp r13, end_value
+        emit_byte(analysis.end_value & 0xFF);
+        emit_byte((analysis.end_value >> 8) & 0xFF);
+        emit_byte((analysis.end_value >> 16) & 0xFF);
+        emit_byte((analysis.end_value >> 24) & 0xFF);
+
+        // Jump back if less than end_value (branch prediction hint: taken)
+        size_t loop_end_pos = code_buffer_.size();
+        int32_t rel_offset = static_cast<int32_t>(loop_start_pos - (loop_end_pos + 6));
+        emit_byte(0x0F); emit_byte(0x8C);  // jl (near jump, backward = likely taken)
+        emit_byte(rel_offset & 0xFF);
+        emit_byte((rel_offset >> 8) & 0xFF);
+        emit_byte((rel_offset >> 16) & 0xFF);
+        emit_byte((rel_offset >> 24) & 0xFF);
+
+        // After loop: write r12 back to variable (only once!)
+        size_t target_offset = embed_string(target_name);
+
+        // Save Context pointer that was passed in RCX (Windows) or RDI (Linux)
+        // It's in the shadow space / stack already from prologue
+
+        #ifdef _WIN32
+        // Windows x64: Context is in RCX (first parameter)
+        // jit_write_variable(Context* ctx, const char* name, int64_t value)
+        // RCX = ctx, RDX = name, R8 = value
+
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x4D); emit_byte(0xF8);  // mov rcx, [rbp-8] (context from our stack)
+        size_t patch_pos = code_buffer_.size() + 2;
+        patches_.push_back({patch_pos, target_offset});
+        emit_byte(0x48); emit_byte(0xBA);  // mov rdx, imm64 (variable name)
+        for (int i = 0; i < 8; i++) emit_byte(0);
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);  // mov rax, r12 (value)
+        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0);  // mov r8, rax (value in R8)
+        #else
+        // Linux x64: Context is in RDI (first parameter)
+        emit_byte(0x48); emit_byte(0x8B); emit_byte(0x7D); emit_byte(0x10);  // mov rdi, [rbp+16] (context)
+        size_t patch_pos = code_buffer_.size() + 2;
+        patches_.push_back({patch_pos, target_offset});
+        emit_mov_rsi_imm(0);  // variable name
+        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE2);  // mov rdx, r12 (value)
+        #endif
+
+        emit_call_absolute((void*)jit_write_variable);
+
+        // Set return value to 0 (for loops don't return a meaningful value)
+        emit_byte(0x48); emit_byte(0x31); emit_byte(0xC0);  // xor rax, rax
+
+        emit_epilogue();
+        emit_ret();
+
+        std::cout << "[LOOP-OPT] Generated pure register loop! (" << code_buffer_.size() << " bytes)" << std::endl;
+        std::cout << "[LOOP-OPT] NO memory access during loop! " << std::endl;
+
+        result.code_ptr = allocate_executable_memory(code_buffer_.size());
+        if (!result.code_ptr) {
+            std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
+            return result;
+        }
+
+        std::memcpy(result.code_ptr, code_buffer_.data(), code_buffer_.size());
+        result.code_size = code_buffer_.size();
+
+        for (const auto& patch : patches_) {
+            size_t abs_pos = patch.code_position;
+            size_t str_offset = patch.string_offset;
+            const char* str_ptr = embedded_strings_[str_offset].c_str();
+            std::memcpy(result.code_ptr + abs_pos, &str_ptr, sizeof(void*));
+        }
+
+        return result;
+    }
+
+    // OLD PATH: Function call based loop (fallback)
+    std::cout << "[LOOP-OPT] DEBUG: Using old function-call based loop" << std::endl;
 
     emit_byte(0x41); emit_byte(0x56);
     emit_byte(0x41); emit_byte(0x54);
