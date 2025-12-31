@@ -117,9 +117,6 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
     if (!enabled_ || !node) return false;
     auto start = std::chrono::high_resolution_clock::now();
     auto mc_it = machine_code_cache_.find(node);
-    if (get_loop_depth() > 0) {
-        std::cout << "[JIT-LOOP-SKIP] Skipping machine code inside loop (loop_depth=" << get_loop_depth() << ")" << std::endl;
-    }
     if (mc_it != machine_code_cache_.end() && get_loop_depth() == 0) {
         stats_.cache_hits++;
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
@@ -3515,6 +3512,10 @@ LoopAnalysis MachineCodeGenerator::analyze_loop(ForStatement* loop) {
             Identifier* id = static_cast<Identifier*>(right);
             analysis.invariant_vars.push_back(id->get_name());
             analysis.end_value = 1000;
+        } else if (right && right->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+            // arr.length, obj.size, etc. - treat as loop invariant
+            analysis.invariant_vars.push_back("_member_expr_");
+            analysis.end_value = 100000;  
         }
     }
 
@@ -3524,6 +3525,9 @@ LoopAnalysis MachineCodeGenerator::analyze_loop(ForStatement* loop) {
             upd->get_operator() == UnaryExpression::Operator::PRE_INCREMENT) {
             analysis.step = 1;
         }
+    } else if (update->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+        // i = i + 1, i += 1, etc.
+        analysis.step = 1;  
     }
 
     analysis.is_simple_counting_loop = !analysis.induction_var.empty() &&
