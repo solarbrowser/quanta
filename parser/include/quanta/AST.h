@@ -257,6 +257,7 @@ private:
     std::string name_;
     mutable Value cached_value_;
     mutable bool cache_valid_ = false;
+    mutable class Environment* cached_env_ = nullptr;  // Environment pointer for cache validation
 
 public:
     Identifier(const std::string& name, const Position& start, const Position& end)

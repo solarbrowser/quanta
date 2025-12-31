@@ -23,15 +23,6 @@ class Context;
 class ASTNode;
 class Parameter;
 
-/**
- * JavaScript object implementation
- * Features:
- * - Hidden Classes (Shapes) for property access optimization
- * - Inline caching for property lookups
- * - Efficient property storage with backing arrays
- * - Prototype chain management
- * - Property descriptor support
- */
 class Object {
 public:
     enum class ObjectType : uint8_t {
@@ -122,6 +113,12 @@ public:
     bool delete_property(const std::string& key);
     
     Value get_element(uint32_t index) const;
+
+    // fp: unchecked array access
+    inline Value get_element_unchecked(uint32_t index) const {
+        return elements_[index];
+    }
+
     bool set_element(uint32_t index, const Value& value);
     bool delete_element(uint32_t index);
     

@@ -244,6 +244,7 @@ Value Identifier::evaluate(Context& ctx) {
         "Boolean", "RegExp", "Error", "Date", "Infinity", "NaN", "undefined"
     };
 
+    // Globals have fast path caching (immutable bindings)
     if (cacheable_globals.find(name_) != cacheable_globals.end()) {
         if (__builtin_expect(cache_valid_, 1)) {
             return cached_value_;
@@ -267,6 +268,7 @@ Value Identifier::evaluate(Context& ctx) {
 
     Value result = ctx.get_binding(name_);
 
+    // Only cache immutable globals
     if (cacheable_globals.find(name_) != cacheable_globals.end() && !cache_valid_) {
         cached_value_ = result;
         cache_valid_ = true;
@@ -4257,7 +4259,7 @@ Value MemberExpression::evaluate(Context& ctx) {
     if (object_value.is_object() && computed_) {
         Object* obj = object_value.as_object();
 
-        // ufp: Constant array index 
+        //  ufp: Constant array index
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
             NumberLiteral* num_lit = static_cast<NumberLiteral*>(property_.get());
             double index_double = num_lit->get_value();
@@ -4272,13 +4274,11 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-
-        // fp: Variable array index 
+        // fp: Variable array index
         if (__builtin_expect(prop_value.is_number(), 1)) {
             double index_double = prop_value.as_number();
             if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
                 uint32_t index = static_cast<uint32_t>(index_double);
-
                 Value element = obj->get_element(index);
                 if (!element.is_undefined()) {
                     return element;
@@ -5743,6 +5743,11 @@ Value ForStatement::evaluate(Context& ctx) {
 
     if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
+
+        if (get_loop_depth() == 1) {
+            std::cout << "[LOOP-AGGRESSIVE] Top-level loop detected, forcing immediate JIT compilation!" << std::endl;
+            jit->compile_to_machine_code(this);
+        }
 
         auto start = std::chrono::high_resolution_clock::now();
 

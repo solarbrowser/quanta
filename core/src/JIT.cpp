@@ -20,17 +20,28 @@ extern "C" int64_t jit_read_variable(Context* ctx, const char* name) {
     if (!ctx || !name) {
         return 0;
     }
-    Value val = ctx->get_binding(name);
-    if (val.is_number()) {
-        return static_cast<int64_t>(val.as_number());
+
+   
+    // this bypasses execution depth checks, increment/decrement, and just reads the value.
+    Environment* env = ctx->get_lexical_environment();
+    if (__builtin_expect(env != nullptr, 1)) {
+        Value val = env->get_binding(name);
+        if (__builtin_expect(val.is_number(), 1)) {
+            return static_cast<int64_t>(val.as_number());
+        }
     }
+
     return 0;
 }
 extern "C" void jit_write_variable(Context* ctx, const char* name, int64_t value) {
     if (!ctx || !name) {
         return;
     }
-    ctx->set_binding(name, Value(static_cast<double>(value)));
+
+    Environment* env = ctx->get_lexical_environment();
+    if (__builtin_expect(env != nullptr, 1)) {
+        env->set_binding(name, Value(static_cast<double>(value)));
+    }
 }
 JITCompiler::JITCompiler()
     : enabled_(true),
@@ -117,7 +128,12 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
     if (!enabled_ || !node) return false;
     auto start = std::chrono::high_resolution_clock::now();
     auto mc_it = machine_code_cache_.find(node);
-    if (mc_it != machine_code_cache_.end() && get_loop_depth() == 0) {
+
+    // ForStatement can execute at any depth, others need depth == 0
+    bool can_execute = (mc_it != machine_code_cache_.end()) &&
+                       (node->get_type() == ASTNode::Type::FOR_STATEMENT || get_loop_depth() == 0);
+
+    if (can_execute) {
         stats_.cache_hits++;
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
             BinaryExpression* binop = static_cast<BinaryExpression*>(node);
@@ -257,9 +273,18 @@ bool JITCompiler::compile_to_optimized(ASTNode* node) {
 bool JITCompiler::compile_to_machine_code(ASTNode* node) {
     if (!node) return false;
     std::cout << "[JIT-MACHINE] Compiling node type " << static_cast<int>(node->get_type()) << " to machine code..." << std::endl;
+
+    // Create hotspot entry if it doesn't exist (for forced compilation)
     auto hs_it = hotspots_.find(node);
     if (hs_it == hotspots_.end()) {
-        return false;
+        // For ForStatement, force compilation even without hotspot data
+        if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+            std::cout << "[JIT-MACHINE] No hotspot data, but forcing ForStatement compilation" << std::endl;
+            hotspots_[node] = HotspotInfo();
+            hs_it = hotspots_.find(node);
+        } else {
+            return false;
+        }
     }
     const auto& hotspot = hs_it->second;
     TypeFeedback feedback;
@@ -474,6 +499,23 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
     CompiledMachineCode result;
     code_buffer_.clear();
     std::cout << "[JIT-CODEGEN] Compiling node type: " << static_cast<int>(node ? node->get_type() : ASTNode::Type::PROGRAM) << std::endl;
+
+    if (node && node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+        std::cout << "[JIT-LOOP] ForStatement detected! Analyzing loop..." << std::endl;
+        ForStatement* loop = static_cast<ForStatement*>(node);
+        LoopAnalysis analysis = analyze_loop(loop);
+
+        if (analysis.is_simple_counting_loop) {
+            std::cout << "[JIT-LOOP] Simple counting loop detected! Compiling optimized version..." << std::endl;
+            return compile_optimized_loop(loop, analysis);
+        } else {
+            std::cout << "[JIT-LOOP] Complex loop - cannot optimize yet" << std::endl;
+            result.code_ptr = nullptr;
+            result.code_size = 0;
+            return result;
+        }
+    }
+
     if (node && node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
         BinaryExpression* binop = static_cast<BinaryExpression*>(node);
         ASTNode* left = binop->get_left();
