@@ -18,7 +18,7 @@ CXXFLAGS += -fno-signed-zeros -fno-trapping-math
 CXXFLAGS += -pthread
 
 DEBUG_FLAGS = -g -DDEBUG -O0
-INCLUDES = -Icore/include -Ilexer/include -Iparser/include
+INCLUDES = -Iinclude
 
 # Platform-specific libraries and stack size
 ifeq ($(OS),Windows_NT)
@@ -32,9 +32,9 @@ else
 endif
 
 # Directories
-CORE_SRC = core/src
-LEXER_SRC = lexer/src
-PARSER_SRC = parser/src
+CORE_SRC = src/core
+LEXER_SRC = src/lexer
+PARSER_SRC = src/parser
 BUILD_DIR = build
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
@@ -51,11 +51,8 @@ else
 $(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/lexer $(OBJ_DIR)/parser $(BIN_DIR))
 endif
 
-# Core source files
-CORE_SOURCES = $(wildcard $(CORE_SRC)/*.cpp) $(CORE_SRC)/platform/NativeAPI.cpp $(CORE_SRC)/platform/APIRouter.cpp
-ifneq ($(OS),Windows_NT) 
-    CORE_SOURCES += $(CORE_SRC)/platform/LinuxNativeAPI.cpp
-endif
+# Core source files - recursively find all in subdirectories
+CORE_SOURCES = $(wildcard $(CORE_SRC)/*/*.cpp) $(wildcard $(CORE_SRC)/*/*/*.cpp)
 LEXER_SOURCES = $(wildcard $(LEXER_SRC)/*.cpp)
 PARSER_SOURCES = $(wildcard $(PARSER_SRC)/*.cpp)
 
@@ -89,20 +86,19 @@ $(BIN_DIR)/quanta: $(CONSOLE_MAIN) $(LIBQUANTA)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS)
 	@echo "[OK] Quanta console built: $@"
 
-# Object file compilation
+# Object file compilation - generic rule for all subdirectories
 $(OBJ_DIR)/core/%.o: $(CORE_SRC)/%.cpp
+	@mkdir -p $(dir $@)
 	@echo "[BUILD] Compiling core: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(OBJ_DIR)/core/platform/%.o: $(CORE_SRC)/platform/%.cpp
-	@echo "[BUILD] Compiling platform: $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-
 $(OBJ_DIR)/lexer/%.o: $(LEXER_SRC)/%.cpp
+	@mkdir -p $(dir $@)
 	@echo "[BUILD] Compiling lexer: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
+	@mkdir -p $(dir $@)
 	@echo "[BUILD] Compiling parser: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 

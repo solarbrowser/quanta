@@ -4,13 +4,13 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#include "quanta/Engine.h"
-#include "quanta/Async.h"
-#include "quanta/Generator.h"
-#include "quanta/Iterator.h"
-#include "quanta/ProxyReflect.h"
-#include "quanta/Lexer.h"
-#include "quanta/Parser.h"
+#include "quanta/core/engine/Engine.h"
+#include "quanta/core/runtime/Async.h"
+#include "quanta/core/runtime/Generator.h"
+#include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/lexer/Lexer.h"
+#include "quanta/parser/Parser.h"
 #include <iostream>
 #include <string>
 #include <sstream>
