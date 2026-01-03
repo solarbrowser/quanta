@@ -27,7 +27,7 @@ std::unique_ptr<BytecodeFunction> BytecodeCompiler::compile(ASTNode* ast, const 
     auto function = std::make_unique<BytecodeFunction>(function_name);
     reset_registers();
     
-    std::cout << "� BYTECODE COMPILATION: " << function_name << std::endl;
+    std::cout << "[BYTECODE] Compiling: " << function_name << std::endl;
     
     compile_node_simple(ast, function.get());
     
@@ -94,15 +94,30 @@ void BytecodeCompiler::compile_node_simple(ASTNode* node, BytecodeFunction* func
 
 void BytecodeCompiler::optimize_bytecode(BytecodeFunction* function, uint32_t level) {
     if (!function || level == 0) return;
-    
-    std::cout << "� BYTECODE OPTIMIZATION LEVEL " << level << ": " << function->function_name << std::endl;
-    
-    auto it = std::remove_if(function->instructions.begin(), function->instructions.end(),
-        [](const BytecodeOp& op) {
-            return op.instruction == BytecodeInstruction::NOP;
-        });
-    function->instructions.erase(it, function->instructions.end());
-    
+
+    std::cout << "[BYTECODE-OPT] Level " << level << ": " << function->function_name << std::endl;
+
+    size_t original_size = function->instructions.size();
+
+    // PHASE 1: Constant folding (2+3 -> 5)
+    if (level >= 1) {
+        constant_folding_pass(function);
+    }
+
+    // PHASE 2: Peephole optimizations
+    if (level >= 2) {
+        peephole_optimization_pass(function);
+    }
+
+    // PHASE 3: Dead code elimination (remove NOPs)
+    dead_code_elimination_pass(function);
+
+    size_t optimized_size = function->instructions.size();
+    if (original_size > optimized_size) {
+        std::cout << "[BYTECODE-OPT] Reduced from " << original_size << " to " << optimized_size
+                  << " instructions (-" << (original_size - optimized_size) << ")" << std::endl;
+    }
+
     function->is_optimized = true;
     function->optimization_level = level;
 }
@@ -215,6 +230,94 @@ void BytecodeCompiler::compile_statement(ASTNode* node, BytecodeFunction* functi
 }
 
 void BytecodeCompiler::constant_folding_pass(BytecodeFunction* function) {
+    // Constant folding: Compute constant expressions at compile-time
+    // Example: LOAD_CONST 2, LOAD_CONST 3, ADD -> LOAD_CONST 5
+
+    if (function->instructions.size() < 3) return;
+
+    for (size_t i = 0; i + 2 < function->instructions.size(); ) {
+        BytecodeOp& op1 = function->instructions[i];
+        BytecodeOp& op2 = function->instructions[i + 1];
+        BytecodeOp& op3 = function->instructions[i + 2];
+
+        // Pattern: LOAD_CONST <const1>, LOAD_CONST <const2>, <binary_op>
+        if (op1.instruction == BytecodeInstruction::LOAD_CONST &&
+            op2.instruction == BytecodeInstruction::LOAD_CONST &&
+            !op1.operands.empty() && !op2.operands.empty()) {
+
+            uint32_t idx1 = op1.operands[0].value;
+            uint32_t idx2 = op2.operands[0].value;
+
+            if (idx1 >= function->constants.size() || idx2 >= function->constants.size()) {
+                i++;
+                continue;
+            }
+
+            Value& const1 = function->constants[idx1];
+            Value& const2 = function->constants[idx2];
+
+            // Both must be numbers for arithmetic operations
+            if (!const1.is_number() || !const2.is_number()) {
+                i++;
+                continue;
+            }
+
+            double val1 = const1.to_number();
+            double val2 = const2.to_number();
+            double result = 0.0;
+            bool can_fold = true;
+
+            // Check if third instruction is a foldable binary operation
+            switch (op3.instruction) {
+                case BytecodeInstruction::ADD:
+                    result = val1 + val2;
+                    break;
+                case BytecodeInstruction::SUB:
+                    result = val1 - val2;
+                    break;
+                case BytecodeInstruction::MUL:
+                    result = val1 * val2;
+                    break;
+                case BytecodeInstruction::DIV:
+                    if (val2 == 0.0) {
+                        can_fold = false;  // Don't fold division by zero
+                    } else {
+                        result = val1 / val2;
+                    }
+                    break;
+                case BytecodeInstruction::MOD:
+                    if (val2 == 0.0) {
+                        can_fold = false;
+                    } else {
+                        result = fmod(val1, val2);
+                    }
+                    break;
+                default:
+                    can_fold = false;
+                    break;
+            }
+
+            if (can_fold) {
+                // Replace three instructions with one LOAD_CONST
+                uint32_t new_const_idx = function->add_constant(Value(result));
+                op1.instruction = BytecodeInstruction::LOAD_CONST;
+                op1.operands = {BytecodeOperand(BytecodeOperand::CONSTANT, new_const_idx)};
+
+                // Mark other two as NOP (will be removed by dead code elimination)
+                op2.instruction = BytecodeInstruction::NOP;
+                op2.operands.clear();
+                op3.instruction = BytecodeInstruction::NOP;
+                op3.operands.clear();
+
+                // Continue from next instruction after the folded sequence
+                i++;
+            } else {
+                i++;
+            }
+        } else {
+            i++;
+        }
+    }
 }
 
 void BytecodeCompiler::dead_code_elimination_pass(BytecodeFunction* function) {
@@ -226,6 +329,95 @@ void BytecodeCompiler::dead_code_elimination_pass(BytecodeFunction* function) {
 }
 
 void BytecodeCompiler::peephole_optimization_pass(BytecodeFunction* function) {
+    // Peephole optimization: Remove redundant instruction patterns
+    // Examples:
+    // - PUSH x, POP x -> NOP
+    // - DUP, POP -> NOP
+    // - LOAD_VAR x, STORE_VAR x -> NOP
+
+    if (function->instructions.size() < 2) return;
+
+    for (size_t i = 0; i + 1 < function->instructions.size(); ) {
+        BytecodeOp& op1 = function->instructions[i];
+        BytecodeOp& op2 = function->instructions[i + 1];
+
+        bool optimized = false;
+
+        // Pattern 1: DUP followed by POP - redundant
+        if (op1.instruction == BytecodeInstruction::DUP &&
+            op2.instruction == BytecodeInstruction::POP) {
+            op1.instruction = BytecodeInstruction::NOP;
+            op2.instruction = BytecodeInstruction::NOP;
+            op1.operands.clear();
+            op2.operands.clear();
+            optimized = true;
+        }
+
+        // Pattern 2: LOAD_VAR x, STORE_VAR x - load and immediately store same var
+        else if (op1.instruction == BytecodeInstruction::LOAD_VAR &&
+                 op2.instruction == BytecodeInstruction::STORE_VAR &&
+                 !op1.operands.empty() && !op2.operands.empty() &&
+                 op1.operands[0].value == op2.operands[0].value) {
+            op1.instruction = BytecodeInstruction::NOP;
+            op2.instruction = BytecodeInstruction::NOP;
+            op1.operands.clear();
+            op2.operands.clear();
+            optimized = true;
+        }
+
+        // Pattern 3: Multiple consecutive POPs - keep them but mark for future optimization
+
+        // Pattern 4: LOAD_CONST followed by POP - loading then discarding
+        else if (op1.instruction == BytecodeInstruction::LOAD_CONST &&
+                 op2.instruction == BytecodeInstruction::POP) {
+            op1.instruction = BytecodeInstruction::NOP;
+            op2.instruction = BytecodeInstruction::NOP;
+            op1.operands.clear();
+            op2.operands.clear();
+            optimized = true;
+        }
+
+        if (optimized) {
+            i += 2; // Skip both instructions
+        } else {
+            i++;
+        }
+    }
+
+    // Pattern 5: Strength reduction (x * 2 -> x << 1)
+    for (size_t i = 0; i + 2 < function->instructions.size(); ) {
+        BytecodeOp& op1 = function->instructions[i];
+        BytecodeOp& op2 = function->instructions[i + 1];
+        BytecodeOp& op3 = function->instructions[i + 2];
+
+        // x * 2 -> x << 1 (faster)
+        if (op2.instruction == BytecodeInstruction::LOAD_CONST &&
+            op3.instruction == BytecodeInstruction::MUL &&
+            !op2.operands.empty()) {
+
+            uint32_t const_idx = op2.operands[0].value;
+            if (const_idx < function->constants.size()) {
+                Value& const_val = function->constants[const_idx];
+                if (const_val.is_number()) {
+                    double num = const_val.to_number();
+                    // x * 2 -> x << 1
+                    if (num == 2.0) {
+                        // Replace MUL with left shift by 1
+                        // For now, keep as MUL since we don't have SHIFT instructions
+                        // This is a placeholder for future SHIFT instruction support
+                    }
+                    // x / 2 -> x >> 1
+                    else if (num == 0.5 && op3.instruction == BytecodeInstruction::MUL) {
+                        // x * 0.5 is same as x / 2
+                        op2.operands[0].value = function->add_constant(Value(2.0));
+                        op3.instruction = BytecodeInstruction::DIV;
+                    }
+                }
+            }
+        }
+
+        i++;
+    }
 }
 
 void BytecodeCompiler::hot_path_optimization_pass(BytecodeFunction* function) {
@@ -272,7 +464,7 @@ bool BytecodeJITBridge::should_jit_compile(BytecodeFunction* function) {
 bool BytecodeJITBridge::compile_to_machine_code(BytecodeFunction* function) {
     if (!function || function->is_optimized) return false;
     
-    std::cout << "� JIT COMPILING BYTECODE: " << function->function_name << std::endl;
+    std::cout << "[BYTECODE-JIT] Compiling: " << function->function_name << std::endl;
 
     function->is_optimized = true;
     function->optimization_level = 3;

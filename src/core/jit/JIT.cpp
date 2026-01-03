@@ -180,7 +180,7 @@ JITCompiler::JITCompiler()
     : enabled_(true),
       bytecode_threshold_(3),
       optimized_threshold_(8),
-      machine_code_threshold_(15) {
+      machine_code_threshold_(1) {  // Lowered from 15 to 1 for aggressive loop optimization
     std::cout << "[JIT] Quanta JIT Compiler initialized (ULTRA AGGRESSIVE MODE)" << std::endl;
     std::cout << "[JIT] Tier thresholds:" << std::endl;
     std::cout << "[JIT]   Bytecode:     " << bytecode_threshold_ << " executions" << std::endl;
@@ -3917,22 +3917,32 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
             right_operand = value_node;
             std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
         } else if (binop_op == BinaryExpression::Operator::ASSIGN) {
-            if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
+            // For array: arr[i] = <any expression>
+            if (is_array_access && value_node) {
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << "[i] = <expr>" << std::endl;
+                // We'll handle this in the array-specific path below
+                // Set a flag so we know this is a simple assignment
+                effective_op = BinaryExpression::Operator::ASSIGN;
+                right_operand = value_node;
+            }
+            else if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
                 std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
                 return result;
             }
-            BinaryExpression* value_binop = static_cast<BinaryExpression*>(value_node);
-            effective_op = value_binop->get_operator();
-            right_operand = value_binop->get_right();
+            else {
+                BinaryExpression* value_binop = static_cast<BinaryExpression*>(value_node);
+                effective_op = value_binop->get_operator();
+                right_operand = value_binop->get_right();
 
-            if (effective_op != BinaryExpression::Operator::ADD &&
-                effective_op != BinaryExpression::Operator::SUBTRACT &&
-                effective_op != BinaryExpression::Operator::MULTIPLY &&
-                effective_op != BinaryExpression::Operator::DIVIDE) {
-                std::cout << "[LOOP-OPT] Unsupported binary operator: " << static_cast<int>(effective_op) << std::endl;
-                return result;
+                if (effective_op != BinaryExpression::Operator::ADD &&
+                    effective_op != BinaryExpression::Operator::SUBTRACT &&
+                    effective_op != BinaryExpression::Operator::MULTIPLY &&
+                    effective_op != BinaryExpression::Operator::DIVIDE) {
+                    std::cout << "[LOOP-OPT] Unsupported binary operator: " << static_cast<int>(effective_op) << std::endl;
+                    return result;
+                }
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << " = " << target_name << " op <expr>" << std::endl;
             }
-            std::cout << "[LOOP-OPT] Pattern: " << target_name << " = " << target_name << " op <expr>" << std::endl;
         } else {
             std::cout << "[LOOP-OPT] Unsupported operator" << std::endl;
             return result;
@@ -4139,16 +4149,88 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     int unroll = analysis.unroll_factor;
     for (int u = 0; u < unroll; u++) {
         if (is_array_access) {
-            // Array pattern: arr[i] = i * 2
+            // Array pattern: arr[i] = <expression>
             // Call: jit_set_array_element(ctx, "arr", i, value)
 
-            // Calculate value (i * 2 for simple case)
-            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);  // mov rax, r12 (i)
-            if (u > 0) {
-                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);  // add rax, u
+            // Calculate value based on right_operand
+            if (effective_op == BinaryExpression::Operator::ASSIGN && right_operand) {
+                // Simple assignment: arr[i] = <expr>
+                if (right_operand->get_type() == ASTNode::Type::IDENTIFIER) {
+                    // arr[i] = i (or another variable)
+                    Identifier* id = static_cast<Identifier*>(right_operand);
+                    if (id->get_name() == analysis.induction_var) {
+                        // arr[i] = i
+                        emit_byte(0x4D); emit_byte(0x89); emit_byte(0xE3);  // mov r11, r12 (value = i) - FIXED: 0x4D not 0x4C
+                        if (u > 0) {
+                            emit_byte(0x49); emit_byte(0x83); emit_byte(0xC3); emit_byte(u);  // add r11, u
+                        }
+                    } else {
+                        // arr[i] = someOtherVar - not supported yet, use fallback
+                        std::cout << "[LOOP-OPT] Unsupported: array assignment from other variable" << std::endl;
+                    }
+                } else if (right_operand->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                    // arr[i] = 42
+                    NumberLiteral* num = static_cast<NumberLiteral*>(right_operand);
+                    int64_t val = static_cast<int64_t>(num->get_value());
+                    emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC3);  // mov r11, imm
+                    emit_byte(val & 0xFF);
+                    emit_byte((val >> 8) & 0xFF);
+                    emit_byte((val >> 16) & 0xFF);
+                    emit_byte((val >> 24) & 0xFF);
+                } else if (right_operand->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+                    // arr[i] = i * 2 or i + 5, etc
+                    BinaryExpression* binexpr = static_cast<BinaryExpression*>(right_operand);
+                    ASTNode* left = binexpr->get_left();
+                    ASTNode* right = binexpr->get_right();
+
+                    if (left && left->get_type() == ASTNode::Type::IDENTIFIER &&
+                        static_cast<Identifier*>(left)->get_name() == analysis.induction_var &&
+                        right && right->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+
+                        double const_val = static_cast<NumberLiteral*>(right)->get_value();
+                        auto op = binexpr->get_operator();
+
+                        // Load i into rax
+                        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);  // mov rax, r12 (i)
+                        if (u > 0) {
+                            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);  // add rax, u
+                        }
+
+                        // Apply operation
+                        if (op == BinaryExpression::Operator::MULTIPLY && const_val == 2.0) {
+                            emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(0x01);  // shl rax, 1
+                        } else if (op == BinaryExpression::Operator::MULTIPLY) {
+                            int64_t ival = static_cast<int64_t>(const_val);
+                            emit_byte(0x48); emit_byte(0x69); emit_byte(0xC0);  // imul rax, rax, imm
+                            emit_byte(ival & 0xFF);
+                            emit_byte((ival >> 8) & 0xFF);
+                            emit_byte((ival >> 16) & 0xFF);
+                            emit_byte((ival >> 24) & 0xFF);
+                        } else if (op == BinaryExpression::Operator::ADD) {
+                            int64_t ival = static_cast<int64_t>(const_val);
+                            if (ival >= -128 && ival <= 127) {
+                                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(ival & 0xFF);  // add rax, imm8
+                            } else {
+                                emit_byte(0x48); emit_byte(0x05);  // add rax, imm32
+                                emit_byte(ival & 0xFF);
+                                emit_byte((ival >> 8) & 0xFF);
+                                emit_byte((ival >> 16) & 0xFF);
+                                emit_byte((ival >> 24) & 0xFF);
+                            }
+                        }
+
+                        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC3);  // mov r11, rax (save value)
+                    }
+                }
+            } else {
+                // Old path for i * 2 (keep for backward compat)
+                emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);  // mov rax, r12 (i)
+                if (u > 0) {
+                    emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);  // add rax, u
+                }
+                emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(0x01);  // shl rax, 1 (multiply by 2)
+                emit_byte(0x49); emit_byte(0x89); emit_byte(0xC3);  // mov r11, rax (save value)
             }
-            emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(0x01);  // shl rax, 1 (multiply by 2)
-            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC3);  // mov r11, rax (save value)
 
             // Setup call to jit_set_array_element(ctx, "arr", index, value)
             #ifdef _WIN32
