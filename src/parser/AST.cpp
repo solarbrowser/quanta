@@ -1158,12 +1158,11 @@ std::string UnaryExpression::operator_to_string(Operator op) {
 
 
 Value AssignmentExpression::evaluate(Context& ctx) {
-
     Value right_value = right_->evaluate(ctx);
     if (ctx.has_exception()) {
         return Value();
     }
-    
+
     if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
@@ -1282,6 +1281,20 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return Value();
         }
         
+        if (member->is_computed() && obj && obj->is_array()) {
+            Value prop_value = member->get_property()->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+
+            if (__builtin_expect(prop_value.is_number(), 1)) {
+                double idx_double = prop_value.as_number();
+                if (__builtin_expect(idx_double >= 0 && idx_double == static_cast<uint32_t>(idx_double) && idx_double < 0xFFFFFFFF, 1)) {
+                    uint32_t index = static_cast<uint32_t>(idx_double);
+                    obj->set_element(index, right_value);
+                    return right_value;
+                }
+            }
+        }
+
         std::string prop_name;
         if (member->is_computed()) {
             Value prop_value = member->get_property()->evaluate(ctx);
@@ -5587,7 +5600,6 @@ Value ForStatement::evaluate(Context& ctx) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         if (get_loop_depth() == 1) {
-            std::cout << "[LOOP-AGGRESSIVE] Top-level loop detected, forcing immediate JIT compilation!" << std::endl;
             jit->compile_to_machine_code(this);
         }
 
@@ -5605,6 +5617,47 @@ Value ForStatement::evaluate(Context& ctx) {
         jit->record_execution(this, 0);
     }
 
+    // FAST PATH: Detect simple array filling loops
+    if (init_ && test_ && update_ && body_ && body_->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+        ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(body_.get());
+        if (expr_stmt->get_expression() && expr_stmt->get_expression()->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+            AssignmentExpression* assign = static_cast<AssignmentExpression*>(expr_stmt->get_expression());
+            if (assign->get_left() && assign->get_left()->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                MemberExpression* member = static_cast<MemberExpression*>(assign->get_left());
+                if (member->is_computed() && member->get_object()->get_type() == ASTNode::Type::IDENTIFIER) {
+                    // Pattern: arr[i] = expr
+                    Identifier* arr_id = static_cast<Identifier*>(member->get_object());
+                    Value arr_val = ctx.get_binding(arr_id->get_name());
+                    if (arr_val.is_object() && arr_val.as_object()->is_array()) {
+                        // Execute init
+                        ctx.push_block_scope();
+                        if (init_) init_->evaluate(ctx);
+
+                        // Fast C++ loop
+                        while (true) {
+                            Value test_val = test_->evaluate(ctx);
+                            if (!test_val.to_boolean()) break;
+
+                            // Direct array set
+                            Value idx_val = member->get_property()->evaluate(ctx);
+                            if (idx_val.is_number()) {
+                                uint32_t idx = static_cast<uint32_t>(idx_val.as_number());
+                                Value right_val = assign->get_right()->evaluate(ctx);
+                                arr_val.as_object()->set_element(idx, right_val);
+                            }
+
+                            if (update_) update_->evaluate(ctx);
+                        }
+
+                        ctx.pop_block_scope();
+                        loop_depth--;
+                        return Value();
+                    }
+                }
+            }
+        }
+    }
+
     ctx.push_block_scope();
 
     Value result;
@@ -5616,11 +5669,11 @@ Value ForStatement::evaluate(Context& ctx) {
                 return Value();
             }
         }
-    
-    
+
+
     unsigned int safety_counter = 0;
     const unsigned int max_iterations = 1000000000U;
-    
+
     while (true) {
         if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
             if (safety_counter > max_iterations) {

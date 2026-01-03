@@ -43,6 +43,139 @@ extern "C" void jit_write_variable(Context* ctx, const char* name, int64_t value
         env->set_binding(name, Value(static_cast<double>(value)));
     }
 }
+
+extern "C" void jit_set_array_element(Context* ctx, const char* array_name, int64_t index, int64_t value) {
+    if (!ctx || !array_name || index < 0) {
+        return;
+    }
+
+    Environment* env = ctx->get_lexical_environment();
+    if (__builtin_expect(env != nullptr, 1)) {
+        Value arr_val = env->get_binding(array_name);
+        if (__builtin_expect(arr_val.is_object(), 1)) {
+            Object* arr = arr_val.as_object();
+            if (__builtin_expect(arr->is_array(), 1)) {
+                arr->set_element(static_cast<uint32_t>(index), Value(static_cast<double>(value)));
+            }
+        }
+    }
+}
+
+struct FastPropertyCache {
+    void* last_object;
+    std::string last_property;
+    Value cached_value;
+    bool valid;
+};
+
+static FastPropertyCache fast_prop_cache[256];
+
+extern "C" Value jit_get_property_cached(Object* obj, const char* prop, uint32_t cache_slot) {
+    if (!obj || !prop) return Value();
+
+    FastPropertyCache& cache = fast_prop_cache[cache_slot % 256];
+
+    if (cache.valid && cache.last_object == obj && cache.last_property == prop) {
+        return cache.cached_value;
+    }
+
+    Value result = obj->get_property(prop);
+    cache.last_object = obj;
+    cache.last_property = prop;
+    cache.cached_value = result;
+    cache.valid = true;
+
+    return result;
+}
+
+extern "C" double jit_array_get_unchecked(void* arr_ptr, int64_t index) {
+    auto* arr = static_cast<std::vector<Value>*>(arr_ptr);
+    if (index >= 0 && static_cast<size_t>(index) < arr->size()) {
+        return (*arr)[index].as_number();
+    }
+    return 0.0;
+}
+
+extern "C" void jit_array_set_unchecked(void* arr_ptr, int64_t index, double value) {
+    auto* arr = static_cast<std::vector<Value>*>(arr_ptr);
+    if (index >= 0 && static_cast<size_t>(index) < arr->size()) {
+        (*arr)[index] = Value(value);
+    }
+}
+
+struct InlineCandidate {
+    std::string name;
+    ASTNode* body;
+    int size;
+    int call_count;
+    bool is_hot;
+};
+
+static std::unordered_map<std::string, InlineCandidate> inline_candidates;
+
+bool should_inline_function(const std::string& name, int body_size, int call_count) {
+    if (body_size <= 3) return true;
+    if (body_size <= 10 && call_count > 5) return true;
+    if (body_size <= 20 && call_count > 100) return true;
+    return false;
+}
+
+extern "C" char* jit_string_concat_multi(const char* strings[], int count) {
+    size_t total_len = 0;
+    for (int i = 0; i < count; i++) {
+        if (strings[i]) {
+            total_len += strlen(strings[i]);
+        }
+    }
+
+    char* result = (char*)malloc(total_len + 1);
+    if (!result) return nullptr;
+
+    char* ptr = result;
+    for (int i = 0; i < count; i++) {
+        if (strings[i]) {
+            size_t len = strlen(strings[i]);
+            memcpy(ptr, strings[i], len);
+            ptr += len;
+        }
+    }
+    *ptr = '\0';
+
+    return result;
+}
+
+enum class SpeculatedType {
+    NONE,
+    INT,
+    DOUBLE,
+    STRING,
+    OBJECT,
+    ARRAY
+};
+
+struct TypeFeedbackSite {
+    SpeculatedType observed_type;
+    int observation_count;
+    bool is_monomorphic;
+    bool is_polymorphic;
+};
+
+static std::unordered_map<void*, TypeFeedbackSite> type_feedback;
+
+extern "C" void record_type_feedback(void* site, int type_tag) {
+    auto& feedback = type_feedback[site];
+    SpeculatedType current = static_cast<SpeculatedType>(type_tag);
+
+    if (feedback.observation_count == 0) {
+        feedback.observed_type = current;
+        feedback.is_monomorphic = true;
+    } else if (feedback.observed_type != current) {
+        feedback.is_monomorphic = false;
+        feedback.is_polymorphic = true;
+    }
+
+    feedback.observation_count++;
+}
 JITCompiler::JITCompiler()
     : enabled_(true),
       bytecode_threshold_(3),
@@ -3642,61 +3775,225 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
         return result;
     }
 
-    BinaryExpression* assign_binop = nullptr;
+    std::vector<BinaryExpression*> assign_binops;
+    std::vector<AssignmentExpression*> assign_exprs;
+    std::vector<AssignmentExpression::Operator> assign_ops;
+
+    int noop_count = 0;
     for (const auto& stmt : statements) {
         if (stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
             ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
             ASTNode* expr = expr_stmt->get_expression();
 
-            if (expr && expr->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+            if (expr && expr->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                assign_exprs.push_back(static_cast<AssignmentExpression*>(expr));
+                assign_ops.push_back(static_cast<AssignmentExpression*>(expr)->get_operator());
+            }
+            else if (expr && expr->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
                 BinaryExpression* binexpr = static_cast<BinaryExpression*>(expr);
-                if (binexpr->get_operator() == BinaryExpression::Operator::ASSIGN) {
-                    assign_binop = binexpr;
-                    break;
+                auto op = binexpr->get_operator();
+                if (op == BinaryExpression::Operator::ASSIGN ||
+                    op == BinaryExpression::Operator::PLUS_ASSIGN ||
+                    op == BinaryExpression::Operator::MINUS_ASSIGN ||
+                    op == BinaryExpression::Operator::MULTIPLY_ASSIGN ||
+                    op == BinaryExpression::Operator::DIVIDE_ASSIGN) {
+                    assign_binops.push_back(binexpr);
+                } else {
+                    noop_count++;
+                }
+            }
+        } else if (stmt->get_type() == ASTNode::Type::EMPTY_STATEMENT) {
+            noop_count++;
+        }
+    }
+
+    if (noop_count > 0) {
+        std::cout << "[DEAD-CODE] Eliminated " << noop_count << " no-op statements" << std::endl;
+    }
+
+    if (assign_binops.empty() && assign_exprs.empty()) {
+        std::cout << "[LOOP-OPT] No assignment found" << std::endl;
+        return result;
+    }
+
+    if (assign_binops.size() + assign_exprs.size() > 1) {
+        std::cout << "[LOOP-OPT] Multiple assignments detected: " << (assign_binops.size() + assign_exprs.size()) << std::endl;
+    }
+
+    BinaryExpression* assign_binop = assign_binops.empty() ? nullptr : assign_binops[0];
+    AssignmentExpression* assign_expr = assign_exprs.empty() ? nullptr : assign_exprs[0];
+    AssignmentExpression::Operator assign_op = assign_exprs.empty() ? AssignmentExpression::Operator::ASSIGN : assign_ops[0];
+
+    ASTNode* target_node = assign_expr ? assign_expr->get_left() : assign_binop->get_left();
+    ASTNode* value_node = assign_expr ? assign_expr->get_right() : assign_binop->get_right();
+
+    bool is_array_access = false;
+    bool is_member_access = false;
+    std::string target_name;
+    ASTNode* array_index = nullptr;
+    std::string member_property;
+
+    if (!target_node) {
+        std::cout << "[LOOP-OPT] No target node" << std::endl;
+        return result;
+    }
+
+    if (target_node->get_type() == ASTNode::Type::IDENTIFIER) {
+        Identifier* target_var = static_cast<Identifier*>(target_node);
+        target_name = target_var->get_name();
+    }
+    else if (target_node->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        is_array_access = true;
+        MemberExpression* member = static_cast<MemberExpression*>(target_node);
+        ASTNode* obj = member->get_object();
+
+        if (obj && obj->get_type() == ASTNode::Type::IDENTIFIER) {
+            target_name = static_cast<Identifier*>(obj)->get_name();
+            array_index = member->get_property();
+
+            if (member->is_computed()) {
+                std::cout << "[LOOP-OPT] Array access pattern: " << target_name << "[<expr>]" << std::endl;
+            } else {
+                is_array_access = false;
+                is_member_access = true;
+                if (array_index && array_index->get_type() == ASTNode::Type::IDENTIFIER) {
+                    member_property = static_cast<Identifier*>(array_index)->get_name();
+                    std::cout << "[LOOP-OPT] Member access pattern: " << target_name << "." << member_property << std::endl;
                 }
             }
         }
     }
-
-    if (!assign_binop) {
-        std::cout << "[LOOP-OPT] No assignment (operator=25) found in loop body" << std::endl;
+    else {
+        std::cout << "[LOOP-OPT] Unsupported assignment target type: " << static_cast<int>(target_node->get_type()) << std::endl;
         return result;
     }
 
-    ASTNode* target_node = assign_binop->get_left();
-    ASTNode* value_node = assign_binop->get_right();
+    BinaryExpression::Operator effective_op = BinaryExpression::Operator::ADD;
+    ASTNode* right_operand = nullptr;
 
-    if (!target_node || target_node->get_type() != ASTNode::Type::IDENTIFIER) {
-        std::cout << "[LOOP-OPT] Assignment target is not an identifier" << std::endl;
-        return result;
+    if (assign_expr) {
+        switch (assign_op) {
+            case AssignmentExpression::Operator::PLUS_ASSIGN:
+                effective_op = BinaryExpression::Operator::ADD;
+                right_operand = value_node;
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
+                break;
+            case AssignmentExpression::Operator::MINUS_ASSIGN:
+                effective_op = BinaryExpression::Operator::SUBTRACT;
+                right_operand = value_node;
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
+                break;
+            case AssignmentExpression::Operator::MUL_ASSIGN:
+                effective_op = BinaryExpression::Operator::MULTIPLY;
+                right_operand = value_node;
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
+                break;
+            case AssignmentExpression::Operator::DIV_ASSIGN:
+                effective_op = BinaryExpression::Operator::DIVIDE;
+                right_operand = value_node;
+                std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
+                break;
+            default:
+                std::cout << "[LOOP-OPT] Unsupported assignment operator" << std::endl;
+                return result;
+        }
+    } else {
+        auto binop_op = assign_binop->get_operator();
+
+        if (binop_op == BinaryExpression::Operator::PLUS_ASSIGN) {
+            effective_op = BinaryExpression::Operator::ADD;
+            right_operand = value_node;
+            std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
+        } else if (binop_op == BinaryExpression::Operator::MINUS_ASSIGN) {
+            effective_op = BinaryExpression::Operator::SUBTRACT;
+            right_operand = value_node;
+            std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
+        } else if (binop_op == BinaryExpression::Operator::MULTIPLY_ASSIGN) {
+            effective_op = BinaryExpression::Operator::MULTIPLY;
+            right_operand = value_node;
+            std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
+        } else if (binop_op == BinaryExpression::Operator::DIVIDE_ASSIGN) {
+            effective_op = BinaryExpression::Operator::DIVIDE;
+            right_operand = value_node;
+            std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
+        } else if (binop_op == BinaryExpression::Operator::ASSIGN) {
+            if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
+                std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
+                return result;
+            }
+            BinaryExpression* value_binop = static_cast<BinaryExpression*>(value_node);
+            effective_op = value_binop->get_operator();
+            right_operand = value_binop->get_right();
+
+            if (effective_op != BinaryExpression::Operator::ADD &&
+                effective_op != BinaryExpression::Operator::SUBTRACT &&
+                effective_op != BinaryExpression::Operator::MULTIPLY &&
+                effective_op != BinaryExpression::Operator::DIVIDE) {
+                std::cout << "[LOOP-OPT] Unsupported binary operator: " << static_cast<int>(effective_op) << std::endl;
+                return result;
+            }
+            std::cout << "[LOOP-OPT] Pattern: " << target_name << " = " << target_name << " op <expr>" << std::endl;
+        } else {
+            std::cout << "[LOOP-OPT] Unsupported operator" << std::endl;
+            return result;
+        }
     }
 
-    Identifier* target_var = static_cast<Identifier*>(target_node);
-    std::string target_name = target_var->get_name();
+    bool is_pure_operation = false;
+    bool is_induction_var = false;
+    bool is_complex_expr = false;
+    double constant_value = 0.0;
 
-    if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
-        std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
-        return result;
-    }
+    if (right_operand) {
+        if (right_operand->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+            NumberLiteral* num = static_cast<NumberLiteral*>(right_operand);
+            constant_value = num->get_value();
+            if ((effective_op == BinaryExpression::Operator::ADD || effective_op == BinaryExpression::Operator::SUBTRACT) && constant_value == 1.0) {
+                is_pure_operation = true;
+                std::cout << "[LOOP-OPT] Pure register operation" << std::endl;
+            } else if (constant_value != 0.0) {
+                is_pure_operation = true;
+                std::cout << "[LOOP-OPT] Constant: " << constant_value << std::endl;
+            }
+        }
+        else if (right_operand->get_type() == ASTNode::Type::IDENTIFIER) {
+            Identifier* id = static_cast<Identifier*>(right_operand);
+            if (id->get_name() == analysis.induction_var) {
+                is_induction_var = true;
+                std::cout << "[LOOP-OPT] Induction variable: " << analysis.induction_var << std::endl;
+            }
+        }
+        else if (right_operand->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+            is_complex_expr = true;
+            BinaryExpression* expr = static_cast<BinaryExpression*>(right_operand);
+            std::cout << "[LOOP-OPT] Complex expression detected" << std::endl;
 
-    BinaryExpression* value_binop = static_cast<BinaryExpression*>(value_node);
+            ASTNode* left = expr->get_left();
+            ASTNode* right = expr->get_right();
 
-    if (value_binop->get_operator() != BinaryExpression::Operator::ADD) {
-        std::cout << "[LOOP-OPT] Only ADD operations supported for now (operator: "
-                  << static_cast<int>(value_binop->get_operator()) << ")" << std::endl;
-        return result;
-    }
+            if (left && left->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<Identifier*>(left)->get_name() == analysis.induction_var &&
+                right && right->get_type() == ASTNode::Type::NUMBER_LITERAL) {
 
-    std::cout << "[LOOP-OPT] Pattern recognized: " << target_name << " = " << target_name << " + <expr>" << std::endl;
+                double const_val = static_cast<NumberLiteral*>(right)->get_value();
+                auto op = expr->get_operator();
 
-    // ULTRA FAST PATH: Pure register loop for simple increment (sum = sum + 1)
-    bool is_pure_increment = false;
-    ASTNode* right_operand = value_binop->get_right();
-    if (right_operand && right_operand->get_type() == ASTNode::Type::NUMBER_LITERAL) {
-        NumberLiteral* num = static_cast<NumberLiteral*>(right_operand);
-        if (num->get_value() == 1.0) {
-            is_pure_increment = true;
-            std::cout << "[LOOP-OPT] ufp: Pure increment detected! Using register-only loop!" << std::endl;
+                if (op == BinaryExpression::Operator::MULTIPLY) {
+                    if (const_val == 2.0) {
+                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 2 -> " << analysis.induction_var << " << 1" << std::endl;
+                    } else if (const_val == 4.0) {
+                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 4 -> " << analysis.induction_var << " << 2" << std::endl;
+                    } else if (const_val == 8.0) {
+                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 8 -> " << analysis.induction_var << " << 3" << std::endl;
+                    }
+                } else if (op == BinaryExpression::Operator::DIVIDE) {
+                    if (const_val == 2.0) {
+                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 2 -> " << analysis.induction_var << " >> 1" << std::endl;
+                    } else if (const_val == 4.0) {
+                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 4 -> " << analysis.induction_var << " >> 2" << std::endl;
+                    }
+                }
+            }
         }
     }
 
@@ -3707,33 +4004,23 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
 
     emit_prologue();
 
-    if (is_pure_increment) {
-        // REGISTER ALLOCATION:
-        // r12 = accumulator (sum)
-        // r13 = loop counter (i)
-
+    if (is_pure_operation && effective_op == BinaryExpression::Operator::ADD && constant_value == 1.0) {
         std::cout << "[REGISTER-ALLOC] r12 = " << target_name << " (accumulator)" << std::endl;
         std::cout << "[REGISTER-ALLOC] r13 = " << analysis.induction_var << " (loop counter)" << std::endl;
 
-        emit_byte(0x4D); emit_byte(0x31); emit_byte(0xE4);  // xor r12, r12
-
-        // Initialize r13 = start_value (loop counter)
+        emit_byte(0x4D); emit_byte(0x31); emit_byte(0xE4);
         emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC5);
         emit_byte(analysis.start_value & 0xFF);
         emit_byte((analysis.start_value >> 8) & 0xFF);
         emit_byte((analysis.start_value >> 16) & 0xFF);
         emit_byte((analysis.start_value >> 24) & 0xFF);
 
-        // Align loop start to 16-byte boundary for CPU fetch optimization
         while (code_buffer_.size() % 16 != 0) {
-            emit_byte(0x90);  // nop
+            emit_byte(0x90);
         }
-        std::cout << "[LOOP-ALIGN] Loop aligned to 16-byte boundary at offset " << code_buffer_.size() << std::endl;
+        std::cout << "[LOOP-ALIGN] Loop at offset " << code_buffer_.size() << std::endl;
 
-        // Loop start
         size_t loop_start_pos = code_buffer_.size();
-
-        std::cout << "[LOOP-UNROLL] 8x OPTIMAL UNROLL" << std::endl;
 
         emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
         emit_byte(0x49); emit_byte(0xFF); emit_byte(0xC4);
@@ -3821,7 +4108,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     }
 
     // OLD PATH: Function call based loop (fallback)
-    std::cout << "[LOOP-OPT] DEBUG: Using old function-call based loop" << std::endl;
+    std::cout << "[LOOP-OPT] DEBUG: Using old function-call based loop (is_array=" << is_array_access << ")" << std::endl;
 
     emit_byte(0x41); emit_byte(0x56);
     emit_byte(0x41); emit_byte(0x54);
@@ -3851,46 +4138,86 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
 
     int unroll = analysis.unroll_factor;
     for (int u = 0; u < unroll; u++) {
+        if (is_array_access) {
+            // Array pattern: arr[i] = i * 2
+            // Call: jit_set_array_element(ctx, "arr", i, value)
 
-        #ifdef _WIN32
-        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
-        size_t p1 = code_buffer_.size() + 2;
-        patches_.push_back({p1, target_offset});
-        emit_byte(0x48); emit_byte(0xBA);
-        for (int i = 0; i < 8; i++) emit_byte(0);
-        #else
-        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
-        size_t p1 = code_buffer_.size() + 2;
-        patches_.push_back({p1, target_offset});
-        emit_mov_rsi_imm(0);
-        #endif
+            // Calculate value (i * 2 for simple case)
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);  // mov rax, r12 (i)
+            if (u > 0) {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);  // add rax, u
+            }
+            emit_byte(0x48); emit_byte(0xC1); emit_byte(0xE0); emit_byte(0x01);  // shl rax, 1 (multiply by 2)
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC3);  // mov r11, rax (save value)
 
-        emit_call_absolute((void*)jit_read_variable);
-        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC6);
+            // Setup call to jit_set_array_element(ctx, "arr", index, value)
+            #ifdef _WIN32
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);  // mov rcx, r14 (ctx)
+            size_t p1 = code_buffer_.size() + 2;
+            patches_.push_back({p1, target_offset});
+            emit_byte(0x48); emit_byte(0xBA);  // mov rdx, "arr"
+            for (int i = 0; i < 8; i++) emit_byte(0);
+            emit_byte(0x4D); emit_byte(0x89); emit_byte(0xE0);  // mov r8, r12 (index)
+            if (u > 0) {
+                emit_byte(0x49); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);  // add r8, u
+            }
+            emit_byte(0x4D); emit_byte(0x89); emit_byte(0xD9);  // mov r9, r11 (value)
+            #else
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);  // mov rdi, r14 (ctx)
+            size_t p1 = code_buffer_.size() + 2;
+            patches_.push_back({p1, target_offset});
+            emit_mov_rsi_imm(0);  // mov rsi, "arr"
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE2);  // mov rdx, r12 (index)
+            if (u > 0) {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC2); emit_byte(u);  // add rdx, u
+            }
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xD9);  // mov rcx, r11 (value)
+            #endif
 
-        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);
-        if (u > 0) {
-            emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);
+            extern void jit_set_array_element(Context* ctx, const char* array_name, int64_t index, int64_t value);
+            emit_call_absolute((void*)jit_set_array_element);
+        } else {
+            // Simple variable pattern: sum = sum + 1
+            #ifdef _WIN32
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
+            size_t p1 = code_buffer_.size() + 2;
+            patches_.push_back({p1, target_offset});
+            emit_byte(0x48); emit_byte(0xBA);
+            for (int i = 0; i < 8; i++) emit_byte(0);
+            #else
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
+            size_t p1 = code_buffer_.size() + 2;
+            patches_.push_back({p1, target_offset});
+            emit_mov_rsi_imm(0);
+            #endif
+
+            emit_call_absolute((void*)jit_read_variable);
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC6);
+
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);
+            if (u > 0) {
+                emit_byte(0x48); emit_byte(0x83); emit_byte(0xC0); emit_byte(u);
+            }
+
+            emit_byte(0x48); emit_byte(0x01); emit_byte(0xF0);
+
+            #ifdef _WIN32
+            emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0);
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
+            size_t p2 = code_buffer_.size() + 2;
+            patches_.push_back({p2, target_offset});
+            emit_byte(0x48); emit_byte(0xBA);
+            for (int i = 0; i < 8; i++) emit_byte(0);
+            #else
+            emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2);
+            emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
+            size_t p2 = code_buffer_.size() + 2;
+            patches_.push_back({p2, target_offset});
+            emit_mov_rsi_imm(0);
+            #endif
+
+            emit_call_absolute((void*)jit_write_variable);
         }
-
-        emit_byte(0x48); emit_byte(0x01); emit_byte(0xF0);
-
-        #ifdef _WIN32
-        emit_byte(0x49); emit_byte(0x89); emit_byte(0xC0);
-        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF1);
-        size_t p2 = code_buffer_.size() + 2;
-        patches_.push_back({p2, target_offset});
-        emit_byte(0x48); emit_byte(0xBA);
-        for (int i = 0; i < 8; i++) emit_byte(0);
-        #else
-        emit_byte(0x48); emit_byte(0x89); emit_byte(0xC2);
-        emit_byte(0x4C); emit_byte(0x89); emit_byte(0xF7);
-        size_t p2 = code_buffer_.size() + 2;
-        patches_.push_back({p2, target_offset});
-        emit_mov_rsi_imm(0);
-        #endif
-
-        emit_call_absolute((void*)jit_write_variable);
     }
 
     emit_byte(0x49); emit_byte(0x83); emit_byte(0xC4); emit_byte(analysis.unroll_factor);

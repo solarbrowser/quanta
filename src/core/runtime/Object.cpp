@@ -370,7 +370,6 @@ Value Object::get_property(const Value& key) const {
 }
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
-
     if (header_.type == ObjectType::Array && key == "length") {
         double length_double = value.to_number();
 
@@ -505,22 +504,27 @@ Value Object::get_element(uint32_t index) const {
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {
-    if (index >= elements_.size()) {
-        if (index > 10000000) {
+    if (__builtin_expect(index >= elements_.size(), 0)) {
+        if (__builtin_expect(index > 10000000, 0)) {
             return false;
         }
-        elements_.resize(index + 1, Value());
-    }
-    
-    elements_[index] = value;
-    
-    if (header_.type == ObjectType::Array) {
-        uint32_t length = get_length();
-        if (index >= length) {
-            set_length(index + 1);
+        size_t new_size = index + 1;
+        if (new_size > elements_.capacity()) {
+            elements_.reserve(new_size * 2);
+        }
+        elements_.resize(new_size, Value());
+
+        if (__builtin_expect(header_.type == ObjectType::Array, 1)) {
+            if (overflow_properties_) {
+                auto it = overflow_properties_->find("length");
+                if (it != overflow_properties_->end()) {
+                    it->second = Value(static_cast<double>(new_size));
+                }
+            }
         }
     }
-    
+
+    elements_[index] = value;
     return true;
 }
 
