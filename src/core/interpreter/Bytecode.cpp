@@ -384,15 +384,14 @@ void BytecodeCompiler::peephole_optimization_pass(BytecodeFunction* function) {
         }
     }
 
-    // Pattern 5: Strength reduction (x * 2 -> x << 1)
+    // Pattern 5: Algebraic simplifications and strength reduction
     for (size_t i = 0; i + 2 < function->instructions.size(); ) {
         BytecodeOp& op1 = function->instructions[i];
         BytecodeOp& op2 = function->instructions[i + 1];
         BytecodeOp& op3 = function->instructions[i + 2];
 
-        // x * 2 -> x << 1 (faster)
+        // Pattern: <expr>, LOAD_CONST, <arithmetic_op>
         if (op2.instruction == BytecodeInstruction::LOAD_CONST &&
-            op3.instruction == BytecodeInstruction::MUL &&
             !op2.operands.empty()) {
 
             uint32_t const_idx = op2.operands[0].value;
@@ -400,15 +399,46 @@ void BytecodeCompiler::peephole_optimization_pass(BytecodeFunction* function) {
                 Value& const_val = function->constants[const_idx];
                 if (const_val.is_number()) {
                     double num = const_val.to_number();
-                    // x * 2 -> x << 1
-                    if (num == 2.0) {
-                        // Replace MUL with left shift by 1
-                        // For now, keep as MUL since we don't have SHIFT instructions
-                        // This is a placeholder for future SHIFT instruction support
+
+                    // x * 1 -> x (identity elimination)
+                    if (op3.instruction == BytecodeInstruction::MUL && num == 1.0) {
+                        op2.instruction = BytecodeInstruction::NOP;
+                        op3.instruction = BytecodeInstruction::NOP;
+                        op2.operands.clear();
+                        op3.operands.clear();
                     }
-                    // x / 2 -> x >> 1
-                    else if (num == 0.5 && op3.instruction == BytecodeInstruction::MUL) {
-                        // x * 0.5 is same as x / 2
+                    // x * 0 -> 0 (zero elimination)
+                    else if (op3.instruction == BytecodeInstruction::MUL && num == 0.0) {
+                        // Replace entire expression with LOAD_CONST 0
+                        op1.instruction = BytecodeInstruction::NOP;
+                        op2.operands[0].value = function->add_constant(Value(0.0));
+                        op3.instruction = BytecodeInstruction::NOP;
+                        op1.operands.clear();
+                        op3.operands.clear();
+                    }
+                    // x + 0 -> x (identity elimination)
+                    else if (op3.instruction == BytecodeInstruction::ADD && num == 0.0) {
+                        op2.instruction = BytecodeInstruction::NOP;
+                        op3.instruction = BytecodeInstruction::NOP;
+                        op2.operands.clear();
+                        op3.operands.clear();
+                    }
+                    // x - 0 -> x (identity elimination)
+                    else if (op3.instruction == BytecodeInstruction::SUB && num == 0.0) {
+                        op2.instruction = BytecodeInstruction::NOP;
+                        op3.instruction = BytecodeInstruction::NOP;
+                        op2.operands.clear();
+                        op3.operands.clear();
+                    }
+                    // x / 1 -> x (identity elimination)
+                    else if (op3.instruction == BytecodeInstruction::DIV && num == 1.0) {
+                        op2.instruction = BytecodeInstruction::NOP;
+                        op3.instruction = BytecodeInstruction::NOP;
+                        op2.operands.clear();
+                        op3.operands.clear();
+                    }
+                    // x * 0.5 -> x / 2 (strength reduction)
+                    else if (op3.instruction == BytecodeInstruction::MUL && num == 0.5) {
                         op2.operands[0].value = function->add_constant(Value(2.0));
                         op3.instruction = BytecodeInstruction::DIV;
                     }

@@ -23,7 +23,8 @@ enum PropertyAttributes : uint8_t {
     Writable = 1 << 0,
     Enumerable = 1 << 1,
     Configurable = 1 << 2,
-    Default = Writable | Enumerable | Configurable
+    Default = Writable | Enumerable | Configurable,
+    BuiltinFunction = Writable | Configurable  // enumerable: false per ECMAScript spec
 };
 
 }

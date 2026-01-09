@@ -181,11 +181,11 @@ JITCompiler::JITCompiler()
       bytecode_threshold_(3),
       optimized_threshold_(8),
       machine_code_threshold_(1) {  // Lowered from 15 to 1 for aggressive loop optimization
-    std::cout << "[JIT] Quanta JIT Compiler initialized (ULTRA AGGRESSIVE MODE)" << std::endl;
-    std::cout << "[JIT] Tier thresholds:" << std::endl;
-    std::cout << "[JIT]   Bytecode:     " << bytecode_threshold_ << " executions" << std::endl;
-    std::cout << "[JIT]   Optimized:    " << optimized_threshold_ << " executions" << std::endl;
-    std::cout << "[JIT]   Machine Code: " << machine_code_threshold_ << " executions" << std::endl;
+    // std::cout << "[JIT] Quanta JIT Compiler initialized (ULTRA AGGRESSIVE MODE)" << std::endl;
+    // std::cout << "[JIT] Tier thresholds:" << std::endl;
+    // std::cout << "[JIT]   Bytecode:     " << bytecode_threshold_ << " executions" << std::endl;
+    // std::cout << "[JIT]   Optimized:    " << optimized_threshold_ << " executions" << std::endl;
+    // std::cout << "[JIT]   Machine Code: " << machine_code_threshold_ << " executions" << std::endl;
 }
 JITCompiler::~JITCompiler() {
     for (auto& entry : machine_code_cache_) {
@@ -198,9 +198,9 @@ JITCompiler::~JITCompiler() {
             entry.second.code_ptr = nullptr;
         }
     }
-    std::cout << "[JIT] JIT Compiler shutdown. Final stats:" << std::endl;
-    print_stats();
-    print_property_cache_stats();
+    // std::cout << "[JIT] JIT Compiler shutdown. Final stats:" << std::endl;
+    // print_stats();
+    // print_property_cache_stats();
 }
 void JITCompiler::record_execution(ASTNode* node, uint64_t execution_time_ns) {
     if (!enabled_ || !node) return;
@@ -210,13 +210,13 @@ void JITCompiler::record_execution(ASTNode* node, uint64_t execution_time_ns) {
     hotspot.total_execution_time_ns += execution_time_ns;
     if (hotspot.execution_count == 3 || hotspot.execution_count == 8 || hotspot.execution_count == 15 || hotspot.execution_count == 100) {
         if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
-            BinaryExpression* binop = static_cast<BinaryExpression*>(node);
-            std::cout << "[JIT-TRACK] BinaryExpression (op " << static_cast<int>(binop->get_operator())
-                     << ") hit " << hotspot.execution_count << " executions" << std::endl;
+            // BinaryExpression* binop = static_cast<BinaryExpression*>(node);
+            // std::cout << "[JIT-TRACK] BinaryExpression (op " << static_cast<int>(binop->get_operator())
+            //          << ") hit " << hotspot.execution_count << " executions" << std::endl;
         } else if (node->get_type() == ASTNode::Type::CALL_EXPRESSION) {
-            std::cout << "[JIT-TRACK] CallExpression hit " << hotspot.execution_count << " executions" << std::endl;
+            // std::cout << "[JIT-TRACK] CallExpression hit " << hotspot.execution_count << " executions" << std::endl;
         } else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-            std::cout << "[JIT-TRACK] ForStatement hit " << hotspot.execution_count << " executions" << std::endl;
+            // std::cout << "[JIT-TRACK] ForStatement hit " << hotspot.execution_count << " executions" << std::endl;
         }
     }
     if (hotspot.execution_count == 1) {
@@ -228,22 +228,22 @@ void JITCompiler::record_execution(ASTNode* node, uint64_t execution_time_ns) {
             case JITTier::Interpreter:
                 if (compile_to_bytecode(node)) {
                     hotspot.current_tier = JITTier::Bytecode;
-                    std::cout << "[JIT] Tiered up to Bytecode (execution count: "
-                              << hotspot.execution_count << ")" << std::endl;
+                    // std::cout << "[JIT] Tiered up to Bytecode (execution count: "
+                    //           << hotspot.execution_count << ")" << std::endl;
                 }
                 break;
             case JITTier::Bytecode:
                 if (compile_to_optimized(node)) {
                     hotspot.current_tier = JITTier::Optimized;
-                    std::cout << "[JIT] Tiered up to Optimized (execution count: "
-                              << hotspot.execution_count << ")" << std::endl;
+                    // std::cout << "[JIT] Tiered up to Optimized (execution count: "
+                    //           << hotspot.execution_count << ")" << std::endl;
                 }
                 break;
             case JITTier::Optimized:
                 if (compile_to_machine_code(node)) {
                     hotspot.current_tier = JITTier::MachineCode;
-                    std::cout << "[JIT] Tiered up to Machine Code (execution count: "
-                              << hotspot.execution_count << ")" << std::endl;
+                    // std::cout << "[JIT] Tiered up to Machine Code (execution count: "
+                    //           << hotspot.execution_count << ")" << std::endl;
                 }
                 break;
             default:
@@ -268,31 +268,31 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
 
     if (can_execute) {
         stats_.cache_hits++;
-        if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
-            BinaryExpression* binop = static_cast<BinaryExpression*>(node);
-            std::cout << "[JIT-CACHE-HIT] Executing BinaryExpression operator "
-                     << static_cast<int>(binop->get_operator()) << " at " << (void*)node << std::endl;
-        }
-        std::cout << "[JIT] Calling execute_machine_code..." << std::endl;
-        std::cout.flush();
+        // if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+        //     BinaryExpression* binop = static_cast<BinaryExpression*>(node);
+        //     // std::cout << "[JIT-CACHE-HIT] Executing BinaryExpression operator "
+        //              << static_cast<int>(binop->get_operator()) << " at " << (void*)node << std::endl;
+        // }
+        // std::cout << "[JIT] Calling execute_machine_code..." << std::endl;
+        // std::cout.flush();
         result = execute_machine_code(mc_it->second, ctx, nullptr, 0);
-        std::cout << "[JIT] execute_machine_code returned, result=" << result.to_string() << std::endl;
-        std::cout.flush();
+        // std::cout << "[JIT] execute_machine_code returned, result=" << result.to_string() << std::endl;
+        // std::cout.flush();
         auto end = std::chrono::high_resolution_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
         stats_.total_jit_time_ns += elapsed;
-        std::cout << "[JIT]  EXECUTED NATIVE x86-64! Result: " << result.to_string() << std::endl;
-        std::cout.flush();
-        std::cout << "[JIT] Returning true from try_execute_jit..." << std::endl;
-        std::cout.flush();
+        // std::cout << "[JIT]  EXECUTED NATIVE x86-64! Result: " << result.to_string() << std::endl;
+        // std::cout.flush();
+        // std::cout << "[JIT] Returning true from try_execute_jit..." << std::endl;
+        // std::cout.flush();
         return true;
     } else {
-        if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
-            BinaryExpression* binop = static_cast<BinaryExpression*>(node);
-            if (binop->get_operator() == BinaryExpression::Operator::ADD) {
-                std::cout << "[JIT-CACHE-MISS] Looking for operator 0 (ADD) at " << (void*)node << std::endl;
-            }
-        }
+        // if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+        //     BinaryExpression* binop = static_cast<BinaryExpression*>(node);
+        //     if (binop->get_operator() == BinaryExpression::Operator::ADD) {
+        //         // std::cout << "[JIT-CACHE-MISS] Looking for operator 0 (ADD) at " << (void*)node << std::endl;
+        //     }
+        // }
     }
     auto bc_it = bytecode_cache_.find(node);
     if (bc_it != bytecode_cache_.end()) {
@@ -314,8 +314,8 @@ bool JITCompiler::try_execute_jit(ASTNode* node, Context& ctx, Value& result) {
 bool JITCompiler::compile_to_bytecode(ASTNode* node) {
     if (!node) return false;
     if (node->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
-        BinaryExpression* binop = static_cast<BinaryExpression*>(node);
-        std::cout << "[JIT-BYTECODE] Compiling BinaryExpression, operator: " << static_cast<int>(binop->get_operator()) << std::endl;
+        // BinaryExpression* binop = static_cast<BinaryExpression*>(node);
+        // std::cout << "[JIT-BYTECODE] Compiling BinaryExpression, operator: " << static_cast<int>(binop->get_operator()) << std::endl;
     }
     auto start = std::chrono::high_resolution_clock::now();
     CompiledBytecode compiled;
@@ -388,7 +388,7 @@ bool JITCompiler::compile_to_optimized(ASTNode* node) {
     if (hs_it == hotspots_.end()) {
         return false;
     }
-    const auto& hotspot = hs_it->second;
+    // const auto& hotspot = hs_it->second;
     ASTNode::Type type = node->get_type();
     if (type == ASTNode::Type::FOR_STATEMENT || type == ASTNode::Type::WHILE_STATEMENT) {
         bc_it->second.instructions.clear();
@@ -400,19 +400,19 @@ bool JITCompiler::compile_to_optimized(ASTNode* node) {
     }
     bc_it->second.tier = JITTier::Optimized;
     stats_.optimized_compilations++;
-    std::cout << "[JIT] Applied optimizations for " << (int)type << std::endl;
+    // std::cout << "[JIT] Applied optimizations for " << (int)type << std::endl;
     return true;
 }
 bool JITCompiler::compile_to_machine_code(ASTNode* node) {
     if (!node) return false;
-    std::cout << "[JIT-MACHINE] Compiling node type " << static_cast<int>(node->get_type()) << " to machine code..." << std::endl;
+    // // std::cout << "[JIT-MACHINE] Compiling node type " << static_cast<int>(node->get_type()) << " to machine code..." << std::endl;
 
     // Create hotspot entry if it doesn't exist (for forced compilation)
     auto hs_it = hotspots_.find(node);
     if (hs_it == hotspots_.end()) {
         // For ForStatement, force compilation even without hotspot data
         if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-            std::cout << "[JIT-MACHINE] No hotspot data, but forcing ForStatement compilation" << std::endl;
+            // std::cout << "[JIT-MACHINE] No hotspot data, but forcing ForStatement compilation" << std::endl;
             hotspots_[node] = HotspotInfo();
             hs_it = hotspots_.find(node);
         } else {
@@ -429,11 +429,11 @@ bool JITCompiler::compile_to_machine_code(ASTNode* node) {
     CompiledMachineCode compiled;
 
     if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-        std::cout << "[JIT-LOOP] ForStatement detected! Analyzing for loop unrolling..." << std::endl;
+        // // std::cout << "[JIT-LOOP] ForStatement detected! Analyzing for loop unrolling..." << std::endl;
         ForStatement* for_stmt = static_cast<ForStatement*>(node);
 
         if (for_stmt->is_nested_loop()) {
-            std::cout << "[JIT-LOOP] Nested loop detected, skipping machine code compilation" << std::endl;
+            // // std::cout << "[JIT-LOOP] Nested loop detected, skipping machine code compilation" << std::endl;
             return false;
         }
 
@@ -441,34 +441,34 @@ bool JITCompiler::compile_to_machine_code(ASTNode* node) {
         LoopAnalysis analysis = loop_generator.analyze_loop(for_stmt);
 
         if (analysis.is_simple_counting_loop) {
-            if (analysis.can_unroll) {
-                std::cout << "[JIT-LOOP] Attempting " << analysis.unroll_factor << "x loop unrolling optimization..." << std::endl;
-            } else {
-                std::cout << "[JIT-LOOP] Compiling simple counting loop (no unrolling)..." << std::endl;
-            }
+            // if (analysis.can_unroll) {
+            //     // std::cout << "[JIT-LOOP] Attempting " << analysis.unroll_factor << "x loop unrolling optimization..." << std::endl;
+            // } else {
+            //     // std::cout << "[JIT-LOOP] Compiling simple counting loop (no unrolling)..." << std::endl;
+            // }
             compiled = loop_generator.compile_optimized_loop(for_stmt, analysis);
 
             if (compiled.code_ptr) {
                 machine_code_cache_[node] = compiled;
                 stats_.machine_code_compilations++;
-                std::cout << "[JIT] Compiled loop to x86-64! (" << compiled.code_size << " bytes)" << std::endl;
+                // std::cout << "[JIT] Compiled loop to x86-64! (" << compiled.code_size << " bytes)" << std::endl;
                 return true;
             }
         }
 
-        std::cout << "[JIT-LOOP] Loop not suitable for machine code compilation - staying at bytecode tier" << std::endl;
+        // // std::cout << "[JIT-LOOP] Loop not suitable for machine code compilation - staying at bytecode tier" << std::endl;
         return false;
     }
 
     compiled = generator.compile(target_node, feedback);
     if (!compiled.code_ptr) {
-        std::cout << "[JIT] Failed to compile to machine code!" << std::endl;
+        // std::cout << "[JIT] Failed to compile to machine code!" << std::endl;
         return false;
     }
     machine_code_cache_[target_node] = compiled;
-    std::cout << "[JIT-CACHE-STORE] Stored machine code for node at " << (void*)target_node << std::endl;
+    // // std::cout << "[JIT-CACHE-STORE] Stored machine code for node at " << (void*)target_node << std::endl;
     stats_.machine_code_compilations++;
-    std::cout << "[JIT] Compiled to x86-64 machine code! (" << compiled.code_size << " bytes)" << std::endl;
+    // std::cout << "[JIT] Compiled to x86-64 machine code! (" << compiled.code_size << " bytes)" << std::endl;
     return true;
 }
 Value JITCompiler::execute_bytecode(const CompiledBytecode& compiled, Context& ctx) {
@@ -568,28 +568,28 @@ Value JITCompiler::execute_bytecode(const CompiledBytecode& compiled, Context& c
 }
 Value JITCompiler::execute_machine_code(const CompiledMachineCode& compiled, Context& ctx, const Value* args, size_t argc) {
     if (!compiled.code_ptr || compiled.code_size == 0) {
-        std::cout << "[JIT-EXEC] ERROR: No compiled code!" << std::endl;
+        // std::cout << "[JIT-EXEC] ERROR: No compiled code!" << std::endl;
         return Value();
     }
-    std::cout << "[JIT-EXEC] Calling native function at " << (void*)compiled.code_ptr
-              << " (" << compiled.code_size << " bytes)" << std::endl;
-    std::cout << "[JIT-EXEC] Code bytes: ";
-    for (size_t i = 0; i < std::min(compiled.code_size, size_t(20)); i++) {
-        printf("%02X ", compiled.code_ptr[i]);
-    }
-    std::cout << std::endl;
+    // std::cout << "[JIT-EXEC] Calling native function at " << (void*)compiled.code_ptr
+    //           << " (" << compiled.code_size << " bytes)" << std::endl;
+    // std::cout << "[JIT-EXEC] Code bytes: ";
+    // for (size_t i = 0; i < std::min(compiled.code_size, size_t(20)); i++) {
+    //     printf("%02X ", compiled.code_ptr[i]);
+    // }
+    // std::cout << std::endl;
     typedef int64_t (*JITFunction)(Context*);
     JITFunction jit_func = reinterpret_cast<JITFunction>(compiled.code_ptr);
-    std::cout << "[JIT-EXEC] About to call JIT function..." << std::endl;
+    // std::cout << "[JIT-EXEC] About to call JIT function..." << std::endl;
     std::cout.flush();
     int64_t result = jit_func(&ctx);
-    std::cout << "[JIT-EXEC] JIT function call returned!" << std::endl;
+    // std::cout << "[JIT-EXEC] JIT function call returned!" << std::endl;
     std::cout.flush();
-    std::cout << "[JIT-EXEC] Native code returned: " << result << std::endl;
-    std::cout << "[JIT-EXEC] Creating Value from result..." << std::endl;
+    // std::cout << "[JIT-EXEC] Native code returned: " << result << std::endl;
+    // std::cout << "[JIT-EXEC] Creating Value from result..." << std::endl;
     std::cout.flush();
     Value return_value = Value(static_cast<double>(result));
-    std::cout << "[JIT-EXEC] Returning value: " << return_value.to_string() << std::endl;
+    // std::cout << "[JIT-EXEC] Returning value: " << return_value.to_string() << std::endl;
     std::cout.flush();
     return return_value;
 }
@@ -631,18 +631,18 @@ MachineCodeGenerator::~MachineCodeGenerator() {
 CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedback& feedback) {
     CompiledMachineCode result;
     code_buffer_.clear();
-    std::cout << "[JIT-CODEGEN] Compiling node type: " << static_cast<int>(node ? node->get_type() : ASTNode::Type::PROGRAM) << std::endl;
+    // std::cout << "[JIT-CODEGEN] Compiling node type: " << static_cast<int>(node ? node->get_type() : ASTNode::Type::PROGRAM) << std::endl;
 
     if (node && node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-        std::cout << "[JIT-LOOP] ForStatement detected! Analyzing loop..." << std::endl;
+        // std::cout << "[JIT-LOOP] ForStatement detected! Analyzing loop..." << std::endl;
         ForStatement* loop = static_cast<ForStatement*>(node);
         LoopAnalysis analysis = analyze_loop(loop);
 
         if (analysis.is_simple_counting_loop) {
-            std::cout << "[JIT-LOOP] Simple counting loop detected! Compiling optimized version..." << std::endl;
+            // std::cout << "[JIT-LOOP] Simple counting loop detected! Compiling optimized version..." << std::endl;
             return compile_optimized_loop(loop, analysis);
         } else {
-            std::cout << "[JIT-LOOP] Complex loop - cannot optimize yet" << std::endl;
+            // std::cout << "[JIT-LOOP] Complex loop - cannot optimize yet" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
@@ -653,10 +653,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
         BinaryExpression* binop = static_cast<BinaryExpression*>(node);
         ASTNode* left = binop->get_left();
         ASTNode* right = binop->get_right();
-        std::cout << "[JIT-CODEGEN] BinaryExpression detected!" << std::endl;
-        std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(binop->get_operator()) << std::endl;
-        std::cout << "[JIT-CODEGEN]   Left type:  " << static_cast<int>(left ? left->get_type() : ASTNode::Type::PROGRAM) << std::endl;
-        std::cout << "[JIT-CODEGEN]   Right type: " << static_cast<int>(right ? right->get_type() : ASTNode::Type::PROGRAM) << std::endl;
+        // std::cout << "[JIT-CODEGEN] BinaryExpression detected!" << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(binop->get_operator()) << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Left type:  " << static_cast<int>(left ? left->get_type() : ASTNode::Type::PROGRAM) << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Right type: " << static_cast<int>(right ? right->get_type() : ASTNode::Type::PROGRAM) << std::endl;
         int op_val = static_cast<int>(binop->get_operator());
         bool is_arithmetic = (op_val >= 0 && op_val <= 5);
         bool is_comparison = (op_val >= 6 && op_val <= 13);
@@ -664,7 +664,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
         bool is_bitwise = (op_val >= 19 && op_val <= 24);
         bool is_assignment = (op_val >= 25 && op_val <= 30);
         if (!is_arithmetic && !is_comparison && !is_logical && !is_bitwise && !is_assignment) {
-            std::cout << "[JIT-CODEGEN]   Unsupported operator (" << op_val << ") - skipping machine code compilation" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Unsupported operator (" << op_val << ") - skipping machine code compilation" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
@@ -680,7 +680,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             NumberLiteral* right_num = static_cast<NumberLiteral*>(right);
             int64_t left_val = static_cast<int64_t>(left_num->get_value());
             int64_t right_val = static_cast<int64_t>(right_num->get_value());
-            std::cout << "[JIT-CODEGEN]  Compiling LITERAL arithmetic: " << left_val;
+            // std::cout << "[JIT-CODEGEN]  Compiling LITERAL arithmetic: " << left_val;
             emit_prologue();
             emit_mov_rax_imm(left_val);
             emit_mov_rbx_imm(right_val);
@@ -745,19 +745,19 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             }
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size()
-                     << " bytes of CONSTANT FOLDING x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size()
+            //          << " bytes of CONSTANT FOLDING x86-64!" << std::endl;
         }
         else if ((is_arithmetic || is_bitwise) && left_is_identifier && right_is_identifier) {
             Identifier* left_id = static_cast<Identifier*>(left);
             Identifier* right_id = static_cast<Identifier*>(right);
             std::string left_name = left_id->get_name();
             std::string right_name = right_id->get_name();
-            std::cout << "[JIT-CODEGEN]  Compiling VARIABLE arithmetic/bitwise: "
-                     << left_name << " " << static_cast<int>(binop->get_operator()) << " " << right_name << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling VARIABLE arithmetic/bitwise: "
+            //          << left_name << " " << static_cast<int>(binop->get_operator()) << " " << right_name << std::endl;
             size_t left_str_offset = embed_string(left_name);
             size_t right_str_offset = embed_string(right_name);
-            std::cout << "[JIT-CODEGEN]  Generating NATIVE CODE for variable arithmetic!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generating NATIVE CODE for variable arithmetic!" << std::endl;
             std::vector<size_t> patch_positions;
             emit_prologue();
             emit_byte(0x41);
@@ -816,49 +816,49 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0xE0);
             switch (binop->get_operator()) {
                 case BinaryExpression::Operator::ADD:
-                    std::cout << "[JIT-CODEGEN] Generating ADD operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating ADD operation" << std::endl;
                     emit_add_rax_rbx();
                     break;
                 case BinaryExpression::Operator::SUBTRACT:
-                    std::cout << "[JIT-CODEGEN] Generating SUB operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating SUB operation" << std::endl;
                     emit_sub_rax_rbx();
                     break;
                 case BinaryExpression::Operator::MULTIPLY:
-                    std::cout << "[JIT-CODEGEN] Generating MUL operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating MUL operation" << std::endl;
                     emit_mul_rax_rbx();
                     break;
                 case BinaryExpression::Operator::DIVIDE:
-                    std::cout << "[JIT-CODEGEN] Generating DIV operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating DIV operation" << std::endl;
                     emit_div_rax_rbx();
                     break;
                 case BinaryExpression::Operator::MODULO:
-                    std::cout << "[JIT-CODEGEN] Generating MOD operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating MOD operation" << std::endl;
                     emit_mod_rax_rbx();
                     break;
                 case BinaryExpression::Operator::BITWISE_AND:
-                    std::cout << "[JIT-CODEGEN] Generating BITWISE AND operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating BITWISE AND operation" << std::endl;
                     emit_and_rax_rbx();
                     break;
                 case BinaryExpression::Operator::BITWISE_OR:
-                    std::cout << "[JIT-CODEGEN] Generating BITWISE OR operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating BITWISE OR operation" << std::endl;
                     emit_or_rax_rbx();
                     break;
                 case BinaryExpression::Operator::BITWISE_XOR:
-                    std::cout << "[JIT-CODEGEN] Generating BITWISE XOR operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating BITWISE XOR operation" << std::endl;
                     emit_xor_rax_rbx();
                     break;
                 case BinaryExpression::Operator::LEFT_SHIFT:
-                    std::cout << "[JIT-CODEGEN] Generating LEFT SHIFT operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating LEFT SHIFT operation" << std::endl;
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xD9);
                     emit_shl_rax_cl();
                     break;
                 case BinaryExpression::Operator::RIGHT_SHIFT:
-                    std::cout << "[JIT-CODEGEN] Generating RIGHT SHIFT (arithmetic) operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating RIGHT SHIFT (arithmetic) operation" << std::endl;
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xD9);
                     emit_sar_rax_cl();
                     break;
                 case BinaryExpression::Operator::UNSIGNED_RIGHT_SHIFT:
-                    std::cout << "[JIT-CODEGEN] Generating UNSIGNED RIGHT SHIFT operation" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating UNSIGNED RIGHT SHIFT operation" << std::endl;
                     emit_byte(0x48); emit_byte(0x89); emit_byte(0xD9);
                     emit_shr_rax_cl();
                     break;
@@ -870,15 +870,15 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of VARIABLE ARITHMETIC x86-64!" << std::endl;
-            std::cout << "[JIT-CODEGEN] Will patch " << patches_.size() << " string addresses after allocation" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of VARIABLE ARITHMETIC x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN] Will patch " << patches_.size() << " string addresses after allocation" << std::endl;
         }
         else if ((is_arithmetic || is_bitwise) && left && left->get_type() == ASTNode::Type::NUMBER_LITERAL && right_is_identifier) {
             NumberLiteral* left_num = static_cast<NumberLiteral*>(left);
             Identifier* right_id = static_cast<Identifier*>(right);
             int64_t left_val = static_cast<int64_t>(left_num->get_value());
             std::string right_name = right_id->get_name();
-            std::cout << "[JIT-CODEGEN]  Compiling MIXED arithmetic/bitwise: " << left_val << " + var(" << right_name << ")" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling MIXED arithmetic/bitwise: " << left_val << " + var(" << right_name << ")" << std::endl;
             size_t right_str_offset = embed_string(right_name);
             emit_prologue();
             emit_byte(0x41);
@@ -1022,14 +1022,14 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of MIXED (literal+var) x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of MIXED (literal+var) x86-64!" << std::endl;
         }
         else if ((is_arithmetic || is_bitwise) && left_is_identifier && right && right->get_type() == ASTNode::Type::NUMBER_LITERAL) {
             Identifier* left_id = static_cast<Identifier*>(left);
             NumberLiteral* right_num = static_cast<NumberLiteral*>(right);
             std::string left_name = left_id->get_name();
             int64_t right_val = static_cast<int64_t>(right_num->get_value());
-            std::cout << "[JIT-CODEGEN]  Compiling MIXED arithmetic/bitwise: var(" << left_name << ") + " << right_val << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling MIXED arithmetic/bitwise: var(" << left_name << ") + " << right_val << std::endl;
             size_t left_str_offset = embed_string(left_name);
             emit_prologue();
             emit_byte(0x41);
@@ -1109,16 +1109,16 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of MIXED (var+literal) x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of MIXED (var+literal) x86-64!" << std::endl;
         }
         else if (is_comparison) {
-            std::cout << "[JIT-CODEGEN]  Compiling COMPARISON operation (op=" << op_val << ")" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling COMPARISON operation (op=" << op_val << ")" << std::endl;
             if (left_is_identifier && right && right->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                 Identifier* left_id = static_cast<Identifier*>(left);
                 NumberLiteral* right_num = static_cast<NumberLiteral*>(right);
                 std::string left_name = left_id->get_name();
                 int64_t right_val = static_cast<int64_t>(right_num->get_value());
-                std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") CMP " << right_val << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") CMP " << right_val << std::endl;
                 size_t left_str_offset = embed_string(left_name);
                 emit_prologue();
                 emit_byte(0x41);
@@ -1184,14 +1184,14 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 emit_byte(0x5E);
                 emit_epilogue();
                 emit_ret();
-                std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (var CMP literal) x86-64!" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (var CMP literal) x86-64!" << std::endl;
             }
             else if (left && left->get_type() == ASTNode::Type::NUMBER_LITERAL && right_is_identifier) {
                 NumberLiteral* left_num = static_cast<NumberLiteral*>(left);
                 Identifier* right_id = static_cast<Identifier*>(right);
                 int64_t left_val = static_cast<int64_t>(left_num->get_value());
                 std::string right_name = right_id->get_name();
-                std::cout << "[JIT-CODEGEN]  Compiling: " << left_val << " CMP var(" << right_name << ")" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Compiling: " << left_val << " CMP var(" << right_name << ")" << std::endl;
                 size_t right_str_offset = embed_string(right_name);
                 emit_prologue();
                 emit_byte(0x41);
@@ -1260,14 +1260,14 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 emit_byte(0x5E);
                 emit_epilogue();
                 emit_ret();
-                std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (literal CMP var) x86-64!" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (literal CMP var) x86-64!" << std::endl;
             }
             else if (left_is_identifier && right_is_identifier) {
                 Identifier* left_id = static_cast<Identifier*>(left);
                 Identifier* right_id = static_cast<Identifier*>(right);
                 std::string left_name = left_id->get_name();
                 std::string right_name = right_id->get_name();
-                std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") CMP var(" << right_name << ")" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") CMP var(" << right_name << ")" << std::endl;
                 size_t left_str_offset = embed_string(left_name);
                 size_t right_str_offset = embed_string(right_name);
                 emit_prologue();
@@ -1357,27 +1357,27 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 emit_byte(0x5E);
                 emit_epilogue();
                 emit_ret();
-                std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (var CMP var) x86-64!" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of COMPARISON (var CMP var) x86-64!" << std::endl;
             }
             else {
-                std::cout << "[JIT-CODEGEN]   Unsupported comparison pattern - skipping" << std::endl;
+                // std::cout << "[JIT-CODEGEN]   Unsupported comparison pattern - skipping" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
             }
         }
         else if (is_logical) {
-            std::cout << "[JIT-CODEGEN]  Compiling LOGICAL operation (op=" << op_val << ")" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling LOGICAL operation (op=" << op_val << ")" << std::endl;
             bool left_is_identifier = left && left->get_type() == ASTNode::Type::IDENTIFIER;
             bool right_is_identifier = right && right->get_type() == ASTNode::Type::IDENTIFIER;
-            bool left_is_literal = left && left->get_type() == ASTNode::Type::NUMBER_LITERAL;
-            bool right_is_literal = right && right->get_type() == ASTNode::Type::NUMBER_LITERAL;
+            // bool left_is_literal = left && left->get_type() == ASTNode::Type::NUMBER_LITERAL;
+            // bool right_is_literal = right && right->get_type() == ASTNode::Type::NUMBER_LITERAL;
             if (left_is_identifier && right_is_identifier) {
                 Identifier* left_id = static_cast<Identifier*>(left);
                 Identifier* right_id = static_cast<Identifier*>(right);
                 std::string left_name = left_id->get_name();
                 std::string right_name = right_id->get_name();
-                std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") ";
+                // std::cout << "[JIT-CODEGEN]  Compiling: var(" << left_name << ") ";
                 std::cout << (op_val == 16 ? "&&" : "||");
                 std::cout << " var(" << right_name << ")" << std::endl;
                 size_t left_str_offset = embed_string(left_name);
@@ -1488,10 +1488,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 emit_byte(0x5E);
                 emit_epilogue();
                 emit_ret();
-                std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of LOGICAL (var " << (op_val == 16 ? "&&" : "||") << " var) x86-64!" << std::endl;
+                // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of LOGICAL (var " << (op_val == 16 ? "&&" : "||") << " var) x86-64!" << std::endl;
             }
             else {
-                std::cout << "[JIT-CODEGEN]   Unsupported logical pattern - skipping" << std::endl;
+                // std::cout << "[JIT-CODEGEN]   Unsupported logical pattern - skipping" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
@@ -1502,7 +1502,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             NumberLiteral* right_num = static_cast<NumberLiteral*>(right);
             std::string var_name = left_id->get_name();
             int64_t right_val = static_cast<int64_t>(right_num->get_value());
-            std::cout << "[JIT-CODEGEN]  Compiling ASSIGNMENT: " << var_name << " op= " << right_val << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling ASSIGNMENT: " << var_name << " op= " << right_val << std::endl;
             size_t var_str_offset = embed_string(var_name);
             emit_prologue();
             emit_byte(0x41); emit_byte(0x56);
@@ -1528,23 +1528,23 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 }
                 switch (op_val) {
                     case 26:
-                        std::cout << "[JIT-CODEGEN] Generating PLUS_ASSIGN (+=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating PLUS_ASSIGN (+=)" << std::endl;
                         emit_add_rax_rbx();
                         break;
                     case 27:
-                        std::cout << "[JIT-CODEGEN] Generating MINUS_ASSIGN (-=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MINUS_ASSIGN (-=)" << std::endl;
                         emit_sub_rax_rbx();
                         break;
                     case 28:
-                        std::cout << "[JIT-CODEGEN] Generating MULTIPLY_ASSIGN (*=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MULTIPLY_ASSIGN (*=)" << std::endl;
                         emit_mul_rax_rbx();
                         break;
                     case 29:
-                        std::cout << "[JIT-CODEGEN] Generating DIVIDE_ASSIGN (/=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating DIVIDE_ASSIGN (/=)" << std::endl;
                         emit_div_rax_rbx();
                         break;
                     case 30:
-                        std::cout << "[JIT-CODEGEN] Generating MODULO_ASSIGN (%=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MODULO_ASSIGN (%=)" << std::endl;
                         emit_mod_rax_rbx();
                         break;
                     default:
@@ -1552,7 +1552,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                         break;
                 }
             } else {
-                std::cout << "[JIT-CODEGEN] Generating ASSIGN (=)" << std::endl;
+                // std::cout << "[JIT-CODEGEN] Generating ASSIGN (=)" << std::endl;
                 emit_mov_rax_imm(right_val);
             }
             #ifdef _WIN32
@@ -1573,18 +1573,18 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0x41); emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of ASSIGNMENT x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of ASSIGNMENT x86-64!" << std::endl;
         }
         else if (is_number_arithmetic) {
-            std::cout << "[JIT-CODEGEN]   MONOMORPHIC NUMBER arithmetic - other patterns not implemented yet" << std::endl;
-            std::cout << "[JIT-CODEGEN]   Cannot compile to machine code - staying at optimized tier" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   MONOMORPHIC NUMBER arithmetic - other patterns not implemented yet" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Cannot compile to machine code - staying at optimized tier" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
         }
         else {
-            std::cout << "[JIT-CODEGEN]   Complex/polymorphic arithmetic - cannot compile to machine code" << std::endl;
-            std::cout << "[JIT-CODEGEN]   Cannot compile to machine code - staying at optimized tier" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Complex/polymorphic arithmetic - cannot compile to machine code" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Cannot compile to machine code - staying at optimized tier" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
@@ -1592,16 +1592,16 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
     } else if (node && node->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
         UnaryExpression* unop = static_cast<UnaryExpression*>(node);
         ASTNode* operand = unop->get_operand();
-        std::cout << "[JIT-CODEGEN] UnaryExpression detected!" << std::endl;
-        std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(unop->get_operator()) << std::endl;
-        std::cout << "[JIT-CODEGEN]   Operand type: " << static_cast<int>(operand ? operand->get_type() : ASTNode::Type::PROGRAM) << std::endl;
+        // std::cout << "[JIT-CODEGEN] UnaryExpression detected!" << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(unop->get_operator()) << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Operand type: " << static_cast<int>(operand ? operand->get_type() : ASTNode::Type::PROGRAM) << std::endl;
         int op_val = static_cast<int>(unop->get_operator());
         bool operand_is_identifier = operand && operand->get_type() == ASTNode::Type::IDENTIFIER;
         bool operand_is_literal = operand && operand->get_type() == ASTNode::Type::NUMBER_LITERAL;
         if (((op_val >= 0 && op_val <= 3) || (op_val >= 4 && op_val <= 10)) && operand_is_identifier) {
             Identifier* id = static_cast<Identifier*>(operand);
             std::string var_name = id->get_name();
-            std::cout << "[JIT-CODEGEN]  Compiling unary operation on variable: " << var_name << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling unary operation on variable: " << var_name << std::endl;
             size_t var_str_offset = embed_string(var_name);
             emit_prologue();
             emit_byte(0x41); emit_byte(0x56);
@@ -1622,97 +1622,97 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_call_absolute((void*)jit_read_variable);
             switch (op_val) {
                 case 0:
-                    std::cout << "[JIT-CODEGEN] Generating UNARY PLUS (+x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating UNARY PLUS (+x)" << std::endl;
                     break;
                 case 1:
-                    std::cout << "[JIT-CODEGEN] Generating UNARY MINUS (-x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating UNARY MINUS (-x)" << std::endl;
                     emit_neg_rax();
                     break;
                 case 2:
-                    std::cout << "[JIT-CODEGEN] Generating LOGICAL NOT (!x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating LOGICAL NOT (!x)" << std::endl;
                     emit_test_rax_rax();
                     emit_sete_al();
                     emit_movzx_rax_al();
                     break;
                 case 3:
-                    std::cout << "[JIT-CODEGEN] Generating BITWISE NOT (~x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating BITWISE NOT (~x)" << std::endl;
                     emit_not_rax();
                     break;
                 case 4:
-                    std::cout << "[JIT-CODEGEN] Generating TYPEOF (typeof x) - returning 0 for number" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating TYPEOF (typeof x) - returning 0 for number" << std::endl;
                     emit_mov_rax_imm(0);
                     break;
                 case 5:
-                    std::cout << "[JIT-CODEGEN] Generating VOID (void x) - returning undefined (0)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating VOID (void x) - returning undefined (0)" << std::endl;
                     emit_mov_rax_imm(0);
                     break;
                 case 6:
-                    std::cout << "[JIT-CODEGEN] Generating DELETE (delete x) - returning true (1)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating DELETE (delete x) - returning true (1)" << std::endl;
                     emit_mov_rax_imm(1);
                     break;
                 case 7:
-                    std::cout << "[JIT-CODEGEN] Generating PRE INCREMENT (++x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating PRE INCREMENT (++x)" << std::endl;
                     emit_inc_rax();
                     break;
                 case 8:
-                    std::cout << "[JIT-CODEGEN] Generating POST INCREMENT (x++)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating POST INCREMENT (x++)" << std::endl;
                     emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC0);
                     emit_inc_rax();
                     emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);
                     break;
                 case 9:
-                    std::cout << "[JIT-CODEGEN] Generating PRE DECREMENT (--x)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating PRE DECREMENT (--x)" << std::endl;
                     emit_dec_rax();
                     break;
                 case 10:
-                    std::cout << "[JIT-CODEGEN] Generating POST DECREMENT (x--)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Generating POST DECREMENT (x--)" << std::endl;
                     emit_byte(0x4C); emit_byte(0x89); emit_byte(0xC0);
                     emit_dec_rax();
                     emit_byte(0x4C); emit_byte(0x89); emit_byte(0xE0);
                     break;
                 default:
-                    std::cout << "[JIT-CODEGEN] Unsupported unary operator" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] Unsupported unary operator" << std::endl;
                     emit_mov_rax_imm(0);
                     break;
             }
             emit_byte(0x41); emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of UNARY x86-64!" << std::endl;
-            std::cout << "[JIT-CODEGEN] Will patch " << patches_.size() << " string addresses after allocation" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of UNARY x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN] Will patch " << patches_.size() << " string addresses after allocation" << std::endl;
         } else if ((op_val >= 0 && op_val <= 6) && operand_is_literal) {
             NumberLiteral* num = static_cast<NumberLiteral*>(operand);
             int64_t value = static_cast<int64_t>(num->get_value());
-            std::cout << "[JIT-CODEGEN]  Constant folding unary on literal: " << value << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Constant folding unary on literal: " << value << std::endl;
             emit_prologue();
             int64_t result_value = value;
             switch (op_val) {
                 case 0:
-                    std::cout << "[JIT-CODEGEN] +" << value << " = " << result_value << std::endl;
+                    // std::cout << "[JIT-CODEGEN] +" << value << " = " << result_value << std::endl;
                     break;
                 case 1:
                     result_value = -value;
-                    std::cout << "[JIT-CODEGEN] -" << value << " = " << result_value << std::endl;
+                    // std::cout << "[JIT-CODEGEN] -" << value << " = " << result_value << std::endl;
                     break;
                 case 2:
                     result_value = (value == 0) ? 1 : 0;
-                    std::cout << "[JIT-CODEGEN] !" << value << " = " << result_value << std::endl;
+                    // std::cout << "[JIT-CODEGEN] !" << value << " = " << result_value << std::endl;
                     break;
                 case 3:
                     result_value = ~value;
-                    std::cout << "[JIT-CODEGEN] ~" << value << " = " << result_value << std::endl;
+                    // std::cout << "[JIT-CODEGEN] ~" << value << " = " << result_value << std::endl;
                     break;
                 case 4:
                     result_value = 0;
-                    std::cout << "[JIT-CODEGEN] typeof " << value << " = 'number' (0)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] typeof " << value << " = 'number' (0)" << std::endl;
                     break;
                 case 5:
                     result_value = 0;
-                    std::cout << "[JIT-CODEGEN] void " << value << " = undefined (0)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] void " << value << " = undefined (0)" << std::endl;
                     break;
                 case 6:
                     result_value = 1;
-                    std::cout << "[JIT-CODEGEN] delete " << value << " = true (1)" << std::endl;
+                    // std::cout << "[JIT-CODEGEN] delete " << value << " = true (1)" << std::endl;
                     break;
                 default:
                     break;
@@ -1720,9 +1720,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_mov_rax_imm(result_value);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of CONSTANT FOLDING UNARY x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of CONSTANT FOLDING UNARY x86-64!" << std::endl;
         } else {
-            std::cout << "[JIT-CODEGEN]   Unsupported unary pattern" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Unsupported unary pattern" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
@@ -1731,8 +1731,8 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
         AssignmentExpression* assign = static_cast<AssignmentExpression*>(node);
         ASTNode* left = assign->get_left();
         ASTNode* right = assign->get_right();
-        std::cout << "[JIT-CODEGEN] AssignmentExpression detected!" << std::endl;
-        std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(assign->get_operator()) << std::endl;
+        // std::cout << "[JIT-CODEGEN] AssignmentExpression detected!" << std::endl;
+        // std::cout << "[JIT-CODEGEN]   Operator: " << static_cast<int>(assign->get_operator()) << std::endl;
         int op_val = static_cast<int>(assign->get_operator());
         bool left_is_identifier = left && left->get_type() == ASTNode::Type::IDENTIFIER;
         bool right_is_literal = right && right->get_type() == ASTNode::Type::NUMBER_LITERAL;
@@ -1741,7 +1741,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             NumberLiteral* right_num = static_cast<NumberLiteral*>(right);
             std::string var_name = left_id->get_name();
             int64_t right_val = static_cast<int64_t>(right_num->get_value());
-            std::cout << "[JIT-CODEGEN]  Compiling assignment: " << var_name << " op= " << right_val << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Compiling assignment: " << var_name << " op= " << right_val << std::endl;
             size_t var_str_offset = embed_string(var_name);
             emit_prologue();
             emit_byte(0x41); emit_byte(0x56);
@@ -1767,23 +1767,23 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 }
                 switch (op_val) {
                     case 1:
-                        std::cout << "[JIT-CODEGEN] Generating PLUS_ASSIGN (+=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating PLUS_ASSIGN (+=)" << std::endl;
                         emit_add_rax_rbx();
                         break;
                     case 2:
-                        std::cout << "[JIT-CODEGEN] Generating MINUS_ASSIGN (-=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MINUS_ASSIGN (-=)" << std::endl;
                         emit_sub_rax_rbx();
                         break;
                     case 3:
-                        std::cout << "[JIT-CODEGEN] Generating MUL_ASSIGN (*=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MUL_ASSIGN (*=)" << std::endl;
                         emit_mul_rax_rbx();
                         break;
                     case 4:
-                        std::cout << "[JIT-CODEGEN] Generating DIV_ASSIGN (/=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating DIV_ASSIGN (/=)" << std::endl;
                         emit_div_rax_rbx();
                         break;
                     case 5:
-                        std::cout << "[JIT-CODEGEN] Generating MOD_ASSIGN (%=)" << std::endl;
+                        // std::cout << "[JIT-CODEGEN] Generating MOD_ASSIGN (%=)" << std::endl;
                         emit_mod_rax_rbx();
                         break;
                     default:
@@ -1791,7 +1791,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                         break;
                 }
             } else {
-                std::cout << "[JIT-CODEGEN] Generating ASSIGN (=)" << std::endl;
+                // std::cout << "[JIT-CODEGEN] Generating ASSIGN (=)" << std::endl;
                 emit_mov_rax_imm(right_val);
             }
             #ifdef _WIN32
@@ -1812,9 +1812,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             emit_byte(0x41); emit_byte(0x5E);
             emit_epilogue();
             emit_ret();
-            std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of ASSIGNMENT x86-64!" << std::endl;
+            // std::cout << "[JIT-CODEGEN]  Generated " << code_buffer_.size() << " bytes of ASSIGNMENT x86-64!" << std::endl;
         } else {
-            std::cout << "[JIT-CODEGEN]   Unsupported assignment pattern" << std::endl;
+            // std::cout << "[JIT-CODEGEN]   Unsupported assignment pattern" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
@@ -1822,21 +1822,21 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
     } else if (node && node->get_type() == ASTNode::Type::CALL_EXPRESSION) {
         CallExpression* call = static_cast<CallExpression*>(node);
         ASTNode* callee = call->get_callee();
-        std::cout << "[JIT-INLINE] CallExpression detected!" << std::endl;
+        // std::cout << "[JIT-INLINE] CallExpression detected!" << std::endl;
         if (callee && callee->get_type() == ASTNode::Type::IDENTIFIER && call->argument_count() == 1) {
             Identifier* func_id = static_cast<Identifier*>(callee);
             std::string func_name = func_id->get_name();
             const auto& args = call->get_arguments();
             ASTNode* arg0 = args[0].get();
-            std::cout << "[JIT-INLINE]   Function: " << func_name << std::endl;
-            std::cout << "[JIT-INLINE]   Arg[0] type: " << static_cast<int>(arg0->get_type()) << std::endl;
+            // std::cout << "[JIT-INLINE]   Function: " << func_name << std::endl;
+            // std::cout << "[JIT-INLINE]   Arg[0] type: " << static_cast<int>(arg0->get_type()) << std::endl;
             if (arg0->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* arg_id = static_cast<Identifier*>(arg0);
                 std::string arg_name = arg_id->get_name();
                 size_t arg_str_offset = embed_string(arg_name);
                 bool inlined = false;
                 if (func_name == "double") {
-                    std::cout << "[JIT-INLINE]  INLINING double(" << arg_name << ") as " << arg_name << " * 2" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING double(" << arg_name << ") as " << arg_name << " * 2" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1863,7 +1863,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "triple") {
-                    std::cout << "[JIT-INLINE]  INLINING triple(" << arg_name << ") as " << arg_name << " * 3" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING triple(" << arg_name << ") as " << arg_name << " * 3" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1890,7 +1890,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "square") {
-                    std::cout << "[JIT-INLINE]  INLINING square(" << arg_name << ") as " << arg_name << " * " << arg_name << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING square(" << arg_name << ") as " << arg_name << " * " << arg_name << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1916,7 +1916,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "add5") {
-                    std::cout << "[JIT-INLINE]  INLINING add5(" << arg_name << ") as " << arg_name << " + 5" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING add5(" << arg_name << ") as " << arg_name << " + 5" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1943,7 +1943,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "negate") {
-                    std::cout << "[JIT-INLINE]  INLINING negate(" << arg_name << ") as -" << arg_name << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING negate(" << arg_name << ") as -" << arg_name << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1968,7 +1968,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "increment") {
-                    std::cout << "[JIT-INLINE]  INLINING increment(" << arg_name << ") as " << arg_name << " + 1" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING increment(" << arg_name << ") as " << arg_name << " + 1" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -1993,10 +1993,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 if (inlined) {
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "isEven") {
-                    std::cout << "[JIT-INLINE]  INLINING isEven(" << arg_name << ") as (" << arg_name << " % 2 == 0)" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING isEven(" << arg_name << ") as (" << arg_name << " % 2 == 0)" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2019,10 +2019,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x83); emit_byte(0xF0); emit_byte(0x01);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "isOdd") {
-                    std::cout << "[JIT-INLINE]  INLINING isOdd(" << arg_name << ") as (" << arg_name << " % 2 != 0)" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING isOdd(" << arg_name << ") as (" << arg_name << " % 2 != 0)" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2044,10 +2044,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x83); emit_byte(0xE0); emit_byte(0x01);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "sign") {
-                    std::cout << "[JIT-INLINE]  INLINING sign(" << arg_name << ") as sign(" << arg_name << ")" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING sign(" << arg_name << ") as sign(" << arg_name << ")" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2078,10 +2078,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x0F); emit_byte(0x44); emit_byte(0xC3);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "isPowerOfTwo") {
-                    std::cout << "[JIT-INLINE]  INLINING isPowerOfTwo(" << arg_name << ") as (x & (x-1)) == 0 && x != 0" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING isPowerOfTwo(" << arg_name << ") as (x & (x-1)) == 0 && x != 0" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2111,10 +2111,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "toBoolean") {
-                    std::cout << "[JIT-INLINE]  INLINING toBoolean(" << arg_name << ") as !!x" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING toBoolean(" << arg_name << ") as !!x" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2138,10 +2138,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "not") {
-                    std::cout << "[JIT-INLINE]  INLINING not(" << arg_name << ") as !x" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING not(" << arg_name << ") as !x" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2165,10 +2165,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0x0F); emit_byte(0xB6); emit_byte(0xC0);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "dec" || func_name == "decrement") {
-                    std::cout << "[JIT-INLINE]  INLINING " << func_name << "(" << arg_name << ") as x - 1" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING " << func_name << "(" << arg_name << ") as x - 1" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2190,10 +2190,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0xFF); emit_byte(0xC8);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else if (func_name == "abs") {
-                    std::cout << "[JIT-INLINE]  INLINING abs(" << arg_name << ") - non-Math version" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING abs(" << arg_name << ") - non-Math version" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2217,16 +2217,16 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD8);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED x86-64!" << std::endl;
                 }
                 else {
-                    std::cout << "[JIT-INLINE]   Unknown function: " << func_name << std::endl;
+                    // std::cout << "[JIT-INLINE]   Unknown function: " << func_name << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
                 }
             } else {
-                std::cout << "[JIT-INLINE]   Cannot inline: unknown function or pattern" << std::endl;
+                // std::cout << "[JIT-INLINE]   Cannot inline: unknown function or pattern" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
@@ -2238,9 +2238,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             const auto& args = call->get_arguments();
             ASTNode* arg0 = args[0].get();
             ASTNode* arg1 = args[1].get();
-            std::cout << "[JIT-INLINE]   Function: " << func_name << " (2 args)" << std::endl;
-            std::cout << "[JIT-INLINE]   Arg[0] type: " << static_cast<int>(arg0->get_type()) << std::endl;
-            std::cout << "[JIT-INLINE]   Arg[1] type: " << static_cast<int>(arg1->get_type()) << std::endl;
+            // std::cout << "[JIT-INLINE]   Function: " << func_name << " (2 args)" << std::endl;
+            // std::cout << "[JIT-INLINE]   Arg[0] type: " << static_cast<int>(arg0->get_type()) << std::endl;
+            // std::cout << "[JIT-INLINE]   Arg[1] type: " << static_cast<int>(arg1->get_type()) << std::endl;
             if (arg0->get_type() == ASTNode::Type::IDENTIFIER && arg1->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* arg0_id = static_cast<Identifier*>(arg0);
                 Identifier* arg1_id = static_cast<Identifier*>(arg1);
@@ -2250,7 +2250,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 size_t arg1_str_offset = embed_string(arg1_name);
                 bool inlined = false;
                 if (func_name == "add") {
-                    std::cout << "[JIT-INLINE]  INLINING add(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " + " << arg1_name << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING add(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " + " << arg1_name << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2292,7 +2292,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "multiply") {
-                    std::cout << "[JIT-INLINE]  INLINING multiply(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " * " << arg1_name << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING multiply(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " * " << arg1_name << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2334,7 +2334,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "subtract") {
-                    std::cout << "[JIT-INLINE]  INLINING subtract(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " - " << arg1_name << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING subtract(" << arg0_name << ", " << arg1_name << ") as " << arg0_name << " - " << arg1_name << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2376,9 +2376,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 if (inlined) {
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED 2-ARG x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED 2-ARG x86-64!" << std::endl;
                 } else {
-                    std::cout << "[JIT-INLINE]   Unknown 2-arg function: " << func_name << std::endl;
+                    // std::cout << "[JIT-INLINE]   Unknown 2-arg function: " << func_name << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
@@ -2393,7 +2393,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 size_t arg0_str_offset = embed_string(arg0_name);
                 bool inlined = false;
                 if (func_name == "add") {
-                    std::cout << "[JIT-INLINE]  INLINING add(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " + " << arg1_int << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING add(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " + " << arg1_int << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2421,7 +2421,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "multiply") {
-                    std::cout << "[JIT-INLINE]  INLINING multiply(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " * " << arg1_int << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING multiply(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " * " << arg1_int << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2449,7 +2449,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "subtract") {
-                    std::cout << "[JIT-INLINE]  INLINING subtract(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " - " << arg1_int << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING subtract(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " - " << arg1_int << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2477,7 +2477,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "divide") {
-                    std::cout << "[JIT-INLINE]  INLINING divide(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " / " << arg1_int << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING divide(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " / " << arg1_int << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2505,7 +2505,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "modulo") {
-                    std::cout << "[JIT-INLINE]  INLINING modulo(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " % " << arg1_int << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING modulo(" << arg0_name << ", " << arg1_int << ") as " << arg0_name << " % " << arg1_int << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2533,7 +2533,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "max") {
-                    std::cout << "[JIT-INLINE]  INLINING max(" << arg0_name << ", " << arg1_int << ") as max(" << arg0_name << ", " << arg1_int << ")" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING max(" << arg0_name << ", " << arg1_int << ") as max(" << arg0_name << ", " << arg1_int << ")" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2562,7 +2562,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else if (func_name == "min") {
-                    std::cout << "[JIT-INLINE]  INLINING min(" << arg0_name << ", " << arg1_int << ") as min(" << arg0_name << ", " << arg1_int << ")" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING min(" << arg0_name << ", " << arg1_int << ") as min(" << arg0_name << ", " << arg1_int << ")" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2591,13 +2591,13 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_ret();
                 }
                 else {
-                    std::cout << "[JIT-INLINE]   Unknown 2-arg function: " << func_name << std::endl;
+                    // std::cout << "[JIT-INLINE]   Unknown 2-arg function: " << func_name << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
                 }
                 if (inlined) {
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED (var, literal) x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED (var, literal) x86-64!" << std::endl;
                 }
             }
             else if (arg0->get_type() == ASTNode::Type::IDENTIFIER && arg1->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -2609,7 +2609,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 size_t arg1_str_offset = embed_string(arg1_name);
                 bool inlined = false;
                 if (func_name == "clampMin") {
-                    std::cout << "[JIT-INLINE]  INLINING clampMin(" << arg0_name << ", " << arg1_name << ") as Math.max(x, min)" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING clampMin(" << arg0_name << ", " << arg1_name << ") as Math.max(x, min)" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2650,10 +2650,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x41); emit_byte(0x5E);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED clampMin x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED clampMin x86-64!" << std::endl;
                 }
                 else if (func_name == "clampMax") {
-                    std::cout << "[JIT-INLINE]  INLINING clampMax(" << arg0_name << ", " << arg1_name << ") as Math.min(x, max)" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING clampMax(" << arg0_name << ", " << arg1_name << ") as Math.min(x, max)" << std::endl;
                     inlined = true;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
@@ -2694,17 +2694,17 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x41); emit_byte(0x5E);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED clampMax x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of INLINED clampMax x86-64!" << std::endl;
                 }
                 if (!inlined) {
-                    std::cout << "[JIT-INLINE]   Unknown 2-arg (var,var) function: " << func_name << std::endl;
+                    // std::cout << "[JIT-INLINE]   Unknown 2-arg (var,var) function: " << func_name << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
                 }
             }
             else {
-                std::cout << "[JIT-INLINE]   2-arg function with unsupported argument pattern" << std::endl;
+                // std::cout << "[JIT-INLINE]   2-arg function with unsupported argument pattern" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
@@ -2717,7 +2717,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
             ASTNode* arg0 = args[0].get();
             ASTNode* arg1 = args[1].get();
             ASTNode* arg2 = args[2].get();
-            std::cout << "[JIT-INLINE]   Function: " << func_name << " (3 args)" << std::endl;
+            // std::cout << "[JIT-INLINE]   Function: " << func_name << " (3 args)" << std::endl;
             if (arg0->get_type() == ASTNode::Type::IDENTIFIER &&
                 arg1->get_type() == ASTNode::Type::IDENTIFIER &&
                 arg2->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -2731,7 +2731,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 size_t arg1_str_offset = embed_string(arg1_name);
                 size_t arg2_str_offset = embed_string(arg2_name);
                 if (func_name == "clamp") {
-                    std::cout << "[JIT-INLINE]  INLINING clamp(" << arg0_name << ", " << arg1_name << ", " << arg2_name << ")" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING clamp(" << arg0_name << ", " << arg1_name << ", " << arg2_name << ")" << std::endl;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
                     emit_byte(0x41); emit_byte(0x57);
@@ -2805,10 +2805,10 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x41); emit_byte(0x5E);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of clamp x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of clamp x86-64!" << std::endl;
                 }
                 else if (func_name == "isBetween") {
-                    std::cout << "[JIT-INLINE]  INLINING isBetween(" << arg0_name << ", " << arg1_name << ", " << arg2_name << ") as x >= min && x <= max" << std::endl;
+                    // std::cout << "[JIT-INLINE]  INLINING isBetween(" << arg0_name << ", " << arg1_name << ", " << arg2_name << ") as x >= min && x <= max" << std::endl;
                     emit_prologue();
                     emit_byte(0x41); emit_byte(0x56);
                     emit_byte(0x41); emit_byte(0x57);
@@ -2868,16 +2868,16 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                     emit_byte(0x41); emit_byte(0x5E);
                     emit_epilogue();
                     emit_ret();
-                    std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of isBetween x86-64!" << std::endl;
+                    // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of isBetween x86-64!" << std::endl;
                 }
                 else {
-                    std::cout << "[JIT-INLINE]   Unknown 3-arg function: " << func_name << std::endl;
+                    // std::cout << "[JIT-INLINE]   Unknown 3-arg function: " << func_name << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
                 }
             } else {
-                std::cout << "[JIT-INLINE]   3-arg function with non-identifier arguments" << std::endl;
+                // std::cout << "[JIT-INLINE]   3-arg function with non-identifier arguments" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
@@ -2892,7 +2892,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                 if (obj_id->get_name() == "Math" && property && property->get_type() == ASTNode::Type::IDENTIFIER) {
                     Identifier* prop_id = static_cast<Identifier*>(property);
                     std::string method_name = prop_id->get_name();
-                    std::cout << "[JIT-INLINE] Math." << method_name << " detected!" << std::endl;
+                    // std::cout << "[JIT-INLINE] Math." << method_name << " detected!" << std::endl;
                     if (method_name == "abs" && call->argument_count() == 1) {
                         const auto& args = call->get_arguments();
                         ASTNode* arg0 = args[0].get();
@@ -2900,7 +2900,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             Identifier* arg_id = static_cast<Identifier*>(arg0);
                             std::string arg_name = arg_id->get_name();
                             size_t arg_str_offset = embed_string(arg_name);
-                            std::cout << "[JIT-INLINE]  INLINING Math.abs(" << arg_name << ")" << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.abs(" << arg_name << ")" << std::endl;
                             emit_prologue();
                             emit_byte(0x41); emit_byte(0x56);
                             #ifdef _WIN32
@@ -2923,14 +2923,14 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_byte(0x48); emit_byte(0xF7); emit_byte(0xD8);
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.abs x86-64!" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.abs x86-64!" << std::endl;
                         } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                             // Math.abs with literal (e.g., Math.abs(5))
                             NumberLiteral* num_lit = static_cast<NumberLiteral*>(arg0);
                             double num = num_lit->get_value();
                             double abs_result = num < 0 ? -num : num;
 
-                            std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
                             emit_prologue();
 
                             // Emit constant result
@@ -2940,7 +2940,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
 
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
                         } else if (arg0->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
                             // Math.abs with unary expression (e.g., Math.abs(-5))
                             UnaryExpression* unary = static_cast<UnaryExpression*>(arg0);
@@ -2950,7 +2950,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                                 double num = -num_lit->get_value();  // Apply unary minus
                                 double abs_result = num < 0 ? -num : num;
 
-                                std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
+                                // std::cout << "[JIT-INLINE]  INLINING Math.abs(" << num << ") = " << abs_result << std::endl;
                                 emit_prologue();
 
                                 // Emit constant result
@@ -2960,15 +2960,15 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
 
                                 emit_epilogue();
                                 emit_ret();
-                                std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
+                                // std::cout << "[JIT-INLINE]  Generated constant Math.abs" << std::endl;
                             } else {
-                                std::cout << "[JIT-INLINE]   Math.abs: unsupported unary expression" << std::endl;
+                                // std::cout << "[JIT-INLINE]   Math.abs: unsupported unary expression" << std::endl;
                                 result.code_ptr = nullptr;
                                 result.code_size = 0;
                                 return result;
                             }
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.abs: argument not an identifier or literal" << std::endl;
+                            // std::cout << "[JIT-INLINE]   Math.abs: argument not an identifier or literal" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -2981,7 +2981,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             Identifier* arg_id = static_cast<Identifier*>(arg0);
                             std::string arg_name = arg_id->get_name();
                             size_t arg_str_offset = embed_string(arg_name);
-                            std::cout << "[JIT-INLINE]  INLINING Math.floor(" << arg_name << ")" << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.floor(" << arg_name << ")" << std::endl;
                             emit_prologue();
                             emit_byte(0x41); emit_byte(0x56);
                             #ifdef _WIN32
@@ -3001,9 +3001,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_call_absolute((void*)jit_read_variable);
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.floor x86-64!" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.floor x86-64!" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.floor: argument not an identifier" << std::endl;
+                            // std::cout << "[JIT-INLINE]   Math.floor: argument not an identifier" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -3016,7 +3016,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             Identifier* arg_id = static_cast<Identifier*>(arg0);
                             std::string arg_name = arg_id->get_name();
                             size_t arg_str_offset = embed_string(arg_name);
-                            std::cout << "[JIT-INLINE]  INLINING Math.ceil(" << arg_name << ")" << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.ceil(" << arg_name << ")" << std::endl;
                             emit_prologue();
                             emit_byte(0x41); emit_byte(0x56);
                             #ifdef _WIN32
@@ -3036,9 +3036,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_call_absolute((void*)jit_read_variable);
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.ceil x86-64!" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.ceil x86-64!" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.ceil: argument not an identifier" << std::endl;
+                            // std::cout << "[JIT-INLINE]   Math.ceil: argument not an identifier" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -3055,7 +3055,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             std::string arg1_name = arg1_id->get_name();
                             size_t arg0_str_offset = embed_string(arg0_name);
                             size_t arg1_str_offset = embed_string(arg1_name);
-                            std::cout << "[JIT-INLINE]  INLINING Math.max(" << arg0_name << ", " << arg1_name << ")" << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.max(" << arg0_name << ", " << arg1_name << ")" << std::endl;
                             emit_prologue();
                             emit_byte(0x41); emit_byte(0x56);
                             emit_byte(0x41); emit_byte(0x57);
@@ -3095,7 +3095,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_byte(0x41); emit_byte(0x5E);
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.max x86-64!" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.max x86-64!" << std::endl;
                         } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL &&
                                    arg1->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                             // Math.max with literals (e.g., Math.max(1, 2))
@@ -3105,7 +3105,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             double num1 = num1_lit->get_value();
                             double max_result = (num0 > num1) ? num0 : num1;
 
-                            std::cout << "[JIT-INLINE]  INLINING Math.max(" << num0 << ", " << num1 << ") = " << max_result << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.max(" << num0 << ", " << num1 << ") = " << max_result << std::endl;
                             emit_prologue();
 
                             // Emit constant result
@@ -3115,9 +3115,9 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
 
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated constant Math.max" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated constant Math.max" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.max: arguments not both identifiers or literals" << std::endl;
+                            // std::cout << "[JIT-INLINE]   Math.max: arguments not both identifiers or literals" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
@@ -3134,7 +3134,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             std::string arg1_name = arg1_id->get_name();
                             size_t arg0_str_offset = embed_string(arg0_name);
                             size_t arg1_str_offset = embed_string(arg1_name);
-                            std::cout << "[JIT-INLINE]  INLINING Math.min(" << arg0_name << ", " << arg1_name << ")" << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.min(" << arg0_name << ", " << arg1_name << ")" << std::endl;
                             emit_prologue();
                             emit_byte(0x41); emit_byte(0x56);
                             emit_byte(0x41); emit_byte(0x57);
@@ -3174,7 +3174,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             emit_byte(0x41); emit_byte(0x5E);
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.min x86-64!" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated " << code_buffer_.size() << " bytes of Math.min x86-64!" << std::endl;
                         } else if (arg0->get_type() == ASTNode::Type::NUMBER_LITERAL &&
                                    arg1->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                             // Math.min with literals (e.g., Math.min(3, 7))
@@ -3184,7 +3184,7 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
                             double num1 = num1_lit->get_value();
                             double min_result = (num0 < num1) ? num0 : num1;
 
-                            std::cout << "[JIT-INLINE]  INLINING Math.min(" << num0 << ", " << num1 << ") = " << min_result << std::endl;
+                            // std::cout << "[JIT-INLINE]  INLINING Math.min(" << num0 << ", " << num1 << ") = " << min_result << std::endl;
                             emit_prologue();
 
                             // Emit constant result
@@ -3194,41 +3194,41 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
 
                             emit_epilogue();
                             emit_ret();
-                            std::cout << "[JIT-INLINE]  Generated constant Math.min" << std::endl;
+                            // std::cout << "[JIT-INLINE]  Generated constant Math.min" << std::endl;
                         } else {
-                            std::cout << "[JIT-INLINE]   Math.min: arguments not both identifiers or literals" << std::endl;
+                            // std::cout << "[JIT-INLINE]   Math.min: arguments not both identifiers or literals" << std::endl;
                             result.code_ptr = nullptr;
                             result.code_size = 0;
                             return result;
                         }
                     }
                     else {
-                        std::cout << "[JIT-INLINE]   Unsupported Math." << method_name << " pattern" << std::endl;
+                        // std::cout << "[JIT-INLINE]   Unsupported Math." << method_name << " pattern" << std::endl;
                         result.code_ptr = nullptr;
                         result.code_size = 0;
                         return result;
                     }
                 } else {
-                    std::cout << "[JIT-INLINE]   Not a Math.* call" << std::endl;
+                    // std::cout << "[JIT-INLINE]   Not a Math.* call" << std::endl;
                     result.code_ptr = nullptr;
                     result.code_size = 0;
                     return result;
                 }
             } else {
-                std::cout << "[JIT-INLINE]   MemberExpression object not an identifier" << std::endl;
+                // std::cout << "[JIT-INLINE]   MemberExpression object not an identifier" << std::endl;
                 result.code_ptr = nullptr;
                 result.code_size = 0;
                 return result;
             }
         }
         else {
-            std::cout << "[JIT-INLINE]   Cannot inline: complex call pattern" << std::endl;
+            // std::cout << "[JIT-INLINE]   Cannot inline: complex call pattern" << std::endl;
             result.code_ptr = nullptr;
             result.code_size = 0;
             return result;
         }
     } else {
-        std::cout << "[JIT-CODEGEN] Non-arithmetic node - using fallback" << std::endl;
+        // std::cout << "[JIT-CODEGEN] Non-arithmetic node - using fallback" << std::endl;
         emit_prologue();
         emit_mov_rax_imm(42);
         emit_epilogue();
@@ -3240,32 +3240,32 @@ CompiledMachineCode MachineCodeGenerator::compile(ASTNode* node, const TypeFeedb
         strings_size += str.length() + 1;
     }
     size_t total_size = code_size + strings_size;
-    std::cout << "[JIT-CODEGEN] Code size: " << code_size << " bytes, Strings: " << strings_size << " bytes, Total: " << total_size << " bytes" << std::endl;
+    // std::cout << "[JIT-CODEGEN] Code size: " << code_size << " bytes, Strings: " << strings_size << " bytes, Total: " << total_size << " bytes" << std::endl;
     uint8_t* code_ptr = allocate_executable_memory(total_size);
     if (!code_ptr) {
-        std::cout << "[JIT-CODEGEN] Failed to allocate executable memory!" << std::endl;
+        // std::cout << "[JIT-CODEGEN] Failed to allocate executable memory!" << std::endl;
         return result;
     }
     std::memcpy(code_ptr, code_buffer_.data(), code_size);
     finalize_strings(code_ptr);
     if (!patches_.empty()) {
-        std::cout << "[JIT-PATCH] Patching " << patches_.size() << " string addresses..." << std::endl;
+        // std::cout << "[JIT-PATCH] Patching " << patches_.size() << " string addresses..." << std::endl;
         for (const auto& patch : patches_) {
             uint64_t string_addr = reinterpret_cast<uint64_t>(code_ptr + code_size + patch.string_offset);
-            std::cout << "[JIT-PATCH] Patching position " << patch.code_position
-                     << " with string address 0x" << std::hex << string_addr << std::dec
-                     << " (code_ptr=" << (void*)code_ptr << " + code_size=" << code_size
-                     << " + string_offset=" << patch.string_offset << ")" << std::endl;
+            // std::cout << "[JIT-PATCH] Patching position " << patch.code_position
+            //          << " with string address 0x" << std::hex << string_addr << std::dec
+            //          << " (code_ptr=" << (void*)code_ptr << " + code_size=" << code_size
+            //          << " + string_offset=" << patch.string_offset << ")" << std::endl;
             uint8_t* patch_location = code_ptr + patch.code_position;
             for (int i = 0; i < 8; i++) {
                 patch_location[i] = (string_addr >> (i * 8)) & 0xFF;
             }
         }
-        std::cout << "[JIT-PATCH]  All addresses patched!" << std::endl;
+        // std::cout << "[JIT-PATCH]  All addresses patched!" << std::endl;
     }
     result.code_ptr = code_ptr;
     result.code_size = code_size;
-    std::cout << "[JIT-CODEGEN]  Machine code ready at: " << (void*)code_ptr << std::endl;
+    // std::cout << "[JIT-CODEGEN]  Machine code ready at: " << (void*)code_ptr << std::endl;
     embedded_strings_.clear();
     string_offsets_.clear();
     patches_.clear();
@@ -3311,13 +3311,13 @@ size_t MachineCodeGenerator::embed_string(const std::string& str) {
     }
     embedded_strings_.push_back(str);
     string_offsets_[str] = offset;
-    std::cout << "[JIT-STRING] Embedding string '" << str << "' at offset " << offset << std::endl;
+    // std::cout << "[JIT-STRING] Embedding string '" << str << "' at offset " << offset << std::endl;
     return offset;
 }
 void MachineCodeGenerator::finalize_strings(uint8_t* base_ptr) {
     size_t offset = code_buffer_.size();
     for (const auto& str : embedded_strings_) {
-        std::cout << "[JIT-STRING] Writing '" << str << "' at " << (void*)(base_ptr + offset) << std::endl;
+        // std::cout << "[JIT-STRING] Writing '" << str << "' at " << (void*)(base_ptr + offset) << std::endl;
         std::memcpy(base_ptr + offset, str.c_str(), str.length() + 1);
         offset += str.length() + 1;
     }
@@ -3347,12 +3347,12 @@ void MachineCodeGenerator::emit_epilogue() {
     emit_byte(0x5D);                          // pop rbp
 }
 void MachineCodeGenerator::emit_mov_rax_imm(int64_t value) {
-    std::cout << "[EMIT] mov rax, " << value << std::endl;
+    // std::cout << "[EMIT] mov rax, " << value << std::endl;
     emit_byte(0x48);
     emit_byte(0xB8);
     for (int i = 0; i < 8; i++) {
         uint8_t byte_val = (value >> (i * 8)) & 0xFF;
-        std::cout << "[EMIT]   byte[" << i << "] = 0x" << std::hex << (int)byte_val << std::dec << std::endl;
+        // std::cout << "[EMIT]   byte[" << i << "] = 0x" << std::hex << (int)byte_val << std::dec << std::endl;
         emit_byte(byte_val);
     }
 }
@@ -3364,7 +3364,7 @@ void MachineCodeGenerator::emit_mov_rbx_imm(int64_t value) {
     }
 }
 void MachineCodeGenerator::emit_mov_rsi_imm(int64_t value) {
-    std::cout << "[EMIT] mov rsi, 0x" << std::hex << value << std::dec << std::endl;
+    // std::cout << "[EMIT] mov rsi, 0x" << std::hex << value << std::dec << std::endl;
     emit_byte(0x48);
     emit_byte(0xBE);
     for (int i = 0; i < 8; i++) {
@@ -3372,7 +3372,7 @@ void MachineCodeGenerator::emit_mov_rsi_imm(int64_t value) {
     }
 }
 void MachineCodeGenerator::emit_call_absolute(void* func_ptr) {
-    std::cout << "[EMIT] call " << func_ptr << std::endl;
+    // std::cout << "[EMIT] call " << func_ptr << std::endl;
     emit_byte(0x48);
     emit_byte(0xB8);
     uint64_t addr = reinterpret_cast<uint64_t>(func_ptr);
@@ -3407,75 +3407,75 @@ void MachineCodeGenerator::emit_div_rax_rbx() {
     emit_byte(0xFB);
 }
 void MachineCodeGenerator::emit_mod_rax_rbx() {
-    std::cout << "[EMIT] xor rdx, rdx" << std::endl;
+    // std::cout << "[EMIT] xor rdx, rdx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x31);
     emit_byte(0xD2);
-    std::cout << "[EMIT] idiv rbx" << std::endl;
+    // std::cout << "[EMIT] idiv rbx" << std::endl;
     emit_byte(0x48);
     emit_byte(0xF7);
     emit_byte(0xFB);
-    std::cout << "[EMIT] mov rax, rdx" << std::endl;
+    // std::cout << "[EMIT] mov rax, rdx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x89);
     emit_byte(0xD0);
 }
 void MachineCodeGenerator::emit_and_rax_rbx() {
-    std::cout << "[EMIT] and rax, rbx" << std::endl;
+    // std::cout << "[EMIT] and rax, rbx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x21);
     emit_byte(0xD8);
 }
 void MachineCodeGenerator::emit_or_rax_rbx() {
-    std::cout << "[EMIT] or rax, rbx" << std::endl;
+    // std::cout << "[EMIT] or rax, rbx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x09);
     emit_byte(0xD8);
 }
 void MachineCodeGenerator::emit_xor_rax_rbx() {
-    std::cout << "[EMIT] xor rax, rbx" << std::endl;
+    // std::cout << "[EMIT] xor rax, rbx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x31);
     emit_byte(0xD8);
 }
 void MachineCodeGenerator::emit_shl_rax_cl() {
-    std::cout << "[EMIT] shl rax, cl" << std::endl;
+    // std::cout << "[EMIT] shl rax, cl" << std::endl;
     emit_byte(0x48);
     emit_byte(0xD3);
     emit_byte(0xE0);
 }
 void MachineCodeGenerator::emit_shr_rax_cl() {
-    std::cout << "[EMIT] shr rax, cl" << std::endl;
+    // std::cout << "[EMIT] shr rax, cl" << std::endl;
     emit_byte(0x48);
     emit_byte(0xD3);
     emit_byte(0xE8);
 }
 void MachineCodeGenerator::emit_sar_rax_cl() {
-    std::cout << "[EMIT] sar rax, cl" << std::endl;
+    // std::cout << "[EMIT] sar rax, cl" << std::endl;
     emit_byte(0x48);
     emit_byte(0xD3);
     emit_byte(0xF8);
 }
 void MachineCodeGenerator::emit_neg_rax() {
-    std::cout << "[EMIT] neg rax" << std::endl;
+    // std::cout << "[EMIT] neg rax" << std::endl;
     emit_byte(0x48);
     emit_byte(0xF7);
     emit_byte(0xD8);
 }
 void MachineCodeGenerator::emit_not_rax() {
-    std::cout << "[EMIT] not rax" << std::endl;
+    // std::cout << "[EMIT] not rax" << std::endl;
     emit_byte(0x48);
     emit_byte(0xF7);
     emit_byte(0xD0);
 }
 void MachineCodeGenerator::emit_inc_rax() {
-    std::cout << "[EMIT] inc rax" << std::endl;
+    // std::cout << "[EMIT] inc rax" << std::endl;
     emit_byte(0x48);
     emit_byte(0xFF);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_dec_rax() {
-    std::cout << "[EMIT] dec rax" << std::endl;
+    // std::cout << "[EMIT] dec rax" << std::endl;
     emit_byte(0x48);
     emit_byte(0xFF);
     emit_byte(0xC8);
@@ -3507,72 +3507,72 @@ void MachineCodeGenerator::emit_addsd_xmm0_xmm1() {
     emit_byte(0xC1);
 }
 void MachineCodeGenerator::emit_cmp_rax_rbx() {
-    std::cout << "[EMIT] cmp rax, rbx" << std::endl;
+    // std::cout << "[EMIT] cmp rax, rbx" << std::endl;
     emit_byte(0x48);
     emit_byte(0x39);
     emit_byte(0xD8);
 }
 void MachineCodeGenerator::emit_setl_al() {
-    std::cout << "[EMIT] setl al" << std::endl;
+    // std::cout << "[EMIT] setl al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x9C);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_setg_al() {
-    std::cout << "[EMIT] setg al" << std::endl;
+    // std::cout << "[EMIT] setg al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x9F);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_setle_al() {
-    std::cout << "[EMIT] setle al" << std::endl;
+    // std::cout << "[EMIT] setle al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x9E);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_setge_al() {
-    std::cout << "[EMIT] setge al" << std::endl;
+    // std::cout << "[EMIT] setge al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x9D);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_sete_al() {
-    std::cout << "[EMIT] sete al" << std::endl;
+    // std::cout << "[EMIT] sete al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x94);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_setne_al() {
-    std::cout << "[EMIT] setne al" << std::endl;
+    // std::cout << "[EMIT] setne al" << std::endl;
     emit_byte(0x0F);
     emit_byte(0x95);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_movzx_rax_al() {
-    std::cout << "[EMIT] movzx rax, al" << std::endl;
+    // std::cout << "[EMIT] movzx rax, al" << std::endl;
     emit_byte(0x48);
     emit_byte(0x0F);
     emit_byte(0xB6);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_test_rax_rax() {
-    std::cout << "[EMIT] test rax, rax" << std::endl;
+    // std::cout << "[EMIT] test rax, rax" << std::endl;
     emit_byte(0x48);
     emit_byte(0x85);
     emit_byte(0xC0);
 }
 void MachineCodeGenerator::emit_jz_rel8(int8_t offset) {
-    std::cout << "[EMIT] jz short " << (int)offset << std::endl;
+    // std::cout << "[EMIT] jz short " << (int)offset << std::endl;
     emit_byte(0x74);
     emit_byte(static_cast<uint8_t>(offset));
 }
 void MachineCodeGenerator::emit_jnz_rel8(int8_t offset) {
-    std::cout << "[EMIT] jnz short " << (int)offset << std::endl;
+    // std::cout << "[EMIT] jnz short " << (int)offset << std::endl;
     emit_byte(0x75);
     emit_byte(static_cast<uint8_t>(offset));
 }
 void MachineCodeGenerator::emit_jz_rel32(int32_t offset) {
-    std::cout << "[EMIT] jz near " << offset << std::endl;
+    // std::cout << "[EMIT] jz near " << offset << std::endl;
     emit_byte(0x0F);
     emit_byte(0x84);
     for (int i = 0; i < 4; i++) {
@@ -3580,7 +3580,7 @@ void MachineCodeGenerator::emit_jz_rel32(int32_t offset) {
     }
 }
 void MachineCodeGenerator::emit_jnz_rel32(int32_t offset) {
-    std::cout << "[EMIT] jnz near " << offset << std::endl;
+    // std::cout << "[EMIT] jnz near " << offset << std::endl;
     emit_byte(0x0F);
     emit_byte(0x85);
     for (int i = 0; i < 4; i++) {
@@ -3588,12 +3588,12 @@ void MachineCodeGenerator::emit_jnz_rel32(int32_t offset) {
     }
 }
 void MachineCodeGenerator::emit_jmp_rel8(int8_t offset) {
-    std::cout << "[EMIT] jmp short " << (int)offset << std::endl;
+    // std::cout << "[EMIT] jmp short " << (int)offset << std::endl;
     emit_byte(0xEB);
     emit_byte(static_cast<uint8_t>(offset));
 }
 void MachineCodeGenerator::emit_jmp_rel32(int32_t offset) {
-    std::cout << "[EMIT] jmp near " << offset << std::endl;
+    // std::cout << "[EMIT] jmp near " << offset << std::endl;
     emit_byte(0xE9);
     for (int i = 0; i < 4; i++) {
         emit_byte((offset >> (i * 8)) & 0xFF);
@@ -3756,14 +3756,14 @@ bool MachineCodeGenerator::is_loop_invariant(ASTNode* expr, const std::string& i
 CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* loop, const LoopAnalysis& analysis) {
     CompiledMachineCode result;
 
-    std::cout << "[LOOP-OPT] Compiling loop (unroll factor: " << analysis.unroll_factor << "):" << std::endl;
-    std::cout << "[LOOP-OPT]   Induction var: " << analysis.induction_var << std::endl;
-    std::cout << "[LOOP-OPT]   Range: " << analysis.start_value << " to " << analysis.end_value << std::endl;
-    std::cout << "[LOOP-OPT]   Unroll factor: " << analysis.unroll_factor << "x" << std::endl;
+    // std::cout << "[LOOP-OPT] Compiling loop (unroll factor: " << analysis.unroll_factor << "):" << std::endl;
+    // std::cout << "[LOOP-OPT]   Induction var: " << analysis.induction_var << std::endl;
+    // std::cout << "[LOOP-OPT]   Range: " << analysis.start_value << " to " << analysis.end_value << std::endl;
+    // std::cout << "[LOOP-OPT]   Unroll factor: " << analysis.unroll_factor << "x" << std::endl;
 
     ASTNode* body = loop->get_body();
     if (!body || body->get_type() != ASTNode::Type::BLOCK_STATEMENT) {
-        std::cout << "[LOOP-OPT] Loop body is not a block statement" << std::endl;
+        // std::cout << "[LOOP-OPT] Loop body is not a block statement" << std::endl;
         return result;
     }
 
@@ -3771,7 +3771,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     auto& statements = block->get_statements();
 
     if (statements.empty()) {
-        std::cout << "[LOOP-OPT] Loop body is empty" << std::endl;
+        // std::cout << "[LOOP-OPT] Loop body is empty" << std::endl;
         return result;
     }
 
@@ -3808,16 +3808,16 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     }
 
     if (noop_count > 0) {
-        std::cout << "[DEAD-CODE] Eliminated " << noop_count << " no-op statements" << std::endl;
+        // std::cout << "[DEAD-CODE] Eliminated " << noop_count << " no-op statements" << std::endl;
     }
 
     if (assign_binops.empty() && assign_exprs.empty()) {
-        std::cout << "[LOOP-OPT] No assignment found" << std::endl;
+        // std::cout << "[LOOP-OPT] No assignment found" << std::endl;
         return result;
     }
 
     if (assign_binops.size() + assign_exprs.size() > 1) {
-        std::cout << "[LOOP-OPT] Multiple assignments detected: " << (assign_binops.size() + assign_exprs.size()) << std::endl;
+        // std::cout << "[LOOP-OPT] Multiple assignments detected: " << (assign_binops.size() + assign_exprs.size()) << std::endl;
     }
 
     BinaryExpression* assign_binop = assign_binops.empty() ? nullptr : assign_binops[0];
@@ -3834,7 +3834,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     std::string member_property;
 
     if (!target_node) {
-        std::cout << "[LOOP-OPT] No target node" << std::endl;
+        // std::cout << "[LOOP-OPT] No target node" << std::endl;
         return result;
     }
 
@@ -3852,19 +3852,19 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
             array_index = member->get_property();
 
             if (member->is_computed()) {
-                std::cout << "[LOOP-OPT] Array access pattern: " << target_name << "[<expr>]" << std::endl;
+                // std::cout << "[LOOP-OPT] Array access pattern: " << target_name << "[<expr>]" << std::endl;
             } else {
                 is_array_access = false;
                 is_member_access = true;
                 if (array_index && array_index->get_type() == ASTNode::Type::IDENTIFIER) {
                     member_property = static_cast<Identifier*>(array_index)->get_name();
-                    std::cout << "[LOOP-OPT] Member access pattern: " << target_name << "." << member_property << std::endl;
+                    // std::cout << "[LOOP-OPT] Member access pattern: " << target_name << "." << member_property << std::endl;
                 }
             }
         }
     }
     else {
-        std::cout << "[LOOP-OPT] Unsupported assignment target type: " << static_cast<int>(target_node->get_type()) << std::endl;
+        // std::cout << "[LOOP-OPT] Unsupported assignment target type: " << static_cast<int>(target_node->get_type()) << std::endl;
         return result;
     }
 
@@ -3876,25 +3876,25 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
             case AssignmentExpression::Operator::PLUS_ASSIGN:
                 effective_op = BinaryExpression::Operator::ADD;
                 right_operand = value_node;
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
                 break;
             case AssignmentExpression::Operator::MINUS_ASSIGN:
                 effective_op = BinaryExpression::Operator::SUBTRACT;
                 right_operand = value_node;
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
                 break;
             case AssignmentExpression::Operator::MUL_ASSIGN:
                 effective_op = BinaryExpression::Operator::MULTIPLY;
                 right_operand = value_node;
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
                 break;
             case AssignmentExpression::Operator::DIV_ASSIGN:
                 effective_op = BinaryExpression::Operator::DIVIDE;
                 right_operand = value_node;
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
                 break;
             default:
-                std::cout << "[LOOP-OPT] Unsupported assignment operator" << std::endl;
+                // std::cout << "[LOOP-OPT] Unsupported assignment operator" << std::endl;
                 return result;
         }
     } else {
@@ -3903,30 +3903,30 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
         if (binop_op == BinaryExpression::Operator::PLUS_ASSIGN) {
             effective_op = BinaryExpression::Operator::ADD;
             right_operand = value_node;
-            std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
+            // std::cout << "[LOOP-OPT] Pattern: " << target_name << " += <expr>" << std::endl;
         } else if (binop_op == BinaryExpression::Operator::MINUS_ASSIGN) {
             effective_op = BinaryExpression::Operator::SUBTRACT;
             right_operand = value_node;
-            std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
+            // std::cout << "[LOOP-OPT] Pattern: " << target_name << " -= <expr>" << std::endl;
         } else if (binop_op == BinaryExpression::Operator::MULTIPLY_ASSIGN) {
             effective_op = BinaryExpression::Operator::MULTIPLY;
             right_operand = value_node;
-            std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
+            // std::cout << "[LOOP-OPT] Pattern: " << target_name << " *= <expr>" << std::endl;
         } else if (binop_op == BinaryExpression::Operator::DIVIDE_ASSIGN) {
             effective_op = BinaryExpression::Operator::DIVIDE;
             right_operand = value_node;
-            std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
+            // std::cout << "[LOOP-OPT] Pattern: " << target_name << " /= <expr>" << std::endl;
         } else if (binop_op == BinaryExpression::Operator::ASSIGN) {
             // For array: arr[i] = <any expression>
             if (is_array_access && value_node) {
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << "[i] = <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << "[i] = <expr>" << std::endl;
                 // We'll handle this in the array-specific path below
                 // Set a flag so we know this is a simple assignment
                 effective_op = BinaryExpression::Operator::ASSIGN;
                 right_operand = value_node;
             }
             else if (!value_node || value_node->get_type() != ASTNode::Type::BINARY_EXPRESSION) {
-                std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
+                // std::cout << "[LOOP-OPT] Assignment value is not a binary expression" << std::endl;
                 return result;
             }
             else {
@@ -3938,13 +3938,13 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
                     effective_op != BinaryExpression::Operator::SUBTRACT &&
                     effective_op != BinaryExpression::Operator::MULTIPLY &&
                     effective_op != BinaryExpression::Operator::DIVIDE) {
-                    std::cout << "[LOOP-OPT] Unsupported binary operator: " << static_cast<int>(effective_op) << std::endl;
+                    // std::cout << "[LOOP-OPT] Unsupported binary operator: " << static_cast<int>(effective_op) << std::endl;
                     return result;
                 }
-                std::cout << "[LOOP-OPT] Pattern: " << target_name << " = " << target_name << " op <expr>" << std::endl;
+                // std::cout << "[LOOP-OPT] Pattern: " << target_name << " = " << target_name << " op <expr>" << std::endl;
             }
         } else {
-            std::cout << "[LOOP-OPT] Unsupported operator" << std::endl;
+            // std::cout << "[LOOP-OPT] Unsupported operator" << std::endl;
             return result;
         }
     }
@@ -3960,23 +3960,23 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
             constant_value = num->get_value();
             if ((effective_op == BinaryExpression::Operator::ADD || effective_op == BinaryExpression::Operator::SUBTRACT) && constant_value == 1.0) {
                 is_pure_operation = true;
-                std::cout << "[LOOP-OPT] Pure register operation" << std::endl;
+                // std::cout << "[LOOP-OPT] Pure register operation" << std::endl;
             } else if (constant_value != 0.0) {
                 is_pure_operation = true;
-                std::cout << "[LOOP-OPT] Constant: " << constant_value << std::endl;
+                // std::cout << "[LOOP-OPT] Constant: " << constant_value << std::endl;
             }
         }
         else if (right_operand->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* id = static_cast<Identifier*>(right_operand);
             if (id->get_name() == analysis.induction_var) {
                 is_induction_var = true;
-                std::cout << "[LOOP-OPT] Induction variable: " << analysis.induction_var << std::endl;
+                // std::cout << "[LOOP-OPT] Induction variable: " << analysis.induction_var << std::endl;
             }
         }
         else if (right_operand->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
             is_complex_expr = true;
             BinaryExpression* expr = static_cast<BinaryExpression*>(right_operand);
-            std::cout << "[LOOP-OPT] Complex expression detected" << std::endl;
+            // std::cout << "[LOOP-OPT] Complex expression detected" << std::endl;
 
             ASTNode* left = expr->get_left();
             ASTNode* right = expr->get_right();
@@ -3990,17 +3990,17 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
 
                 if (op == BinaryExpression::Operator::MULTIPLY) {
                     if (const_val == 2.0) {
-                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 2 -> " << analysis.induction_var << " << 1" << std::endl;
+                        // std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 2 -> " << analysis.induction_var << " << 1" << std::endl;
                     } else if (const_val == 4.0) {
-                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 4 -> " << analysis.induction_var << " << 2" << std::endl;
+                        // std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 4 -> " << analysis.induction_var << " << 2" << std::endl;
                     } else if (const_val == 8.0) {
-                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 8 -> " << analysis.induction_var << " << 3" << std::endl;
+                        // std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " * 8 -> " << analysis.induction_var << " << 3" << std::endl;
                     }
                 } else if (op == BinaryExpression::Operator::DIVIDE) {
                     if (const_val == 2.0) {
-                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 2 -> " << analysis.induction_var << " >> 1" << std::endl;
+                        // std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 2 -> " << analysis.induction_var << " >> 1" << std::endl;
                     } else if (const_val == 4.0) {
-                        std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 4 -> " << analysis.induction_var << " >> 2" << std::endl;
+                        // std::cout << "[STRENGTH-REDUCTION] " << analysis.induction_var << " / 4 -> " << analysis.induction_var << " >> 2" << std::endl;
                     }
                 }
             }
@@ -4015,8 +4015,8 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     emit_prologue();
 
     if (is_pure_operation && effective_op == BinaryExpression::Operator::ADD && constant_value == 1.0) {
-        std::cout << "[REGISTER-ALLOC] r12 = " << target_name << " (accumulator)" << std::endl;
-        std::cout << "[REGISTER-ALLOC] r13 = " << analysis.induction_var << " (loop counter)" << std::endl;
+        // std::cout << "[REGISTER-ALLOC] r12 = " << target_name << " (accumulator)" << std::endl;
+        // std::cout << "[REGISTER-ALLOC] r13 = " << analysis.induction_var << " (loop counter)" << std::endl;
 
         emit_byte(0x4D); emit_byte(0x31); emit_byte(0xE4);
         emit_byte(0x49); emit_byte(0xC7); emit_byte(0xC5);
@@ -4028,7 +4028,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
         while (code_buffer_.size() % 16 != 0) {
             emit_byte(0x90);
         }
-        std::cout << "[LOOP-ALIGN] Loop at offset " << code_buffer_.size() << std::endl;
+        // std::cout << "[LOOP-ALIGN] Loop at offset " << code_buffer_.size() << std::endl;
 
         size_t loop_start_pos = code_buffer_.size();
 
@@ -4095,12 +4095,12 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
         emit_epilogue();
         emit_ret();
 
-        std::cout << "[LOOP-OPT] Generated pure register loop! (" << code_buffer_.size() << " bytes)" << std::endl;
-        std::cout << "[LOOP-OPT] NO memory access during loop! " << std::endl;
+        // std::cout << "[LOOP-OPT] Generated pure register loop! (" << code_buffer_.size() << " bytes)" << std::endl;
+        // std::cout << "[LOOP-OPT] NO memory access during loop! " << std::endl;
 
         result.code_ptr = allocate_executable_memory(code_buffer_.size());
         if (!result.code_ptr) {
-            std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
+            // std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
             return result;
         }
 
@@ -4118,7 +4118,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     }
 
     // OLD PATH: Function call based loop (fallback)
-    std::cout << "[LOOP-OPT] DEBUG: Using old function-call based loop (is_array=" << is_array_access << ")" << std::endl;
+    // std::cout << "[LOOP-OPT] DEBUG: Using old function-call based loop (is_array=" << is_array_access << ")" << std::endl;
 
     emit_byte(0x41); emit_byte(0x56);
     emit_byte(0x41); emit_byte(0x54);
@@ -4166,7 +4166,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
                         }
                     } else {
                         // arr[i] = someOtherVar - not supported yet, use fallback
-                        std::cout << "[LOOP-OPT] Unsupported: array assignment from other variable" << std::endl;
+                        // std::cout << "[LOOP-OPT] Unsupported: array assignment from other variable" << std::endl;
                     }
                 } else if (right_operand->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                     // arr[i] = 42
@@ -4329,7 +4329,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
 
     uint8_t* executable_mem = allocate_executable_memory(code_size + strings_size);
     if (!executable_mem) {
-        std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
+        // std::cout << "[LOOP-OPT] Failed to allocate executable memory" << std::endl;
         return result;
     }
 
@@ -4344,7 +4344,7 @@ CompiledMachineCode MachineCodeGenerator::compile_optimized_loop(ForStatement* l
     result.code_ptr = executable_mem;
     result.code_size = code_size;
 
-    std::cout << "[LOOP-OPT] Successfully generated " << code_size << " bytes of 4x unrolled loop!" << std::endl;
+    // std::cout << "[LOOP-OPT] Successfully generated " << code_size << " bytes of 4x unrolled loop!" << std::endl;
 
     return result;
 }

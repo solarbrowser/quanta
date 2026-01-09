@@ -39,7 +39,7 @@ Engine::Engine() : initialized_(false), execution_count_(0),
     jit_compiler_ = std::make_unique<JITCompiler>();
 
     config_.strict_mode = false;
-    config_.enable_jit = true;
+    config_.enable_jit = false;  // JIT disabled for stability
     config_.enable_optimizations = true;
     config_.max_heap_size = 512 * 1024 * 1024;
     config_.initial_heap_size = 32 * 1024 * 1024;

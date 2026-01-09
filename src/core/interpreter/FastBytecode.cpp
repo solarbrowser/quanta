@@ -37,72 +37,153 @@ void FastBytecodeVM::emit(FastOp op, uint32_t a, uint32_t b, uint32_t c, double 
 }
 
 Value FastBytecodeVM::execute_fast() {
-    
+
     auto start = std::chrono::high_resolution_clock::now();
-    
+
     pc_ = 0;
     Value result;
-    
+
+#ifdef __GNUC__
+    // Computed goto dispatch table (faster than switch on GCC/Clang)
+    static const void* dispatch_table[] = {
+        &&op_load_number,    // FastOp::LOAD_NUMBER
+        &&op_fast_add,       // FastOp::FAST_ADD
+        &&op_fast_sub,       // FastOp::FAST_SUB
+        &&op_fast_mul,       // FastOp::FAST_MUL
+        &&op_fast_div,       // FastOp::FAST_DIV
+        &&op_math_loop_sum,  // FastOp::MATH_LOOP_SUM
+        &&op_native_exec,    // FastOp::NATIVE_EXEC
+        &&op_fast_return     // FastOp::FAST_RETURN
+    };
+
+    #define DISPATCH() goto *dispatch_table[static_cast<int>(code_[pc_].op)]
+    #define NEXT() ++pc_; DISPATCH()
+
+    DISPATCH();
+
+op_load_number: {
+        const FastInstruction& instr = code_[pc_];
+        registers_[instr.a] = instr.immediate;
+        NEXT();
+    }
+
+op_fast_add: {
+        const FastInstruction& instr = code_[pc_];
+        registers_[instr.a] = registers_[instr.b] + registers_[instr.c];
+        NEXT();
+    }
+
+op_fast_sub: {
+        const FastInstruction& instr = code_[pc_];
+        registers_[instr.a] = registers_[instr.b] - registers_[instr.c];
+        NEXT();
+    }
+
+op_fast_mul: {
+        const FastInstruction& instr = code_[pc_];
+        registers_[instr.a] = registers_[instr.b] * registers_[instr.c];
+        NEXT();
+    }
+
+op_fast_div: {
+        const FastInstruction& instr = code_[pc_];
+        registers_[instr.a] = registers_[instr.b] / registers_[instr.c];
+        NEXT();
+    }
+
+op_math_loop_sum: {
+        const FastInstruction& instr = code_[pc_];
+        int64_t n = static_cast<int64_t>(instr.immediate);
+        int64_t sum = n * (n + 1) / 2;
+        registers_[instr.a] = static_cast<double>(sum);
+        NEXT();
+    }
+
+op_native_exec: {
+        const FastInstruction& instr = code_[pc_];
+        int64_t n = static_cast<int64_t>(instr.immediate);
+        int64_t result_val = 0;
+
+        for (int64_t i = 0; i < n; ++i) {
+            result_val += i + 1;
+        }
+
+        registers_[instr.a] = static_cast<double>(result_val);
+        NEXT();
+    }
+
+op_fast_return: {
+        const FastInstruction& instr = code_[pc_];
+        result = Value(registers_[instr.a]);
+        goto vm_exit;
+    }
+
+    #undef DISPATCH
+    #undef NEXT
+
+#else
+    // Fallback to switch for non-GCC compilers
     while (pc_ < code_.size()) {
         const FastInstruction& instr = code_[pc_];
-        
+
         switch (instr.op) {
             case FastOp::LOAD_NUMBER:
                 registers_[instr.a] = instr.immediate;
                 break;
-                
+
             case FastOp::FAST_ADD:
                 registers_[instr.a] = registers_[instr.b] + registers_[instr.c];
                 break;
-                
+
             case FastOp::FAST_SUB:
                 registers_[instr.a] = registers_[instr.b] - registers_[instr.c];
                 break;
-                
+
             case FastOp::FAST_MUL:
                 registers_[instr.a] = registers_[instr.b] * registers_[instr.c];
                 break;
-                
+
             case FastOp::FAST_DIV:
                 registers_[instr.a] = registers_[instr.b] / registers_[instr.c];
                 break;
-                
+
             case FastOp::MATH_LOOP_SUM: {
                 int64_t n = static_cast<int64_t>(instr.immediate);
                 int64_t sum = n * (n + 1) / 2;
                 registers_[instr.a] = static_cast<double>(sum);
                 break;
             }
-                
+
             case FastOp::NATIVE_EXEC: {
                 int64_t n = static_cast<int64_t>(instr.immediate);
                 int64_t result_val = 0;
-                
+
                 for (int64_t i = 0; i < n; ++i) {
                     result_val += i + 1;
                 }
-                
+
                 registers_[instr.a] = static_cast<double>(result_val);
                 break;
             }
-                
+
             case FastOp::FAST_RETURN:
                 result = Value(registers_[instr.a]);
                 goto vm_exit;
-                
+
             default:
                 break;
         }
-        
+
         ++pc_;
     }
-    
+#endif
+
 vm_exit:
     auto end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    
+
     std::cout << "BYTECODE EXECUTION COMPLETED in " << duration.count() << " microseconds" << std::endl;
-    
+
     return result;
 }
 

@@ -234,7 +234,7 @@ void Context::register_built_in_object(const std::string& name, Object* object) 
         } else {
             binding_value = Value(object);
         }
-        PropertyDescriptor desc(binding_value, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor desc(binding_value, PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor(name, desc);
     }
 }
@@ -243,7 +243,7 @@ void Context::register_built_in_function(const std::string& name, Function* func
     built_in_functions_[name] = function;
 
     if (global_object_) {
-        PropertyDescriptor desc(Value(function), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor desc(Value(function), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor(name, desc);
     }
 }
@@ -384,7 +384,7 @@ void Context::initialize_built_ins() {
 
             return Value(result_array.release());
         }, 1);
-    object_constructor->set_property("keys", Value(keys_fn.release()));
+    object_constructor->set_property("keys", Value(keys_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto values_fn = ObjectFactory::create_native_function("values", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -418,7 +418,7 @@ void Context::initialize_built_ins() {
 
             return Value(result_array.release());
         }, 1);
-    object_constructor->set_property("values", Value(values_fn.release()));
+    object_constructor->set_property("values", Value(values_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto entries_fn = ObjectFactory::create_native_function("entries", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -454,7 +454,7 @@ void Context::initialize_built_ins() {
 
             return Value(result_array.release());
         }, 1);
-    object_constructor->set_property("entries", Value(entries_fn.release()));
+    object_constructor->set_property("entries", Value(entries_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto is_fn = ObjectFactory::create_native_function("is",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -470,7 +470,7 @@ void Context::initialize_built_ins() {
     is_length_desc.set_enumerable(false);
     is_length_desc.set_writable(false);
     is_fn->set_property_descriptor("length", is_length_desc);
-    object_constructor->set_property("is", Value(is_fn.release()));
+    object_constructor->set_property("is", Value(is_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -507,7 +507,7 @@ void Context::initialize_built_ins() {
             
             return Value(result_obj.release());
         }, 1);
-    object_constructor->set_property("fromEntries", Value(fromEntries_fn.release()));
+    object_constructor->set_property("fromEntries", Value(fromEntries_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto create_fn = ObjectFactory::create_native_function("create",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -598,7 +598,7 @@ void Context::initialize_built_ins() {
 
             return Value(new_obj_ptr);
         }, 2);
-    object_constructor->set_property("create", Value(create_fn.release()));
+    object_constructor->set_property("create", Value(create_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto assign_fn = ObjectFactory::create_native_function("assign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -642,7 +642,7 @@ void Context::initialize_built_ins() {
             
             return target;
         }, 2);
-    object_constructor->set_property("assign", Value(assign_fn.release()));
+    object_constructor->set_property("assign", Value(assign_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getPrototypeOf_fn = ObjectFactory::create_native_function("getPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -700,7 +700,7 @@ void Context::initialize_built_ins() {
 
             return Value::null();
         }, 1);
-    object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()));
+    object_constructor->set_property("getPrototypeOf", Value(getPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -740,7 +740,7 @@ void Context::initialize_built_ins() {
 
             return obj_val;
         }, 2);
-    object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()));
+    object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -758,7 +758,7 @@ void Context::initialize_built_ins() {
 
             return Value(obj->has_own_property(prop_name));
         }, 1);
-    object_constructor->set_property("hasOwnProperty", Value(hasOwnProperty_fn.release()));
+    object_constructor->set_property("hasOwnProperty", Value(hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -835,7 +835,7 @@ void Context::initialize_built_ins() {
 
             return Value(descriptor.release());
         }, 2);
-    object_constructor->set_property("getOwnPropertyDescriptor", Value(getOwnPropertyDescriptor_fn.release()));
+    object_constructor->set_property("getOwnPropertyDescriptor", Value(getOwnPropertyDescriptor_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto defineProperty_fn = ObjectFactory::create_native_function("defineProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -903,7 +903,7 @@ void Context::initialize_built_ins() {
 
             return args[0];
         }, 3);
-    object_constructor->set_property("defineProperty", Value(defineProperty_fn.release()));
+    object_constructor->set_property("defineProperty", Value(defineProperty_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyNames_fn = ObjectFactory::create_native_function("getOwnPropertyNames",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -927,7 +927,7 @@ void Context::initialize_built_ins() {
 
             return Value(result.release());
         }, 1);
-    object_constructor->set_property("getOwnPropertyNames", Value(getOwnPropertyNames_fn.release()));
+    object_constructor->set_property("getOwnPropertyNames", Value(getOwnPropertyNames_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto defineProperties_fn = ObjectFactory::create_native_function("defineProperties",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -998,7 +998,7 @@ void Context::initialize_built_ins() {
 
             return args[0];
         }, 2);
-    object_constructor->set_property("defineProperties", Value(defineProperties_fn.release()));
+    object_constructor->set_property("defineProperties", Value(defineProperties_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto getOwnPropertyDescriptors_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptors",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1050,7 +1050,7 @@ void Context::initialize_built_ins() {
 
             return Value(result.release());
         }, 1);
-    object_constructor->set_property("getOwnPropertyDescriptors", Value(getOwnPropertyDescriptors_fn.release()));
+    object_constructor->set_property("getOwnPropertyDescriptors", Value(getOwnPropertyDescriptors_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto seal_fn = ObjectFactory::create_native_function("seal",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1062,7 +1062,7 @@ void Context::initialize_built_ins() {
 
             return args[0];
         }, 1);
-    object_constructor->set_property("seal", Value(seal_fn.release()));
+    object_constructor->set_property("seal", Value(seal_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto freeze_fn = ObjectFactory::create_native_function("freeze",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1074,7 +1074,7 @@ void Context::initialize_built_ins() {
 
             return args[0];
         }, 1);
-    object_constructor->set_property("freeze", Value(freeze_fn.release()));
+    object_constructor->set_property("freeze", Value(freeze_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto preventExtensions_fn = ObjectFactory::create_native_function("preventExtensions",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1086,7 +1086,7 @@ void Context::initialize_built_ins() {
 
             return args[0];
         }, 1);
-    object_constructor->set_property("preventExtensions", Value(preventExtensions_fn.release()));
+    object_constructor->set_property("preventExtensions", Value(preventExtensions_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isSealed_fn = ObjectFactory::create_native_function("isSealed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1095,7 +1095,7 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].as_object();
             return Value(obj->is_sealed());
         }, 1);
-    object_constructor->set_property("isSealed", Value(isSealed_fn.release()));
+    object_constructor->set_property("isSealed", Value(isSealed_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFrozen_fn = ObjectFactory::create_native_function("isFrozen",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1104,7 +1104,7 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].as_object();
             return Value(obj->is_frozen());
         }, 1);
-    object_constructor->set_property("isFrozen", Value(isFrozen_fn.release()));
+    object_constructor->set_property("isFrozen", Value(isFrozen_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isExtensible_fn = ObjectFactory::create_native_function("isExtensible",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1113,7 +1113,7 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].as_object();
             return Value(obj->is_extensible());
         }, 1);
-    object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()));
+    object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto hasOwn_fn = ObjectFactory::create_native_function("hasOwn",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1131,7 +1131,7 @@ void Context::initialize_built_ins() {
 
             return Value(obj->has_own_property(prop_name));
         }, 2);
-    object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()));
+    object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto groupBy_fn = ObjectFactory::create_native_function("groupBy",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1178,7 +1178,7 @@ void Context::initialize_built_ins() {
 
             return Value(result.release());
         }, 2);
-    object_constructor->set_property("groupBy", Value(groupBy_fn.release()));
+    object_constructor->set_property("groupBy", Value(groupBy_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto object_prototype = ObjectFactory::create_object();
 
@@ -1311,9 +1311,9 @@ void Context::initialize_built_ins() {
     isPrototypeOf_length_desc.set_writable(false);
     proto_isPrototypeOf_fn->set_property_descriptor("length", isPrototypeOf_length_desc);
 
-    object_prototype->set_property("toString", Value(proto_toString_fn.release()));
-    object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()));
-    object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()));
+    object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+    object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
+    object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
@@ -1363,7 +1363,7 @@ void Context::initialize_built_ins() {
     // Note: Using set_property with explicit attrs since built-in function properties need Writable | Configurable
     // Default for Function::set_property is None, so we must explicitly pass attrs
     Function* isArray_ptr = isArray_fn.release();
-    PropertyAttributes isArray_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    PropertyAttributes isArray_attrs = PropertyAttributes::BuiltinFunction;
     array_constructor->set_property("isArray", Value(isArray_ptr), isArray_attrs);
 
     auto from_fn = ObjectFactory::create_native_function("from",
@@ -1428,7 +1428,7 @@ void Context::initialize_built_ins() {
             return Value(result);
         }, 1);
     Function* from_ptr = from_fn.release();
-    PropertyAttributes from_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    PropertyAttributes from_attrs = PropertyAttributes::BuiltinFunction;
     array_constructor->set_property("from", Value(from_ptr), from_attrs);
     
     auto of_fn = ObjectFactory::create_native_function("of",
@@ -1459,7 +1459,7 @@ void Context::initialize_built_ins() {
             return Value(result);
         }, 0);
     Function* of_ptr = of_fn.release();
-    PropertyAttributes of_attrs = static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    PropertyAttributes of_attrs = PropertyAttributes::BuiltinFunction;
     array_constructor->set_property("of", Value(of_ptr), of_attrs);
 
     auto fromAsync_fn = ObjectFactory::create_native_function("fromAsync",
@@ -1473,7 +1473,7 @@ void Context::initialize_built_ins() {
     fromAsync_length_desc.set_writable(false);
     fromAsync_fn->set_property_descriptor("length", fromAsync_length_desc);
 
-    array_constructor->set_property("fromAsync", Value(fromAsync_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    array_constructor->set_property("fromAsync", Value(fromAsync_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1530,7 +1530,7 @@ void Context::initialize_built_ins() {
     find_fn->set_property("name", Value("find"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor find_desc(Value(find_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("find", find_desc);
 
     auto findLast_fn = ObjectFactory::create_native_function("findLast",
@@ -1570,7 +1570,7 @@ void Context::initialize_built_ins() {
 
     findLast_fn->set_property("name", Value("findLast"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor findLast_desc(Value(findLast_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("findLast", findLast_desc);
 
     auto findLastIndex_fn = ObjectFactory::create_native_function("findLastIndex",
@@ -1610,7 +1610,7 @@ void Context::initialize_built_ins() {
 
     findLastIndex_fn->set_property("name", Value("findLastIndex"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor findLastIndex_desc(Value(findLastIndex_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("findLastIndex", findLastIndex_desc);
 
     auto with_fn = ObjectFactory::create_native_function("with",
@@ -1657,7 +1657,7 @@ void Context::initialize_built_ins() {
 
     with_fn->set_property("name", Value("with"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor with_desc(Value(with_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("with", with_desc);
 
     auto at_fn = ObjectFactory::create_native_function("at",
@@ -1688,7 +1688,7 @@ void Context::initialize_built_ins() {
 
     at_fn->set_property("name", Value("at"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor at_desc(Value(at_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("at", at_desc);
 
 
@@ -1745,7 +1745,7 @@ void Context::initialize_built_ins() {
     includes_fn->set_property("name", Value("includes"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor array_includes_desc(Value(includes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("includes", array_includes_desc);
     
     auto flat_fn = ObjectFactory::create_native_function("flat",
@@ -1795,7 +1795,7 @@ void Context::initialize_built_ins() {
     flat_fn->set_property("name", Value("flat"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor flat_desc(Value(flat_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("flat", flat_desc);
 
     auto flatMap_fn = ObjectFactory::create_native_function("flatMap",
@@ -1839,7 +1839,7 @@ void Context::initialize_built_ins() {
 
     flatMap_fn->set_property("name", Value("flatMap"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor flatMap_desc(Value(flatMap_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("flatMap", flatMap_desc);
 
     auto fill_fn = ObjectFactory::create_native_function("fill",
@@ -1860,7 +1860,7 @@ void Context::initialize_built_ins() {
     fill_fn->set_property("name", Value("fill"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor fill_desc(Value(fill_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("fill", fill_desc);
 
     auto array_keys_fn = ObjectFactory::create_native_function("keys",
@@ -1873,7 +1873,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor keys_desc(Value(array_keys_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("keys", keys_desc);
 
     auto array_values_fn = ObjectFactory::create_native_function("values",
@@ -1886,7 +1886,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor values_desc(Value(array_values_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("values", values_desc);
 
     auto array_entries_fn = ObjectFactory::create_native_function("entries",
@@ -1903,7 +1903,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor entries_desc(Value(array_entries_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("entries", entries_desc);
 
     auto array_toString_fn = ObjectFactory::create_native_function("toString",
@@ -1934,7 +1934,7 @@ void Context::initialize_built_ins() {
             }
         });
     PropertyDescriptor array_toString_desc(Value(array_toString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("toString", array_toString_desc);
 
     auto array_push_fn = ObjectFactory::create_native_function("push",
@@ -1954,7 +1954,7 @@ void Context::initialize_built_ins() {
 
 
     PropertyDescriptor push_desc(Value(array_push_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("push", push_desc);
 
     auto copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
@@ -2007,7 +2007,7 @@ void Context::initialize_built_ins() {
     copyWithin_fn->set_property_descriptor("length", copyWithin_length_desc);
 
     PropertyDescriptor copyWithin_desc(Value(copyWithin_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("copyWithin", copyWithin_desc);
 
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
@@ -2057,7 +2057,7 @@ void Context::initialize_built_ins() {
     lastIndexOf_fn->set_property_descriptor("length", lastIndexOf_length_desc);
 
     PropertyDescriptor lastIndexOf_desc(Value(lastIndexOf_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("lastIndexOf", lastIndexOf_desc);
 
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
@@ -2138,7 +2138,7 @@ void Context::initialize_built_ins() {
     reduceRight_fn->set_property_descriptor("length", reduceRight_length_desc);
 
     PropertyDescriptor reduceRight_desc(Value(reduceRight_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("reduceRight", reduceRight_desc);
 
     auto toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
@@ -2178,7 +2178,7 @@ void Context::initialize_built_ins() {
             return Value(result);
         });
     PropertyDescriptor array_toLocaleString_desc(Value(toLocaleString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("toLocaleString", array_toLocaleString_desc);
 
     auto toReversed_fn = ObjectFactory::create_native_function("toReversed",
@@ -2197,7 +2197,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 0);
     PropertyDescriptor toReversed_desc(Value(toReversed_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("toReversed", toReversed_desc);
 
     auto toSorted_fn = ObjectFactory::create_native_function("toSorted",
@@ -2216,7 +2216,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor toSorted_desc(Value(toSorted_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("toSorted", toSorted_desc);
 
     auto toSpliced_fn = ObjectFactory::create_native_function("toSpliced",
@@ -2254,7 +2254,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 2);
     PropertyDescriptor toSpliced_desc(Value(toSpliced_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("toSpliced", toSpliced_desc);
 
     auto array_concat_fn = ObjectFactory::create_native_function("concat",
@@ -2295,7 +2295,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         });
     PropertyDescriptor concat_desc(Value(array_concat_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("concat", concat_desc);
 
     auto every_fn = ObjectFactory::create_native_function("every",
@@ -2322,7 +2322,7 @@ void Context::initialize_built_ins() {
             return Value(true);
         }, 1);
     PropertyDescriptor every_desc(Value(every_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("every", every_desc);
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
@@ -2353,7 +2353,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor filter_desc(Value(filter_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("filter", filter_desc);
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
@@ -2369,7 +2369,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 1);
     PropertyDescriptor forEach_desc(Value(forEach_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("forEach", forEach_desc);
 
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
@@ -2390,7 +2390,7 @@ void Context::initialize_built_ins() {
             return Value(-1.0);
         }, 1);
     PropertyDescriptor array_indexOf_desc(Value(indexOf_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("indexOf", array_indexOf_desc);
 
     auto map_fn = ObjectFactory::create_native_function("map",
@@ -2418,7 +2418,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor map_desc(Value(map_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("map", map_desc);
 
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
@@ -2461,7 +2461,7 @@ void Context::initialize_built_ins() {
             return accumulator;
         }, 1);
     PropertyDescriptor reduce_desc(Value(reduce_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("reduce", reduce_desc);
 
     auto some_fn = ObjectFactory::create_native_function("some",
@@ -2489,7 +2489,7 @@ void Context::initialize_built_ins() {
             return Value(false);
         }, 1);
     PropertyDescriptor some_desc(Value(some_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("some", some_desc);
 
     auto findIndex_fn = ObjectFactory::create_native_function("findIndex",
@@ -2517,7 +2517,7 @@ void Context::initialize_built_ins() {
             return Value(-1.0);
         }, 1);
     PropertyDescriptor findIndex_desc(Value(findIndex_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("findIndex", findIndex_desc);
 
     auto join_fn = ObjectFactory::create_native_function("join",
@@ -2536,7 +2536,7 @@ void Context::initialize_built_ins() {
             return Value(result);
         }, 1);
     PropertyDescriptor join_desc(Value(join_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("join", join_desc);
 
     auto pop_fn = ObjectFactory::create_native_function("pop",
@@ -2552,7 +2552,7 @@ void Context::initialize_built_ins() {
             return element;
         }, 0);
     PropertyDescriptor pop_desc(Value(pop_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("pop", pop_desc);
 
     auto reverse_fn = ObjectFactory::create_native_function("reverse",
@@ -2569,7 +2569,7 @@ void Context::initialize_built_ins() {
             return Value(this_obj);
         }, 0);
     PropertyDescriptor reverse_desc(Value(reverse_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("reverse", reverse_desc);
 
     auto shift_fn = ObjectFactory::create_native_function("shift",
@@ -2588,7 +2588,7 @@ void Context::initialize_built_ins() {
             return first;
         }, 0);
     PropertyDescriptor shift_desc(Value(shift_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("shift", shift_desc);
 
     auto slice_fn = ObjectFactory::create_native_function("slice",
@@ -2615,7 +2615,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 2);
     PropertyDescriptor slice_desc(Value(slice_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("slice", slice_desc);
 
     auto sort_fn = ObjectFactory::create_native_function("sort",
@@ -2681,7 +2681,7 @@ void Context::initialize_built_ins() {
             return Value(this_obj);
         }, 1);
     PropertyDescriptor sort_desc(Value(sort_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("sort", sort_desc);
 
     auto splice_fn = ObjectFactory::create_native_function("splice",
@@ -2749,7 +2749,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 2);
     PropertyDescriptor splice_desc(Value(splice_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("splice", splice_desc);
 
     auto unshift_fn = ObjectFactory::create_native_function("unshift",
@@ -2773,13 +2773,13 @@ void Context::initialize_built_ins() {
             return Value(static_cast<double>(new_length));
         }, 1);
     PropertyDescriptor unshift_desc(Value(unshift_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("unshift", unshift_desc);
 
     Object* array_proto_ptr = array_prototype.get();
 
     PropertyDescriptor array_constructor_desc(Value(array_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     array_proto_ptr->set_property_descriptor("constructor", array_constructor_desc);
 
     PropertyDescriptor array_tag_desc(Value(std::string("Array")), PropertyAttributes::Configurable);
@@ -2866,7 +2866,7 @@ void Context::initialize_built_ins() {
 
     call_fn->set_property("name", Value("call"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
-    function_prototype->set_property("call", Value(call_fn.release()));
+    function_prototype->set_property("call", Value(call_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto apply_fn = ObjectFactory::create_native_function("apply",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2902,7 +2902,7 @@ void Context::initialize_built_ins() {
 
     apply_fn->set_property("name", Value("apply"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
-    function_prototype->set_property("apply", Value(apply_fn.release()));
+    function_prototype->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto bind_fn = ObjectFactory::create_native_function("bind",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -2938,7 +2938,7 @@ void Context::initialize_built_ins() {
 
     bind_fn->set_property("name", Value("bind"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
-    function_prototype->set_property("bind", Value(bind_fn.release()));
+    function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
 
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
@@ -2970,7 +2970,7 @@ void Context::initialize_built_ins() {
                         }
                         return Value("");
                     });
-                this_obj->set_property("toString", Value(toString_fn.release()));
+                this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             }
 
             return Value(str_value);
@@ -3005,7 +3005,7 @@ void Context::initialize_built_ins() {
             return Value(padding + str);
         });
     PropertyDescriptor padStart_desc(Value(padStart_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("padStart", padStart_desc);
     
     auto padEnd_fn = ObjectFactory::create_native_function("padEnd",
@@ -3035,7 +3035,7 @@ void Context::initialize_built_ins() {
             return Value(str + padding);
         });
     PropertyDescriptor padEnd_desc(Value(padEnd_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("padEnd", padEnd_desc);
 
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
@@ -3072,7 +3072,7 @@ void Context::initialize_built_ins() {
     str_includes_length_desc.set_writable(false);
     str_includes_fn->set_property_descriptor("length", str_includes_length_desc);
     PropertyDescriptor string_includes_desc(Value(str_includes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("includes", string_includes_desc);
 
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
@@ -3108,7 +3108,7 @@ void Context::initialize_built_ins() {
     startsWith_length_desc.set_writable(false);
     startsWith_fn->set_property_descriptor("length", startsWith_length_desc);
     PropertyDescriptor startsWith_desc(Value(startsWith_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("startsWith", startsWith_desc);
 
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
@@ -3137,7 +3137,7 @@ void Context::initialize_built_ins() {
     endsWith_length_desc.set_writable(false);
     endsWith_fn->set_property_descriptor("length", endsWith_length_desc);
     PropertyDescriptor endsWith_desc(Value(endsWith_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("endsWith", endsWith_desc);
     
     auto match_fn = ObjectFactory::create_native_function("match",
@@ -3179,7 +3179,7 @@ void Context::initialize_built_ins() {
             return Value();
         });
     PropertyDescriptor match_desc(Value(match_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("match", match_desc);
 
     auto matchAll_fn = ObjectFactory::create_native_function("matchAll",
@@ -3201,7 +3201,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     PropertyDescriptor matchAll_desc(Value(matchAll_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("matchAll", matchAll_desc);
 
     auto replace_fn = ObjectFactory::create_native_function("replace",
@@ -3254,7 +3254,7 @@ void Context::initialize_built_ins() {
             return Value(str);
         });
     PropertyDescriptor replace_desc(Value(replace_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("replace", replace_desc);
 
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
@@ -3297,7 +3297,7 @@ void Context::initialize_built_ins() {
             return Value(str);
         }, 2);
     PropertyDescriptor replaceAll_desc(Value(replaceAll_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("replaceAll", replaceAll_desc);
 
     auto trim_fn = ObjectFactory::create_native_function("trim",
@@ -3313,7 +3313,7 @@ void Context::initialize_built_ins() {
             return Value(str.substr(start, end - start + 1));
         }, 0);
     PropertyDescriptor trim_desc(Value(trim_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("trim", trim_desc);
 
     auto trimStart_fn = ObjectFactory::create_native_function("trimStart",
@@ -3328,7 +3328,7 @@ void Context::initialize_built_ins() {
             return Value(str.substr(start));
         }, 0);
     PropertyDescriptor trimStart_desc(Value(trimStart_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("trimStart", trimStart_desc);
     string_prototype->set_property_descriptor("trimLeft", trimStart_desc);
 
@@ -3344,7 +3344,7 @@ void Context::initialize_built_ins() {
             return Value(str.substr(0, end + 1));
         }, 0);
     PropertyDescriptor trimEnd_desc(Value(trimEnd_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("trimEnd", trimEnd_desc);
     string_prototype->set_property_descriptor("trimRight", trimEnd_desc);
 
@@ -3390,7 +3390,7 @@ void Context::initialize_built_ins() {
             return Value(static_cast<double>(ch));
         }, 1);
     PropertyDescriptor codePointAt_desc(Value(codePointAt_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("codePointAt", codePointAt_desc);
 
     auto localeCompare_fn = ObjectFactory::create_native_function("localeCompare",
@@ -3408,7 +3408,7 @@ void Context::initialize_built_ins() {
             return Value(0.0);
         }, 1);
     PropertyDescriptor localeCompare_desc(Value(localeCompare_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("localeCompare", localeCompare_desc);
 
 
@@ -3429,7 +3429,7 @@ void Context::initialize_built_ins() {
             return Value(std::string(1, str[index]));
         });
     PropertyDescriptor charAt_desc(Value(charAt_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charAt", charAt_desc);
 
     auto string_at_fn = ObjectFactory::create_native_function("at",
@@ -3455,7 +3455,7 @@ void Context::initialize_built_ins() {
             return Value(std::string(1, str[static_cast<size_t>(index)]));
         }, 1);
     PropertyDescriptor string_at_desc(Value(string_at_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("at", string_at_desc);
 
     auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
@@ -3475,7 +3475,7 @@ void Context::initialize_built_ins() {
             return Value(static_cast<double>(static_cast<unsigned char>(str[index])));
         });
     PropertyDescriptor charCodeAt_desc(Value(charCodeAt_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
 
     auto str_indexOf_fn = ObjectFactory::create_native_function("indexOf",
@@ -3497,7 +3497,7 @@ void Context::initialize_built_ins() {
             return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
         });
     PropertyDescriptor string_indexOf_desc(Value(str_indexOf_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
     auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
@@ -3512,7 +3512,7 @@ void Context::initialize_built_ins() {
             return Value(str);
         });
     PropertyDescriptor toLowerCase_desc(Value(toLowerCase_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toLowerCase", toLowerCase_desc);
 
     auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
@@ -3527,7 +3527,7 @@ void Context::initialize_built_ins() {
             return Value(str);
         });
     PropertyDescriptor toUpperCase_desc(Value(toUpperCase_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toUpperCase", toUpperCase_desc);
 
     auto string_concat_static = ObjectFactory::create_native_function("concat",
@@ -3550,7 +3550,7 @@ void Context::initialize_built_ins() {
             return Value("<a name=\"" + name + "\">" + str + "</a>");
         }, 1);
     PropertyDescriptor anchor_desc(Value(anchor_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("anchor", anchor_desc);
 
     auto big_fn = ObjectFactory::create_native_function("big",
@@ -3561,7 +3561,7 @@ void Context::initialize_built_ins() {
             return Value("<big>" + str + "</big>");
         }, 0);
     PropertyDescriptor big_desc(Value(big_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("big", big_desc);
 
     auto blink_fn = ObjectFactory::create_native_function("blink",
@@ -3572,7 +3572,7 @@ void Context::initialize_built_ins() {
             return Value("<blink>" + str + "</blink>");
         }, 0);
     PropertyDescriptor blink_desc(Value(blink_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("blink", blink_desc);
 
     auto bold_fn = ObjectFactory::create_native_function("bold",
@@ -3583,7 +3583,7 @@ void Context::initialize_built_ins() {
             return Value("<b>" + str + "</b>");
         }, 0);
     PropertyDescriptor bold_desc(Value(bold_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("bold", bold_desc);
 
     auto fixed_fn = ObjectFactory::create_native_function("fixed",
@@ -3594,7 +3594,7 @@ void Context::initialize_built_ins() {
             return Value("<tt>" + str + "</tt>");
         }, 0);
     PropertyDescriptor fixed_desc(Value(fixed_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("fixed", fixed_desc);
 
     auto fontcolor_fn = ObjectFactory::create_native_function("fontcolor",
@@ -3606,7 +3606,7 @@ void Context::initialize_built_ins() {
             return Value("<font color=\"" + color + "\">" + str + "</font>");
         }, 1);
     PropertyDescriptor fontcolor_desc(Value(fontcolor_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("fontcolor", fontcolor_desc);
 
     auto fontsize_fn = ObjectFactory::create_native_function("fontsize",
@@ -3618,7 +3618,7 @@ void Context::initialize_built_ins() {
             return Value("<font size=\"" + size + "\">" + str + "</font>");
         }, 1);
     PropertyDescriptor fontsize_desc(Value(fontsize_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("fontsize", fontsize_desc);
 
     auto italics_fn = ObjectFactory::create_native_function("italics",
@@ -3629,7 +3629,7 @@ void Context::initialize_built_ins() {
             return Value("<i>" + str + "</i>");
         }, 0);
     PropertyDescriptor italics_desc(Value(italics_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("italics", italics_desc);
 
     auto link_fn = ObjectFactory::create_native_function("link",
@@ -3641,7 +3641,7 @@ void Context::initialize_built_ins() {
             return Value("<a href=\"" + url + "\">" + str + "</a>");
         }, 1);
     PropertyDescriptor link_desc(Value(link_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("link", link_desc);
 
     auto small_fn = ObjectFactory::create_native_function("small",
@@ -3652,7 +3652,7 @@ void Context::initialize_built_ins() {
             return Value("<small>" + str + "</small>");
         }, 0);
     PropertyDescriptor small_desc(Value(small_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("small", small_desc);
 
     auto strike_fn = ObjectFactory::create_native_function("strike",
@@ -3663,7 +3663,7 @@ void Context::initialize_built_ins() {
             return Value("<strike>" + str + "</strike>");
         }, 0);
     PropertyDescriptor strike_desc(Value(strike_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("strike", strike_desc);
 
     auto sub_fn = ObjectFactory::create_native_function("sub",
@@ -3674,7 +3674,7 @@ void Context::initialize_built_ins() {
             return Value("<sub>" + str + "</sub>");
         }, 0);
     PropertyDescriptor sub_desc(Value(sub_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("sub", sub_desc);
 
     auto sup_fn = ObjectFactory::create_native_function("sup",
@@ -3685,7 +3685,7 @@ void Context::initialize_built_ins() {
             return Value("<sup>" + str + "</sup>");
         }, 0);
     PropertyDescriptor sup_desc(Value(sup_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("sup", sup_desc);
 
     auto isWellFormed_fn = ObjectFactory::create_native_function("isWellFormed",
@@ -3701,7 +3701,7 @@ void Context::initialize_built_ins() {
             return Value(true);
         }, 0);
     PropertyDescriptor isWellFormed_desc(Value(isWellFormed_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("isWellFormed", isWellFormed_desc);
 
     auto toWellFormed_fn = ObjectFactory::create_native_function("toWellFormed",
@@ -3717,7 +3717,7 @@ void Context::initialize_built_ins() {
             return Value(str);
         }, 0);
     PropertyDescriptor toWellFormed_desc(Value(toWellFormed_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toWellFormed", toWellFormed_desc);
 
     auto repeat_fn = ObjectFactory::create_native_function("repeat",
@@ -3747,7 +3747,7 @@ void Context::initialize_built_ins() {
             return Value(result);
         }, 1);
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
 
     Object* proto_ptr = string_prototype.get();
@@ -3775,7 +3775,7 @@ void Context::initialize_built_ins() {
             return Value("");
         }, 1);
 
-    string_constructor->set_property("raw", Value(string_raw_fn.release()));
+    string_constructor->set_property("raw", Value(string_raw_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto fromCharCode_fn = ObjectFactory::create_native_function("fromCharCode",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3796,7 +3796,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 1);
-    string_constructor->set_property("fromCharCode", Value(fromCharCode_fn.release()));
+    string_constructor->set_property("fromCharCode", Value(fromCharCode_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto fromCodePoint_fn = ObjectFactory::create_native_function("fromCodePoint",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3826,7 +3826,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 1);
-    string_constructor->set_property("fromCodePoint", Value(fromCodePoint_fn.release()));
+    string_constructor->set_property("fromCodePoint", Value(fromCodePoint_fn.release()), PropertyAttributes::BuiltinFunction);
 
     register_built_in_object("String", string_constructor.release());
 
@@ -3865,7 +3865,7 @@ void Context::initialize_built_ins() {
             global_includes_length_desc.set_enumerable(false);
             global_includes_length_desc.set_writable(false);
             global_includes_fn->set_property_descriptor("length", global_includes_length_desc);
-            global_prototype->set_property("includes", Value(global_includes_fn.release()));
+            global_prototype->set_property("includes", Value(global_includes_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3908,7 +3908,7 @@ void Context::initialize_built_ins() {
             string_valueOf_name_desc.set_writable(false);
             string_valueOf_fn->set_property_descriptor("name", string_valueOf_name_desc);
 
-            global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()));
+            global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_toString_fn = ObjectFactory::create_native_function("toString",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3951,7 +3951,7 @@ void Context::initialize_built_ins() {
             string_toString_name_desc.set_writable(false);
             string_toString_fn->set_property_descriptor("name", string_toString_name_desc);
 
-            global_prototype->set_property("toString", Value(string_toString_fn.release()));
+            global_prototype->set_property("toString", Value(string_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_trim_fn = ObjectFactory::create_native_function("trim",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3971,7 +3971,7 @@ void Context::initialize_built_ins() {
 
                     return Value(str.substr(start, end - start));
                 });
-            global_prototype->set_property("trim", Value(string_trim_fn.release()));
+            global_prototype->set_property("trim", Value(string_trim_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_trimStart_fn = ObjectFactory::create_native_function("trimStart",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3986,8 +3986,8 @@ void Context::initialize_built_ins() {
 
                     return Value(str.substr(start));
                 });
-            global_prototype->set_property("trimStart", Value(string_trimStart_fn.release()));
-            global_prototype->set_property("trimLeft", Value(string_trimStart_fn.get()));
+            global_prototype->set_property("trimStart", Value(string_trimStart_fn.release()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimLeft", Value(string_trimStart_fn.get()), PropertyAttributes::BuiltinFunction);
 
             auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4002,8 +4002,8 @@ void Context::initialize_built_ins() {
 
                     return Value(str.substr(0, end));
                 });
-            global_prototype->set_property("trimEnd", Value(string_trimEnd_fn.release()));
-            global_prototype->set_property("trimRight", Value(string_trimEnd_fn.get()));
+            global_prototype->set_property("trimEnd", Value(string_trimEnd_fn.release()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimRight", Value(string_trimEnd_fn.get()), PropertyAttributes::BuiltinFunction);
 
         }
     }
@@ -4053,13 +4053,13 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return Symbol::symbol_for(ctx, args);
         });
-    symbol_constructor->set_property("for", Value(symbol_for_fn.release()));
+    symbol_constructor->set_property("for", Value(symbol_for_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return Symbol::symbol_key_for(ctx, args);
         });
-    symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()));
+    symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Symbol* iterator_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_sym) {
@@ -4171,7 +4171,7 @@ void Context::initialize_built_ins() {
             double num = args[0].to_number();
             return Value(std::isfinite(num) && std::floor(num) == num);
         }, 1);
-    number_constructor->set_property("isInteger", Value(isInteger_fn.release()));
+    number_constructor->set_property("isInteger", Value(isInteger_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto numberIsNaN_fn = ObjectFactory::create_native_function("isNaN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4187,7 +4187,7 @@ void Context::initialize_built_ins() {
             double val = args[0].to_number();
             return Value(val != val);
         }, 1);
-    number_constructor->set_property("isNaN", Value(numberIsNaN_fn.release()));
+    number_constructor->set_property("isNaN", Value(numberIsNaN_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto numberIsFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4202,7 +4202,7 @@ void Context::initialize_built_ins() {
             const double MAX_FINITE = 1.7976931348623157e+308;
             return Value(val > -MAX_FINITE && val < MAX_FINITE);
         }, 1);
-    number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()));
+    number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isSafeInteger_fn = ObjectFactory::create_native_function("isSafeInteger",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4214,7 +4214,7 @@ void Context::initialize_built_ins() {
             const double MAX_SAFE = 9007199254740991.0;
             return Value(num >= -MAX_SAFE && num <= MAX_SAFE);
         }, 1);
-    number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()));
+    number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto numberParseFloat_fn = ObjectFactory::create_native_function("parseFloat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4235,7 +4235,7 @@ void Context::initialize_built_ins() {
                 return Value(std::numeric_limits<double>::quiet_NaN());
             }
         }, 1);
-    number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()));
+    number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()), PropertyAttributes::BuiltinFunction);
 
     number_constructor->set_property("parseInt", this->get_binding("parseInt"));
 
@@ -4315,10 +4315,10 @@ void Context::initialize_built_ins() {
     number_toString->set_property_descriptor("length", number_toString_length_desc);
 
     PropertyDescriptor number_valueOf_desc(Value(number_valueOf.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("valueOf", number_valueOf_desc);
     PropertyDescriptor number_toString_desc(Value(number_toString.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toString", number_toString_desc);
 
     auto toExponential_fn = ObjectFactory::create_native_function("toExponential",
@@ -4345,7 +4345,7 @@ void Context::initialize_built_ins() {
             return Value(std::string(buffer));
         });
     PropertyDescriptor toExponential_desc(Value(toExponential_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toExponential", toExponential_desc);
 
     auto toFixed_fn = ObjectFactory::create_native_function("toFixed",
@@ -4368,7 +4368,7 @@ void Context::initialize_built_ins() {
             return Value(std::string(buffer));
         });
     PropertyDescriptor toFixed_desc(Value(toFixed_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toFixed", toFixed_desc);
 
     auto toPrecision_fn = ObjectFactory::create_native_function("toPrecision",
@@ -4392,7 +4392,7 @@ void Context::initialize_built_ins() {
             return Value(std::string(buffer));
         });
     PropertyDescriptor toPrecision_desc(Value(toPrecision_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toPrecision", toPrecision_desc);
 
     auto number_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
@@ -4403,11 +4403,11 @@ void Context::initialize_built_ins() {
             return Value(std::to_string(num));
         });
     PropertyDescriptor number_toLocaleString_desc(Value(number_toLocaleString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toLocaleString", number_toLocaleString_desc);
 
     PropertyDescriptor number_constructor_desc(Value(number_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("constructor", number_constructor_desc);
 
     auto isNaN_fn = ObjectFactory::create_native_function("isNaN",
@@ -4416,7 +4416,7 @@ void Context::initialize_built_ins() {
             if (args.empty() || !args[0].is_number()) return Value(false);
             return Value(std::isnan(args[0].to_number()));
         }, 1);
-    number_constructor->set_property("isNaN", Value(isNaN_fn.release()));
+    number_constructor->set_property("isNaN", Value(isNaN_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4424,7 +4424,7 @@ void Context::initialize_built_ins() {
             if (args.empty() || !args[0].is_number()) return Value(false);
             return Value(std::isfinite(args[0].to_number()));
         }, 1);
-    number_constructor->set_property("isFinite", Value(isFinite_fn.release()));
+    number_constructor->set_property("isFinite", Value(isFinite_fn.release()), PropertyAttributes::BuiltinFunction);
     number_constructor->set_property("prototype", Value(number_prototype.release()));
 
     register_built_in_object("Number", number_constructor.release());
@@ -4505,13 +4505,13 @@ void Context::initialize_built_ins() {
     boolean_toString->set_property_descriptor("length", boolean_toString_length_desc);
 
     PropertyDescriptor boolean_valueOf_desc(Value(boolean_valueOf.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     boolean_prototype->set_property_descriptor("valueOf", boolean_valueOf_desc);
     PropertyDescriptor boolean_toString_desc(Value(boolean_toString.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     boolean_prototype->set_property_descriptor("toString", boolean_toString_desc);
     PropertyDescriptor boolean_constructor_desc(Value(boolean_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     boolean_prototype->set_property_descriptor("constructor", boolean_constructor_desc);
 
     boolean_constructor->set_property("prototype", Value(boolean_prototype.release()));
@@ -4521,7 +4521,7 @@ void Context::initialize_built_ins() {
     auto error_prototype = ObjectFactory::create_object();
     
     PropertyDescriptor error_proto_name_desc(Value("Error"),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     error_prototype->set_property_descriptor("name", error_proto_name_desc);
     error_prototype->set_property("message", Value(""));
     error_prototype->set_property("message", Value(""));
@@ -4560,7 +4560,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -4587,7 +4587,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value(name + ": " + message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             
             return Value(error_obj.release());
         });
@@ -4596,7 +4596,7 @@ void Context::initialize_built_ins() {
     error_constructor->set_property("isError", Value(error_isError.release()));
 
     PropertyDescriptor error_constructor_desc(Value(error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     error_prototype->set_property_descriptor("constructor", error_constructor_desc);
 
     error_constructor->set_property("prototype", Value(error_prototype_ptr), PropertyAttributes::None);
@@ -4614,14 +4614,14 @@ void Context::initialize_built_ins() {
             return JSON::js_parse(ctx, args);
         }, 2);
     json_object->set_property("parse", Value(json_parse.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
 
     auto json_stringify = ObjectFactory::create_native_function("stringify",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return JSON::js_stringify(ctx, args);
         }, 3);
     json_object->set_property("stringify", Value(json_stringify.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
 
     auto json_isRawJSON = ObjectFactory::create_native_function("isRawJSON",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4638,7 +4638,7 @@ void Context::initialize_built_ins() {
             return Value(false);
         }, 1);
     json_object->set_property("isRawJSON", Value(json_isRawJSON.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
 
     PropertyDescriptor json_tag_desc(Value(std::string("JSON")), PropertyAttributes::Configurable);
     json_object->set_property_descriptor("Symbol.toStringTag", json_tag_desc);
@@ -4674,7 +4674,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_min_fn = ObjectFactory::create_native_function("min",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4692,7 +4692,7 @@ void Context::initialize_built_ins() {
             }
             return Value(result);
         }, 2);
-    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_round_fn = ObjectFactory::create_native_function("round",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4703,7 +4703,7 @@ void Context::initialize_built_ins() {
             double value = args[0].to_number();
             return Value(std::round(value));
         }, 1);
-    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("round", Value(store_fn(std::move(math_round_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_random_fn = ObjectFactory::create_native_function("random",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4711,7 +4711,7 @@ void Context::initialize_built_ins() {
             (void)args;
             return Value(static_cast<double>(rand()) / RAND_MAX);
         }, 0);
-    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("random", Value(store_fn(std::move(math_random_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_floor_fn = ObjectFactory::create_native_function("floor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4719,7 +4719,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::floor(args[0].to_number()));
         }, 1);
-    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("floor", Value(store_fn(std::move(math_floor_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_ceil_fn = ObjectFactory::create_native_function("ceil",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4727,7 +4727,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::ceil(args[0].to_number()));
         }, 1);
-    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("ceil", Value(store_fn(std::move(math_ceil_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_abs_fn = ObjectFactory::create_native_function("abs",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4739,7 +4739,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::abs(value));
         }, 1);
-    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("abs", Value(store_fn(std::move(math_abs_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_sqrt_fn = ObjectFactory::create_native_function("sqrt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4747,7 +4747,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sqrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("sqrt", Value(store_fn(std::move(math_sqrt_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_pow_fn = ObjectFactory::create_native_function("pow",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4755,7 +4755,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::pow(args[0].to_number(), args[1].to_number()));
         }, 2);
-    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_sin_fn = ObjectFactory::create_native_function("sin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4763,7 +4763,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sin(args[0].to_number()));
         }, 1);
-    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("sin", Value(store_fn(std::move(math_sin_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_cos_fn = ObjectFactory::create_native_function("cos",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4771,7 +4771,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cos(args[0].to_number()));
         }, 1);
-    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("cos", Value(store_fn(std::move(math_cos_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_tan_fn = ObjectFactory::create_native_function("tan",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4779,7 +4779,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tan(args[0].to_number()));
         }, 1);
-    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("tan", Value(store_fn(std::move(math_tan_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_log_fn = ObjectFactory::create_native_function("log",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4787,7 +4787,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log(args[0].to_number()));
         }, 1);
-    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("log", Value(store_fn(std::move(math_log_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_log10_fn = ObjectFactory::create_native_function("log10",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4795,7 +4795,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log10(args[0].to_number()));
         }, 1);
-    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("log10", Value(store_fn(std::move(math_log10_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_exp_fn = ObjectFactory::create_native_function("exp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4803,7 +4803,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::exp(args[0].to_number()));
         }, 1);
-    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("exp", Value(store_fn(std::move(math_exp_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_trunc_fn = ObjectFactory::create_native_function("trunc",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4814,7 +4814,7 @@ void Context::initialize_built_ins() {
             if (std::isnan(val)) return Value(0.0);
             return Value(std::trunc(val));
         }, 1);
-    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_sign_fn = ObjectFactory::create_native_function("sign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4826,7 +4826,7 @@ void Context::initialize_built_ins() {
             if (val < 0) return Value(-1.0);
             return Value(val);
         }, 1);
-    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("sign", Value(store_fn(std::move(math_sign_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_acos_fn = ObjectFactory::create_native_function("acos",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4834,7 +4834,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acos(args[0].to_number()));
         }, 1);
-    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("acos", Value(store_fn(std::move(math_acos_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_acosh_fn = ObjectFactory::create_native_function("acosh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4842,7 +4842,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::acosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("acosh", Value(store_fn(std::move(math_acosh_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_asin_fn = ObjectFactory::create_native_function("asin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4850,7 +4850,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asin(args[0].to_number()));
         }, 1);
-    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("asin", Value(store_fn(std::move(math_asin_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_asinh_fn = ObjectFactory::create_native_function("asinh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4858,7 +4858,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::asinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("asinh", Value(store_fn(std::move(math_asinh_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_atan_fn = ObjectFactory::create_native_function("atan",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4866,7 +4866,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan(args[0].to_number()));
         }, 1);
-    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("atan", Value(store_fn(std::move(math_atan_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_atan2_fn = ObjectFactory::create_native_function("atan2",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4874,7 +4874,7 @@ void Context::initialize_built_ins() {
             if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atan2(args[0].to_number(), args[1].to_number()));
         }, 2);
-    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("atan2", Value(store_fn(std::move(math_atan2_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_atanh_fn = ObjectFactory::create_native_function("atanh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4882,7 +4882,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::atanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("atanh", Value(store_fn(std::move(math_atanh_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_cbrt_fn = ObjectFactory::create_native_function("cbrt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4890,7 +4890,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cbrt(args[0].to_number()));
         }, 1);
-    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("cbrt", Value(store_fn(std::move(math_cbrt_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_clz32_fn = ObjectFactory::create_native_function("clz32",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4905,7 +4905,7 @@ void Context::initialize_built_ins() {
             }
             return Value(static_cast<double>(count));
         }, 1);
-    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("clz32", Value(store_fn(std::move(math_clz32_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_cosh_fn = ObjectFactory::create_native_function("cosh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4913,7 +4913,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::cosh(args[0].to_number()));
         }, 1);
-    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("cosh", Value(store_fn(std::move(math_cosh_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_expm1_fn = ObjectFactory::create_native_function("expm1",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4921,7 +4921,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::expm1(args[0].to_number()));
         }, 1);
-    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("expm1", Value(store_fn(std::move(math_expm1_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_fround_fn = ObjectFactory::create_native_function("fround",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4929,7 +4929,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(static_cast<double>(static_cast<float>(args[0].to_number())));
         }, 1);
-    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("fround", Value(store_fn(std::move(math_fround_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_hypot_fn = ObjectFactory::create_native_function("hypot",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4941,7 +4941,7 @@ void Context::initialize_built_ins() {
             }
             return Value(std::sqrt(sum));
         }, 2);
-    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_imul_fn = ObjectFactory::create_native_function("imul",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4951,7 +4951,7 @@ void Context::initialize_built_ins() {
             int32_t b = static_cast<int32_t>(args[1].to_number());
             return Value(static_cast<double>(a * b));
         }, 2);
-    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_log1p_fn = ObjectFactory::create_native_function("log1p",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4959,7 +4959,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log1p(args[0].to_number()));
         }, 1);
-    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("log1p", Value(store_fn(std::move(math_log1p_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_log2_fn = ObjectFactory::create_native_function("log2",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4967,7 +4967,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::log2(args[0].to_number()));
         }, 1);
-    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("log2", Value(store_fn(std::move(math_log2_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_sinh_fn = ObjectFactory::create_native_function("sinh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4975,7 +4975,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::sinh(args[0].to_number()));
         }, 1);
-    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("sinh", Value(store_fn(std::move(math_sinh_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_tanh_fn = ObjectFactory::create_native_function("tanh",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4983,7 +4983,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             return Value(std::tanh(args[0].to_number()));
         }, 1);
-    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    math_object->set_property("tanh", Value(store_fn(std::move(math_tanh_fn))), PropertyAttributes::BuiltinFunction);
 
     PropertyDescriptor ln10_desc(Value(2.302585092994046), PropertyAttributes::None);
     math_object->set_property_descriptor("LN10", ln10_desc);
@@ -5018,7 +5018,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value(std::string("1/1/1970"));
                 }, 1);
-            formatter->set_property("format", Value(format_fn.release()));
+            formatter->set_property("format", Value(format_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(formatter.release());
         });
@@ -5037,7 +5037,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value(args[0].to_string());
                 }, 1);
-            formatter->set_property("format", Value(format_fn.release()));
+            formatter->set_property("format", Value(format_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(formatter.release());
         });
@@ -5058,7 +5058,7 @@ void Context::initialize_built_ins() {
                     if (a > b) return Value(1.0);
                     return Value(0.0);
                 }, 2);
-            collator->set_property("compare", Value(compare_fn.release()));
+            collator->set_property("compare", Value(compare_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(collator.release());
         });
@@ -5075,7 +5075,7 @@ void Context::initialize_built_ins() {
                     now.time_since_epoch()).count();
                 return Value(static_cast<double>(timestamp));
             });
-        date_obj->set_property("getTime", Value(getTime_fn.release()));
+        date_obj->set_property("getTime", Value(getTime_fn.release()), PropertyAttributes::BuiltinFunction);
         
         auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5085,7 +5085,7 @@ void Context::initialize_built_ins() {
                 std::tm* local_time = std::localtime(&time);
                 return local_time ? Value(static_cast<double>(local_time->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
             });
-        date_obj->set_property("getFullYear", Value(getFullYear_fn.release()));
+        date_obj->set_property("getFullYear", Value(getFullYear_fn.release()), PropertyAttributes::BuiltinFunction);
         
         auto getMonth_fn = ObjectFactory::create_native_function("getMonth",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5095,7 +5095,7 @@ void Context::initialize_built_ins() {
                 std::tm* local_time = std::localtime(&time);
                 return local_time ? Value(static_cast<double>(local_time->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
             });
-        date_obj->set_property("getMonth", Value(getMonth_fn.release()));
+        date_obj->set_property("getMonth", Value(getMonth_fn.release()), PropertyAttributes::BuiltinFunction);
         
         auto getDate_fn = ObjectFactory::create_native_function("getDate",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5105,7 +5105,7 @@ void Context::initialize_built_ins() {
                 std::tm* local_time = std::localtime(&time);
                 return local_time ? Value(static_cast<double>(local_time->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
             });
-        date_obj->set_property("getDate", Value(getDate_fn.release()));
+        date_obj->set_property("getDate", Value(getDate_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto getYear_fn = ObjectFactory::create_native_function("getYear",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5115,7 +5115,7 @@ void Context::initialize_built_ins() {
                 std::tm* local_time = std::localtime(&time);
                 return local_time ? Value(static_cast<double>(local_time->tm_year)) : Value(std::numeric_limits<double>::quiet_NaN());
             });
-        date_obj->set_property("getYear", Value(getYear_fn.release()));
+        date_obj->set_property("getYear", Value(getYear_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto setYear_fn = ObjectFactory::create_native_function("setYear",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5136,7 +5136,7 @@ void Context::initialize_built_ins() {
 
                 return Value(static_cast<double>(year));
             });
-        date_obj->set_property("setYear", Value(setYear_fn.release()));
+        date_obj->set_property("setYear", Value(setYear_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto toString_fn = ObjectFactory::create_native_function("toString",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5149,7 +5149,7 @@ void Context::initialize_built_ins() {
                 }
                 return Value(time_str);
             });
-        date_obj->set_property("toString", Value(toString_fn.release()));
+        date_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
     };
     
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
@@ -5167,9 +5167,9 @@ void Context::initialize_built_ins() {
     auto date_parse = ObjectFactory::create_native_function("parse", Date::parse);
     auto date_UTC = ObjectFactory::create_native_function("UTC", Date::UTC);
     
-    date_constructor_fn->set_property("now", Value(date_now.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    date_constructor_fn->set_property("parse", Value(date_parse.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    date_constructor_fn->set_property("UTC", Value(date_UTC.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_constructor_fn->set_property("now", Value(date_now.release()), PropertyAttributes::BuiltinFunction);
+    date_constructor_fn->set_property("parse", Value(date_parse.release()), PropertyAttributes::BuiltinFunction);
+    date_constructor_fn->set_property("UTC", Value(date_UTC.release()), PropertyAttributes::BuiltinFunction);
     
     auto date_prototype = ObjectFactory::create_object();
     
@@ -5221,60 +5221,60 @@ void Context::initialize_built_ins() {
     auto setYear_fn = ObjectFactory::create_native_function("setYear", Date::setYear);
 
     PropertyDescriptor getTime_desc(Value(getTime_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getTime", getTime_desc);
     PropertyDescriptor getFullYear_desc(Value(getFullYear_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getFullYear", getFullYear_desc);
     PropertyDescriptor getMonth_desc(Value(getMonth_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getMonth", getMonth_desc);
     PropertyDescriptor getDate_desc(Value(getDate_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getDate", getDate_desc);
     PropertyDescriptor getDay_desc(Value(getDay_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getDay", getDay_desc);
     PropertyDescriptor getHours_desc(Value(getHours_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getHours", getHours_desc);
     PropertyDescriptor getMinutes_desc(Value(getMinutes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getMinutes", getMinutes_desc);
     PropertyDescriptor getSeconds_desc(Value(getSeconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getSeconds", getSeconds_desc);
     PropertyDescriptor getMilliseconds_desc(Value(getMilliseconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getMilliseconds", getMilliseconds_desc);
     PropertyDescriptor date_toString_desc(Value(toString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toString", date_toString_desc);
     PropertyDescriptor toISOString_desc(Value(toISOString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toISOString", toISOString_desc);
     PropertyDescriptor toJSON_desc(Value(toJSON_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toJSON", toJSON_desc);
     PropertyDescriptor toDateString_desc(Value(toDateString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toDateString", toDateString_desc);
     PropertyDescriptor toLocaleDateString_desc(Value(toLocaleDateString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toLocaleDateString", toLocaleDateString_desc);
     PropertyDescriptor date_toLocaleString_desc(Value(date_toLocaleString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toLocaleString", date_toLocaleString_desc);
     PropertyDescriptor toLocaleTimeString_desc(Value(toLocaleTimeString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toLocaleTimeString", toLocaleTimeString_desc);
     PropertyDescriptor toTimeString_desc(Value(toTimeString_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toTimeString", toTimeString_desc);
 
     auto getTimezoneOffset_fn = ObjectFactory::create_native_function("getTimezoneOffset", Date::getTimezoneOffset, 0);
     PropertyDescriptor getTimezoneOffset_desc(Value(getTimezoneOffset_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getTimezoneOffset", getTimezoneOffset_desc);
 
     auto getUTCDate_fn = ObjectFactory::create_native_function("getUTCDate", Date::getUTCDate, 0);
@@ -5287,28 +5287,28 @@ void Context::initialize_built_ins() {
     auto getUTCSeconds_fn = ObjectFactory::create_native_function("getUTCSeconds", Date::getUTCSeconds, 0);
 
     PropertyDescriptor getUTCDate_desc(Value(getUTCDate_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCDate", getUTCDate_desc);
     PropertyDescriptor getUTCDay_desc(Value(getUTCDay_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCDay", getUTCDay_desc);
     PropertyDescriptor getUTCFullYear_desc(Value(getUTCFullYear_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCFullYear", getUTCFullYear_desc);
     PropertyDescriptor getUTCHours_desc(Value(getUTCHours_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCHours", getUTCHours_desc);
     PropertyDescriptor getUTCMilliseconds_desc(Value(getUTCMilliseconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCMilliseconds", getUTCMilliseconds_desc);
     PropertyDescriptor getUTCMinutes_desc(Value(getUTCMinutes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCMinutes", getUTCMinutes_desc);
     PropertyDescriptor getUTCMonth_desc(Value(getUTCMonth_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCMonth", getUTCMonth_desc);
     PropertyDescriptor getUTCSeconds_desc(Value(getUTCSeconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("getUTCSeconds", getUTCSeconds_desc);
 
     auto setTime_fn = ObjectFactory::create_native_function("setTime", Date::setTime, 1);
@@ -5321,28 +5321,28 @@ void Context::initialize_built_ins() {
     auto setMilliseconds_fn = ObjectFactory::create_native_function("setMilliseconds", Date::setMilliseconds, 1);
 
     PropertyDescriptor setTime_desc(Value(setTime_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setTime", setTime_desc);
     PropertyDescriptor setFullYear_desc(Value(setFullYear_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setFullYear", setFullYear_desc);
     PropertyDescriptor setMonth_desc(Value(setMonth_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setMonth", setMonth_desc);
     PropertyDescriptor setDate_desc(Value(setDate_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setDate", setDate_desc);
     PropertyDescriptor setHours_desc(Value(setHours_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setHours", setHours_desc);
     PropertyDescriptor setMinutes_desc(Value(setMinutes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setMinutes", setMinutes_desc);
     PropertyDescriptor setSeconds_desc(Value(setSeconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setSeconds", setSeconds_desc);
     PropertyDescriptor setMilliseconds_desc(Value(setMilliseconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setMilliseconds", setMilliseconds_desc);
 
     auto setUTCFullYear_fn = ObjectFactory::create_native_function("setUTCFullYear", Date::setUTCFullYear, 3);
@@ -5354,32 +5354,32 @@ void Context::initialize_built_ins() {
     auto setUTCMilliseconds_fn = ObjectFactory::create_native_function("setUTCMilliseconds", Date::setUTCMilliseconds, 1);
 
     PropertyDescriptor setUTCFullYear_desc(Value(setUTCFullYear_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCFullYear", setUTCFullYear_desc);
     PropertyDescriptor setUTCMonth_desc(Value(setUTCMonth_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCMonth", setUTCMonth_desc);
     PropertyDescriptor setUTCDate_desc(Value(setUTCDate_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCDate", setUTCDate_desc);
     PropertyDescriptor setUTCHours_desc(Value(setUTCHours_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCHours", setUTCHours_desc);
     PropertyDescriptor setUTCMinutes_desc(Value(setUTCMinutes_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCMinutes", setUTCMinutes_desc);
     PropertyDescriptor setUTCSeconds_desc(Value(setUTCSeconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCSeconds", setUTCSeconds_desc);
     PropertyDescriptor setUTCMilliseconds_desc(Value(setUTCMilliseconds_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("setUTCMilliseconds", setUTCMilliseconds_desc);
 
-    date_prototype->set_property("getYear", Value(getYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    date_prototype->set_property("setYear", Value(setYear_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property("getYear", Value(getYear_fn.release()), PropertyAttributes::BuiltinFunction);
+    date_prototype->set_property("setYear", Value(setYear_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toString);
-    date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     date_constructor_fn->set_property("prototype", Value(date_prototype.get()));
     
@@ -5393,7 +5393,7 @@ void Context::initialize_built_ins() {
     }
     if (global_object_) {
         PropertyDescriptor date_desc(Value(date_constructor_fn.get()),
-            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("Date", date_desc);
     }
     
@@ -5418,7 +5418,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5431,13 +5431,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         });
 
     PropertyDescriptor type_error_constructor_desc(Value(type_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     type_error_prototype->set_property_descriptor("constructor", type_error_constructor_desc);
 
     type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
@@ -5474,7 +5474,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5487,13 +5487,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             
             return Value(error_obj.release());
         });
     
     PropertyDescriptor reference_error_constructor_desc(Value(reference_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     reference_error_prototype->set_property_descriptor("constructor", reference_error_constructor_desc);
     reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()));
 
@@ -5529,7 +5529,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5542,13 +5542,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             
             return Value(error_obj.release());
         });
     
     PropertyDescriptor syntax_error_constructor_desc(Value(syntax_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     syntax_error_prototype->set_property_descriptor("constructor", syntax_error_constructor_desc);
     syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()));
 
@@ -5584,7 +5584,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5597,13 +5597,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         });
 
     PropertyDescriptor range_error_constructor_desc(Value(range_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     range_error_prototype->set_property_descriptor("constructor", range_error_constructor_desc);
 
     range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
@@ -5640,7 +5640,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5653,13 +5653,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         });
 
     PropertyDescriptor uri_error_constructor_desc(Value(uri_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     uri_error_prototype->set_property_descriptor("constructor", uri_error_constructor_desc);
 
     uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()));
@@ -5688,7 +5688,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[1].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5701,13 +5701,13 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         });
 
     PropertyDescriptor eval_error_constructor_desc(Value(eval_error_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     eval_error_prototype->set_property_descriptor("constructor", eval_error_constructor_desc);
 
     eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()));
@@ -5767,7 +5767,7 @@ void Context::initialize_built_ins() {
                 Object* options = args[2].as_object();
                 if (options->has_property("cause")) {
                     Value cause = options->get_property("cause");
-                    PropertyDescriptor cause_desc(cause, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    PropertyDescriptor cause_desc(cause, PropertyAttributes::BuiltinFunction);
                     error_obj->set_property_descriptor("cause", cause_desc);
                 }
             }
@@ -5780,7 +5780,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value(error_name + ": " + error_message);
                 });
-            error_obj->set_property("toString", Value(toString_fn.release()));
+            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         }, 2);
@@ -5839,7 +5839,7 @@ void Context::initialize_built_ins() {
 
             return Value(this_obj);
         }, 2);
-    regexp_prototype->set_property("compile", Value(compile_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    regexp_prototype->set_property("compile", Value(compile_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* regexp_proto_ptr = regexp_prototype.get();
 
@@ -5875,7 +5875,7 @@ void Context::initialize_built_ins() {
                         std::string str = args[0].to_string();
                         return Value(regexp_impl->test(str));
                     });
-                regex_obj->set_property("test", Value(test_fn.release()));
+                regex_obj->set_property("test", Value(test_fn.release()), PropertyAttributes::BuiltinFunction);
                 
                 auto exec_fn = ObjectFactory::create_native_function("exec",
                     [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5883,7 +5883,7 @@ void Context::initialize_built_ins() {
                         std::string str = args[0].to_string();
                         return regexp_impl->exec(str);
                     });
-                regex_obj->set_property("exec", Value(exec_fn.release()));
+                regex_obj->set_property("exec", Value(exec_fn.release()), PropertyAttributes::BuiltinFunction);
 
                 regex_obj->set_property("source", Value(regexp_impl->get_source()));
                 regex_obj->set_property("flags", Value(regexp_impl->get_flags()));
@@ -5901,7 +5901,7 @@ void Context::initialize_built_ins() {
         });
 
     PropertyDescriptor regexp_constructor_desc(Value(regexp_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
 
@@ -6063,8 +6063,8 @@ void Context::initialize_built_ins() {
             
             auto result_obj = ObjectFactory::create_object();
             result_obj->set_property("promise", Value(promise.release()));
-            result_obj->set_property("resolve", Value(resolve_fn.release()));
-            result_obj->set_property("reject", Value(reject_fn.release()));
+            result_obj->set_property("resolve", Value(resolve_fn.release()), PropertyAttributes::BuiltinFunction);
+            result_obj->set_property("reject", Value(reject_fn.release()), PropertyAttributes::BuiltinFunction);
             
             return Value(result_obj.release());
         });
@@ -6370,7 +6370,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value();
                 }, 0);
-            weakref_obj->set_property("deref", Value(deref_fn.release()));
+            weakref_obj->set_property("deref", Value(deref_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(weakref_obj.release());
         });
@@ -6422,7 +6422,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value();
                 }, 2);
-            registry_obj->set_property("register", Value(register_fn.release()));
+            registry_obj->set_property("register", Value(register_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto unregister_fn = ObjectFactory::create_native_function("unregister",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6446,7 +6446,7 @@ void Context::initialize_built_ins() {
                     }
                     return Value(false);
                 }, 1);
-            registry_obj->set_property("unregister", Value(unregister_fn.release()));
+            registry_obj->set_property("unregister", Value(unregister_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(registry_obj.release());
         });
@@ -6494,7 +6494,7 @@ void Context::initialize_built_ins() {
             }
             return Value();
         }, 1);
-    disposablestack_prototype->set_property("use", Value(ds_use_fn.release()));
+    disposablestack_prototype->set_property("use", Value(ds_use_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ds_dispose_fn = ObjectFactory::create_native_function("dispose",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6529,7 +6529,7 @@ void Context::initialize_built_ins() {
             }
             return Value();
         }, 0);
-    disposablestack_prototype->set_property("dispose", Value(ds_dispose_fn.release()));
+    disposablestack_prototype->set_property("dispose", Value(ds_dispose_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ds_adopt_fn = ObjectFactory::create_native_function("adopt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6582,7 +6582,7 @@ void Context::initialize_built_ins() {
 
             return value;
         }, 2);
-    disposablestack_prototype->set_property("adopt", Value(ds_adopt_fn.release()));
+    disposablestack_prototype->set_property("adopt", Value(ds_adopt_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ds_defer_fn = ObjectFactory::create_native_function("defer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6627,7 +6627,7 @@ void Context::initialize_built_ins() {
 
             return Value();
         }, 1);
-    disposablestack_prototype->set_property("defer", Value(ds_defer_fn.release()));
+    disposablestack_prototype->set_property("defer", Value(ds_defer_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ds_move_fn = ObjectFactory::create_native_function("move",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6659,7 +6659,7 @@ void Context::initialize_built_ins() {
 
             return Value();
         }, 0);
-    disposablestack_prototype->set_property("move", Value(ds_move_fn.release()));
+    disposablestack_prototype->set_property("move", Value(ds_move_fn.release()), PropertyAttributes::BuiltinFunction);
 
     disposablestack_constructor->set_property("prototype", Value(disposablestack_prototype.release()));
 
@@ -6707,7 +6707,7 @@ void Context::initialize_built_ins() {
             }
             return Value();
         }, 1);
-    asyncdisposablestack_prototype->set_property("use", Value(ads_use_fn.release()));
+    asyncdisposablestack_prototype->set_property("use", Value(ads_use_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ads_disposeAsync_fn = ObjectFactory::create_native_function("disposeAsync",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6745,7 +6745,7 @@ void Context::initialize_built_ins() {
 
             return Value();
         }, 0);
-    asyncdisposablestack_prototype->set_property("disposeAsync", Value(ads_disposeAsync_fn.release()));
+    asyncdisposablestack_prototype->set_property("disposeAsync", Value(ads_disposeAsync_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ads_adopt_fn = ObjectFactory::create_native_function("adopt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6780,7 +6780,7 @@ void Context::initialize_built_ins() {
 
             return value;
         }, 2);
-    asyncdisposablestack_prototype->set_property("adopt", Value(ads_adopt_fn.release()));
+    asyncdisposablestack_prototype->set_property("adopt", Value(ads_adopt_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ads_defer_fn = ObjectFactory::create_native_function("defer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6809,7 +6809,7 @@ void Context::initialize_built_ins() {
 
             return Value();
         }, 1);
-    asyncdisposablestack_prototype->set_property("defer", Value(ads_defer_fn.release()));
+    asyncdisposablestack_prototype->set_property("defer", Value(ads_defer_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ads_move_fn = ObjectFactory::create_native_function("move",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6841,7 +6841,7 @@ void Context::initialize_built_ins() {
 
             return Value();
         }, 0);
-    asyncdisposablestack_prototype->set_property("move", Value(ads_move_fn.release()));
+    asyncdisposablestack_prototype->set_property("move", Value(ads_move_fn.release()), PropertyAttributes::BuiltinFunction);
 
     asyncdisposablestack_constructor->set_property("prototype", Value(asyncdisposablestack_prototype.release()));
 
@@ -6941,7 +6941,7 @@ void Context::initialize_built_ins() {
     isView_length_desc.set_writable(false);
     arraybuffer_isView->set_property_descriptor("length", isView_length_desc);
 
-    arraybuffer_constructor->set_property("isView", Value(arraybuffer_isView.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    arraybuffer_constructor->set_property("isView", Value(arraybuffer_isView.release()), PropertyAttributes::BuiltinFunction);
 
     auto arraybuffer_prototype = ObjectFactory::create_object();
 
@@ -6987,7 +6987,7 @@ void Context::initialize_built_ins() {
         }, 2);
 
     ab_slice_fn->set_property("name", Value("slice"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    arraybuffer_prototype->set_property("slice", Value(ab_slice_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    arraybuffer_prototype->set_property("slice", Value(ab_slice_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_resize_fn = ObjectFactory::create_native_function("resize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6995,7 +6995,7 @@ void Context::initialize_built_ins() {
         }, 1);
 
     ab_resize_fn->set_property("name", Value("resize"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    arraybuffer_prototype->set_property("resize", Value(ab_resize_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    arraybuffer_prototype->set_property("resize", Value(ab_resize_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_transfer_fn = ObjectFactory::create_native_function("transfer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -7003,7 +7003,7 @@ void Context::initialize_built_ins() {
         }, 0);
 
     ab_transfer_fn->set_property("name", Value("transfer"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    arraybuffer_prototype->set_property("transfer", Value(ab_transfer_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    arraybuffer_prototype->set_property("transfer", Value(ab_transfer_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_maxByteLength_fn = ObjectFactory::create_native_function("get maxByteLength",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -7060,7 +7060,7 @@ void Context::initialize_built_ins() {
         }, 0);
 
     ab_transferToFixedLength_fn->set_property("name", Value("transferToFixedLength"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    arraybuffer_prototype->set_property("transferToFixedLength", Value(ab_transferToFixedLength_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    arraybuffer_prototype->set_property("transferToFixedLength", Value(ab_transferToFixedLength_fn.release()), PropertyAttributes::BuiltinFunction);
 
     arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
 
@@ -7241,7 +7241,7 @@ void Context::setup_global_bindings() {
         lexical_environment_->create_binding("window", Value(global_object_), false);
         lexical_environment_->create_binding("this", Value(global_object_), false);
 
-        PropertyDescriptor global_ref_desc(Value(global_object_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor global_ref_desc(Value(global_object_), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("globalThis", global_ref_desc);
         global_object_->set_property_descriptor("global", global_ref_desc);
         global_object_->set_property_descriptor("window", global_ref_desc);
@@ -7444,7 +7444,7 @@ void Context::setup_global_bindings() {
         });
     lexical_environment_->create_binding("escape", Value(escape_fn.get()), false);
     if (global_object_) {
-        PropertyDescriptor escape_desc(Value(escape_fn.get()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor escape_desc(Value(escape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("escape", escape_desc);
     }
     escape_fn.release();
@@ -7510,7 +7510,7 @@ void Context::setup_global_bindings() {
         });
     lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), false);
     if (global_object_) {
-        PropertyDescriptor unescape_desc(Value(unescape_fn.get()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor unescape_desc(Value(unescape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("unescape", unescape_desc);
     }
     unescape_fn.release();
@@ -7520,9 +7520,9 @@ void Context::setup_global_bindings() {
     auto console_error_fn = ObjectFactory::create_native_function("error", WebAPI::console_error);
     auto console_warn_fn = ObjectFactory::create_native_function("warn", WebAPI::console_warn);
     
-    console_obj->set_property("log", Value(console_log_fn.release()));
-    console_obj->set_property("error", Value(console_error_fn.release()));
-    console_obj->set_property("warn", Value(console_warn_fn.release()));
+    console_obj->set_property("log", Value(console_log_fn.release()), PropertyAttributes::BuiltinFunction);
+    console_obj->set_property("error", Value(console_error_fn.release()), PropertyAttributes::BuiltinFunction);
+    console_obj->set_property("warn", Value(console_warn_fn.release()), PropertyAttributes::BuiltinFunction);
     
     lexical_environment_->create_binding("console", Value(console_obj.release()), false);
 
@@ -7563,9 +7563,9 @@ void Context::setup_global_bindings() {
             return Value();
         }, 0);
 
-    gc_obj->set_property("stats", Value(gc_obj_stats_fn.release()));
-    gc_obj->set_property("collect", Value(gc_obj_collect_fn.release()));
-    gc_obj->set_property("heapSize", Value(gc_obj_heap_size_fn.release()));
+    gc_obj->set_property("stats", Value(gc_obj_stats_fn.release()), PropertyAttributes::BuiltinFunction);
+    gc_obj->set_property("collect", Value(gc_obj_collect_fn.release()), PropertyAttributes::BuiltinFunction);
+    gc_obj->set_property("heapSize", Value(gc_obj_heap_size_fn.release()), PropertyAttributes::BuiltinFunction);
 
     lexical_environment_->create_binding("gc", Value(gc_obj.release()), false);
 
@@ -7674,7 +7674,7 @@ void Context::setup_global_bindings() {
                 lexical_environment_->create_binding(pair.first, binding_value, false);
                 if (global_object_) {
                     PropertyDescriptor desc(binding_value,
-                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                        PropertyAttributes::BuiltinFunction);
                     global_object_->set_property_descriptor(pair.first, desc);
                 }
             }
@@ -7943,7 +7943,7 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
     }
 
     if (type_ == Type::Object && binding_object_) {
-        PropertyDescriptor desc(value, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyDescriptor desc(value, PropertyAttributes::BuiltinFunction);
         return binding_object_->set_property_descriptor(name, desc);
     } else {
         bindings_[name] = value;
@@ -8242,7 +8242,7 @@ void Context::register_typed_array_constructors() {
     auto typedarray_prototype = ObjectFactory::create_object();
 
     PropertyDescriptor typedarray_constructor_desc(Value(typedarray_constructor.get()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_prototype->set_property_descriptor("constructor", typedarray_constructor_desc);
 
     PropertyDescriptor typedarray_tag_desc(Value(std::string("TypedArray")), PropertyAttributes::Configurable);
@@ -8345,7 +8345,7 @@ void Context::register_typed_array_constructors() {
             return ta->get_element(static_cast<size_t>(index));
         }, 1);
     PropertyDescriptor typedarray_at_desc(Value(typedarray_at_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_proto_ptr->set_property_descriptor("at", typedarray_at_desc);
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
@@ -8376,7 +8376,7 @@ void Context::register_typed_array_constructors() {
             return Value();
         }, 1);
     PropertyDescriptor forEach_desc(Value(forEach_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_proto_ptr->set_property_descriptor("forEach", forEach_desc);
 
     auto map_fn = ObjectFactory::create_native_function("map",
@@ -8442,7 +8442,7 @@ void Context::register_typed_array_constructors() {
             return Value(result);
         }, 1);
     PropertyDescriptor map_desc(Value(map_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_proto_ptr->set_property_descriptor("map", map_desc);
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
@@ -8516,7 +8516,7 @@ void Context::register_typed_array_constructors() {
             return Value(result);
         }, 1);
     PropertyDescriptor filter_desc(Value(filter_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_proto_ptr->set_property_descriptor("filter", filter_desc);
 
     PropertyDescriptor typedarray_prototype_desc(Value(typedarray_prototype.release()), PropertyAttributes::None);
@@ -8529,7 +8529,7 @@ void Context::register_typed_array_constructors() {
             return Value();
         }, 1);
     PropertyDescriptor from_desc(Value(typedarray_from.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_constructor->set_property_descriptor("from", from_desc);
 
     auto typedarray_of = ObjectFactory::create_native_function("of",
@@ -8538,7 +8538,7 @@ void Context::register_typed_array_constructors() {
             return Value();
         }, 0);
     PropertyDescriptor of_desc(Value(typedarray_of.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        PropertyAttributes::BuiltinFunction);
     typedarray_constructor->set_property_descriptor("of", of_desc);
 
     register_built_in_object("TypedArray", typedarray_constructor.release());
@@ -8929,34 +8929,27 @@ void Context::load_bootstrap() {
                                       std::istreambuf_iterator<char>());
             file.close();
 
-            std::cerr << "[BOOTSTRAP] Loading test262_bootstrap.js from: " << path << std::endl;
             try {
                 if (engine_) {
                     auto result = engine_->execute(bootstrap_code, "<test262_bootstrap>");
                     if (result.success) {
-                        std::cerr << "[BOOTSTRAP] Successfully loaded!" << std::endl;
-
-                        // Copy bootstrap globals (assert, $262) to global object
+                        // Copy bootstrap globals to global object
                         if (global_object_) {
-                            if (has_binding("assert")) {
-                                Value assert_val = get_binding("assert");
-                                global_object_->set_property("assert", assert_val);
-                                std::cerr << "[BOOTSTRAP] Registered assert to global" << std::endl;
-                            }
-                            if (has_binding("$262")) {
-                                Value dollar262_val = get_binding("$262");
-                                global_object_->set_property("$262", dollar262_val);
-                                std::cerr << "[BOOTSTRAP] Registered $262 to global" << std::endl;
+                            const char* globals[] = {
+                                "assert", "$262", "verifyProperty", "Test262Error",
+                                "compareArray", "isConstructor", "$DONOTEVALUATE"
+                            };
+                            for (const char* name : globals) {
+                                if (has_binding(name)) {
+                                    Value val = get_binding(name);
+                                    global_object_->set_property(name, val);
+                                }
                             }
                         }
-                    } else {
-                        std::cerr << "[BOOTSTRAP] Failed: " << result.error_message << std::endl;
                     }
                 }
-            } catch (const std::exception& e) {
-                std::cerr << "[BOOTSTRAP] Error: " << e.what() << std::endl;
             } catch (...) {
-                std::cerr << "[BOOTSTRAP] Unknown error loading bootstrap" << std::endl;
+                // Silently ignore bootstrap errors
             }
             break;
         }
