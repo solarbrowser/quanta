@@ -3651,6 +3651,41 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         return Value(result);
 
     } else {
+        // Fallback: Check String.prototype for the method
+        Value string_constructor = ctx.get_binding("String");
+
+        // String constructor can be a function (which is also an object)
+        Object* string_ctor = nullptr;
+        if (string_constructor.is_function()) {
+            string_ctor = string_constructor.as_function();
+        } else if (string_constructor.is_object()) {
+            string_ctor = string_constructor.as_object();
+        }
+
+        if (string_ctor && string_ctor->has_property("prototype")) {
+            Value prototype_value = string_ctor->get_property("prototype");
+            if (prototype_value.is_object()) {
+                Object* string_prototype = prototype_value.as_object();
+                if (string_prototype && string_prototype->has_property(method_name)) {
+                    Value method_value = string_prototype->get_property(method_name);
+                    if (method_value.is_function()) {
+                        Function* method = method_value.as_function();
+
+                        // Evaluate arguments
+                        std::vector<Value> arg_values;
+                        for (const auto& arg : arguments_) {
+                            Value val = arg->evaluate(ctx);
+                            if (ctx.has_exception()) return Value();
+                            arg_values.push_back(val);
+                        }
+
+                        // Call method with string as 'this'
+                        return method->call(ctx, arg_values, Value(str));
+                    }
+                }
+            }
+        }
+
         return Value();
     }
 }

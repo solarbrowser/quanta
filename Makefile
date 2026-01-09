@@ -88,17 +88,17 @@ $(BIN_DIR)/quanta: $(CONSOLE_MAIN) $(LIBQUANTA)
 
 # Object file compilation - generic rule for all subdirectories
 $(OBJ_DIR)/core/%.o: $(CORE_SRC)/%.cpp
-	@mkdir -p $(dir $@)
+	@mkdir -p $(dir $@) 2>/dev/null || true
 	@echo "[BUILD] Compiling core: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/lexer/%.o: $(LEXER_SRC)/%.cpp
-	@mkdir -p $(dir $@)
+	@mkdir -p $(dir $@) 2>/dev/null || true
 	@echo "[BUILD] Compiling lexer: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
-	@mkdir -p $(dir $@)
+	@mkdir -p $(dir $@) 2>/dev/null || true
 	@echo "[BUILD] Compiling parser: $<"
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
