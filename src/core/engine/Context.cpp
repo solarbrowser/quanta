@@ -2942,7 +2942,14 @@ void Context::initialize_built_ins() {
 
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
+    // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods
+    Object* object_proto = ObjectFactory::get_object_prototype();
+    if (object_proto) {
+        function_prototype->set_prototype(object_proto);
+    }
+
     Object* function_proto_ptr = function_prototype.get();
+    ObjectFactory::set_function_prototype(function_proto_ptr);
 
     function_constructor->set_property("prototype", Value(function_prototype.release()), PropertyAttributes::None);
 
@@ -8912,7 +8919,10 @@ void Context::trigger_gc() {
 }
 
 // Bootstrap loading
+// DISABLED: PowerShell test script now handles loading bootstrap and harness files in correct order
 void Context::load_bootstrap() {
+    return;  // Bootstrap is loaded by test runner script to avoid conflicts with harness files
+
     const char* bootstrap_paths[] = {
         "src/core/test262_bootstrap_minimal.js",
         "test262_bootstrap_minimal.js",
@@ -8934,10 +8944,11 @@ void Context::load_bootstrap() {
                     auto result = engine_->execute(bootstrap_code, "<test262_bootstrap>");
                     if (result.success) {
                         // Copy bootstrap globals to global object
+                        // Note: assert, Test262Error, and $DONOTEVALUATE are provided by test262 harness files (assert.js, sta.js)
                         if (global_object_) {
                             const char* globals[] = {
-                                "assert", "$262", "verifyProperty", "Test262Error",
-                                "compareArray", "isConstructor", "$DONOTEVALUATE"
+                                "$262", "verifyProperty",
+                                "compareArray", "isConstructor"
                             };
                             for (const char* name : globals) {
                                 if (has_binding(name)) {

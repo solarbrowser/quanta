@@ -1594,6 +1594,7 @@ void return_to_pool(std::unique_ptr<Object> obj) {
 
 static Object* object_prototype_object = nullptr;
 static Object* array_prototype_object = nullptr;
+static Object* function_prototype_object = nullptr;
 
 void set_object_prototype(Object* prototype) {
     object_prototype_object = prototype;
@@ -1609,6 +1610,14 @@ void set_array_prototype(Object* prototype) {
 
 Object* get_array_prototype() {
     return array_prototype_object;
+}
+
+void set_function_prototype(Object* prototype) {
+    function_prototype_object = prototype;
+}
+
+Object* get_function_prototype() {
+    return function_prototype_object;
 }
 
 std::unique_ptr<Object> create_object(Object* prototype) {

@@ -4046,7 +4046,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 arg_values.push_back(val);
             }
-            
+
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
         } else {

@@ -186,7 +186,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             actual_this.is_null() || actual_this.is_undefined()) {
             ctx.set_binding("__primitive_this__", actual_this);
         }
-        
+
         Value result = native_fn_(ctx, args);
 
         ctx.set_this_binding(old_this);
@@ -555,19 +555,34 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn) {
-    return std::make_unique<Function>(name, fn, false);
+    auto func = std::make_unique<Function>(name, fn, false);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        func->set_prototype(func_proto);
+    }
+    return func;
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,
                                                  std::function<Value(Context&, const std::vector<Value>&)> fn,
                                                  uint32_t arity) {
-    return std::make_unique<Function>(name, fn, arity, false);
+    auto func = std::make_unique<Function>(name, fn, arity, false);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        func->set_prototype(func_proto);
+    }
+    return func;
 }
 
 std::unique_ptr<Function> create_native_constructor(const std::string& name,
                                                     std::function<Value(Context&, const std::vector<Value>&)> fn,
                                                     uint32_t arity) {
-    return std::make_unique<Function>(name, fn, arity, true);
+    auto func = std::make_unique<Function>(name, fn, arity, true);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        func->set_prototype(func_proto);
+    }
+    return func;
 }
 
 }

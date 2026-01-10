@@ -430,6 +430,8 @@ namespace ObjectFactory {
     Object* get_object_prototype();
     void set_array_prototype(Object* prototype);
     Object* get_array_prototype();
+    void set_function_prototype(Object* prototype);
+    Object* get_function_prototype();
     std::unique_ptr<Function> create_js_function(const std::string& name,
                                                  const std::vector<std::string>& params,
                                                  std::unique_ptr<class ASTNode> body,
