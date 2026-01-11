@@ -1361,6 +1361,10 @@ std::string Object::to_string() const {
                         std::string ctor_name = ctor->get_name();
                         std::string message = message_prop.to_string();
                         if (!ctor_name.empty() && ctor_name != "Object") {
+                            // Only add ": " if message is not empty
+                            if (message.empty()) {
+                                return ctor_name;
+                            }
                             return ctor_name + ": " + message;
                         }
                     }
@@ -1397,6 +1401,10 @@ std::string Object::to_string() const {
                 Function* ctor = ctor_val.as_function();
                 std::string ctor_name = ctor ? ctor->get_name() : "";
                 if (!ctor_name.empty() && ctor_name != "Object") {
+                    // Only add ": " if message is not empty
+                    if (message_str.empty()) {
+                        return ctor_name;
+                    }
                     return ctor_name + ": " + message_str;
                 }
             }
@@ -1414,11 +1422,18 @@ std::string Object::to_string() const {
                 if (!name_val.is_undefined()) {
                     std::string name = name_val.to_string();
                     if (!name.empty()) {
+                        // Only add ": " if message is not empty
+                        if (message_str.empty()) {
+                            return name;
+                        }
                         return name + ": " + message_str;
                     }
                 }
                 // If no name but has custom toString, assume it's an error-like object
                 // Default to "Error: message" format for compatibility
+                if (message_str.empty()) {
+                    return "Error";
+                }
                 return "Error: " + message_str;
             }
         }
