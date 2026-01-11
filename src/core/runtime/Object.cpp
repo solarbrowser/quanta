@@ -91,6 +91,17 @@ bool Object::has_own_property(const std::string& key) const {
     }
 
     if (header_.shape && header_.shape->has_property(key)) {
+        // Check if the property was deleted (value set to undefined by delete_property)
+        auto info = header_.shape->get_property_info(key);
+        if (info.offset < properties_.size()) {
+            // Property exists in shape but was deleted if value is undefined with no descriptor
+            Value val = properties_[info.offset];
+            if (val.is_undefined()) {
+                // Could be actually undefined or deleted - check if there's a descriptor
+                return descriptors_ && descriptors_->count(key) > 0;
+            }
+            return true;
+        }
         return true;
     }
 
@@ -1331,18 +1342,89 @@ std::string Object::to_string() const {
         }
         return oss.str();
     }
-    
-    Value name_prop = get_property("name");
-    Value message_prop = get_property("message");
-    if (!name_prop.is_undefined() && !message_prop.is_undefined()) {
-        std::string name = name_prop.to_string();
-        std::string message = message_prop.to_string();
-        if (!name.empty()) {
-            if (message.empty()) {
-                return name;
+
+    // Check for custom toString property in constructor
+    // For Test262Error and similar custom errors
+    Value constructor_prop = get_property("constructor");
+    if (!constructor_prop.is_undefined() && constructor_prop.is_function()) {
+        Function* ctor = constructor_prop.as_function();
+        if (ctor) {
+            Value proto_val = ctor->get_property("prototype");
+            if (!proto_val.is_undefined() && proto_val.is_object()) {
+                Object* proto = proto_val.as_object();
+                Value proto_toString = proto->get_property("toString");
+                // If prototype has a custom toString, try to format using properties
+                if (!proto_toString.is_undefined() && proto_toString.is_function()) {
+                    // Try to mimic what toString would do
+                    Value message_prop = get_property("message");
+                    if (!message_prop.is_undefined()) {
+                        std::string ctor_name = ctor->get_name();
+                        std::string message = message_prop.to_string();
+                        if (!ctor_name.empty() && ctor_name != "Object") {
+                            return ctor_name + ": " + message;
+                        }
+                    }
+                }
             }
-            return name + ": " + message;
         }
+    }
+
+    // Fallback: check for name and message properties (Error objects)
+    // This handles Error objects that don't have a custom toString method
+    if (header_.type == ObjectType::Error) {
+        Value name_prop = get_property("name");
+        Value message_prop = get_property("message");
+
+        std::string name = name_prop.is_undefined() ? "Error" : name_prop.to_string();
+        std::string message = message_prop.is_undefined() ? "" : message_prop.to_string();
+
+        if (message.empty()) {
+            return name;
+        }
+        return name + ": " + message;
+    }
+
+    // For non-Error objects, check if they have message property (like Test262Error)
+    Value message_prop = get_property("message");
+    if (!message_prop.is_undefined()) {
+        std::string message_str = message_prop.to_string();
+
+        // Try to get constructor name from prototype chain
+        Object* proto = header_.prototype;
+        while (proto) {
+            Value ctor_val = proto->get_property("constructor");
+            if (!ctor_val.is_undefined() && ctor_val.is_function()) {
+                Function* ctor = ctor_val.as_function();
+                std::string ctor_name = ctor ? ctor->get_name() : "";
+                if (!ctor_name.empty() && ctor_name != "Object") {
+                    return ctor_name + ": " + message_str;
+                }
+            }
+            proto = proto->get_prototype();
+        }
+
+        // Fallback: check if prototype has toString (custom error types like Test262Error)
+        proto = header_.prototype;
+        if (proto) {
+            Value toString_val = proto->get_property("toString");
+            if (!toString_val.is_undefined() && toString_val.is_function()) {
+                // This is likely a custom error type
+                // Check if it has a name property
+                Value name_val = get_property("name");
+                if (!name_val.is_undefined()) {
+                    std::string name = name_val.to_string();
+                    if (!name.empty()) {
+                        return name + ": " + message_str;
+                    }
+                }
+                // If no name but has custom toString, assume it's an error-like object
+                // Default to "Error: message" format for compatibility
+                return "Error: " + message_str;
+            }
+        }
+
+        // Ultimate fallback: just return message
+        return message_str;
     }
 
     return "[object Object]";

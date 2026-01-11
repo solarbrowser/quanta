@@ -172,12 +172,88 @@ StackFrame* Context::current_frame() const {
 }
 
 void Context::throw_exception(const Value& exception) {
-    current_exception_ = exception;
+    // If exception is a string, convert it to an Error object
+    if (exception.is_string()) {
+        std::string error_msg = exception.to_string();
+
+        // Parse error type from message prefix (e.g., "TypeError: message")
+        std::string error_type;
+        std::string message = error_msg;
+        size_t colon_pos = error_msg.find(':');
+        if (colon_pos != std::string::npos) {
+            error_type = error_msg.substr(0, colon_pos);
+            message = error_msg.substr(colon_pos + 1);
+            // Trim leading whitespace from message
+            size_t start = message.find_first_not_of(" \t");
+            if (start != std::string::npos) {
+                message = message.substr(start);
+            }
+        }
+
+        // Create appropriate Error object based on type prefix
+        std::unique_ptr<Error> error_obj;
+        Object* prototype = nullptr;
+
+        if (error_type == "TypeError") {
+            error_obj = Error::create_type_error(message);
+            prototype = get_built_in_object("TypeError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else if (error_type == "ReferenceError") {
+            error_obj = Error::create_reference_error(message);
+            prototype = get_built_in_object("ReferenceError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else if (error_type == "SyntaxError") {
+            error_obj = Error::create_syntax_error(message);
+            prototype = get_built_in_object("SyntaxError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else if (error_type == "RangeError") {
+            error_obj = Error::create_range_error(message);
+            prototype = get_built_in_object("RangeError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else if (error_type == "URIError") {
+            error_obj = Error::create_uri_error(message);
+            prototype = get_built_in_object("URIError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else if (error_type == "EvalError") {
+            error_obj = Error::create_eval_error(message);
+            prototype = get_built_in_object("EvalError");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        } else {
+            // Default to generic Error
+            error_obj = Error::create_error(error_msg);
+            prototype = get_built_in_object("Error");
+            if (prototype) {
+                prototype = prototype->get_property("prototype").as_object();
+            }
+        }
+
+        // Set the prototype for proper toString inheritance
+        if (prototype) {
+            error_obj->set_prototype(prototype);
+        }
+
+        current_exception_ = Value(error_obj.release());
+    } else {
+        current_exception_ = exception;
+    }
+
     has_exception_ = true;
     state_ = State::Thrown;
-    
-    if (exception.is_object()) {
-        Object* obj = exception.as_object();
+
+    if (current_exception_.is_object()) {
+        Object* obj = current_exception_.as_object();
         Error* error = dynamic_cast<Error*>(obj);
         if (error) {
             error->generate_stack_trace();
@@ -1311,9 +1387,45 @@ void Context::initialize_built_ins() {
     isPrototypeOf_length_desc.set_writable(false);
     proto_isPrototypeOf_fn->set_property_descriptor("length", isPrototypeOf_length_desc);
 
+    auto proto_propertyIsEnumerable_fn = ObjectFactory::create_native_function("propertyIsEnumerable",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                return Value(false);
+            }
+
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_exception(Value("TypeError: propertyIsEnumerable called on null or undefined"));
+                return Value(false);
+            }
+
+            std::string prop_name = args[0].to_string();
+
+            // Check if property exists and is own property
+            if (!this_obj->has_own_property(prop_name)) {
+                return Value(false);
+            }
+
+            // Check if property is enumerable
+            PropertyDescriptor desc = this_obj->get_property_descriptor(prop_name);
+            return Value(desc.is_enumerable());
+        }, 1);
+
+    PropertyDescriptor propertyIsEnumerable_name_desc(Value("propertyIsEnumerable"), PropertyAttributes::None);
+    propertyIsEnumerable_name_desc.set_configurable(true);
+    propertyIsEnumerable_name_desc.set_enumerable(false);
+    propertyIsEnumerable_name_desc.set_writable(false);
+    proto_propertyIsEnumerable_fn->set_property_descriptor("name", propertyIsEnumerable_name_desc);
+
+    PropertyDescriptor propertyIsEnumerable_length_desc(Value(1.0), PropertyAttributes::Configurable);
+    propertyIsEnumerable_length_desc.set_enumerable(false);
+    propertyIsEnumerable_length_desc.set_writable(false);
+    proto_propertyIsEnumerable_fn->set_property_descriptor("length", propertyIsEnumerable_length_desc);
+
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
+    object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
@@ -4526,14 +4638,42 @@ void Context::initialize_built_ins() {
     register_built_in_object("Boolean", boolean_constructor.release());
     
     auto error_prototype = ObjectFactory::create_object();
-    
+
     PropertyDescriptor error_proto_name_desc(Value("Error"),
         PropertyAttributes::BuiltinFunction);
     error_prototype->set_property_descriptor("name", error_proto_name_desc);
     error_prototype->set_property("message", Value(""));
-    error_prototype->set_property("message", Value(""));
+
+    // Add Error.prototype.toString method
+    auto error_proto_toString = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                return Value("Error");
+            }
+
+            Value name_val = this_obj->get_property("name");
+            Value message_val = this_obj->get_property("message");
+
+            std::string name = name_val.is_undefined() ? "Error" : name_val.to_string();
+            std::string message = message_val.is_undefined() ? "" : message_val.to_string();
+
+            if (message.empty()) {
+                return Value(name);
+            }
+            if (name.empty()) {
+                return Value(message);
+            }
+            return Value(name + ": " + message);
+        }, 0);
+
+    PropertyDescriptor error_proto_toString_desc(Value(error_proto_toString.release()),
+        PropertyAttributes::BuiltinFunction);
+    error_prototype->set_property_descriptor("toString", error_proto_toString_desc);
+
     Object* error_prototype_ptr = error_prototype.get();
-    
+
     auto error_constructor = ObjectFactory::create_native_constructor("Error",
         [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
@@ -8918,51 +9058,86 @@ void Context::trigger_gc() {
     }
 }
 
-// Bootstrap loading
-// DISABLED: PowerShell test script now handles loading bootstrap and harness files in correct order
+// Bootstrap loading - Load essential test262 harness files
 void Context::load_bootstrap() {
-    return;  // Bootstrap is loaded by test runner script to avoid conflicts with harness files
+    if (!engine_) return;
 
-    const char* bootstrap_paths[] = {
-        "src/core/test262_bootstrap_minimal.js",
-        "test262_bootstrap_minimal.js",
-        "src/core/test262_bootstrap.js",
-        "test262_bootstrap.js",
-        "../test262_bootstrap.js",
-        "./src/core/test262_bootstrap.js"
+    // Define $262 object required by test262
+    std::string test262_object = R"(
+var $262 = {
+    // IsHTMLDDA - emulates HTML document.all behavior (falsy object)
+    IsHTMLDDA: {},
+
+    // createRealm - creates a new realm (not fully implemented yet)
+    createRealm: function() {
+        return {
+            global: globalThis
+        };
+    },
+
+    // evalScript - evaluates script in current realm
+    evalScript: function(code) {
+        return eval(code);
+    },
+
+    // detachArrayBuffer - detaches an array buffer
+    detachArrayBuffer: function(buffer) {
+        // Not fully implemented yet
+    },
+
+    // gc - trigger garbage collection (no-op for now)
+    gc: function() {
+        // No-op
+    },
+
+    // agent - agent API for shared memory tests
+    agent: {
+        start: function() {},
+        broadcast: function() {},
+        getReport: function() { return null; },
+        sleep: function() {},
+        monotonicNow: function() { return Date.now(); }
+    }
+};
+)";
+
+    // Execute $262 definition
+    try {
+        auto result = engine_->execute(test262_object, "$262-definition");
+        if (!result.success) {
+            std::cerr << "Warning: Failed to define $262 object: " << result.error_message << std::endl;
+        }
+    } catch (...) {
+        std::cerr << "Exception while defining $262 object" << std::endl;
+    }
+
+    // List of essential harness files in correct order
+    const char* harness_files[] = {
+        "test262/harness/sta.js",           // Test262Error, $DONOTEVALUATE
+        "test262/harness/assert.js",        // assert functions
+        "test262/harness/propertyHelper.js",// verifyProperty and related
+        "test262/harness/isConstructor.js", // isConstructor
+        "test262/harness/compareArray.js"   // compareArray
     };
 
-    for (const char* path : bootstrap_paths) {
-        std::ifstream file(path);
+    // Load each harness file
+    for (const char* harness_path : harness_files) {
+        std::ifstream file(harness_path);
         if (file.is_open()) {
-            std::string bootstrap_code((std::istreambuf_iterator<char>(file)),
-                                      std::istreambuf_iterator<char>());
+            std::string harness_code((std::istreambuf_iterator<char>(file)),
+                                     std::istreambuf_iterator<char>());
             file.close();
 
             try {
-                if (engine_) {
-                    auto result = engine_->execute(bootstrap_code, "<test262_bootstrap>");
-                    if (result.success) {
-                        // Copy bootstrap globals to global object
-                        // Note: assert, Test262Error, and $DONOTEVALUATE are provided by test262 harness files (assert.js, sta.js)
-                        if (global_object_) {
-                            const char* globals[] = {
-                                "$262", "verifyProperty",
-                                "compareArray", "isConstructor"
-                            };
-                            for (const char* name : globals) {
-                                if (has_binding(name)) {
-                                    Value val = get_binding(name);
-                                    global_object_->set_property(name, val);
-                                }
-                            }
-                        }
-                    }
+                auto result = engine_->execute(harness_code, harness_path);
+                if (!result.success) {
+                    // Harness loading failed, but continue with next file
+                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error_message << std::endl;
                 }
             } catch (...) {
-                // Silently ignore bootstrap errors
+                // Silently ignore errors and continue with next file
+                std::cerr << "Exception while loading harness file" << std::endl;
             }
-            break;
         }
     }
 }

@@ -34,24 +34,23 @@ void Error::set_error_name() {
 
 void Error::initialize_properties() {
     set_property("name", Value(name_));
-    
-    if (!message_.empty()) {
-        set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    }
-    
+
+    // Always set message property, even if empty (required for proper toString)
+    set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     if (!stack_trace_.empty()) {
         set_property("stack", Value(stack_trace_));
     }
-    
-    
+
+
     if (line_number_ > 0) {
         set_property("lineNumber", Value(static_cast<double>(line_number_)));
     }
-    
+
     if (column_number_ > 0) {
         set_property("columnNumber", Value(static_cast<double>(column_number_)));
     }
-    
+
     if (!filename_.empty()) {
         set_property("fileName", Value(filename_));
     }

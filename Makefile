@@ -1,12 +1,12 @@
 # =============================================================================
-# Quanta JavaScript Engine v0.0.2
-# Clean Build System
+# Quanta JavaScript Engine v0.1.0
+# Universal Build System (Windows/Linux/macOS)
 # =============================================================================
 
 # Compiler and optimization flags
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
-CXXFLAGS += -DQUANTA_VERSION="0.0.2"
+CXXFLAGS += -DQUANTA_VERSION="0.1.0"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD
 CXXFLAGS += -funroll-loops -finline-functions -finline-limit=1000
 CXXFLAGS += -ftree-vectorize -ftree-loop-vectorize
@@ -20,15 +20,34 @@ CXXFLAGS += -pthread
 DEBUG_FLAGS = -g -DDEBUG -O0
 INCLUDES = -Iinclude
 
-# Platform-specific libraries and stack size
-ifeq ($(OS),Windows_NT)
+# Platform detection
+UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
+
+# Platform-specific settings
+ifeq ($(UNAME_S),Windows)
     LIBS = -lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32
-    # Increase stack size to 64MB for deep recursion support
     STACK_FLAGS = -Wl,--stack,67108864
-else
+    EXE_EXT = .exe
+    RM = rm -rf
+    MKDIR_P = mkdir -p
+else ifeq ($(UNAME_S),Linux)
     LIBS =
-    # Linux stack size flag
     STACK_FLAGS = -Wl,-z,stack-size=16777216
+    EXE_EXT =
+    RM = rm -rf
+    MKDIR_P = mkdir -p
+else ifeq ($(UNAME_S),Darwin)
+    LIBS =
+    STACK_FLAGS =
+    EXE_EXT =
+    RM = rm -rf
+    MKDIR_P = mkdir -p
+else
+    LIBS = -lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32
+    STACK_FLAGS = -Wl,--stack,67108864
+    EXE_EXT = .exe
+    RM = rm -rf
+    MKDIR_P = mkdir -p
 endif
 
 # Directories
@@ -38,18 +57,6 @@ PARSER_SRC = src/parser
 BUILD_DIR = build
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
-
-# Create directories
-ifeq ($(OS),Windows_NT)
-$(shell if not exist $(subst /,\,$(OBJ_DIR)) mkdir $(subst /,\,$(OBJ_DIR)) >nul 2>&1)
-$(shell if not exist $(subst /,\,$(OBJ_DIR))\core mkdir $(subst /,\,$(OBJ_DIR))\core >nul 2>&1)
-$(shell if not exist $(subst /,\,$(OBJ_DIR))\core\platform mkdir $(subst /,\,$(OBJ_DIR))\core\platform >nul 2>&1)
-$(shell if not exist $(subst /,\,$(OBJ_DIR))\lexer mkdir $(subst /,\,$(OBJ_DIR))\lexer >nul 2>&1)
-$(shell if not exist $(subst /,\,$(OBJ_DIR))\parser mkdir $(subst /,\,$(OBJ_DIR))\parser >nul 2>&1)
-$(shell if not exist $(subst /,\,$(BIN_DIR)) mkdir $(subst /,\,$(BIN_DIR)) >nul 2>&1)
-else
-$(shell mkdir -p $(OBJ_DIR) $(OBJ_DIR)/core $(OBJ_DIR)/core/platform $(OBJ_DIR)/lexer $(OBJ_DIR)/parser $(BIN_DIR))
-endif
 
 # Core source files - recursively find all in subdirectories
 CORE_SOURCES = $(wildcard $(CORE_SRC)/*/*.cpp) $(wildcard $(CORE_SRC)/*/*/*.cpp)
@@ -66,41 +73,42 @@ ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS)
 # Static library
 LIBQUANTA = $(BUILD_DIR)/libquanta.a
 
+# Console main source
+CONSOLE_MAIN = console.cpp
+
 # Main targets
 .PHONY: all clean debug release
 
-all: $(LIBQUANTA) $(BIN_DIR)/quanta
-
-# Console main source
-CONSOLE_MAIN = console.cpp
+all: $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT)
 
 # Static library for embedding
 $(LIBQUANTA): $(ALL_OBJECTS)
 	@echo "[LIB] Creating Quanta static library..."
-	ar rcs $@ $^
+	@ar rcs $@ $^
 	@echo "[OK] Library created: $@"
 
 # Main console executable
-$(BIN_DIR)/quanta: $(CONSOLE_MAIN) $(LIBQUANTA)
+$(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA)
+	@$(MKDIR_P) $(BIN_DIR)
 	@echo "[BUILD] Building Quanta JavaScript console..."
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS)
 	@echo "[OK] Quanta console built: $@"
 
-# Object file compilation - generic rule for all subdirectories
+# Object file compilation - create directories and compile
 $(OBJ_DIR)/core/%.o: $(CORE_SRC)/%.cpp
-	@mkdir -p $(dir $@) 2>/dev/null || true
+	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling core: $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/lexer/%.o: $(LEXER_SRC)/%.cpp
-	@mkdir -p $(dir $@) 2>/dev/null || true
+	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling lexer: $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
-	@mkdir -p $(dir $@) 2>/dev/null || true
+	@$(MKDIR_P) $(dir $@)
 	@echo "[BUILD] Compiling parser: $<"
-	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)
@@ -113,11 +121,7 @@ release: all
 # Clean
 clean:
 	@echo "[CLEAN] Cleaning build files..."
-ifeq ($(OS),Windows_NT)
-	if exist $(subst /,\,$(BUILD_DIR)) rmdir /s /q $(subst /,\,$(BUILD_DIR)) >nul 2>&1
-else
-	rm -rf $(BUILD_DIR)/*
-endif
+	@$(RM) $(BUILD_DIR)
 	@echo "[OK] Clean completed"
 
 # Prevent deletion of intermediate files
