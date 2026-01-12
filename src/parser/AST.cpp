@@ -5633,7 +5633,9 @@ Value ForStatement::evaluate(Context& ctx) {
                   << "), JIT disabled" << std::endl;
     }
 
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
+    // DISABLED: JIT has bugs causing crashes in for loops
+    // TODO: Fix and re-enable
+    if (false && ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         if (get_loop_depth() == 1) {
@@ -5681,6 +5683,15 @@ Value ForStatement::evaluate(Context& ctx) {
                                 uint32_t idx = static_cast<uint32_t>(idx_val.as_number());
                                 Value right_val = assign->get_right()->evaluate(ctx);
                                 arr_val.as_object()->set_element(idx, right_val);
+                            }
+
+                            // Check for break/continue
+                            if (ctx.has_break()) {
+                                ctx.clear_break_continue();
+                                break;
+                            }
+                            if (ctx.has_continue()) {
+                                ctx.clear_break_continue();
                             }
 
                             if (update_) update_->evaluate(ctx);

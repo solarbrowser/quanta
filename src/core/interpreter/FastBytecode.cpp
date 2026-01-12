@@ -189,26 +189,30 @@ vm_exit:
 
 
 bool DirectPatternCompiler::try_compile_math_loop(const std::string& source, FastBytecodeVM& vm) {
+    // DISABLED: This optimization has bugs (wrong math formula, crashes)
+    // TODO: Fix and re-enable
+    return false;
+
     LoopParams params = extract_loop_params(source);
-    
+
     if (!params.valid) {
         return false;
     }
-    
-    
+
+
     int64_t iterations = params.end_val - params.start_val;
-    
-    if (params.operation.find("+=") != std::string::npos && 
-        (params.operation.find("+ 1") != std::string::npos || 
+
+    if (params.operation.find("+=") != std::string::npos &&
+        (params.operation.find("+ 1") != std::string::npos ||
          params.operation.find("+1") != std::string::npos ||
          params.operation.find("i +") != std::string::npos)) {
-        
+
         vm.emit(FastOp::MATH_LOOP_SUM, 0, 0, 0, static_cast<double>(iterations));
-        
+
     } else {
         vm.emit(FastOp::NATIVE_EXEC, 0, 0, 0, static_cast<double>(iterations));
     }
-    
+
     vm.emit(FastOp::FAST_RETURN, 0);
     return true;
 }

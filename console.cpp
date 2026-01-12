@@ -179,26 +179,27 @@ public:
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
 
-            if (!result.success) {
+            if (!result.has_value()) {
+                auto& error = result.error();
                 std::cout << RED;
 
-                if (filename != "<console>" && (result.line_number > 0 || result.column_number > 0)) {
+                if (filename != "<console>" && (error.line_number > 0 || error.column_number > 0)) {
                     std::cout << filename;
-                    if (result.line_number > 0) {
-                        std::cout << ":" << result.line_number;
-                        if (result.column_number > 0) {
-                            std::cout << ":" << result.column_number;
+                    if (error.line_number > 0) {
+                        std::cout << ":" << error.line_number;
+                        if (error.column_number > 0) {
+                            std::cout << ":" << error.column_number;
                         }
                     }
                     std::cout << "\n";
                 }
 
-                std::cout << result.error_message << RESET << std::endl;
+                std::cout << error.message << RESET << std::endl;
                 return false;
             }
-            
-            if (show_result && !result.value.is_undefined()) {
-                std::cout << GREEN << result.value.to_string() << RESET << std::endl;
+
+            if (show_result && !result->is_undefined()) {
+                std::cout << GREEN << result->to_string() << RESET << std::endl;
             }
             
             

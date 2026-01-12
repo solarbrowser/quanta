@@ -5,7 +5,7 @@
 
 # Compiler and optimization flags
 CXX = g++
-CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
+CXXFLAGS = -std=c++23 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.1.0"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD
 CXXFLAGS += -funroll-loops -finline-functions -finline-limit=1000

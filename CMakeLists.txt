@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
-project(Quanta VERSION 0.0.2 LANGUAGES CXX)
+project(Quanta VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -39,10 +39,10 @@ if(MSVC)
         /arch:AVX2             
         /fp:fast              
         /MP                 
-        /EHsc          
-        /std:c++17        
+        /EHsc
+        /std:c++23
         /D_CRT_SECURE_NO_WARNINGS
-        /DQUANTA_VERSION="0.0.2"
+        /DQUANTA_VERSION="0.1.0"
         /DPROMISE_STABILITY_FIXED
         /DNATIVE_BUILD
     )
@@ -69,7 +69,7 @@ else()
         -fno-trapping-math
     )
     add_compile_definitions(
-        QUANTA_VERSION="0.0.2"
+        QUANTA_VERSION="0.1.0"
         PROMISE_STABILITY_FIXED
         NATIVE_BUILD
     )

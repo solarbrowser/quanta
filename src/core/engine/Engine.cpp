@@ -519,10 +519,10 @@ void Engine::setup_built_in_functions() {
         
         try {
             Result result = execute(code);
-            if (result.success) {
-                return result.value;
+            if (result.has_value()) {
+                return *result;
             } else {
-                throw std::runtime_error("SyntaxError: " + result.error_message);
+                throw std::runtime_error("SyntaxError: " + result.error().message);
             }
         } catch (const std::runtime_error& e) {
             std::string error_msg = e.what();
@@ -668,7 +668,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (lexer.has_errors()) {
             const auto& errors = lexer.get_errors();
             std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
-            return Result(error_msg);
+            return std::unexpected(Error(error_msg));
         }
         
         Parser parser(tokens);
@@ -677,11 +677,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
             std::string error_msg = errors.empty() ? "Parse error" : errors[0].message;
-            return Result("SyntaxError: " + error_msg);
+            return std::unexpected(Error("SyntaxError: " + error_msg));
         }
-        
+
         if (!program) {
-            return Result("Parse error in " + filename);
+            return std::unexpected(Error("Parse error in " + filename));
         }
         
         if (is_simple_mathematical_loop(program.get())) {
@@ -696,18 +696,18 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
-                return Result(exception.to_string());
+                return std::unexpected(Error(exception.to_string()));
             }
-            
-            return Result(result);
+
+            return result;  // Success case - just return the Value
         } else {
-            return Result("Context not initialized");
+            return std::unexpected(Error("Context not initialized"));
         }
-        
+
     } catch (const std::exception& e) {
-        return Result(std::string(e.what()));
+        return std::unexpected(Error(std::string(e.what())));
     } catch (...) {
-        return Result("Unknown engine error");
+        return std::unexpected(Error("Unknown engine error"));
     }
 }
 

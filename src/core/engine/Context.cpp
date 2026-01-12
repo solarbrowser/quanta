@@ -2944,6 +2944,50 @@ void Context::initialize_built_ins() {
     
     auto function_constructor = ObjectFactory::create_native_constructor("Function",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // new Function(arg1, arg2, ..., argN, functionBody)
+            // Last arg is function body, previous args are parameter names
+
+            if (args.empty()) {
+                // new Function() - empty function
+                return Value(ObjectFactory::create_function().release());
+            }
+
+            // Extract parameter names and body
+            std::vector<std::string> param_names;
+            std::string body;
+
+            if (args.size() == 1) {
+                // Only body, no parameters
+                body = args[0].to_string();
+            } else {
+                // Last arg is body, others are param names
+                for (size_t i = 0; i < args.size() - 1; i++) {
+                    param_names.push_back(args[i].to_string());
+                }
+                body = args[args.size() - 1].to_string();
+            }
+
+            // Build function source code and use eval
+            std::string func_source = "(function(";
+            for (size_t i = 0; i < param_names.size(); i++) {
+                if (i > 0) func_source += ", ";
+                func_source += param_names[i];
+            }
+            func_source += ") { " + body + " })";
+
+            // Use eval to parse and create function
+            Value eval_fn = ctx.get_binding("eval");
+            if (eval_fn.is_function()) {
+                std::vector<Value> eval_args;
+                eval_args.push_back(Value(func_source.c_str()));
+                Function* eval_func = eval_fn.as_function();
+                Value result = eval_func->call(ctx, eval_args);
+
+                std::cout << "[DEBUG] eval result type: " << (int)result.get_type()
+                          << ", is_function: " << result.is_function() << std::endl;
+                return result;
+            }
+
             return Value(ObjectFactory::create_function().release());
         });
     
@@ -7282,10 +7326,10 @@ void Context::setup_global_bindings() {
 
             try {
                 auto result = engine->evaluate(code);
-                if (result.success) {
-                    return result.value;
+                if (result.has_value()) {
+                    return *result;  // Dereference to get Value
                 } else {
-                    ctx.throw_exception(Value("SyntaxError: " + result.error_message));
+                    ctx.throw_exception(Value("SyntaxError: " + result.error().message));
                     return Value();
                 }
             } catch (...) {
@@ -9022,8 +9066,8 @@ var $262 = {
     // Execute $262 definition
     try {
         auto result = engine_->execute(test262_object, "$262-definition");
-        if (!result.success) {
-            std::cerr << "Warning: Failed to define $262 object: " << result.error_message << std::endl;
+        if (!result.has_value()) {
+            std::cerr << "Warning: Failed to define $262 object: " << result.error().message << std::endl;
         }
     } catch (...) {
         std::cerr << "Exception while defining $262 object" << std::endl;
@@ -9048,9 +9092,9 @@ var $262 = {
 
             try {
                 auto result = engine_->execute(harness_code, harness_path);
-                if (!result.success) {
+                if (!result.has_value()) {
                     // Harness loading failed, but continue with next file
-                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error_message << std::endl;
+                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error().message << std::endl;
                 }
             } catch (...) {
                 // Silently ignore errors and continue with next file
