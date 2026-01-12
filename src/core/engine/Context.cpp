@@ -5210,100 +5210,15 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Intl", intl_object.release());
 
-    auto add_date_instance_methods = [](Object* date_obj) {
-        auto getTime_fn = ObjectFactory::create_native_function("getTime",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    now.time_since_epoch()).count();
-                return Value(static_cast<double>(timestamp));
-            });
-        date_obj->set_property("getTime", Value(getTime_fn.release()), PropertyAttributes::BuiltinFunction);
-        
-        auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                std::time_t time = std::chrono::system_clock::to_time_t(now);
-                std::tm* local_time = std::localtime(&time);
-                return local_time ? Value(static_cast<double>(local_time->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
-            });
-        date_obj->set_property("getFullYear", Value(getFullYear_fn.release()), PropertyAttributes::BuiltinFunction);
-        
-        auto getMonth_fn = ObjectFactory::create_native_function("getMonth",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                std::time_t time = std::chrono::system_clock::to_time_t(now);
-                std::tm* local_time = std::localtime(&time);
-                return local_time ? Value(static_cast<double>(local_time->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
-            });
-        date_obj->set_property("getMonth", Value(getMonth_fn.release()), PropertyAttributes::BuiltinFunction);
-        
-        auto getDate_fn = ObjectFactory::create_native_function("getDate",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                std::time_t time = std::chrono::system_clock::to_time_t(now);
-                std::tm* local_time = std::localtime(&time);
-                return local_time ? Value(static_cast<double>(local_time->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
-            });
-        date_obj->set_property("getDate", Value(getDate_fn.release()), PropertyAttributes::BuiltinFunction);
+    auto date_prototype = ObjectFactory::create_object();
+    Object* date_proto_ptr = date_prototype.get();
 
-        auto getYear_fn = ObjectFactory::create_native_function("getYear",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                std::time_t time = std::chrono::system_clock::to_time_t(now);
-                std::tm* local_time = std::localtime(&time);
-                return local_time ? Value(static_cast<double>(local_time->tm_year)) : Value(std::numeric_limits<double>::quiet_NaN());
-            });
-        date_obj->set_property("getYear", Value(getYear_fn.release()), PropertyAttributes::BuiltinFunction);
-
-        auto setYear_fn = ObjectFactory::create_native_function("setYear",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx;
-                if (args.empty()) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-
-                double year_value = args[0].to_number();
-                if (std::isnan(year_value) || std::isinf(year_value)) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-
-                int year = static_cast<int>(year_value);
-                if (year >= 0 && year <= 99) {
-                    year += 1900;
-                }
-
-                return Value(static_cast<double>(year));
-            });
-        date_obj->set_property("setYear", Value(setYear_fn.release()), PropertyAttributes::BuiltinFunction);
-
-        auto toString_fn = ObjectFactory::create_native_function("toString",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx; (void)args;
-                auto now = std::chrono::system_clock::now();
-                std::time_t time = std::chrono::system_clock::to_time_t(now);
-                std::string time_str = std::ctime(&time);
-                if (!time_str.empty() && time_str.back() == '\n') {
-                    time_str.pop_back();
-                }
-                return Value(time_str);
-            });
-        date_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
-    };
-    
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
-        [add_date_instance_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [date_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Value date_obj = Date::date_constructor(ctx, args);
-            
             if (date_obj.is_object()) {
-                add_date_instance_methods(date_obj.as_object());
+                date_obj.as_object()->set_prototype(date_proto_ptr);
             }
-            
             return date_obj;
         });
     
@@ -5314,9 +5229,7 @@ void Context::initialize_built_ins() {
     date_constructor_fn->set_property("now", Value(date_now.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("parse", Value(date_parse.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("UTC", Value(date_UTC.release()), PropertyAttributes::BuiltinFunction);
-    
-    auto date_prototype = ObjectFactory::create_object();
-    
+
     auto getTime_fn = ObjectFactory::create_native_function("getTime", Date::getTime);
     auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear", Date::getFullYear);
     auto getMonth_fn = ObjectFactory::create_native_function("getMonth", Date::getMonth);
