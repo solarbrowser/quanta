@@ -39,7 +39,7 @@ Value::Value(Object* obj) {
 Value::Value(const std::string& str) {
     auto string_obj = std::make_unique<String>(str);
     String* raw_ptr = string_obj.release();
-    
+
     #if PLATFORM_POINTER_COMPRESSION
     uint64_t compressed = compress_pointer(raw_ptr);
     bits_ = QUIET_NAN | TAG_STRING | (compressed & PAYLOAD_MASK);

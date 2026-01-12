@@ -3066,33 +3066,19 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Function", function_constructor.release());
 
+    auto string_prototype = ObjectFactory::create_object();
+    Object* string_proto_ptr = string_prototype.get();
+
     auto string_constructor = ObjectFactory::create_native_constructor("String",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [string_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str_value = args.empty() ? "" : args[0].to_string();
 
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                this_obj->set_property("value", Value(str_value));
-                PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
-                    static_cast<PropertyAttributes>(PropertyAttributes::None));
-                this_obj->set_property_descriptor("length", length_desc);
+            // Create String object
+            auto str_obj = ObjectFactory::create_string(str_value);
+            str_obj->set_prototype(string_proto_ptr);
 
-                auto toString_fn = ObjectFactory::create_native_function("toString",
-                    [](Context& ctx, const std::vector<Value>& args) -> Value {
-                        (void)args;
-                        Object* this_binding = ctx.get_this_binding();
-                        if (this_binding && this_binding->has_property("value")) {
-                            return this_binding->get_property("value");
-                        }
-                        return Value("");
-                    });
-                this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
-            }
-
-            return Value(str_value);
+            return Value(str_obj.release());
         });
-    
-    auto string_prototype = ObjectFactory::create_object();
     
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3533,12 +3519,13 @@ void Context::initialize_built_ins() {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
 
-            uint32_t index = 0;
+            int64_t index = 0;
             if (args.size() > 0) {
-                index = static_cast<uint32_t>(args[0].to_number());
+                index = static_cast<int64_t>(args[0].to_number());
             }
 
-            if (index >= str.length()) {
+            // Return empty string for out of bounds (negative or >= length)
+            if (index < 0 || index >= static_cast<int64_t>(str.length())) {
                 return Value("");
             }
 
@@ -3865,6 +3852,30 @@ void Context::initialize_built_ins() {
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
+
+    // Add valueOf method
+    auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("String.prototype.valueOf called on null or undefined");
+                return Value();
+            }
+
+            if (this_obj->get_type() == Object::ObjectType::String) {
+                Value primitive = this_obj->get_property("value");
+                if (primitive.is_string()) {
+                    return primitive;
+                }
+            }
+
+            ctx.throw_type_error("String.prototype.valueOf called on non-string");
+            return Value();
+        }, 0);
+    PropertyDescriptor string_valueOf_desc(Value(string_valueOf_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("valueOf", string_valueOf_desc);
 
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()), PropertyAttributes::None);

@@ -155,6 +155,7 @@ public:
         #endif
     }
     explicit Value(const std::string& str);
+    explicit Value(const char* str) : Value(std::string(str)) {}
     
     explicit Value(class Symbol* sym) {
         #if PLATFORM_POINTER_COMPRESSION
