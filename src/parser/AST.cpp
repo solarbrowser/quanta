@@ -1299,7 +1299,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (member->is_computed()) {
             Value prop_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            prop_name = prop_value.to_string();
+            // Use to_property_key() for proper Symbol handling
+            prop_name = prop_value.to_property_key();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -4178,7 +4179,8 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         std::string prop_name;
         if (prop_value.is_symbol()) {
-            prop_name = prop_value.as_symbol()->get_description();
+            // Use to_property_key() to get the unique symbol key
+            prop_name = prop_value.as_symbol()->to_property_key();
         } else {
             prop_name = prop_value.to_string();
         }

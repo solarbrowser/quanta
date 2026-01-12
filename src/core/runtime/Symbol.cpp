@@ -89,10 +89,11 @@ std::string Symbol::to_string() const {
 }
 
 std::string Symbol::to_property_key() const {
-    if (!description_.empty() && description_.find("Symbol.") == 0) {
-        return description_;
-    }
-    return to_string();
+    // Symbols as property keys must be unique based on their ID
+    // Use a special prefix to distinguish from string keys
+    std::ostringstream oss;
+    oss << "@@symbol_" << id_;
+    return oss.str();
 }
 
 bool Symbol::equals(const Symbol* other) const {

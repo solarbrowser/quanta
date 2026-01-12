@@ -9066,7 +9066,9 @@ void Context::load_bootstrap() {
     std::string test262_object = R"(
 var $262 = {
     // IsHTMLDDA - emulates HTML document.all behavior (falsy object)
-    IsHTMLDDA: {},
+    // When called as a function, returns undefined (not an object)
+    // This causes Array.from to throw TypeError since iterator must return object
+    IsHTMLDDA: function() { return undefined; },
 
     // createRealm - creates a new realm (not fully implemented yet)
     createRealm: function() {
