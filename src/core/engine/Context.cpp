@@ -4545,34 +4545,38 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Number", number_constructor.release());
     
-    auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(false);
-            return Value(args[0].to_boolean());
-        });
-
     auto boolean_prototype = ObjectFactory::create_object();
+    Object* boolean_proto_ptr = boolean_prototype.get();
+
+    auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
+        [boolean_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            bool value = args.empty() ? false : args[0].to_boolean();
+
+            // Create Boolean object
+            auto bool_obj = ObjectFactory::create_boolean(value);
+            bool_obj->set_prototype(boolean_proto_ptr);
+
+            return Value(bool_obj.release());
+        });
 
     auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            try {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_boolean()) {
-                    return this_val;
-                }
-                if (this_val.is_object()) {
-                    Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
-                        return this_obj->get_property("[[PrimitiveValue]]");
-                    }
-                }
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
-                return Value();
-            } catch (...) {
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Boolean.prototype.valueOf called on null or undefined");
                 return Value();
             }
+
+            if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                Value primitive = this_obj->get_property("value");
+                if (primitive.is_boolean()) {
+                    return primitive;
+                }
+            }
+
+            ctx.throw_type_error("Boolean.prototype.valueOf called on non-boolean");
+            return Value();
         }, 0);
 
     PropertyDescriptor boolean_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
@@ -4589,24 +4593,20 @@ void Context::initialize_built_ins() {
     auto boolean_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            try {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_boolean()) {
-                    return Value(this_val.to_boolean() ? "true" : "false");
-                }
-                if (this_val.is_object()) {
-                    Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
-                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
-                        return Value(primitive.to_boolean() ? "true" : "false");
-                    }
-                }
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
-                return Value();
-            } catch (...) {
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Boolean.prototype.toString called on null or undefined");
                 return Value();
             }
+
+            if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                Value primitive = this_obj->get_property("value");
+                // Use to_boolean instead of as_boolean/is_boolean check
+                return Value(primitive.to_boolean() ? std::string("true") : std::string("false"));
+            }
+
+            ctx.throw_type_error("Boolean.prototype.toString called on non-boolean");
+            return Value();
         }, 0);
 
     PropertyDescriptor boolean_toString_name_desc(Value("toString"), PropertyAttributes::None);
