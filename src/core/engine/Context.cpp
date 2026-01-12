@@ -2125,8 +2125,9 @@ void Context::initialize_built_ins() {
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array()) {
-                return Value(-1.0);
+            if (!this_obj) {
+                ctx.throw_type_error("Array.prototype.lastIndexOf called on null or undefined");
+                return Value();
             }
 
             if (args.empty()) {
@@ -2175,8 +2176,8 @@ void Context::initialize_built_ins() {
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array()) {
-                ctx.throw_type_error("Array.prototype.reduceRight called on non-array");
+            if (!this_obj) {
+                ctx.throw_type_error("Array.prototype.reduceRight called on null or undefined");
                 return Value();
             }
 
@@ -2373,11 +2374,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_array = ctx.get_this_binding();
             if (!this_array) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
-                return Value();
-            }
-            if (!this_array->is_array()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-array"));
+                ctx.throw_type_error("Array.prototype.concat called on null or undefined");
                 return Value();
             }
 

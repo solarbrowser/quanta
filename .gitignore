@@ -40,6 +40,7 @@ test262/
 tests/
 *.js
 neo/
+test262_failures_by_error/
 
 # other
 .eshostrc
