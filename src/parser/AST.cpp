@@ -6283,7 +6283,15 @@ Value WhileStatement::evaluate(Context& ctx) {
             try {
                 Value body_result = body_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                
+
+                if (ctx.has_break()) {
+                    ctx.clear_break_continue();
+                    break;
+                }
+                if (ctx.has_continue()) {
+                    ctx.clear_break_continue();
+                }
+
                 if (safety_counter % 10 == 0) {
                 }
             } catch (...) {

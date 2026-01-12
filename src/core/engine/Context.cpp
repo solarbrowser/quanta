@@ -4258,10 +4258,18 @@ void Context::initialize_built_ins() {
     
     Generator::setup_generator_prototype(*this);
     
+    auto number_prototype = ObjectFactory::create_object();
+    Object* number_proto_ptr = number_prototype.get();
+
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(0.0);
-            return Value(args[0].to_number());
+        [number_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            double value = args.empty() ? 0.0 : args[0].to_number();
+
+            // Create Number object
+            auto num_obj = ObjectFactory::create_number(value);
+            num_obj->set_prototype(number_proto_ptr);
+
+            return Value(num_obj.release());
         });
     PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("MAX_VALUE", max_value_desc);
@@ -4355,28 +4363,24 @@ void Context::initialize_built_ins() {
 
     number_constructor->set_property("parseInt", this->get_binding("parseInt"));
 
-    auto number_prototype = ObjectFactory::create_object();
-
     auto number_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            try {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_number()) {
-                    return this_val;
-                }
-                if (this_val.is_object()) {
-                    Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Number) {
-                        return this_obj->get_property("[[PrimitiveValue]]");
-                    }
-                }
-                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
-                return Value();
-            } catch (...) {
-                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Number.prototype.valueOf called on null or undefined");
                 return Value();
             }
+
+            if (this_obj->get_type() == Object::ObjectType::Number) {
+                Value primitive = this_obj->get_property("value");
+                if (primitive.is_number()) {
+                    return primitive;
+                }
+            }
+
+            ctx.throw_type_error("Number.prototype.valueOf called on non-number");
+            return Value();
         }, 0);
 
     PropertyDescriptor number_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
@@ -4392,31 +4396,22 @@ void Context::initialize_built_ins() {
 
     auto number_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            try {
-                Value this_val = ctx.get_binding("this");
-                double num = 0.0;
-
-                if (this_val.is_number()) {
-                    num = this_val.as_number();
-                } else if (this_val.is_object()) {
-                    Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Number) {
-                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
-                        num = primitive.as_number();
-                    } else {
-                        ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
-                        return Value();
-                    }
-                } else {
-                    ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
-                    return Value();
-                }
-
-                return Value(std::to_string(num));
-            } catch (...) {
-                ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Number.prototype.toString called on null or undefined");
                 return Value();
             }
+
+            if (this_obj->get_type() == Object::ObjectType::Number) {
+                Value primitive = this_obj->get_property("value");
+                if (primitive.is_number()) {
+                    return Value(std::to_string(primitive.as_number()));
+                }
+            }
+
+            ctx.throw_type_error("Number.prototype.toString called on non-number");
+            return Value();
         }, 1);
 
     PropertyDescriptor number_toString_name_desc(Value("toString"), PropertyAttributes::None);
