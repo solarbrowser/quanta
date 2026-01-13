@@ -3266,7 +3266,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
             Value search_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             std::string search_str = search_val.to_string();
-            
+
             int start_pos = 0;
             if (arguments_.size() > 1) {
                 Value start_val = arguments_[1]->evaluate(ctx);
@@ -3275,7 +3275,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
                 if (start_pos < 0) start_pos = 0;
                 if (start_pos >= static_cast<int>(str.length())) return Value(-1.0);
             }
-            
+
             size_t pos = str.find(search_str, start_pos);
             if (pos == std::string::npos) {
                 return Value(-1.0);
@@ -3487,9 +3487,20 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         if (arguments_.size() > 0) {
             Value search_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             std::string search_str = search_val.to_string();
-            size_t pos = str.find(search_str);
+
+            size_t start_pos = 0;
+            if (arguments_.size() > 1) {
+                Value start_val = arguments_[1]->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                double start_num = start_val.to_number();
+                if (start_num >= 0) {
+                    start_pos = static_cast<size_t>(start_num);
+                }
+            }
+
+            size_t pos = str.find(search_str, start_pos);
             return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
         }
         return Value(-1.0);
@@ -4466,7 +4477,14 @@ Value MemberExpression::evaluate(Context& ctx) {
                     (void)ctx;
                     if (args.empty()) return Value(-1.0);
                     std::string search = args[0].to_string();
-                    size_t pos = str_value.find(search);
+                    size_t start_pos = 0;
+                    if (args.size() > 1) {
+                        double start_num = args[1].to_number();
+                        if (start_num >= 0) {
+                            start_pos = static_cast<size_t>(start_num);
+                        }
+                    }
+                    size_t pos = str_value.find(search, start_pos);
                     return Value(pos != std::string::npos ? static_cast<double>(pos) : -1.0);
                 });
             return Value(index_of_fn.release());
@@ -5061,7 +5079,14 @@ Value MemberExpression::evaluate(Context& ctx) {
                         (void)ctx;
                         if (args.empty()) return Value(-1.0);
                         std::string search = args[0].to_string();
-                        size_t pos = str_value.find(search);
+                        size_t start_pos = 0;
+                        if (args.size() > 1) {
+                            double start_num = args[1].to_number();
+                            if (start_num >= 0) {
+                                start_pos = static_cast<size_t>(start_num);
+                            }
+                        }
+                        size_t pos = str_value.find(search, start_pos);
                         return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
                     });
                 return Value(index_of_fn.release());
