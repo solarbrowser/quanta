@@ -111,16 +111,16 @@ Engine::Result Engine::execute(const std::string& source) {
 
 Engine::Result Engine::execute(const std::string& source, const std::string& filename) {
     if (!initialized_) {
-        return Result("Engine not initialized");
+        return std::unexpected(Error("Engine not initialized"));
     }
-    
+
     return execute_internal(source, filename);
 }
 
 Engine::Result Engine::execute_file(const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
-        return Result("Cannot open file: " + filename);
+        return std::unexpected(Error("Cannot open file: " + filename));
     }
     
     std::ostringstream buffer;
@@ -130,7 +130,7 @@ Engine::Result Engine::execute_file(const std::string& filename) {
 
 Engine::Result Engine::evaluate(const std::string& expression) {
     if (!initialized_) {
-        return Result("Engine not initialized");
+        return std::unexpected(Error("Engine not initialized"));
     }
     
     try {
@@ -179,16 +179,16 @@ Engine::Result Engine::evaluate(const std::string& expression) {
                     error_message = exception.to_string();
                 }
 
-                std::cerr << "[DEBUG Engine] Final error_message: " << error_message << std::endl;
-                return Result(error_message);
+                return std::unexpected(Error(error_message));
             }
 
-            return Result(result);
+            return result;
         } else {
-            Parser expr_parser(lexer.tokenize());
+            Lexer expr_lexer(expression);
+            Parser expr_parser(expr_lexer.tokenize());
             auto expr_ast = expr_parser.parse_expression();
             if (!expr_ast) {
-                return Result("Parse error: Failed to parse expression");
+                return std::unexpected(Error("Parse error: Failed to parse expression"));
             }
 
             if (global_context_) {
@@ -227,17 +227,17 @@ Engine::Result Engine::evaluate(const std::string& expression) {
                         error_message = exception.to_string();
                     }
 
-                    return Result(error_message);
+                    return std::unexpected(Error(error_message));
                 }
 
-                return Result(result);
+                return result;
             } else {
-                return Result("Engine context not initialized");
+                return std::unexpected(Error("Engine context not initialized"));
             }
         }
-        
+
     } catch (const std::exception& e) {
-        return Result("Error evaluating expression: " + std::string(e.what()));
+        return std::unexpected(Error("Error evaluating expression: " + std::string(e.what())));
     }
 }
 
@@ -511,14 +511,15 @@ void Engine::setup_built_in_functions() {
         if (args.empty()) {
             return Value();
         }
-        
+
         std::string code = args[0].to_string();
         if (code.empty()) {
             return Value();
         }
-        
+
         try {
-            Result result = execute(code);
+            // Use evaluate() instead of execute() for proper expression parsing
+            Result result = evaluate(code);
             if (result.has_value()) {
                 return *result;
             } else {
@@ -659,7 +660,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         
         if (compiled) {
             Value result = vm.execute_fast();
-            return Result(result);
+            return result;
         }
         
         Lexer lexer(source);

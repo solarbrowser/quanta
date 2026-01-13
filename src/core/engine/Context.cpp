@@ -2982,9 +2982,6 @@ void Context::initialize_built_ins() {
                 eval_args.push_back(Value(func_source.c_str()));
                 Function* eval_func = eval_fn.as_function();
                 Value result = eval_func->call(ctx, eval_args);
-
-                std::cout << "[DEBUG] eval result type: " << (int)result.get_type()
-                          << ", is_function: " << result.is_function() << std::endl;
                 return result;
             }
 
@@ -7327,7 +7324,7 @@ void Context::setup_global_bindings() {
             try {
                 auto result = engine->evaluate(code);
                 if (result.has_value()) {
-                    return *result;  // Dereference to get Value
+                    return *result;
                 } else {
                     ctx.throw_exception(Value("SyntaxError: " + result.error().message));
                     return Value();

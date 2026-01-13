@@ -514,6 +514,11 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         }
     }
     
+    // If constructor returned a function, return it directly
+    if (result.is_function()) {
+        return result;
+    }
+
     if (result.is_object() && result.as_object() != new_object.get()) {
         return result;
     } else {

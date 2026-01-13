@@ -5251,7 +5251,7 @@ Value ExpressionStatement::evaluate(Context& ctx) {
     if (ctx.has_exception()) {
         return Value();
     }
-    return Value();
+    return result;  // Return the expression result for eval() support
 }
 
 std::string ExpressionStatement::to_string() const {
