@@ -5995,7 +5995,7 @@ void Context::initialize_built_ins() {
     Object* regexp_proto_ptr = regexp_prototype.get();
 
     auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [regexp_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string pattern = "";
             std::string flags = "";
             
@@ -6042,6 +6042,9 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+
+                // Set prototype so RegExp instances inherit compile, toString, etc.
+                regex_obj->set_prototype(regexp_proto_ptr);
 
                 return Value(regex_obj.release());
                 

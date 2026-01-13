@@ -480,12 +480,17 @@ bool Object::delete_property(const std::string& key) {
     if (!desc.is_configurable()) {
         return false;
     }
-    
+
     uint32_t index;
     if (is_array_index(key, &index)) {
         return delete_element(index);
     }
-    
+
+    // Remove from descriptor map if present
+    if (descriptors_) {
+        descriptors_->erase(key);
+    }
+
     if (overflow_properties_) {
         auto it = overflow_properties_->find(key);
         if (it != overflow_properties_->end()) {
@@ -495,7 +500,7 @@ bool Object::delete_property(const std::string& key) {
             return true;
         }
     }
-    
+
     if (header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
@@ -503,7 +508,7 @@ bool Object::delete_property(const std::string& key) {
             return true;
         }
     }
-    
+
     return false;
 }
 

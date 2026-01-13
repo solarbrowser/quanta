@@ -8525,7 +8525,6 @@ std::unique_ptr<ASTNode> ConditionalExpression::clone() const {
 
 
 Value RegexLiteral::evaluate(Context& ctx) {
-    (void)ctx;
     try {
         auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
         
@@ -8578,7 +8577,16 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("test", Value(test_fn.release()));
         obj->set_property("exec", Value(exec_fn.release()));
         obj->set_property("toString", Value(toString_fn.release()));
-        
+
+        // Set RegExp.prototype so literal regexes inherit compile and other methods
+        Value regexp_constructor = ctx.get_binding("RegExp");
+        if (regexp_constructor.is_function()) {
+            Value regexp_prototype = regexp_constructor.as_function()->get_property("prototype");
+            if (regexp_prototype.is_object()) {
+                obj->set_prototype(regexp_prototype.as_object());
+            }
+        }
+
         return Value(obj.release());
     } catch (const std::exception& e) {
         return Value::null();
