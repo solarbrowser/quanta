@@ -4143,8 +4143,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
 
-    if (object_value.is_object() && !computed_) {
-        Object* obj = object_value.as_object();
+    if ((object_value.is_object() || object_value.is_function()) && !computed_) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
@@ -4194,8 +4194,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
     
-    if (object_value.is_object() && computed_) {
-        Object* obj = object_value.as_object();
+    if ((object_value.is_object() || object_value.is_function()) && computed_) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
 
         //  ufp: Constant array index
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {

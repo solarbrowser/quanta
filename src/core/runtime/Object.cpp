@@ -116,7 +116,7 @@ bool Object::has_own_property(const std::string& key) const {
 Value Object::get_property(const std::string& key) const {
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
-        
+
         if (key == "name") {
             return Value(func->get_name());
         }
@@ -189,27 +189,32 @@ Value Object::get_property(const std::string& key) const {
                         ctx.throw_exception(Value("Function.bind called on non-function"));
                         return Value();
                     }
-                    
+
                     Function* original_func = static_cast<Function*>(function_obj);
                     Value bound_this = args.size() > 0 ? args[0] : Value();
-                    
+
                     std::vector<Value> bound_args;
                     for (size_t i = 1; i < args.size(); i++) {
                         bound_args.push_back(args[i]);
                     }
-                    
+
                     auto bound_fn = ObjectFactory::create_native_function("bound " + original_func->get_name(),
                         [original_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                             std::vector<Value> final_args = bound_args;
                             final_args.insert(final_args.end(), call_args.begin(), call_args.end());
-                            
+
                             return original_func->call(ctx, final_args, bound_this);
                         });
                     return Value(bound_fn.release());
                 });
             return Value(bind_fn.release());
         }
-        
+
+        if (key == "toString") {
+            std::string func_name = func->get_name();
+            return Value("function " + func_name + "() { [native code] }");
+        }
+
         Value result = get_own_property(key);
         if (!result.is_undefined()) {
             return result;

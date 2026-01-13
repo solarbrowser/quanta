@@ -41,7 +41,12 @@ Function::Function(const std::string& name,
     this->set_property_descriptor("name", name_desc);
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
-    
+
+    // Set __proto__ to Function.prototype
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    if (func_proto) {
+        this->set_prototype(func_proto);
+    }
 }
 
 Function::Function(const std::string& name,
@@ -64,6 +69,12 @@ Function::Function(const std::string& name,
     this->set_property_descriptor("name", name_desc);
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
+
+    // Set __proto__ to Function.prototype
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    if (func_proto) {
+        this->set_prototype(func_proto);
+    }
 }
 
 Function::Function(const std::string& name,
@@ -84,6 +95,11 @@ Function::Function(const std::string& name,
     PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
+    // Set __proto__ to Function.prototype
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    if (func_proto) {
+        this->set_prototype(func_proto);
+    }
 }
 
 Function::Function(const std::string& name,
@@ -105,6 +121,11 @@ Function::Function(const std::string& name,
     PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
+    // Set __proto__ to Function.prototype
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    if (func_proto) {
+        this->set_prototype(func_proto);
+    }
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -450,7 +471,7 @@ Value Function::get_property(const std::string& key) const {
             });
         return Value(bind_fn.release());
     }
-    
+
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
         return result;

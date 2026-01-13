@@ -1441,6 +1441,10 @@ void Context::initialize_built_ins() {
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
+
+    // Set constructor property on Object.prototype
+    object_prototype->set_property("constructor", Value(object_constructor.get()), PropertyAttributes::BuiltinFunction);
+
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
     global_object_->set_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
@@ -3101,6 +3105,22 @@ void Context::initialize_built_ins() {
     bind_fn->set_property("name", Value("bind"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto func_toString_fn = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_function()) {
+                ctx.throw_type_error("Function.prototype.toString called on non-function");
+                return Value();
+            }
+
+            Function* func = static_cast<Function*>(this_obj);
+            std::string func_name = func->get_name();
+            return Value("function " + func_name + "() { [native code] }");
+        });
+
+    function_prototype->set_property("toString", Value(func_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
