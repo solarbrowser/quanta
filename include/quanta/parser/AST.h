@@ -311,7 +311,13 @@ public:
         MINUS_ASSIGN,
         MULTIPLY_ASSIGN,
         DIVIDE_ASSIGN,
-        MODULO_ASSIGN
+        MODULO_ASSIGN,
+        BITWISE_AND_ASSIGN,
+        BITWISE_OR_ASSIGN,
+        BITWISE_XOR_ASSIGN,
+        LEFT_SHIFT_ASSIGN,
+        RIGHT_SHIFT_ASSIGN,
+        UNSIGNED_RIGHT_SHIFT_ASSIGN
     };
 
 private:
@@ -415,7 +421,13 @@ public:
         MINUS_ASSIGN,
         MUL_ASSIGN,
         DIV_ASSIGN,
-        MOD_ASSIGN
+        MOD_ASSIGN,
+        BITWISE_AND_ASSIGN,
+        BITWISE_OR_ASSIGN,
+        BITWISE_XOR_ASSIGN,
+        LEFT_SHIFT_ASSIGN,
+        RIGHT_SHIFT_ASSIGN,
+        UNSIGNED_RIGHT_SHIFT_ASSIGN
     };
 
 private:

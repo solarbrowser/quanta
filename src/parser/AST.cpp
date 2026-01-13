@@ -309,12 +309,18 @@ Value BinaryExpression::evaluate(Context& ctx) {
         jit->record_execution(this, 0);
     }
 
-    if (operator_ == Operator::ASSIGN || 
+    if (operator_ == Operator::ASSIGN ||
         operator_ == Operator::PLUS_ASSIGN ||
         operator_ == Operator::MINUS_ASSIGN ||
         operator_ == Operator::MULTIPLY_ASSIGN ||
         operator_ == Operator::DIVIDE_ASSIGN ||
-        operator_ == Operator::MODULO_ASSIGN) {
+        operator_ == Operator::MODULO_ASSIGN ||
+        operator_ == Operator::BITWISE_AND_ASSIGN ||
+        operator_ == Operator::BITWISE_OR_ASSIGN ||
+        operator_ == Operator::BITWISE_XOR_ASSIGN ||
+        operator_ == Operator::LEFT_SHIFT_ASSIGN ||
+        operator_ == Operator::RIGHT_SHIFT_ASSIGN ||
+        operator_ == Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN) {
         
         
         
@@ -346,6 +352,24 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     break;
                 case Operator::MODULO_ASSIGN:
                     result_value = left_value.modulo(right_value);
+                    break;
+                case Operator::BITWISE_AND_ASSIGN:
+                    result_value = left_value.bitwise_and(right_value);
+                    break;
+                case Operator::BITWISE_OR_ASSIGN:
+                    result_value = left_value.bitwise_or(right_value);
+                    break;
+                case Operator::BITWISE_XOR_ASSIGN:
+                    result_value = left_value.bitwise_xor(right_value);
+                    break;
+                case Operator::LEFT_SHIFT_ASSIGN:
+                    result_value = left_value.left_shift(right_value);
+                    break;
+                case Operator::RIGHT_SHIFT_ASSIGN:
+                    result_value = left_value.right_shift(right_value);
+                    break;
+                case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:
+                    result_value = left_value.unsigned_right_shift(right_value);
                     break;
                 default:
                     break;
@@ -805,6 +829,12 @@ std::string BinaryExpression::operator_to_string(Operator op) {
         case Operator::LEFT_SHIFT: return "<<";
         case Operator::RIGHT_SHIFT: return ">>";
         case Operator::UNSIGNED_RIGHT_SHIFT: return ">>>";
+        case Operator::BITWISE_AND_ASSIGN: return "&=";
+        case Operator::BITWISE_OR_ASSIGN: return "|=";
+        case Operator::BITWISE_XOR_ASSIGN: return "^=";
+        case Operator::LEFT_SHIFT_ASSIGN: return "<<=";
+        case Operator::RIGHT_SHIFT_ASSIGN: return ">>=";
+        case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: return ">>>=";
         default: return "?";
     }
 }
@@ -823,6 +853,12 @@ BinaryExpression::Operator BinaryExpression::token_type_to_operator(TokenType ty
         case TokenType::MULTIPLY_ASSIGN: return Operator::MULTIPLY_ASSIGN;
         case TokenType::DIVIDE_ASSIGN: return Operator::DIVIDE_ASSIGN;
         case TokenType::MODULO_ASSIGN: return Operator::MODULO_ASSIGN;
+        case TokenType::BITWISE_AND_ASSIGN: return Operator::BITWISE_AND_ASSIGN;
+        case TokenType::BITWISE_OR_ASSIGN: return Operator::BITWISE_OR_ASSIGN;
+        case TokenType::BITWISE_XOR_ASSIGN: return Operator::BITWISE_XOR_ASSIGN;
+        case TokenType::LEFT_SHIFT_ASSIGN: return Operator::LEFT_SHIFT_ASSIGN;
+        case TokenType::RIGHT_SHIFT_ASSIGN: return Operator::RIGHT_SHIFT_ASSIGN;
+        case TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN: return Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN;
         case TokenType::EQUAL: return Operator::EQUAL;
         case TokenType::NOT_EQUAL: return Operator::NOT_EQUAL;
         case TokenType::STRICT_EQUAL: return Operator::STRICT_EQUAL;
