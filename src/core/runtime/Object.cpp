@@ -210,11 +210,6 @@ Value Object::get_property(const std::string& key) const {
             return Value(bind_fn.release());
         }
 
-        if (key == "toString") {
-            std::string func_name = func->get_name();
-            return Value("function " + func_name + "() { [native code] }");
-        }
-
         Value result = get_own_property(key);
         if (!result.is_undefined()) {
             return result;

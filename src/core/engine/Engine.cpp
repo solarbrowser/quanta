@@ -147,19 +147,14 @@ Engine::Result Engine::evaluate(const std::string& expression) {
 
                 // If exception is an object with a toString method, call it
                 std::string error_message;
-                std::cerr << "[DEBUG Engine] Exception type - is_object: " << exception.is_object()
-                          << ", is_function: " << exception.is_function() << std::endl;
                 if (exception.is_object() || exception.is_function()) {
                     Object* obj = exception.is_object() ? exception.as_object() : exception.as_function();
-                    std::cerr << "[DEBUG Engine] Got obj pointer: " << (obj != nullptr) << std::endl;
                     if (obj) {
                         Value toString_method = obj->get_property("toString");
-                        std::cerr << "[DEBUG Engine] toString_method.is_function(): " << toString_method.is_function() << std::endl;
                         if (toString_method.is_function()) {
                             try {
                                 Function* toString_fn = toString_method.as_function();
                                 Value toString_result = toString_fn->call(*global_context_, {}, exception);
-                                std::cerr << "[DEBUG Engine] toString_result: " << toString_result.to_string() << std::endl;
                                 if (!global_context_->has_exception() && toString_result.is_string()) {
                                     error_message = toString_result.to_string();
                                 } else {

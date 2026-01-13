@@ -5965,9 +5965,9 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 Value ForInStatement::evaluate(Context& ctx) {
     Value object = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
-    if (object.is_object()) {
-        Object* obj = object.as_object();
+
+    if (object.is_object() || object.is_function()) {
+        Object* obj = object.is_object() ? object.as_object() : object.as_function();
         
         std::string var_name;
         

@@ -3146,7 +3146,14 @@ void Context::initialize_built_ins() {
         [string_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str_value = args.empty() ? "" : args[0].to_string();
 
-            // Create String object
+            // When called as a function (not constructor), return primitive string
+            Object* this_binding = ctx.get_this_binding();
+            if (!this_binding || this_binding == ctx.get_global_object()) {
+                // Called as function: String('foo') -> primitive "foo"
+                return Value(str_value);
+            }
+
+            // Called as constructor: new String('foo') -> String object
             auto str_obj = ObjectFactory::create_string(str_value);
             str_obj->set_prototype(string_proto_ptr);
 
@@ -4349,7 +4356,14 @@ void Context::initialize_built_ins() {
         [number_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             double value = args.empty() ? 0.0 : args[0].to_number();
 
-            // Create Number object
+            // When called as a function (not constructor), return primitive number
+            Object* this_binding = ctx.get_this_binding();
+            if (!this_binding || this_binding == ctx.get_global_object()) {
+                // Called as function: Number('42') -> primitive 42
+                return Value(value);
+            }
+
+            // Called as constructor: new Number(42) -> Number object
             auto num_obj = ObjectFactory::create_number(value);
             num_obj->set_prototype(number_proto_ptr);
 
@@ -4625,7 +4639,14 @@ void Context::initialize_built_ins() {
         [boolean_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
-            // Create Boolean object
+            // When called as a function (not constructor), return primitive boolean
+            Object* this_binding = ctx.get_this_binding();
+            if (!this_binding || this_binding == ctx.get_global_object()) {
+                // Called as function: Boolean('foo') -> primitive true
+                return Value(value);
+            }
+
+            // Called as constructor: new Boolean(true) -> Boolean object
             auto bool_obj = ObjectFactory::create_boolean(value);
             bool_obj->set_prototype(boolean_proto_ptr);
 
@@ -7582,7 +7603,7 @@ void Context::setup_global_bindings() {
             }
 
             return Value(result);
-        });
+        }, 1);
     lexical_environment_->create_binding("escape", Value(escape_fn.get()), false);
     if (global_object_) {
         PropertyDescriptor escape_desc(Value(escape_fn.get()), PropertyAttributes::BuiltinFunction);
@@ -7648,7 +7669,7 @@ void Context::setup_global_bindings() {
             }
 
             return Value(result);
-        });
+        }, 1);
     lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), false);
     if (global_object_) {
         PropertyDescriptor unescape_desc(Value(unescape_fn.get()), PropertyAttributes::BuiltinFunction);
