@@ -4562,10 +4562,17 @@ Value MemberExpression::evaluate(Context& ctx) {
             auto split_fn = ObjectFactory::create_native_function("split",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
-                    std::string separator = args.empty() ? "" : args[0].to_string();
-                    
                     auto array = ObjectFactory::create_array();
-                    
+
+                    // If no separator provided, return whole string as single element
+                    if (args.empty()) {
+                        array->set_element(0, Value(str_value));
+                        array->set_length(1);
+                        return Value(array.release());
+                    }
+
+                    std::string separator = args[0].to_string();
+
                     if (separator.empty()) {
                         for (size_t i = 0; i < str_value.length(); ++i) {
                             array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str_value[i])));
@@ -5096,10 +5103,17 @@ Value MemberExpression::evaluate(Context& ctx) {
                 auto split_fn = ObjectFactory::create_native_function("split",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx;
-                        std::string separator = args.empty() ? "" : args[0].to_string();
-                        
                         auto array = ObjectFactory::create_array();
-                        
+
+                        // If no separator provided, return whole string as single element
+                        if (args.empty()) {
+                            array->set_element(0, Value(str_value));
+                            array->set_length(1);
+                            return Value(array.release());
+                        }
+
+                        std::string separator = args[0].to_string();
+
                         if (separator.empty()) {
                             for (size_t i = 0; i < str_value.length(); ++i) {
                                 array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str_value[i])));
