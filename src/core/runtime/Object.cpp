@@ -487,8 +487,13 @@ bool Object::delete_property(const std::string& key) {
     }
 
     // Remove from descriptor map if present
+    bool descriptor_deleted = false;
     if (descriptors_) {
-        descriptors_->erase(key);
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) {
+            descriptors_->erase(it);
+            descriptor_deleted = true;
+        }
     }
 
     if (overflow_properties_) {
@@ -505,8 +510,23 @@ bool Object::delete_property(const std::string& key) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
             properties_[info.offset] = Value();
+
+            // Remove property from shape
+            Shape* new_shape = header_.shape->remove_property(key);
+            if (new_shape) {
+                header_.shape = new_shape;
+            }
+
+            header_.property_count--;
+            update_hash_code();
             return true;
         }
+    }
+
+    // If we deleted from descriptor but property wasn't in shape/overflow,
+    // still return true (descriptor-only property was deleted)
+    if (descriptor_deleted) {
+        return true;
     }
 
     return false;
@@ -1585,6 +1605,37 @@ std::vector<std::string> Shape::get_property_keys() const {
     }
     
     return keys;
+}
+
+Shape* Shape::remove_property(const std::string& key) {
+    // Remove a property by creating a new shape without it
+    // Find the property in the chain
+    if (!has_property(key)) {
+        return this; // Property doesn't exist, return same shape
+    }
+
+    // Create a new shape tree without the removed property
+    Shape* new_shape = new Shape();
+    new_shape->parent_ = nullptr;
+
+    // Rebuild the property chain without the removed key
+    std::vector<std::string> keys;
+    const Shape* current = this;
+    while (current && current->parent_) {
+        if (!current->transition_key_.empty() && current->transition_key_ != key) {
+            keys.push_back(current->transition_key_);
+        }
+        current = current->parent_;
+    }
+
+    // Rebuild in reverse order (root to leaf)
+    Shape* building_shape = new_shape;
+    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
+        auto info = get_property_info(*it);
+        building_shape = building_shape->add_property(*it, info.attributes);
+    }
+
+    return building_shape;
 }
 
 Shape* Shape::get_root_shape() {

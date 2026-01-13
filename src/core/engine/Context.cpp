@@ -7607,7 +7607,7 @@ void Context::setup_global_bindings() {
 
             return Value(result);
         }, 1);
-    lexical_environment_->create_binding("escape", Value(escape_fn.get()), false);
+    lexical_environment_->create_binding("escape", Value(escape_fn.get()), true);
     if (global_object_) {
         PropertyDescriptor escape_desc(Value(escape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("escape", escape_desc);
@@ -7673,7 +7673,7 @@ void Context::setup_global_bindings() {
 
             return Value(result);
         }, 1);
-    lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), false);
+    lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), true);
     if (global_object_) {
         PropertyDescriptor unescape_desc(Value(unescape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("unescape", unescape_desc);

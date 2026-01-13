@@ -380,6 +380,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
 Value Function::get_property(const std::string& key) const {
     if (key == "name") {
+        // Check if property was deleted via descriptor (use has_own_property to check only this object)
+        if (!Object::has_own_property(key)) {
+            return Value(); // Property deleted, return undefined
+        }
         return Value(name_);
     }
     if (key == "length") {

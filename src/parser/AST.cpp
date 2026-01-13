@@ -961,12 +961,13 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value object_value = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                
-                if (!object_value.is_object()) {
+
+                // Functions are also objects that can have properties deleted
+                if (!object_value.is_object() && !object_value.is_function()) {
                     return Value(true);
                 }
-                
-                Object* obj = object_value.as_object();
+
+                Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
                 std::string property_name;
                 
                 if (member->is_computed()) {
