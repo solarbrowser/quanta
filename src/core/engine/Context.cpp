@@ -1422,7 +1422,19 @@ void Context::initialize_built_ins() {
     propertyIsEnumerable_length_desc.set_writable(false);
     proto_propertyIsEnumerable_fn->set_property_descriptor("length", propertyIsEnumerable_length_desc);
 
+    auto proto_valueOf_fn = ObjectFactory::create_native_function("valueOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                return Value(this_obj);
+            }
+            // If no this binding, return undefined
+            return Value();
+        }, 0);
+
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+    object_prototype->set_property("valueOf", Value(proto_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);

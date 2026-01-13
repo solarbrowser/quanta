@@ -75,9 +75,9 @@ Quanta uses **platform-native compilers** for optimal performance:
 
 **Universal Build Script** (Recommended):
 ```bash
-./build.sh           # Build with Makefile
-./build.sh cmake     # Build with CMake
-./build.sh clean     # Clean all builds
+./build.sh            # Build with Makefile
+./build.sh cmake      # Build with CMake
+./build.sh clean      # Clean all builds
 ```
 
 **Windows (Native MSVC)**:

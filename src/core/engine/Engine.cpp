@@ -559,7 +559,18 @@ void Engine::setup_built_in_functions() {
                 radix = static_cast<int>(r);
             }
         }
-        
+
+        // Auto-detect hex prefix "0x" or "0X" if no radix specified
+        if (args.size() <= 1 && start + 2 <= str.length() &&
+            str[start] == '0' && (str[start + 1] == 'x' || str[start + 1] == 'X')) {
+            radix = 16;
+            start += 2; // Skip "0x" prefix
+        }
+
+        if (start >= str.length()) {
+            return Value::nan();
+        }
+
         char first_char = str[start];
         bool has_valid_start = false;
         
