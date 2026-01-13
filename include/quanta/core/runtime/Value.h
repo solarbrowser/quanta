@@ -136,7 +136,7 @@ public:
     explicit Value(double d) {
         if (std::isnan(d)) {
             bits_ = QUIET_NAN | TAG_NAN;
-        } else if (std::isinf(d)) {
+        } else if (std::isinf(d) || d == std::numeric_limits<double>::infinity() || d == -std::numeric_limits<double>::infinity()) {
             bits_ = QUIET_NAN | (d > 0 ? TAG_POS_INF : TAG_NEG_INF);
         } else {
             number_ = d;

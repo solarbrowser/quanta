@@ -4327,11 +4327,12 @@ void Context::initialize_built_ins() {
     number_constructor->set_property_descriptor("MAX_VALUE", max_value_desc);
     PropertyDescriptor min_value_desc(Value(5e-324), PropertyAttributes::None);
     number_constructor->set_property_descriptor("MIN_VALUE", min_value_desc);
-    PropertyDescriptor nan_desc(Value(std::numeric_limits<double>::quiet_NaN()), PropertyAttributes::None);
+    PropertyDescriptor nan_desc(Value::nan(), PropertyAttributes::None);
     number_constructor->set_property_descriptor("NaN", nan_desc);
-    PropertyDescriptor pos_inf_desc(Value(std::numeric_limits<double>::infinity()), PropertyAttributes::None);
+
+    PropertyDescriptor pos_inf_desc(Value::positive_infinity(), PropertyAttributes::None);
     number_constructor->set_property_descriptor("POSITIVE_INFINITY", pos_inf_desc);
-    PropertyDescriptor neg_inf_desc(Value(-std::numeric_limits<double>::infinity()), PropertyAttributes::None);
+    PropertyDescriptor neg_inf_desc(Value::negative_infinity(), PropertyAttributes::None);
     number_constructor->set_property_descriptor("NEGATIVE_INFINITY", neg_inf_desc);
     PropertyDescriptor epsilon_desc(Value(2.220446049250313e-16), PropertyAttributes::None);
     number_constructor->set_property_descriptor("EPSILON", epsilon_desc);
@@ -4368,15 +4369,15 @@ void Context::initialize_built_ins() {
     auto numberIsFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
-            
+
             if (!args[0].is_number()) return Value(false);
-            
-            double val = args[0].to_number();
-            
-            if (val != val) return Value(false);
-            
-            const double MAX_FINITE = 1.7976931348623157e+308;
-            return Value(val > -MAX_FINITE && val < MAX_FINITE);
+
+            // Check if it's NaN, positive or negative infinity
+            if (args[0].is_nan() || args[0].is_positive_infinity() || args[0].is_negative_infinity()) {
+                return Value(false);
+            }
+
+            return Value(true);
         }, 1);
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -4581,13 +4582,6 @@ void Context::initialize_built_ins() {
         }, 1);
     number_constructor->set_property("isNaN", Value(isNaN_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            if (args.empty() || !args[0].is_number()) return Value(false);
-            return Value(std::isfinite(args[0].to_number()));
-        }, 1);
-    number_constructor->set_property("isFinite", Value(isFinite_fn.release()), PropertyAttributes::BuiltinFunction);
     number_constructor->set_property("prototype", Value(number_prototype.release()));
 
     register_built_in_object("Number", number_constructor.release());
@@ -7305,8 +7299,19 @@ void Context::setup_global_bindings() {
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
-            double num = args[0].to_number();
-            return Value(std::isfinite(num));
+
+            Value val = args[0];
+            double num = val.to_number();
+
+            // Check for NaN
+            if (num != num) return Value(false);
+
+            // Check if the value is infinity
+            if (val.is_number() && (val.is_positive_infinity() || val.is_negative_infinity())) {
+                return Value(false);
+            }
+
+            return Value(true);
         }, 1);
     lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
 

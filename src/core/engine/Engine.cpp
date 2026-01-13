@@ -627,18 +627,48 @@ void Engine::setup_built_in_functions() {
         if (args.empty()) {
             return Value(true);
         }
-        
-        double num = args[0].to_number();
-        return Value(std::isnan(num));
+
+        Value val = args[0];
+        double num = val.to_number();
+
+        // Check for NaN using both value tag and double comparison
+        if (val.is_number() && val.is_nan()) {
+            return Value(true);
+        }
+
+        // Also check using != (NaN != NaN is true)
+        return Value(num != num);
     });
     
     register_function("isFinite", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value(false);
         }
-        
-        double num = args[0].to_number();
-        return Value(std::isfinite(num));
+
+        Value val = args[0];
+
+        // Convert to number first
+        double num = val.to_number();
+
+        // Check using Value tags if it's a number type
+        if (val.is_number()) {
+            // Check for NaN, positive infinity, or negative infinity
+            if (val.is_nan() || val.is_positive_infinity() || val.is_negative_infinity()) {
+                return Value(false);
+            }
+            return Value(true);
+        }
+
+        // For non-number types after conversion, check the double
+        // Check for NaN using != comparison
+        if (num != num) return Value(false);
+
+        // Check for infinity by comparing with limits
+        if (num == std::numeric_limits<double>::infinity() || num == -std::numeric_limits<double>::infinity()) {
+            return Value(false);
+        }
+
+        return Value(true);
     });
 }
 
