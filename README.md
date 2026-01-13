@@ -29,7 +29,7 @@
 
 ## What is Quanta
 
-Quanta is a modern JavaScript engine designed for the **Solar Project** with a focus on **modular architecture** and **high performance**. Built from the ground up in C++17, Quanta provides:
+Quanta is a modern JavaScript engine designed for the **Solar Project** with a focus on **modular architecture** and **high performance**. Built from the ground up in C++23, Quanta provides:
 
 ### Core Features
 - **Modular Architecture** - Clean separation of concerns with 15+ focused modules
