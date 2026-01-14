@@ -2488,8 +2488,16 @@ void Context::initialize_built_ins() {
 
             if (args.empty() || !args[0].is_function()) return Value();
 
+            Function* callback = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+
             uint32_t length = this_obj->get_length();
             for (uint32_t i = 0; i < length; i++) {
+                Value element = this_obj->get_element(i);
+                // Call callback for all elements (including undefined)
+                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
+                callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);

@@ -689,12 +689,16 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
 }
 
 uint32_t Object::get_length() const {
-    if (header_.type == ObjectType::Array) {
-        Value length_val = get_own_property("length");
-        if (length_val.is_number()) {
-            return static_cast<uint32_t>(length_val.as_number());
-        }
+    // For both arrays and array-like objects, check length property
+    Value length_val = get_property("length");
+    if (!length_val.is_undefined()) {
+        // ToUint32: convert to number, then to uint32
+        double length_num = length_val.to_number();
+        if (length_num < 0) return 0;
+        if (std::isnan(length_num) || std::isinf(length_num)) return 0;
+        return static_cast<uint32_t>(length_num);
     }
+    // Fallback to elements size if no length property
     return static_cast<uint32_t>(elements_.size());
 }
 
