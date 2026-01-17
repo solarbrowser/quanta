@@ -1473,6 +1473,25 @@ void Context::initialize_built_ins() {
         }, 0);
 
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    // Object.prototype.toLocaleString - calls toString by default
+    auto proto_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                return Value("[object Object]");
+            }
+            // Call toString method on this object
+            Value toString_val = this_obj->get_property("toString");
+            if (toString_val.is_function()) {
+                Function* toString_fn = toString_val.as_function();
+                return toString_fn->call(ctx, {}, Value(this_obj));
+            }
+            return Value(this_obj->to_string());
+        }, 0);
+
+    object_prototype->set_property("toLocaleString", Value(proto_toLocaleString_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("valueOf", Value(proto_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
