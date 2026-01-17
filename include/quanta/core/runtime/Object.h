@@ -362,8 +362,9 @@ private:
     class Context* closure_context_;
     Object* prototype_;
     bool is_native_;
+    bool is_constructor_;  // Whether this function has [[Construct]] internal method
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
-    
+
     mutable uint32_t execution_count_;
     mutable bool is_hot_;
     mutable std::chrono::high_resolution_clock::time_point last_call_time_;
@@ -394,6 +395,8 @@ public:
     const std::vector<std::string>& get_parameters() const { return parameters_; }
     size_t get_arity() const { return parameters_.size(); }
     bool is_native() const { return is_native_; }
+    bool is_constructor() const { return is_constructor_; }
+    void set_is_constructor(bool value) { is_constructor_ = value; }
     
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }

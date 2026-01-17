@@ -3807,6 +3807,53 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("sup", sup_desc);
 
+    // AnnexB: String.prototype.substr(start, length)
+    auto substr_fn = ObjectFactory::create_native_function("substr",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            int64_t len = static_cast<int64_t>(str.length());
+
+            // Get start parameter
+            int64_t start = 0;
+            if (!args.empty()) {
+                start = static_cast<int64_t>(args[0].to_number());
+            }
+
+            // If start is negative, it's treated as max(len + start, 0)
+            if (start < 0) {
+                start = std::max(static_cast<int64_t>(0), len + start);
+            } else if (start >= len) {
+                return Value("");
+            }
+
+            // Get length parameter
+            int64_t length;
+            if (args.size() > 1) {
+                double length_val = args[1].to_number();
+                // Negative or NaN length should return empty string
+                if (std::isnan(length_val) || length_val < 0) {
+                    return Value("");
+                }
+                length = static_cast<int64_t>(length_val);
+            } else {
+                // If length not specified, use rest of string
+                length = len - start;
+            }
+
+            // Clamp length to available characters
+            length = std::min(length, len - start);
+
+            if (length <= 0) {
+                return Value("");
+            }
+
+            return Value(str.substr(static_cast<size_t>(start), static_cast<size_t>(length)));
+        }, 2);
+    PropertyDescriptor substr_desc(Value(substr_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("substr", substr_desc);
+
     auto isWellFormed_fn = ObjectFactory::create_native_function("isWellFormed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;

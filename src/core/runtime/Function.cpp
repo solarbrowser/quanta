@@ -25,13 +25,13 @@ namespace Quanta {
 namespace Quanta {
 
 
-Function::Function(const std::string& name, 
+Function::Function(const std::string& name,
                    const std::vector<std::string>& params,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context)
-    : Object(ObjectType::Function), name_(name), parameters_(params), 
-      body_(std::move(body)), closure_context_(closure_context), 
-      prototype_(nullptr), is_native_(false), execution_count_(0), is_hot_(false) {
+    : Object(ObjectType::Function), name_(name), parameters_(params),
+      body_(std::move(body)), closure_context_(closure_context),
+      prototype_(nullptr), is_native_(false), is_constructor_(true), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
     
@@ -49,8 +49,8 @@ Function::Function(const std::string& name,
                    std::unique_ptr<ASTNode> body,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
-      body_(std::move(body)), closure_context_(closure_context), 
-      prototype_(nullptr), is_native_(false), execution_count_(0), is_hot_(false) {
+      body_(std::move(body)), closure_context_(closure_context),
+      prototype_(nullptr), is_native_(false), is_constructor_(true), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
@@ -70,7 +70,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -91,7 +91,7 @@ Function::Function(const std::string& name,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -482,6 +482,12 @@ bool Function::set_property(const std::string& key, const Value& value, Property
 }
 
 Value Function::construct(Context& ctx, const std::vector<Value>& args) {
+    // Check if this function is a constructor
+    if (!is_constructor_) {
+        ctx.throw_exception(Value("TypeError: " + name_ + " is not a constructor"));
+        return Value();
+    }
+
     auto new_object = ObjectFactory::create_object();
     Value this_value(new_object.get());
     
