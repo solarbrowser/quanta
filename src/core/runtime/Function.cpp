@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
@@ -171,10 +172,64 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.throw_exception(Value("call stack size exceeded"));
             return Value();
         }
-        
+
         Object* old_this = ctx.get_this_binding();
-        if (this_value.is_object() || this_value.is_function()) {
-            Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+
+        // ToObject: Wrap primitives to objects for this_binding
+        // ToObject throws TypeError for undefined and null
+        if (this_value.is_undefined() || this_value.is_null()) {
+            ctx.throw_type_error("Cannot convert undefined or null to object");
+            return Value();
+        }
+
+        Object* this_obj = nullptr;
+        if (this_value.is_object()) {
+            this_obj = this_value.as_object();
+        } else if (this_value.is_function()) {
+            this_obj = this_value.as_function();
+        } else if (this_value.is_boolean()) {
+            // Wrap boolean primitive to Boolean object
+            auto bool_wrapper = ObjectFactory::create_boolean(this_value.as_boolean());
+
+            // Set prototype from Boolean.prototype
+            Value boolean_ctor = ctx.get_binding("Boolean");
+            if (boolean_ctor.is_function()) {
+                Value boolean_proto = boolean_ctor.as_function()->get_property("prototype");
+                if (boolean_proto.is_object()) {
+                    bool_wrapper->set_prototype(boolean_proto.as_object());
+                }
+            }
+
+            this_obj = bool_wrapper.release();
+        } else if (this_value.is_number()) {
+            // Wrap number primitive to Number object
+            auto num_wrapper = ObjectFactory::create_number(this_value.as_number());
+
+            Value number_ctor = ctx.get_binding("Number");
+            if (number_ctor.is_function()) {
+                Value number_proto = number_ctor.as_function()->get_property("prototype");
+                if (number_proto.is_object()) {
+                    num_wrapper->set_prototype(number_proto.as_object());
+                }
+            }
+
+            this_obj = num_wrapper.release();
+        } else if (this_value.is_string()) {
+            // Wrap string primitive to String object
+            auto str_wrapper = ObjectFactory::create_string(this_value.as_string()->str());
+
+            Value string_ctor = ctx.get_binding("String");
+            if (string_ctor.is_function()) {
+                Value string_proto = string_ctor.as_function()->get_property("prototype");
+                if (string_proto.is_object()) {
+                    str_wrapper->set_prototype(string_proto.as_object());
+                }
+            }
+
+            this_obj = str_wrapper.release();
+        }
+
+        if (this_obj) {
             ctx.set_this_binding(this_obj);
         }
 

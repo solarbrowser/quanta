@@ -1372,6 +1372,16 @@ std::string Object::to_string() const {
         return oss.str();
     }
 
+    // Handle primitive wrapper objects (Number, Boolean, String)
+    if (header_.type == ObjectType::Number ||
+        header_.type == ObjectType::Boolean ||
+        header_.type == ObjectType::String) {
+        Value primitive_value = get_property("value");
+        if (!primitive_value.is_undefined()) {
+            return primitive_value.to_string();
+        }
+    }
+
     // Check for custom toString property in constructor
     // For Test262Error and similar custom errors
     Value constructor_prop = get_property("constructor");

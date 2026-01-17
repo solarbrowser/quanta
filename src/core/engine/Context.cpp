@@ -278,6 +278,16 @@ void Context::throw_error(const std::string& message) {
 void Context::throw_type_error(const std::string& message) {
     auto error = Error::create_type_error(message);
     error->generate_stack_trace();
+
+    // Set TypeError.prototype so error inherits constructor
+    Value type_error_ctor = get_binding("TypeError");
+    if (type_error_ctor.is_function()) {
+        Value type_error_proto = type_error_ctor.as_function()->get_property("prototype");
+        if (type_error_proto.is_object()) {
+            error->set_prototype(type_error_proto.as_object());
+        }
+    }
+
     throw_exception(Value(error.release()));
 }
 
@@ -387,30 +397,59 @@ void Context::initialize_built_ins() {
 
 
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
-        [](Context& /* ctx */, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
                 return Value(ObjectFactory::create_object().release());
             }
-            
+
             Value value = args[0];
-            
+
             if (value.is_null() || value.is_undefined()) {
                 return Value(ObjectFactory::create_object().release());
             }
-            
+
             if (value.is_object() || value.is_function()) {
                 return value;
             }
-            
+
             if (value.is_string()) {
                 auto string_obj = ObjectFactory::create_string(value.to_string());
+
+                // Set String.prototype
+                Value string_ctor = ctx.get_binding("String");
+                if (string_ctor.is_function()) {
+                    Value string_proto = string_ctor.as_function()->get_property("prototype");
+                    if (string_proto.is_object()) {
+                        string_obj->set_prototype(string_proto.as_object());
+                    }
+                }
+
                 return Value(string_obj.release());
             } else if (value.is_number()) {
-                auto number_obj = ObjectFactory::create_object();
-                number_obj->set_property("valueOf", value);
+                auto number_obj = ObjectFactory::create_number(value.as_number());
+
+                // Set Number.prototype
+                Value number_ctor = ctx.get_binding("Number");
+                if (number_ctor.is_function()) {
+                    Value number_proto = number_ctor.as_function()->get_property("prototype");
+                    if (number_proto.is_object()) {
+                        number_obj->set_prototype(number_proto.as_object());
+                    }
+                }
+
                 return Value(number_obj.release());
             } else if (value.is_boolean()) {
                 auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
+
+                // Set Boolean.prototype
+                Value boolean_ctor = ctx.get_binding("Boolean");
+                if (boolean_ctor.is_function()) {
+                    Value boolean_proto = boolean_ctor.as_function()->get_property("prototype");
+                    if (boolean_proto.is_object()) {
+                        boolean_obj->set_prototype(boolean_proto.as_object());
+                    }
+                }
+
                 return Value(boolean_obj.release());
             } else if (value.is_symbol()) {
                 auto symbol_obj = ObjectFactory::create_object();
