@@ -18,7 +18,7 @@
 
 namespace Quanta {
 
-std::unordered_map<std::pair<Shape*, std::string>, Shape*, Object::ShapeTransitionHash> Object::shape_transition_cache_;
+std::unordered_map<std::tuple<Shape*, std::string, PropertyAttributes>, Shape*, Object::ShapeTransitionHash> Object::shape_transition_cache_;
 std::unordered_map<std::string, std::string> Object::interned_keys_;
 uint32_t Shape::next_shape_id_ = 1;
 
@@ -116,7 +116,7 @@ bool Object::has_own_property(const std::string& key) const {
 Value Object::get_property(const std::string& key) const {
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
-
+        
         if (key == "name") {
             return Value(func->get_name());
         }
@@ -189,27 +189,27 @@ Value Object::get_property(const std::string& key) const {
                         ctx.throw_exception(Value("Function.bind called on non-function"));
                         return Value();
                     }
-
+                    
                     Function* original_func = static_cast<Function*>(function_obj);
                     Value bound_this = args.size() > 0 ? args[0] : Value();
-
+                    
                     std::vector<Value> bound_args;
                     for (size_t i = 1; i < args.size(); i++) {
                         bound_args.push_back(args[i]);
                     }
-
+                    
                     auto bound_fn = ObjectFactory::create_native_function("bound " + original_func->get_name(),
                         [original_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                             std::vector<Value> final_args = bound_args;
                             final_args.insert(final_args.end(), call_args.begin(), call_args.end());
-
+                            
                             return original_func->call(ctx, final_args, bound_this);
                         });
                     return Value(bound_fn.release());
                 });
             return Value(bind_fn.release());
         }
-
+        
         Value result = get_own_property(key);
         if (!result.is_undefined()) {
             return result;
@@ -480,22 +480,12 @@ bool Object::delete_property(const std::string& key) {
     if (!desc.is_configurable()) {
         return false;
     }
-
+    
     uint32_t index;
     if (is_array_index(key, &index)) {
         return delete_element(index);
     }
-
-    // Remove from descriptor map if present
-    bool descriptor_deleted = false;
-    if (descriptors_) {
-        auto it = descriptors_->find(key);
-        if (it != descriptors_->end()) {
-            descriptors_->erase(it);
-            descriptor_deleted = true;
-        }
-    }
-
+    
     if (overflow_properties_) {
         auto it = overflow_properties_->find(key);
         if (it != overflow_properties_->end()) {
@@ -505,30 +495,15 @@ bool Object::delete_property(const std::string& key) {
             return true;
         }
     }
-
+    
     if (header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
             properties_[info.offset] = Value();
-
-            // Remove property from shape
-            Shape* new_shape = header_.shape->remove_property(key);
-            if (new_shape) {
-                header_.shape = new_shape;
-            }
-
-            header_.property_count--;
-            update_hash_code();
             return true;
         }
     }
-
-    // If we deleted from descriptor but property wasn't in shape/overflow,
-    // still return true (descriptor-only property was deleted)
-    if (descriptor_deleted) {
-        return true;
-    }
-
+    
     return false;
 }
 
@@ -689,16 +664,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
 }
 
 uint32_t Object::get_length() const {
-    // For both arrays and array-like objects, check length property
-    Value length_val = get_property("length");
-    if (!length_val.is_undefined()) {
-        // ToUint32: convert to number, then to uint32
-        double length_num = length_val.to_number();
-        if (length_num < 0) return 0;
-        if (std::isnan(length_num) || std::isinf(length_num)) return 0;
-        return static_cast<uint32_t>(length_num);
+    if (header_.type == ObjectType::Array) {
+        Value length_val = get_own_property("length");
+        if (length_val.is_number()) {
+            return static_cast<uint32_t>(length_val.as_number());
+        }
     }
-    // Fallback to elements size if no length property
     return static_cast<uint32_t>(elements_.size());
 }
 
@@ -1372,16 +1343,6 @@ std::string Object::to_string() const {
         return oss.str();
     }
 
-    // Handle primitive wrapper objects (Number, Boolean, String)
-    if (header_.type == ObjectType::Number ||
-        header_.type == ObjectType::Boolean ||
-        header_.type == ObjectType::String) {
-        Value primitive_value = get_property("value");
-        if (!primitive_value.is_undefined()) {
-            return primitive_value.to_string();
-        }
-    }
-
     // Check for custom toString property in constructor
     // For Test262Error and similar custom errors
     Value constructor_prop = get_property("constructor");
@@ -1586,16 +1547,16 @@ Shape::PropertyInfo Shape::get_property_info(const std::string& key) const {
 }
 
 Shape* Shape::add_property(const std::string& key, PropertyAttributes attrs) {
-    std::pair<Shape*, std::string> cache_key = {this, key};
+    std::tuple<Shape*, std::string, PropertyAttributes> cache_key = {this, key, attrs};
     auto cache_it = Object::shape_transition_cache_.find(cache_key);
     if (cache_it != Object::shape_transition_cache_.end()) {
         return cache_it->second;
     }
-    
+
     Shape* new_shape = new Shape(this, key, attrs);
-    
+
     Object::shape_transition_cache_[cache_key] = new_shape;
-    
+
     return new_shape;
 }
 
@@ -1619,37 +1580,6 @@ std::vector<std::string> Shape::get_property_keys() const {
     }
     
     return keys;
-}
-
-Shape* Shape::remove_property(const std::string& key) {
-    // Remove a property by creating a new shape without it
-    // Find the property in the chain
-    if (!has_property(key)) {
-        return this; // Property doesn't exist, return same shape
-    }
-
-    // Create a new shape tree without the removed property
-    Shape* new_shape = new Shape();
-    new_shape->parent_ = nullptr;
-
-    // Rebuild the property chain without the removed key
-    std::vector<std::string> keys;
-    const Shape* current = this;
-    while (current && current->parent_) {
-        if (!current->transition_key_.empty() && current->transition_key_ != key) {
-            keys.push_back(current->transition_key_);
-        }
-        current = current->parent_;
-    }
-
-    // Rebuild in reverse order (root to leaf)
-    Shape* building_shape = new_shape;
-    for (auto it = keys.rbegin(); it != keys.rend(); ++it) {
-        auto info = get_property_info(*it);
-        building_shape = building_shape->add_property(*it, info.attributes);
-    }
-
-    return building_shape;
 }
 
 Shape* Shape::get_root_shape() {

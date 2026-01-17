@@ -211,14 +211,15 @@ protected:
 public:
     void clear_properties();
     struct ShapeTransitionHash {
-        std::size_t operator()(const std::pair<Shape*, std::string>& p) const {
-            std::size_t h1 = std::hash<void*>{}(p.first);
-            std::size_t h2 = std::hash<std::string>{}(p.second);
-            return h1 ^ (h2 << 1);
+        std::size_t operator()(const std::tuple<Shape*, std::string, PropertyAttributes>& t) const {
+            std::size_t h1 = std::hash<void*>{}(std::get<0>(t));
+            std::size_t h2 = std::hash<std::string>{}(std::get<1>(t));
+            std::size_t h3 = std::hash<uint8_t>{}(static_cast<uint8_t>(std::get<2>(t)));
+            return h1 ^ (h2 << 1) ^ (h3 << 2);
         }
     };
-    
-    static std::unordered_map<std::pair<Shape*, std::string>, Shape*, ShapeTransitionHash> shape_transition_cache_;
+
+    static std::unordered_map<std::tuple<Shape*, std::string, PropertyAttributes>, Shape*, ShapeTransitionHash> shape_transition_cache_;
 
 private:
     

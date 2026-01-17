@@ -5,7 +5,7 @@
 
 # Compiler and optimization flags
 CXX = g++
-CXXFLAGS = -std=c++23 -Wall -O3 -fPIC -march=native -mtune=native
+CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.1.0"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD
 CXXFLAGS += -funroll-loops -finline-functions -finline-limit=1000
@@ -29,7 +29,7 @@ ifeq ($(UNAME_S),Windows)
     STACK_FLAGS = -Wl,--stack,67108864
     EXE_EXT = .exe
     RM = rm -rf
-    MKDIR_P = mkdir -p
+    MKDIR_P = powershell -Command "New-Item -ItemType Directory -Force -Path"
 else ifeq ($(UNAME_S),Linux)
     LIBS =
     STACK_FLAGS = -Wl,-z,stack-size=16777216
@@ -47,7 +47,7 @@ else
     STACK_FLAGS = -Wl,--stack,67108864
     EXE_EXT = .exe
     RM = rm -rf
-    MKDIR_P = mkdir -p
+    MKDIR_P = powershell -Command "New-Item -ItemType Directory -Force -Path"
 endif
 
 # Directories

@@ -5,7 +5,6 @@
  */
 
 #include "quanta/core/runtime/Object.h"
-#include "quanta/core/runtime/String.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/engine/CallStack.h"
@@ -42,12 +41,7 @@ Function::Function(const std::string& name,
     this->set_property_descriptor("name", name_desc);
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
-
-    // Set __proto__ to Function.prototype
-    Object* func_proto = ObjectFactory::get_function_prototype();
-    if (func_proto) {
-        this->set_prototype(func_proto);
-    }
+    
 }
 
 Function::Function(const std::string& name,
@@ -70,12 +64,6 @@ Function::Function(const std::string& name,
     this->set_property_descriptor("name", name_desc);
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
-
-    // Set __proto__ to Function.prototype
-    Object* func_proto = ObjectFactory::get_function_prototype();
-    if (func_proto) {
-        this->set_prototype(func_proto);
-    }
 }
 
 Function::Function(const std::string& name,
@@ -96,11 +84,6 @@ Function::Function(const std::string& name,
     PropertyDescriptor length_desc(Value(static_cast<double>(0)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
-    // Set __proto__ to Function.prototype
-    Object* func_proto = ObjectFactory::get_function_prototype();
-    if (func_proto) {
-        this->set_prototype(func_proto);
-    }
 }
 
 Function::Function(const std::string& name,
@@ -122,11 +105,6 @@ Function::Function(const std::string& name,
     PropertyDescriptor length_desc(Value(static_cast<double>(arity)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
-    // Set __proto__ to Function.prototype
-    Object* func_proto = ObjectFactory::get_function_prototype();
-    if (func_proto) {
-        this->set_prototype(func_proto);
-    }
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
@@ -172,64 +150,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.throw_exception(Value("call stack size exceeded"));
             return Value();
         }
-
+        
         Object* old_this = ctx.get_this_binding();
-
-        // ToObject: Wrap primitives to objects for this_binding
-        // ToObject throws TypeError for undefined and null
-        if (this_value.is_undefined() || this_value.is_null()) {
-            ctx.throw_type_error("Cannot convert undefined or null to object");
-            return Value();
-        }
-
-        Object* this_obj = nullptr;
-        if (this_value.is_object()) {
-            this_obj = this_value.as_object();
-        } else if (this_value.is_function()) {
-            this_obj = this_value.as_function();
-        } else if (this_value.is_boolean()) {
-            // Wrap boolean primitive to Boolean object
-            auto bool_wrapper = ObjectFactory::create_boolean(this_value.as_boolean());
-
-            // Set prototype from Boolean.prototype
-            Value boolean_ctor = ctx.get_binding("Boolean");
-            if (boolean_ctor.is_function()) {
-                Value boolean_proto = boolean_ctor.as_function()->get_property("prototype");
-                if (boolean_proto.is_object()) {
-                    bool_wrapper->set_prototype(boolean_proto.as_object());
-                }
-            }
-
-            this_obj = bool_wrapper.release();
-        } else if (this_value.is_number()) {
-            // Wrap number primitive to Number object
-            auto num_wrapper = ObjectFactory::create_number(this_value.as_number());
-
-            Value number_ctor = ctx.get_binding("Number");
-            if (number_ctor.is_function()) {
-                Value number_proto = number_ctor.as_function()->get_property("prototype");
-                if (number_proto.is_object()) {
-                    num_wrapper->set_prototype(number_proto.as_object());
-                }
-            }
-
-            this_obj = num_wrapper.release();
-        } else if (this_value.is_string()) {
-            // Wrap string primitive to String object
-            auto str_wrapper = ObjectFactory::create_string(this_value.as_string()->str());
-
-            Value string_ctor = ctx.get_binding("String");
-            if (string_ctor.is_function()) {
-                Value string_proto = string_ctor.as_function()->get_property("prototype");
-                if (string_proto.is_object()) {
-                    str_wrapper->set_prototype(string_proto.as_object());
-                }
-            }
-
-            this_obj = str_wrapper.release();
-        }
-
-        if (this_obj) {
+        if (this_value.is_object() || this_value.is_function()) {
+            Object* this_obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
             ctx.set_this_binding(this_obj);
         }
 
@@ -435,10 +359,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
 Value Function::get_property(const std::string& key) const {
     if (key == "name") {
-        // Check if property was deleted via descriptor (use has_own_property to check only this object)
-        if (!Object::has_own_property(key)) {
-            return Value(); // Property deleted, return undefined
-        }
         return Value(name_);
     }
     if (key == "length") {
@@ -530,7 +450,7 @@ Value Function::get_property(const std::string& key) const {
             });
         return Value(bind_fn.release());
     }
-
+    
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
         return result;
@@ -594,11 +514,6 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         }
     }
     
-    // If constructor returned a function, return it directly
-    if (result.is_function()) {
-        return result;
-    }
-
     if (result.is_object() && result.as_object() != new_object.get()) {
         return result;
     } else {

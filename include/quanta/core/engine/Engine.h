@@ -20,7 +20,6 @@
 #include <unordered_map>
 #include <chrono>
 #include <functional>
-#include <expected>
 
 namespace Quanta {
 
@@ -44,19 +43,18 @@ public:
         bool enable_profiler = false;
     };
 
-    // Error type for std::expected
-    struct Error {
-        std::string message;
-        uint32_t line_number = 0;
-        uint32_t column_number = 0;
-
-        Error() = default;
-        Error(std::string msg, uint32_t line = 0, uint32_t col = 0)
-            : message(std::move(msg)), line_number(line), column_number(col) {}
+    struct Result {
+        Value value;
+        bool success;
+        std::string error_message;
+        uint32_t line_number;
+        uint32_t column_number;
+        
+        Result() : success(false), line_number(0), column_number(0) {}
+        Result(const Value& v) : value(v), success(true), line_number(0), column_number(0) {}
+        Result(const std::string& error, uint32_t line = 0, uint32_t col = 0) 
+            : success(false), error_message(error), line_number(line), column_number(col) {}
     };
-
-    // Modern C++23 error handling with std::expected
-    using Result = std::expected<Value, Error>;
 
 private:
     Config config_;

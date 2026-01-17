@@ -29,7 +29,7 @@
 
 ## What is Quanta
 
-Quanta is a modern JavaScript engine designed for the **Solar Project** with a focus on **modular architecture** and **high performance**. Built from the ground up in C++23, Quanta provides:
+Quanta is a modern JavaScript engine designed for the **Solar Project** with a focus on **modular architecture** and **high performance**. Built from the ground up in C++17, Quanta provides:
 
 ### Core Features
 - **Modular Architecture** - Clean separation of concerns with 15+ focused modules
@@ -75,9 +75,9 @@ Quanta uses **platform-native compilers** for optimal performance:
 
 **Universal Build Script** (Recommended):
 ```bash
-./build.sh            # Build with Makefile
-./build.sh cmake      # Build with CMake
-./build.sh clean      # Clean all builds
+./build.sh           # Build with Makefile
+./build.sh cmake     # Build with CMake
+./build.sh clean     # Clean all builds
 ```
 
 **Windows (Native MSVC)**:

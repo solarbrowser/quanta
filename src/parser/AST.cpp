@@ -309,18 +309,12 @@ Value BinaryExpression::evaluate(Context& ctx) {
         jit->record_execution(this, 0);
     }
 
-    if (operator_ == Operator::ASSIGN ||
+    if (operator_ == Operator::ASSIGN || 
         operator_ == Operator::PLUS_ASSIGN ||
         operator_ == Operator::MINUS_ASSIGN ||
         operator_ == Operator::MULTIPLY_ASSIGN ||
         operator_ == Operator::DIVIDE_ASSIGN ||
-        operator_ == Operator::MODULO_ASSIGN ||
-        operator_ == Operator::BITWISE_AND_ASSIGN ||
-        operator_ == Operator::BITWISE_OR_ASSIGN ||
-        operator_ == Operator::BITWISE_XOR_ASSIGN ||
-        operator_ == Operator::LEFT_SHIFT_ASSIGN ||
-        operator_ == Operator::RIGHT_SHIFT_ASSIGN ||
-        operator_ == Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN) {
+        operator_ == Operator::MODULO_ASSIGN) {
         
         
         
@@ -352,24 +346,6 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     break;
                 case Operator::MODULO_ASSIGN:
                     result_value = left_value.modulo(right_value);
-                    break;
-                case Operator::BITWISE_AND_ASSIGN:
-                    result_value = left_value.bitwise_and(right_value);
-                    break;
-                case Operator::BITWISE_OR_ASSIGN:
-                    result_value = left_value.bitwise_or(right_value);
-                    break;
-                case Operator::BITWISE_XOR_ASSIGN:
-                    result_value = left_value.bitwise_xor(right_value);
-                    break;
-                case Operator::LEFT_SHIFT_ASSIGN:
-                    result_value = left_value.left_shift(right_value);
-                    break;
-                case Operator::RIGHT_SHIFT_ASSIGN:
-                    result_value = left_value.right_shift(right_value);
-                    break;
-                case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:
-                    result_value = left_value.unsigned_right_shift(right_value);
                     break;
                 default:
                     break;
@@ -829,12 +805,6 @@ std::string BinaryExpression::operator_to_string(Operator op) {
         case Operator::LEFT_SHIFT: return "<<";
         case Operator::RIGHT_SHIFT: return ">>";
         case Operator::UNSIGNED_RIGHT_SHIFT: return ">>>";
-        case Operator::BITWISE_AND_ASSIGN: return "&=";
-        case Operator::BITWISE_OR_ASSIGN: return "|=";
-        case Operator::BITWISE_XOR_ASSIGN: return "^=";
-        case Operator::LEFT_SHIFT_ASSIGN: return "<<=";
-        case Operator::RIGHT_SHIFT_ASSIGN: return ">>=";
-        case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: return ">>>=";
         default: return "?";
     }
 }
@@ -853,12 +823,6 @@ BinaryExpression::Operator BinaryExpression::token_type_to_operator(TokenType ty
         case TokenType::MULTIPLY_ASSIGN: return Operator::MULTIPLY_ASSIGN;
         case TokenType::DIVIDE_ASSIGN: return Operator::DIVIDE_ASSIGN;
         case TokenType::MODULO_ASSIGN: return Operator::MODULO_ASSIGN;
-        case TokenType::BITWISE_AND_ASSIGN: return Operator::BITWISE_AND_ASSIGN;
-        case TokenType::BITWISE_OR_ASSIGN: return Operator::BITWISE_OR_ASSIGN;
-        case TokenType::BITWISE_XOR_ASSIGN: return Operator::BITWISE_XOR_ASSIGN;
-        case TokenType::LEFT_SHIFT_ASSIGN: return Operator::LEFT_SHIFT_ASSIGN;
-        case TokenType::RIGHT_SHIFT_ASSIGN: return Operator::RIGHT_SHIFT_ASSIGN;
-        case TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN: return Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN;
         case TokenType::EQUAL: return Operator::EQUAL;
         case TokenType::NOT_EQUAL: return Operator::NOT_EQUAL;
         case TokenType::STRICT_EQUAL: return Operator::STRICT_EQUAL;
@@ -961,13 +925,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value object_value = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-
-                // Functions are also objects that can have properties deleted
-                if (!object_value.is_object() && !object_value.is_function()) {
+                
+                if (!object_value.is_object()) {
                     return Value(true);
                 }
-
-                Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
+                
+                Object* obj = object_value.as_object();
                 std::string property_name;
                 
                 if (member->is_computed()) {
@@ -1336,8 +1299,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (member->is_computed()) {
             Value prop_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            // Use to_property_key() for proper Symbol handling
-            prop_name = prop_value.to_property_key();
+            prop_name = prop_value.to_string();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -3303,7 +3265,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
             Value search_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             std::string search_str = search_val.to_string();
-
+            
             int start_pos = 0;
             if (arguments_.size() > 1) {
                 Value start_val = arguments_[1]->evaluate(ctx);
@@ -3312,7 +3274,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
                 if (start_pos < 0) start_pos = 0;
                 if (start_pos >= static_cast<int>(str.length())) return Value(-1.0);
             }
-
+            
             size_t pos = str.find(search_str, start_pos);
             if (pos == std::string::npos) {
                 return Value(-1.0);
@@ -3524,20 +3486,9 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         if (arguments_.size() > 0) {
             Value search_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-
+            
             std::string search_str = search_val.to_string();
-
-            size_t start_pos = 0;
-            if (arguments_.size() > 1) {
-                Value start_val = arguments_[1]->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                double start_num = start_val.to_number();
-                if (start_num >= 0) {
-                    start_pos = static_cast<size_t>(start_num);
-                }
-            }
-
-            size_t pos = str.find(search_str, start_pos);
+            size_t pos = str.find(search_str);
             return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
         }
         return Value(-1.0);
@@ -4144,8 +4095,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
 
-    if ((object_value.is_object() || object_value.is_function()) && !computed_) {
-        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
+    if (object_value.is_object() && !computed_) {
+        Object* obj = object_value.as_object();
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
@@ -4195,8 +4146,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
     
-    if ((object_value.is_object() || object_value.is_function()) && computed_) {
-        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
+    if (object_value.is_object() && computed_) {
+        Object* obj = object_value.as_object();
 
         //  ufp: Constant array index
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
@@ -4227,8 +4178,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         std::string prop_name;
         if (prop_value.is_symbol()) {
-            // Use to_property_key() to get the unique symbol key
-            prop_name = prop_value.as_symbol()->to_property_key();
+            prop_name = prop_value.as_symbol()->get_description();
         } else {
             prop_name = prop_value.to_string();
         }
@@ -4514,14 +4464,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     (void)ctx;
                     if (args.empty()) return Value(-1.0);
                     std::string search = args[0].to_string();
-                    size_t start_pos = 0;
-                    if (args.size() > 1) {
-                        double start_num = args[1].to_number();
-                        if (start_num >= 0) {
-                            start_pos = static_cast<size_t>(start_num);
-                        }
-                    }
-                    size_t pos = str_value.find(search, start_pos);
+                    size_t pos = str_value.find(search);
                     return Value(pos != std::string::npos ? static_cast<double>(pos) : -1.0);
                 });
             return Value(index_of_fn.release());
@@ -4599,17 +4542,10 @@ Value MemberExpression::evaluate(Context& ctx) {
             auto split_fn = ObjectFactory::create_native_function("split",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
+                    std::string separator = args.empty() ? "" : args[0].to_string();
+                    
                     auto array = ObjectFactory::create_array();
-
-                    // If no separator provided, return whole string as single element
-                    if (args.empty()) {
-                        array->set_element(0, Value(str_value));
-                        array->set_length(1);
-                        return Value(array.release());
-                    }
-
-                    std::string separator = args[0].to_string();
-
+                    
                     if (separator.empty()) {
                         for (size_t i = 0; i < str_value.length(); ++i) {
                             array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str_value[i])));
@@ -5123,14 +5059,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                         (void)ctx;
                         if (args.empty()) return Value(-1.0);
                         std::string search = args[0].to_string();
-                        size_t start_pos = 0;
-                        if (args.size() > 1) {
-                            double start_num = args[1].to_number();
-                            if (start_num >= 0) {
-                                start_pos = static_cast<size_t>(start_num);
-                            }
-                        }
-                        size_t pos = str_value.find(search, start_pos);
+                        size_t pos = str_value.find(search);
                         return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
                     });
                 return Value(index_of_fn.release());
@@ -5140,17 +5069,10 @@ Value MemberExpression::evaluate(Context& ctx) {
                 auto split_fn = ObjectFactory::create_native_function("split",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx;
+                        std::string separator = args.empty() ? "" : args[0].to_string();
+                        
                         auto array = ObjectFactory::create_array();
-
-                        // If no separator provided, return whole string as single element
-                        if (args.empty()) {
-                            array->set_element(0, Value(str_value));
-                            array->set_length(1);
-                            return Value(array.release());
-                        }
-
-                        std::string separator = args[0].to_string();
-
+                        
                         if (separator.empty()) {
                             for (size_t i = 0; i < str_value.length(); ++i) {
                                 array->set_element(static_cast<uint32_t>(i), Value(std::string(1, str_value[i])));
@@ -5327,7 +5249,7 @@ Value ExpressionStatement::evaluate(Context& ctx) {
     if (ctx.has_exception()) {
         return Value();
     }
-    return result;  // Return the expression result for eval() support
+    return Value();
 }
 
 std::string ExpressionStatement::to_string() const {
@@ -5709,9 +5631,7 @@ Value ForStatement::evaluate(Context& ctx) {
                   << "), JIT disabled" << std::endl;
     }
 
-    // DISABLED: JIT has bugs causing crashes in for loops
-    // TODO: Fix and re-enable
-    if (false && ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
+    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
         auto* jit = ctx.get_engine()->get_jit_compiler();
 
         if (get_loop_depth() == 1) {
@@ -5759,15 +5679,6 @@ Value ForStatement::evaluate(Context& ctx) {
                                 uint32_t idx = static_cast<uint32_t>(idx_val.as_number());
                                 Value right_val = assign->get_right()->evaluate(ctx);
                                 arr_val.as_object()->set_element(idx, right_val);
-                            }
-
-                            // Check for break/continue
-                            if (ctx.has_break()) {
-                                ctx.clear_break_continue();
-                                break;
-                            }
-                            if (ctx.has_continue()) {
-                                ctx.clear_break_continue();
                             }
 
                             if (update_) update_->evaluate(ctx);
@@ -5966,9 +5877,9 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 Value ForInStatement::evaluate(Context& ctx) {
     Value object = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-
-    if (object.is_object() || object.is_function()) {
-        Object* obj = object.is_object() ? object.as_object() : object.as_function();
+    
+    if (object.is_object()) {
+        Object* obj = object.as_object();
         
         std::string var_name;
         
@@ -6370,15 +6281,7 @@ Value WhileStatement::evaluate(Context& ctx) {
             try {
                 Value body_result = body_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-
-                if (ctx.has_break()) {
-                    ctx.clear_break_continue();
-                    break;
-                }
-                if (ctx.has_continue()) {
-                    ctx.clear_break_continue();
-                }
-
+                
                 if (safety_counter % 10 == 0) {
                 }
             } catch (...) {
@@ -8526,6 +8429,7 @@ std::unique_ptr<ASTNode> ConditionalExpression::clone() const {
 
 
 Value RegexLiteral::evaluate(Context& ctx) {
+    (void)ctx;
     try {
         auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
         
@@ -8578,16 +8482,7 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("test", Value(test_fn.release()));
         obj->set_property("exec", Value(exec_fn.release()));
         obj->set_property("toString", Value(toString_fn.release()));
-
-        // Set RegExp.prototype so literal regexes inherit compile and other methods
-        Value regexp_constructor = ctx.get_binding("RegExp");
-        if (regexp_constructor.is_function()) {
-            Value regexp_prototype = regexp_constructor.as_function()->get_property("prototype");
-            if (regexp_prototype.is_object()) {
-                obj->set_prototype(regexp_prototype.as_object());
-            }
-        }
-
+        
         return Value(obj.release());
     } catch (const std::exception& e) {
         return Value::null();

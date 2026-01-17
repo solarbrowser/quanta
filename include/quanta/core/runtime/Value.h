@@ -136,7 +136,7 @@ public:
     explicit Value(double d) {
         if (std::isnan(d)) {
             bits_ = QUIET_NAN | TAG_NAN;
-        } else if (std::isinf(d) || d == std::numeric_limits<double>::infinity() || d == -std::numeric_limits<double>::infinity()) {
+        } else if (std::isinf(d)) {
             bits_ = QUIET_NAN | (d > 0 ? TAG_POS_INF : TAG_NEG_INF);
         } else {
             number_ = d;
@@ -155,7 +155,6 @@ public:
         #endif
     }
     explicit Value(const std::string& str);
-    explicit Value(const char* str) : Value(std::string(str)) {}
     
     explicit Value(class Symbol* sym) {
         #if PLATFORM_POINTER_COMPRESSION

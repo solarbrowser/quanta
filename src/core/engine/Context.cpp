@@ -278,16 +278,6 @@ void Context::throw_error(const std::string& message) {
 void Context::throw_type_error(const std::string& message) {
     auto error = Error::create_type_error(message);
     error->generate_stack_trace();
-
-    // Set TypeError.prototype so error inherits constructor
-    Value type_error_ctor = get_binding("TypeError");
-    if (type_error_ctor.is_function()) {
-        Value type_error_proto = type_error_ctor.as_function()->get_property("prototype");
-        if (type_error_proto.is_object()) {
-            error->set_prototype(type_error_proto.as_object());
-        }
-    }
-
     throw_exception(Value(error.release()));
 }
 
@@ -397,59 +387,30 @@ void Context::initialize_built_ins() {
 
 
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& /* ctx */, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
                 return Value(ObjectFactory::create_object().release());
             }
-
+            
             Value value = args[0];
-
+            
             if (value.is_null() || value.is_undefined()) {
                 return Value(ObjectFactory::create_object().release());
             }
-
+            
             if (value.is_object() || value.is_function()) {
                 return value;
             }
-
+            
             if (value.is_string()) {
                 auto string_obj = ObjectFactory::create_string(value.to_string());
-
-                // Set String.prototype
-                Value string_ctor = ctx.get_binding("String");
-                if (string_ctor.is_function()) {
-                    Value string_proto = string_ctor.as_function()->get_property("prototype");
-                    if (string_proto.is_object()) {
-                        string_obj->set_prototype(string_proto.as_object());
-                    }
-                }
-
                 return Value(string_obj.release());
             } else if (value.is_number()) {
-                auto number_obj = ObjectFactory::create_number(value.as_number());
-
-                // Set Number.prototype
-                Value number_ctor = ctx.get_binding("Number");
-                if (number_ctor.is_function()) {
-                    Value number_proto = number_ctor.as_function()->get_property("prototype");
-                    if (number_proto.is_object()) {
-                        number_obj->set_prototype(number_proto.as_object());
-                    }
-                }
-
+                auto number_obj = ObjectFactory::create_object();
+                number_obj->set_property("valueOf", value);
                 return Value(number_obj.release());
             } else if (value.is_boolean()) {
                 auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
-
-                // Set Boolean.prototype
-                Value boolean_ctor = ctx.get_binding("Boolean");
-                if (boolean_ctor.is_function()) {
-                    Value boolean_proto = boolean_ctor.as_function()->get_property("prototype");
-                    if (boolean_proto.is_object()) {
-                        boolean_obj->set_prototype(boolean_proto.as_object());
-                    }
-                }
-
                 return Value(boolean_obj.release());
             } else if (value.is_symbol()) {
                 auto symbol_obj = ObjectFactory::create_object();
@@ -1461,48 +1422,13 @@ void Context::initialize_built_ins() {
     propertyIsEnumerable_length_desc.set_writable(false);
     proto_propertyIsEnumerable_fn->set_property_descriptor("length", propertyIsEnumerable_length_desc);
 
-    auto proto_valueOf_fn = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                return Value(this_obj);
-            }
-            // If no this binding, return undefined
-            return Value();
-        }, 0);
-
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
-
-    // Object.prototype.toLocaleString - calls toString by default
-    auto proto_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                return Value("[object Object]");
-            }
-            // Call toString method on this object
-            Value toString_val = this_obj->get_property("toString");
-            if (toString_val.is_function()) {
-                Function* toString_fn = toString_val.as_function();
-                return toString_fn->call(ctx, {}, Value(this_obj));
-            }
-            return Value(this_obj->to_string());
-        }, 0);
-
-    object_prototype->set_property("toLocaleString", Value(proto_toLocaleString_fn.release()), PropertyAttributes::BuiltinFunction);
-    object_prototype->set_property("valueOf", Value(proto_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
-
-    // Set constructor property on Object.prototype
-    object_prototype->set_property("constructor", Value(object_constructor.get()), PropertyAttributes::BuiltinFunction);
-
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
     global_object_->set_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
@@ -2199,9 +2125,8 @@ void Context::initialize_built_ins() {
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Array.prototype.lastIndexOf called on null or undefined");
-                return Value();
+            if (!this_obj || !this_obj->is_array()) {
+                return Value(-1.0);
             }
 
             if (args.empty()) {
@@ -2250,8 +2175,8 @@ void Context::initialize_built_ins() {
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Array.prototype.reduceRight called on null or undefined");
+            if (!this_obj || !this_obj->is_array()) {
+                ctx.throw_type_error("Array.prototype.reduceRight called on non-array");
                 return Value();
             }
 
@@ -2448,7 +2373,11 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_array = ctx.get_this_binding();
             if (!this_array) {
-                ctx.throw_type_error("Array.prototype.concat called on null or undefined");
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
+                return Value();
+            }
+            if (!this_array->is_array()) {
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-array"));
                 return Value();
             }
 
@@ -2546,16 +2475,8 @@ void Context::initialize_built_ins() {
 
             if (args.empty() || !args[0].is_function()) return Value();
 
-            Function* callback = args[0].as_function();
-            Value thisArg = args.size() > 1 ? args[1] : Value();
-
             uint32_t length = this_obj->get_length();
             for (uint32_t i = 0; i < length; i++) {
-                Value element = this_obj->get_element(i);
-                // Call callback for all elements (including undefined)
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                callback->call(ctx, callback_args, thisArg);
-                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);
@@ -3026,47 +2947,6 @@ void Context::initialize_built_ins() {
     
     auto function_constructor = ObjectFactory::create_native_constructor("Function",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // new Function(arg1, arg2, ..., argN, functionBody)
-            // Last arg is function body, previous args are parameter names
-
-            if (args.empty()) {
-                // new Function() - empty function
-                return Value(ObjectFactory::create_function().release());
-            }
-
-            // Extract parameter names and body
-            std::vector<std::string> param_names;
-            std::string body;
-
-            if (args.size() == 1) {
-                // Only body, no parameters
-                body = args[0].to_string();
-            } else {
-                // Last arg is body, others are param names
-                for (size_t i = 0; i < args.size() - 1; i++) {
-                    param_names.push_back(args[i].to_string());
-                }
-                body = args[args.size() - 1].to_string();
-            }
-
-            // Build function source code and use eval
-            std::string func_source = "(function(";
-            for (size_t i = 0; i < param_names.size(); i++) {
-                if (i > 0) func_source += ", ";
-                func_source += param_names[i];
-            }
-            func_source += ") { " + body + " })";
-
-            // Use eval to parse and create function
-            Value eval_fn = ctx.get_binding("eval");
-            if (eval_fn.is_function()) {
-                std::vector<Value> eval_args;
-                eval_args.push_back(Value(func_source.c_str()));
-                Function* eval_func = eval_fn.as_function();
-                Value result = eval_func->call(ctx, eval_args);
-                return result;
-            }
-
             return Value(ObjectFactory::create_function().release());
         });
     
@@ -3172,22 +3052,6 @@ void Context::initialize_built_ins() {
 
     function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    auto func_toString_fn = ObjectFactory::create_native_function("toString",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_function()) {
-                ctx.throw_type_error("Function.prototype.toString called on non-function");
-                return Value();
-            }
-
-            Function* func = static_cast<Function*>(this_obj);
-            std::string func_name = func->get_name();
-            return Value("function " + func_name + "() { [native code] }");
-        });
-
-    function_prototype->set_property("toString", Value(func_toString_fn.release()), PropertyAttributes::BuiltinFunction);
-
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
     // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods
@@ -3205,26 +3069,33 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Function", function_constructor.release());
 
-    auto string_prototype = ObjectFactory::create_object();
-    Object* string_proto_ptr = string_prototype.get();
-
     auto string_constructor = ObjectFactory::create_native_constructor("String",
-        [string_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str_value = args.empty() ? "" : args[0].to_string();
 
-            // When called as a function (not constructor), return primitive string
-            Object* this_binding = ctx.get_this_binding();
-            if (!this_binding || this_binding == ctx.get_global_object()) {
-                // Called as function: String('foo') -> primitive "foo"
-                return Value(str_value);
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                this_obj->set_property("value", Value(str_value));
+                PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
+                    static_cast<PropertyAttributes>(PropertyAttributes::None));
+                this_obj->set_property_descriptor("length", length_desc);
+
+                auto toString_fn = ObjectFactory::create_native_function("toString",
+                    [](Context& ctx, const std::vector<Value>& args) -> Value {
+                        (void)args;
+                        Object* this_binding = ctx.get_this_binding();
+                        if (this_binding && this_binding->has_property("value")) {
+                            return this_binding->get_property("value");
+                        }
+                        return Value("");
+                    });
+                this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             }
 
-            // Called as constructor: new String('foo') -> String object
-            auto str_obj = ObjectFactory::create_string(str_value);
-            str_obj->set_prototype(string_proto_ptr);
-
-            return Value(str_obj.release());
+            return Value(str_value);
         });
+    
+    auto string_prototype = ObjectFactory::create_object();
     
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -3665,13 +3536,12 @@ void Context::initialize_built_ins() {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
 
-            int64_t index = 0;
+            uint32_t index = 0;
             if (args.size() > 0) {
-                index = static_cast<int64_t>(args[0].to_number());
+                index = static_cast<uint32_t>(args[0].to_number());
             }
 
-            // Return empty string for out of bounds (negative or >= length)
-            if (index < 0 || index >= static_cast<int64_t>(str.length())) {
+            if (index >= str.length()) {
                 return Value("");
             }
 
@@ -3998,30 +3868,6 @@ void Context::initialize_built_ins() {
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
-
-    // Add valueOf method
-    auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("String.prototype.valueOf called on null or undefined");
-                return Value();
-            }
-
-            if (this_obj->get_type() == Object::ObjectType::String) {
-                Value primitive = this_obj->get_property("value");
-                if (primitive.is_string()) {
-                    return primitive;
-                }
-            }
-
-            ctx.throw_type_error("String.prototype.valueOf called on non-string");
-            return Value();
-        }, 0);
-    PropertyDescriptor string_valueOf_desc(Value(string_valueOf_fn.release()),
-        PropertyAttributes::BuiltinFunction);
-    string_prototype->set_property_descriptor("valueOf", string_valueOf_desc);
 
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()), PropertyAttributes::None);
@@ -4415,36 +4261,20 @@ void Context::initialize_built_ins() {
     
     Generator::setup_generator_prototype(*this);
     
-    auto number_prototype = ObjectFactory::create_object();
-    Object* number_proto_ptr = number_prototype.get();
-
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
-        [number_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            double value = args.empty() ? 0.0 : args[0].to_number();
-
-            // When called as a function (not constructor), return primitive number
-            Object* this_binding = ctx.get_this_binding();
-            if (!this_binding || this_binding == ctx.get_global_object()) {
-                // Called as function: Number('42') -> primitive 42
-                return Value(value);
-            }
-
-            // Called as constructor: new Number(42) -> Number object
-            auto num_obj = ObjectFactory::create_number(value);
-            num_obj->set_prototype(number_proto_ptr);
-
-            return Value(num_obj.release());
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(0.0);
+            return Value(args[0].to_number());
         });
     PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("MAX_VALUE", max_value_desc);
     PropertyDescriptor min_value_desc(Value(5e-324), PropertyAttributes::None);
     number_constructor->set_property_descriptor("MIN_VALUE", min_value_desc);
-    PropertyDescriptor nan_desc(Value::nan(), PropertyAttributes::None);
+    PropertyDescriptor nan_desc(Value(std::numeric_limits<double>::quiet_NaN()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("NaN", nan_desc);
-
-    PropertyDescriptor pos_inf_desc(Value::positive_infinity(), PropertyAttributes::None);
+    PropertyDescriptor pos_inf_desc(Value(std::numeric_limits<double>::infinity()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("POSITIVE_INFINITY", pos_inf_desc);
-    PropertyDescriptor neg_inf_desc(Value::negative_infinity(), PropertyAttributes::None);
+    PropertyDescriptor neg_inf_desc(Value(-std::numeric_limits<double>::infinity()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("NEGATIVE_INFINITY", neg_inf_desc);
     PropertyDescriptor epsilon_desc(Value(2.220446049250313e-16), PropertyAttributes::None);
     number_constructor->set_property_descriptor("EPSILON", epsilon_desc);
@@ -4481,15 +4311,15 @@ void Context::initialize_built_ins() {
     auto numberIsFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
-
+            
             if (!args[0].is_number()) return Value(false);
-
-            // Check if it's NaN, positive or negative infinity
-            if (args[0].is_nan() || args[0].is_positive_infinity() || args[0].is_negative_infinity()) {
-                return Value(false);
-            }
-
-            return Value(true);
+            
+            double val = args[0].to_number();
+            
+            if (val != val) return Value(false);
+            
+            const double MAX_FINITE = 1.7976931348623157e+308;
+            return Value(val > -MAX_FINITE && val < MAX_FINITE);
         }, 1);
     number_constructor->set_property("isFinite", Value(numberIsFinite_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -4528,24 +4358,28 @@ void Context::initialize_built_ins() {
 
     number_constructor->set_property("parseInt", this->get_binding("parseInt"));
 
+    auto number_prototype = ObjectFactory::create_object();
+
     auto number_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Number.prototype.valueOf called on null or undefined");
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_number()) {
+                    return this_val;
+                }
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                        return this_obj->get_property("[[PrimitiveValue]]");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
                 return Value();
             }
-
-            if (this_obj->get_type() == Object::ObjectType::Number) {
-                Value primitive = this_obj->get_property("value");
-                if (primitive.is_number()) {
-                    return primitive;
-                }
-            }
-
-            ctx.throw_type_error("Number.prototype.valueOf called on non-number");
-            return Value();
         }, 0);
 
     PropertyDescriptor number_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
@@ -4561,22 +4395,31 @@ void Context::initialize_built_ins() {
 
     auto number_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Number.prototype.toString called on null or undefined");
+            try {
+                Value this_val = ctx.get_binding("this");
+                double num = 0.0;
+
+                if (this_val.is_number()) {
+                    num = this_val.as_number();
+                } else if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
+                        num = primitive.as_number();
+                    } else {
+                        ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                        return Value();
+                    }
+                } else {
+                    ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                    return Value();
+                }
+
+                return Value(std::to_string(num));
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
                 return Value();
             }
-
-            if (this_obj->get_type() == Object::ObjectType::Number) {
-                Value primitive = this_obj->get_property("value");
-                if (primitive.is_number()) {
-                    return Value(std::to_string(primitive.as_number()));
-                }
-            }
-
-            ctx.throw_type_error("Number.prototype.toString called on non-number");
-            return Value();
         }, 1);
 
     PropertyDescriptor number_toString_name_desc(Value("toString"), PropertyAttributes::None);
@@ -4694,49 +4537,45 @@ void Context::initialize_built_ins() {
         }, 1);
     number_constructor->set_property("isNaN", Value(isNaN_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty() || !args[0].is_number()) return Value(false);
+            return Value(std::isfinite(args[0].to_number()));
+        }, 1);
+    number_constructor->set_property("isFinite", Value(isFinite_fn.release()), PropertyAttributes::BuiltinFunction);
     number_constructor->set_property("prototype", Value(number_prototype.release()));
 
     register_built_in_object("Number", number_constructor.release());
     
-    auto boolean_prototype = ObjectFactory::create_object();
-    Object* boolean_proto_ptr = boolean_prototype.get();
-
     auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
-        [boolean_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            bool value = args.empty() ? false : args[0].to_boolean();
-
-            // When called as a function (not constructor), return primitive boolean
-            Object* this_binding = ctx.get_this_binding();
-            if (!this_binding || this_binding == ctx.get_global_object()) {
-                // Called as function: Boolean('foo') -> primitive true
-                return Value(value);
-            }
-
-            // Called as constructor: new Boolean(true) -> Boolean object
-            auto bool_obj = ObjectFactory::create_boolean(value);
-            bool_obj->set_prototype(boolean_proto_ptr);
-
-            return Value(bool_obj.release());
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(false);
+            return Value(args[0].to_boolean());
         });
+
+    auto boolean_prototype = ObjectFactory::create_object();
 
     auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Boolean.prototype.valueOf called on null or undefined");
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_boolean()) {
+                    return this_val;
+                }
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                        return this_obj->get_property("[[PrimitiveValue]]");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
                 return Value();
             }
-
-            if (this_obj->get_type() == Object::ObjectType::Boolean) {
-                Value primitive = this_obj->get_property("value");
-                if (primitive.is_boolean()) {
-                    return primitive;
-                }
-            }
-
-            ctx.throw_type_error("Boolean.prototype.valueOf called on non-boolean");
-            return Value();
         }, 0);
 
     PropertyDescriptor boolean_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
@@ -4753,20 +4592,24 @@ void Context::initialize_built_ins() {
     auto boolean_toString = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("Boolean.prototype.toString called on null or undefined");
+            try {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_boolean()) {
+                    return Value(this_val.to_boolean() ? "true" : "false");
+                }
+                if (this_val.is_object()) {
+                    Object* this_obj = this_val.as_object();
+                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
+                        return Value(primitive.to_boolean() ? "true" : "false");
+                    }
+                }
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+                return Value();
+            } catch (...) {
+                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
                 return Value();
             }
-
-            if (this_obj->get_type() == Object::ObjectType::Boolean) {
-                Value primitive = this_obj->get_property("value");
-                // Use to_boolean instead of as_boolean/is_boolean check
-                return Value(primitive.to_boolean() ? std::string("true") : std::string("false"));
-            }
-
-            ctx.throw_type_error("Boolean.prototype.toString called on non-boolean");
-            return Value();
         }, 0);
 
     PropertyDescriptor boolean_toString_name_desc(Value("toString"), PropertyAttributes::None);
@@ -5370,15 +5213,100 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("Intl", intl_object.release());
 
-    auto date_prototype = ObjectFactory::create_object();
-    Object* date_proto_ptr = date_prototype.get();
+    auto add_date_instance_methods = [](Object* date_obj) {
+        auto getTime_fn = ObjectFactory::create_native_function("getTime",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now.time_since_epoch()).count();
+                return Value(static_cast<double>(timestamp));
+            });
+        date_obj->set_property("getTime", Value(getTime_fn.release()), PropertyAttributes::BuiltinFunction);
+        
+        auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getFullYear", Value(getFullYear_fn.release()), PropertyAttributes::BuiltinFunction);
+        
+        auto getMonth_fn = ObjectFactory::create_native_function("getMonth",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getMonth", Value(getMonth_fn.release()), PropertyAttributes::BuiltinFunction);
+        
+        auto getDate_fn = ObjectFactory::create_native_function("getDate",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getDate", Value(getDate_fn.release()), PropertyAttributes::BuiltinFunction);
 
+        auto getYear_fn = ObjectFactory::create_native_function("getYear",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::tm* local_time = std::localtime(&time);
+                return local_time ? Value(static_cast<double>(local_time->tm_year)) : Value(std::numeric_limits<double>::quiet_NaN());
+            });
+        date_obj->set_property("getYear", Value(getYear_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        auto setYear_fn = ObjectFactory::create_native_function("setYear",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx;
+                if (args.empty()) {
+                    return Value(std::numeric_limits<double>::quiet_NaN());
+                }
+
+                double year_value = args[0].to_number();
+                if (std::isnan(year_value) || std::isinf(year_value)) {
+                    return Value(std::numeric_limits<double>::quiet_NaN());
+                }
+
+                int year = static_cast<int>(year_value);
+                if (year >= 0 && year <= 99) {
+                    year += 1900;
+                }
+
+                return Value(static_cast<double>(year));
+            });
+        date_obj->set_property("setYear", Value(setYear_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        auto toString_fn = ObjectFactory::create_native_function("toString",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx; (void)args;
+                auto now = std::chrono::system_clock::now();
+                std::time_t time = std::chrono::system_clock::to_time_t(now);
+                std::string time_str = std::ctime(&time);
+                if (!time_str.empty() && time_str.back() == '\n') {
+                    time_str.pop_back();
+                }
+                return Value(time_str);
+            });
+        date_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+    };
+    
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
-        [date_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [add_date_instance_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             Value date_obj = Date::date_constructor(ctx, args);
+            
             if (date_obj.is_object()) {
-                date_obj.as_object()->set_prototype(date_proto_ptr);
+                add_date_instance_methods(date_obj.as_object());
             }
+            
             return date_obj;
         });
     
@@ -5389,7 +5317,9 @@ void Context::initialize_built_ins() {
     date_constructor_fn->set_property("now", Value(date_now.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("parse", Value(date_parse.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("UTC", Value(date_UTC.release()), PropertyAttributes::BuiltinFunction);
-
+    
+    auto date_prototype = ObjectFactory::create_object();
+    
     auto getTime_fn = ObjectFactory::create_native_function("getTime", Date::getTime);
     auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear", Date::getFullYear);
     auto getMonth_fn = ObjectFactory::create_native_function("getMonth", Date::getMonth);
@@ -6061,7 +5991,7 @@ void Context::initialize_built_ins() {
     Object* regexp_proto_ptr = regexp_prototype.get();
 
     auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
-        [regexp_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string pattern = "";
             std::string flags = "";
             
@@ -6108,9 +6038,6 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
-
-                // Set prototype so RegExp instances inherit compile, toString, etc.
-                regex_obj->set_prototype(regexp_proto_ptr);
 
                 return Value(regex_obj.release());
                 
@@ -7421,19 +7348,8 @@ void Context::setup_global_bindings() {
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value(false);
-
-            Value val = args[0];
-            double num = val.to_number();
-
-            // Check for NaN
-            if (num != num) return Value(false);
-
-            // Check if the value is infinity
-            if (val.is_number() && (val.is_positive_infinity() || val.is_negative_infinity())) {
-                return Value(false);
-            }
-
-            return Value(true);
+            double num = args[0].to_number();
+            return Value(std::isfinite(num));
         }, 1);
     lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
 
@@ -7450,10 +7366,10 @@ void Context::setup_global_bindings() {
 
             try {
                 auto result = engine->evaluate(code);
-                if (result.has_value()) {
-                    return *result;
+                if (result.success) {
+                    return result.value;
                 } else {
-                    ctx.throw_exception(Value("SyntaxError: " + result.error().message));
+                    ctx.throw_exception(Value("SyntaxError: " + result.error_message));
                     return Value();
                 }
             } catch (...) {
@@ -7672,8 +7588,8 @@ void Context::setup_global_bindings() {
             }
 
             return Value(result);
-        }, 1);
-    lexical_environment_->create_binding("escape", Value(escape_fn.get()), true);
+        });
+    lexical_environment_->create_binding("escape", Value(escape_fn.get()), false);
     if (global_object_) {
         PropertyDescriptor escape_desc(Value(escape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("escape", escape_desc);
@@ -7738,8 +7654,8 @@ void Context::setup_global_bindings() {
             }
 
             return Value(result);
-        }, 1);
-    lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), true);
+        });
+    lexical_environment_->create_binding("unescape", Value(unescape_fn.get()), false);
     if (global_object_) {
         PropertyDescriptor unescape_desc(Value(unescape_fn.get()), PropertyAttributes::BuiltinFunction);
         global_object_->set_property_descriptor("unescape", unescape_desc);
@@ -9150,9 +9066,7 @@ void Context::load_bootstrap() {
     std::string test262_object = R"(
 var $262 = {
     // IsHTMLDDA - emulates HTML document.all behavior (falsy object)
-    // When called as a function, returns undefined (not an object)
-    // This causes Array.from to throw TypeError since iterator must return object
-    IsHTMLDDA: function() { return undefined; },
+    IsHTMLDDA: {},
 
     // createRealm - creates a new realm (not fully implemented yet)
     createRealm: function() {
@@ -9190,8 +9104,8 @@ var $262 = {
     // Execute $262 definition
     try {
         auto result = engine_->execute(test262_object, "$262-definition");
-        if (!result.has_value()) {
-            std::cerr << "Warning: Failed to define $262 object: " << result.error().message << std::endl;
+        if (!result.success) {
+            std::cerr << "Warning: Failed to define $262 object: " << result.error_message << std::endl;
         }
     } catch (...) {
         std::cerr << "Exception while defining $262 object" << std::endl;
@@ -9216,9 +9130,9 @@ var $262 = {
 
             try {
                 auto result = engine_->execute(harness_code, harness_path);
-                if (!result.has_value()) {
+                if (!result.success) {
                     // Harness loading failed, but continue with next file
-                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error().message << std::endl;
+                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error_message << std::endl;
                 }
             } catch (...) {
                 // Silently ignore errors and continue with next file

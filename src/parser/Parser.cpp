@@ -1290,13 +1290,7 @@ bool Parser::is_assignment_operator(TokenType type) const {
            type == TokenType::MINUS_ASSIGN ||
            type == TokenType::MULTIPLY_ASSIGN ||
            type == TokenType::DIVIDE_ASSIGN ||
-           type == TokenType::MODULO_ASSIGN ||
-           type == TokenType::BITWISE_AND_ASSIGN ||
-           type == TokenType::BITWISE_OR_ASSIGN ||
-           type == TokenType::BITWISE_XOR_ASSIGN ||
-           type == TokenType::LEFT_SHIFT_ASSIGN ||
-           type == TokenType::RIGHT_SHIFT_ASSIGN ||
-           type == TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN;
+           type == TokenType::MODULO_ASSIGN;
 }
 
 bool Parser::is_binary_operator(TokenType type) const {

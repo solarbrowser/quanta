@@ -111,16 +111,16 @@ Engine::Result Engine::execute(const std::string& source) {
 
 Engine::Result Engine::execute(const std::string& source, const std::string& filename) {
     if (!initialized_) {
-        return std::unexpected(Error("Engine not initialized"));
+        return Result("Engine not initialized");
     }
-
+    
     return execute_internal(source, filename);
 }
 
 Engine::Result Engine::execute_file(const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
-        return std::unexpected(Error("Cannot open file: " + filename));
+        return Result("Cannot open file: " + filename);
     }
     
     std::ostringstream buffer;
@@ -130,7 +130,7 @@ Engine::Result Engine::execute_file(const std::string& filename) {
 
 Engine::Result Engine::evaluate(const std::string& expression) {
     if (!initialized_) {
-        return std::unexpected(Error("Engine not initialized"));
+        return Result("Engine not initialized");
     }
     
     try {
@@ -147,14 +147,19 @@ Engine::Result Engine::evaluate(const std::string& expression) {
 
                 // If exception is an object with a toString method, call it
                 std::string error_message;
+                std::cerr << "[DEBUG Engine] Exception type - is_object: " << exception.is_object()
+                          << ", is_function: " << exception.is_function() << std::endl;
                 if (exception.is_object() || exception.is_function()) {
                     Object* obj = exception.is_object() ? exception.as_object() : exception.as_function();
+                    std::cerr << "[DEBUG Engine] Got obj pointer: " << (obj != nullptr) << std::endl;
                     if (obj) {
                         Value toString_method = obj->get_property("toString");
+                        std::cerr << "[DEBUG Engine] toString_method.is_function(): " << toString_method.is_function() << std::endl;
                         if (toString_method.is_function()) {
                             try {
                                 Function* toString_fn = toString_method.as_function();
                                 Value toString_result = toString_fn->call(*global_context_, {}, exception);
+                                std::cerr << "[DEBUG Engine] toString_result: " << toString_result.to_string() << std::endl;
                                 if (!global_context_->has_exception() && toString_result.is_string()) {
                                     error_message = toString_result.to_string();
                                 } else {
@@ -174,16 +179,16 @@ Engine::Result Engine::evaluate(const std::string& expression) {
                     error_message = exception.to_string();
                 }
 
-                return std::unexpected(Error(error_message));
+                std::cerr << "[DEBUG Engine] Final error_message: " << error_message << std::endl;
+                return Result(error_message);
             }
 
-            return result;
+            return Result(result);
         } else {
-            Lexer expr_lexer(expression);
-            Parser expr_parser(expr_lexer.tokenize());
+            Parser expr_parser(lexer.tokenize());
             auto expr_ast = expr_parser.parse_expression();
             if (!expr_ast) {
-                return std::unexpected(Error("Parse error: Failed to parse expression"));
+                return Result("Parse error: Failed to parse expression");
             }
 
             if (global_context_) {
@@ -222,17 +227,17 @@ Engine::Result Engine::evaluate(const std::string& expression) {
                         error_message = exception.to_string();
                     }
 
-                    return std::unexpected(Error(error_message));
+                    return Result(error_message);
                 }
 
-                return result;
+                return Result(result);
             } else {
-                return std::unexpected(Error("Engine context not initialized"));
+                return Result("Engine context not initialized");
             }
         }
-
+        
     } catch (const std::exception& e) {
-        return std::unexpected(Error("Error evaluating expression: " + std::string(e.what())));
+        return Result("Error evaluating expression: " + std::string(e.what()));
     }
 }
 
@@ -506,19 +511,18 @@ void Engine::setup_built_in_functions() {
         if (args.empty()) {
             return Value();
         }
-
+        
         std::string code = args[0].to_string();
         if (code.empty()) {
             return Value();
         }
-
+        
         try {
-            // Use evaluate() instead of execute() for proper expression parsing
-            Result result = evaluate(code);
-            if (result.has_value()) {
-                return *result;
+            Result result = execute(code);
+            if (result.success) {
+                return result.value;
             } else {
-                throw std::runtime_error("SyntaxError: " + result.error().message);
+                throw std::runtime_error("SyntaxError: " + result.error_message);
             }
         } catch (const std::runtime_error& e) {
             std::string error_msg = e.what();
@@ -554,18 +558,7 @@ void Engine::setup_built_in_functions() {
                 radix = static_cast<int>(r);
             }
         }
-
-        // Auto-detect hex prefix "0x" or "0X" if no radix specified
-        if (args.size() <= 1 && start + 2 <= str.length() &&
-            str[start] == '0' && (str[start + 1] == 'x' || str[start + 1] == 'X')) {
-            radix = 16;
-            start += 2; // Skip "0x" prefix
-        }
-
-        if (start >= str.length()) {
-            return Value::nan();
-        }
-
+        
         char first_char = str[start];
         bool has_valid_start = false;
         
@@ -633,48 +626,18 @@ void Engine::setup_built_in_functions() {
         if (args.empty()) {
             return Value(true);
         }
-
-        Value val = args[0];
-        double num = val.to_number();
-
-        // Check for NaN using both value tag and double comparison
-        if (val.is_number() && val.is_nan()) {
-            return Value(true);
-        }
-
-        // Also check using != (NaN != NaN is true)
-        return Value(num != num);
+        
+        double num = args[0].to_number();
+        return Value(std::isnan(num));
     });
     
     register_function("isFinite", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value(false);
         }
-
-        Value val = args[0];
-
-        // Convert to number first
-        double num = val.to_number();
-
-        // Check using Value tags if it's a number type
-        if (val.is_number()) {
-            // Check for NaN, positive infinity, or negative infinity
-            if (val.is_nan() || val.is_positive_infinity() || val.is_negative_infinity()) {
-                return Value(false);
-            }
-            return Value(true);
-        }
-
-        // For non-number types after conversion, check the double
-        // Check for NaN using != comparison
-        if (num != num) return Value(false);
-
-        // Check for infinity by comparing with limits
-        if (num == std::numeric_limits<double>::infinity() || num == -std::numeric_limits<double>::infinity()) {
-            return Value(false);
-        }
-
-        return Value(true);
+        
+        double num = args[0].to_number();
+        return Value(std::isfinite(num));
     });
 }
 
@@ -696,7 +659,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         
         if (compiled) {
             Value result = vm.execute_fast();
-            return result;
+            return Result(result);
         }
         
         Lexer lexer(source);
@@ -705,7 +668,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (lexer.has_errors()) {
             const auto& errors = lexer.get_errors();
             std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
-            return std::unexpected(Error(error_msg));
+            return Result(error_msg);
         }
         
         Parser parser(tokens);
@@ -714,11 +677,11 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
             std::string error_msg = errors.empty() ? "Parse error" : errors[0].message;
-            return std::unexpected(Error("SyntaxError: " + error_msg));
+            return Result("SyntaxError: " + error_msg);
         }
-
+        
         if (!program) {
-            return std::unexpected(Error("Parse error in " + filename));
+            return Result("Parse error in " + filename);
         }
         
         if (is_simple_mathematical_loop(program.get())) {
@@ -733,18 +696,18 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
-                return std::unexpected(Error(exception.to_string()));
+                return Result(exception.to_string());
             }
-
-            return result;  // Success case - just return the Value
+            
+            return Result(result);
         } else {
-            return std::unexpected(Error("Context not initialized"));
+            return Result("Context not initialized");
         }
-
+        
     } catch (const std::exception& e) {
-        return std::unexpected(Error(std::string(e.what())));
+        return Result(std::string(e.what()));
     } catch (...) {
-        return std::unexpected(Error("Unknown engine error"));
+        return Result("Unknown engine error");
     }
 }
 
