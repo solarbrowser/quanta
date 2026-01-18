@@ -479,14 +479,30 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_exception(Value("TypeError: Reflect.construct requires at least two arguments"));
         return Value();
     }
-    
+
     if (!args[0].is_function()) {
         ctx.throw_exception(Value("TypeError: Reflect.construct first argument must be a function"));
         return Value();
     }
-    
+
     Function* target = args[0].as_function();
-    
+
+    // Get newTarget (3rd argument), default to target if not provided
+    Function* newTarget = target;
+    if (args.size() >= 3) {
+        if (!args[2].is_function()) {
+            ctx.throw_exception(Value("TypeError: Reflect.construct newTarget must be a constructor"));
+            return Value();
+        }
+        newTarget = args[2].as_function();
+    }
+
+    // Check if newTarget is a constructor
+    if (!newTarget->is_constructor()) {
+        ctx.throw_exception(Value("TypeError: newTarget is not a constructor"));
+        return Value();
+    }
+
     std::vector<Value> construct_args;
     if (args[1].is_object()) {
         Object* args_obj = args[1].as_object();
@@ -497,7 +513,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
             }
         }
     }
-    
+
     return target->construct(ctx, construct_args);
 }
 

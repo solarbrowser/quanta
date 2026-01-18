@@ -14,10 +14,6 @@
 
 namespace Quanta {
 
-/**
- * JavaScript lexer/tokenizer
- * Supports ES2023+ specification
- */
 class Lexer {
 public:
     struct LexerOptions {
@@ -98,6 +94,7 @@ private:
     bool is_whitespace(char ch) const;
     bool is_line_terminator(char ch) const;
     bool is_regex_context() const;
+    bool is_at_line_start() const;
     
     double parse_decimal_literal();
     double parse_hex_literal();

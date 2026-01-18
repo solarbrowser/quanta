@@ -18,10 +18,6 @@ namespace Quanta {
 class Context;
 class FunctionExpression;
 
-/**
- * Abstract Syntax Tree nodes for JavaScript
- * High-performance, memory-efficient AST representation
- */
 
 class ASTNode {
 public:
@@ -116,9 +112,6 @@ public:
     virtual std::unique_ptr<ASTNode> clone() const = 0;
 };
 
-/**
- * Literal nodes
- */
 class NumberLiteral : public ASTNode {
 private:
     double value_;
@@ -199,9 +192,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Template literal (e.g., `Hello ${name}!`)
- */
 class TemplateLiteral : public ASTNode {
 public:
     struct Element {
@@ -228,9 +218,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Regular expression literal (e.g., /pattern/flags)
- */
 class RegexLiteral : public ASTNode {
 private:
     std::string pattern_;
@@ -249,9 +236,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Identifier node
- */
 class Identifier : public ASTNode {
 private:
     std::string name_;
@@ -270,9 +254,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Binary expression (e.g., a + b, x * y)
- */
 class BinaryExpression : public ASTNode {
 public:
     enum class Operator {
@@ -339,9 +320,6 @@ public:
     static bool is_right_associative(Operator op);
 };
 
-/**
- * Unary expression (e.g., -x, !flag, ++count)
- */
 class UnaryExpression : public ASTNode {
 public:
     enum class Operator {
@@ -380,9 +358,6 @@ public:
     static std::string operator_to_string(Operator op);
 };
 
-/**
- * Conditional expression (ternary operator: test ? consequent : alternate)
- */
 class ConditionalExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> test_;
@@ -404,9 +379,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Assignment expression (e.g., x = 5, y += 10)
- */
 class AssignmentExpression : public ASTNode {
 public:
     enum class Operator {
@@ -438,9 +410,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Destructuring assignment (e.g., [a, b] = array, {x, y} = obj)
- */
 class DestructuringAssignment : public ASTNode {
 public:
     enum class Type {
@@ -505,9 +474,7 @@ private:
     void handle_infinite_depth_destructuring(Object* obj, const std::string& nested_pattern, Context& ctx);
 };
 
-/**
- * Call expression (e.g., func(a, b), console.log("hello"))
- */
+
 class CallExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> callee_;
@@ -534,9 +501,7 @@ private:
     Value handle_member_expression_call(Context& ctx);
 };
 
-/**
- * Member expression (e.g., obj.prop, console.log)
- */
+
 class MemberExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> object_;
@@ -568,9 +533,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Optional chaining expression (e.g., "obj?.prop", "obj?.method()")
- */
 class OptionalChainingExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> object_;
@@ -592,9 +554,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Nullish coalescing expression (e.g., "a ?? b")
- */
 class NullishCoalescingExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> left_;
@@ -614,9 +573,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * New expression (constructor call with new operator)
- */
 class NewExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> constructor_;
@@ -637,9 +593,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * MetaProperty expression (e.g., new.target)
- */
 class MetaProperty : public ASTNode {
 private:
     std::string meta_;
@@ -659,9 +612,7 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Variable declarator (single variable in a declaration)
- */
+
 class VariableDeclarator : public ASTNode {
 public:
     enum class Kind {
@@ -814,9 +765,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * For...of loop statement (e.g., "for (const item of array) { ... }")
- */
 class ForOfStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> left_;
@@ -839,9 +787,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * While loop statement (e.g., "while (condition) { ... }")
- */
 class WhileStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> test_;
@@ -861,9 +806,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Do-while statement (e.g., "do statement while (condition)")
- */
 class DoWhileStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> body_;
@@ -883,10 +825,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * With statement: with (object) statement
- * Deprecated but still part of ECMAScript (not allowed in strict mode)
- */
 class WithStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> object_;
@@ -906,9 +844,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Function parameter with optional default value
- */
 class Parameter : public ASTNode {
 private:
     std::unique_ptr<Identifier> name_;
@@ -931,9 +866,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Function declaration (e.g., "function foo(x, y) { return x + y; }")
- */
 class FunctionDeclaration : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
@@ -963,9 +895,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Class declaration (e.g., "class MyClass extends BaseClass { constructor() {} method() {} }")
- */
 class ClassDeclaration : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
@@ -996,9 +925,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Method definition within a class (e.g., "constructor() { ... }", "method() { ... }")
- */
 class MethodDefinition : public ASTNode {
 public:
     enum Kind {
@@ -1039,9 +965,6 @@ public:
 };
 
 
-/**
- * Function expression (e.g., "function(x) { return x * 2; }" or "var f = function() { ... }")
- */
 class FunctionExpression : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
@@ -1067,9 +990,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Arrow function expression (e.g., "(x, y) => x + y", "x => x * 2")
- */
 class ArrowFunctionExpression : public ASTNode {
 private:
     std::vector<std::unique_ptr<Parameter>> params_;
@@ -1095,9 +1015,7 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Await expression (e.g., "await promise")
- */
+
 class AwaitExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> argument_;
@@ -1113,9 +1031,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Yield expression (e.g., "yield value", "yield* iterator")
- */
 class YieldExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> argument_;
@@ -1133,9 +1048,7 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Async function expression (e.g., "async function() { ... }")
- */
+
 class AsyncFunctionExpression : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
@@ -1160,9 +1073,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Object literal expression (e.g., "{key: value, method: function() {}}")
- */
 class ObjectLiteral : public ASTNode {
 public:
     enum class PropertyType {
@@ -1201,9 +1111,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Array literal expression (e.g., "[1, 2, 3]" or "[obj, func, nested]")
- */
 class ArrayLiteral : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> elements_;
@@ -1221,9 +1128,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Spread element (e.g., "...array" in function calls or array literals)
- */
 class SpreadElement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> argument_;
@@ -1240,9 +1144,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Return statement (e.g., "return 42;" or "return;")
- */
 class ReturnStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> argument_;
@@ -1259,9 +1160,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Break statement (e.g., "break;")
- */
 class BreakStatement : public ASTNode {
 private:
     std::string label_;
@@ -1277,9 +1175,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Continue statement (e.g., "continue;")
- */
 class ContinueStatement : public ASTNode {
 private:
     std::string label_;
@@ -1295,9 +1190,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Expression statement (e.g., "42;", "console.log('hello');")
- */
 class ExpressionStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> expression_;
@@ -1313,9 +1205,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Empty statement (e.g., ";")
- */
 class EmptyStatement : public ASTNode {
 public:
     EmptyStatement(const Position& start, const Position& end)
@@ -1326,9 +1215,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Labeled statement (e.g., "label: statement")
- */
 class LabeledStatement : public ASTNode {
 private:
     std::string label_;
@@ -1348,9 +1234,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Try statement (e.g., "try { ... } catch (e) { ... } finally { ... }")
- */
 class TryStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> try_block_;
@@ -1376,9 +1259,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Catch clause (e.g., "catch (e) { ... }")
- */
 class CatchClause : public ASTNode {
 private:
     std::string parameter_name_;
@@ -1400,9 +1280,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Throw statement (e.g., "throw new Error('message')")
- */
 class ThrowStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> expression_;
@@ -1420,9 +1297,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Switch statement (e.g., "switch (expr) { case 1: ... default: ... }")
- */
 class SwitchStatement : public ASTNode {
 private:
     std::unique_ptr<ASTNode> discriminant_;
@@ -1444,9 +1318,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Case clause (e.g., "case 1: statements..." or "default: statements...")
- */
 class CaseClause : public ASTNode {
 private:
     std::unique_ptr<ASTNode> test_;
@@ -1469,9 +1340,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * Program node (root of AST)
- */
 class Program : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
@@ -1491,10 +1359,6 @@ public:
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
 };
-
-/**
- * Stage 10: Import/Export statements
- */
 
 class ImportSpecifier : public ASTNode {
 private:
@@ -1634,10 +1498,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-
-/**
- * JSX Element (e.g., <div>content</div>, <Component prop={value} />)
- */
 class JSXElement : public ASTNode {
 private:
     std::string tag_name_;
@@ -1665,9 +1525,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * JSX Text (e.g., the "Hello World" in <div>Hello World</div>)
- */
 class JSXText : public ASTNode {
 private:
     std::string text_;
@@ -1683,9 +1540,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * JSX Expression (e.g., {expression} in JSX)
- */
 class JSXExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> expression_;
@@ -1701,9 +1555,6 @@ public:
     std::unique_ptr<ASTNode> clone() const override;
 };
 
-/**
- * JSX Attribute (e.g., className="active" or onClick={handler})
- */
 class JSXAttribute : public ASTNode {
 private:
     std::string name_;

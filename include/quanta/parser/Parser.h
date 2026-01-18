@@ -17,14 +17,6 @@
 
 namespace Quanta {
 
-/**
- * recursive descent parser for JavaScript
- * Features:
- * - Operator precedence parsing
- * - Error recovery
- * - Position tracking
- * - Memory-efficient AST construction
- */
 class Parser {
 public:
     struct ParseOptions {
@@ -184,9 +176,6 @@ private:
     bool is_valid_assignment_target(ASTNode* node) const;
 };
 
-/**
- * Parser factory for different parsing modes
- */
 namespace ParserFactory {
     std::unique_ptr<Parser> create_expression_parser(const std::string& source);
     std::unique_ptr<Parser> create_statement_parser(const std::string& source);

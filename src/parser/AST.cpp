@@ -6889,12 +6889,14 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     }
     
     auto arrow_function = ObjectFactory::create_js_function(
-        name, 
-        std::move(param_clones), 
+        name,
+        std::move(param_clones),
         body_->clone(),
         &ctx
     );
-    
+
+    arrow_function->set_is_constructor(false);
+
     std::vector<std::string> common_vars = {"x", "y", "z", "i", "j", "k", "a", "b", "c", "value", "result", "data"};
     
     std::set<std::string> param_names;

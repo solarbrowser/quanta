@@ -4037,31 +4037,33 @@ std::unique_ptr<ASTNode> Parser::parse_try_statement() {
 std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     Position start = current_token().get_start();
     advance();
-    
-    if (!consume(TokenType::LEFT_PAREN)) {
-        add_error("Expected '(' after 'catch'");
-        return nullptr;
+
+    std::string parameter_name = "";
+
+    // Optional catch binding: catch can have no parameter (ES2019+)
+    if (match(TokenType::LEFT_PAREN)) {
+        advance(); // consume '('
+
+        if (!match(TokenType::IDENTIFIER)) {
+            add_error("Expected identifier in catch clause");
+            return nullptr;
+        }
+
+        parameter_name = current_token().get_value();
+        advance();
+
+        if (!consume(TokenType::RIGHT_PAREN)) {
+            add_error("Expected ')' after catch parameter");
+            return nullptr;
+        }
     }
-    
-    if (!match(TokenType::IDENTIFIER)) {
-        add_error("Expected identifier in catch clause");
-        return nullptr;
-    }
-    
-    std::string parameter_name = current_token().get_value();
-    advance();
-    
-    if (!consume(TokenType::RIGHT_PAREN)) {
-        add_error("Expected ')' after catch parameter");
-        return nullptr;
-    }
-    
+
     auto body = parse_block_statement();
     if (!body) {
         add_error("Expected block statement in catch clause");
         return nullptr;
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<CatchClause>(parameter_name, std::move(body), start, end);
 }

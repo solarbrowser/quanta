@@ -12,9 +12,6 @@
 
 namespace Quanta {
 
-/**
- * JavaScript token types for ES2023+ specification
- */
 enum class TokenType {
     EOF_TOKEN = 0,
     IDENTIFIER,
@@ -168,9 +165,6 @@ struct Position {
     std::string to_string() const;
 };
 
-/**
- * JavaScript token
- */
 class Token {
 private:
     TokenType type_;
@@ -214,9 +208,7 @@ public:
     static bool is_right_associative(TokenType type);
 };
 
-/**
- * Token sequence for efficient parsing
- */
+
 class TokenSequence {
 private:
     std::vector<Token> tokens_;

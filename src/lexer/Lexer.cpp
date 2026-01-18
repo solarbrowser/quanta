@@ -173,7 +173,18 @@ Token Lexer::next_token() {
             return read_regex();
         }
     }
-    
+
+    // HTML-style comment: <!-- treated as single line comment
+    if (ch == '<' && peek_char() == '!' && peek_char(2) == '-' && peek_char(3) == '-') {
+        return read_single_line_comment();
+    }
+
+    if (ch == '-' && peek_char() == '-' && peek_char(2) == '>') {
+        if (current_position_.column == 1 || is_at_line_start()) {
+            return read_single_line_comment();
+        }
+    }
+
     if (is_digit(ch) || (ch == '.' && is_digit(peek_char()))) {
         return read_number();
     }
@@ -1174,6 +1185,26 @@ Token Lexer::read_regex() {
     
     std::string regex_value = "/" + pattern + "/" + flags;
     return create_token(TokenType::REGEX, regex_value, start);
+}
+
+bool Lexer::is_at_line_start() const {
+    if (current_position_.column == 1) {
+        return true;
+    }
+
+    size_t check_pos = position_;
+    while (check_pos > 0) {
+        check_pos--;
+        char ch = source_[check_pos];
+        if (ch == '\n' || ch == '\r') {
+            return true;  
+        }
+        if (!is_whitespace(ch)) {
+            return false;  
+        }
+    }
+
+    return true;
 }
 
 }
