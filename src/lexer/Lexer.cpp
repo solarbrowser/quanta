@@ -7,6 +7,7 @@
 #include "quanta/lexer/Lexer.h"
 #include <cctype>
 #include <cstdlib>
+#include <cstdint>
 #include <cmath>
 #include <iostream>
 
@@ -1090,13 +1091,104 @@ std::string Lexer::parse_hex_escape() {
 }
 
 std::string Lexer::parse_unicode_escape() {
+    // Check for \u{X...} format (ES6 extended unicode escapes)
+    if (current_char() == '{') {
+        advance(); // skip '{'
+        std::string hex_digits;
+        while (!at_end() && current_char() != '}') {
+            char ch = current_char();
+            if (!is_hex_digit(ch)) {
+                add_error("Invalid unicode escape sequence");
+                return "";
+            }
+            hex_digits += ch;
+            advance();
+        }
+
+        if (current_char() != '}') {
+            add_error("Invalid unicode escape sequence: missing '}'");
+            return "";
+        }
+        advance(); // skip '}'
+
+        if (hex_digits.empty() || hex_digits.length() > 6) {
+            add_error("Invalid unicode escape sequence: invalid length");
+            return "";
+        }
+
+        // Parse hex value
+        uint32_t codepoint = 0;
+        for (char c : hex_digits) {
+            codepoint *= 16;
+            if (c >= '0' && c <= '9') codepoint += c - '0';
+            else if (c >= 'a' && c <= 'f') codepoint += c - 'a' + 10;
+            else codepoint += c - 'A' + 10;
+        }
+
+        if (codepoint > 0x10FFFF) {
+            add_error("Invalid unicode escape sequence: codepoint out of range");
+            return "";
+        }
+
+        // Encode to UTF-8
+        std::string result;
+        if (codepoint < 0x80) {
+            result += static_cast<char>(codepoint);
+        } else if (codepoint < 0x800) {
+            result += static_cast<char>(0xC0 | (codepoint >> 6));
+            result += static_cast<char>(0x80 | (codepoint & 0x3F));
+        } else if (codepoint < 0x10000) {
+            result += static_cast<char>(0xE0 | (codepoint >> 12));
+            result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (codepoint & 0x3F));
+        } else {
+            result += static_cast<char>(0xF0 | (codepoint >> 18));
+            result += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+            result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (codepoint & 0x3F));
+        }
+        return result;
+    }
+
+    // Standard \uXXXX format (4 hex digits)
     if (remaining() < 4) {
         add_error("Invalid unicode escape sequence");
         return "";
     }
-    
-    advance(); advance(); advance(); advance();
-    return "?";
+
+    char digits[4];
+    for (int i = 0; i < 4; i++) {
+        digits[i] = advance();
+        if (!is_hex_digit(digits[i])) {
+            add_error("Invalid unicode escape sequence");
+            return "";
+        }
+    }
+
+    // Parse 4 hex digits to get code unit
+    uint16_t code_unit = 0;
+    for (int i = 0; i < 4; i++) {
+        code_unit *= 16;
+        char c = digits[i];
+        if (c >= '0' && c <= '9') code_unit += c - '0';
+        else if (c >= 'a' && c <= 'f') code_unit += c - 'a' + 10;
+        else code_unit += c - 'A' + 10;
+    }
+
+    // Convert UTF-16 code unit to UTF-8
+    std::string result;
+    if (code_unit < 0x80) {
+        result += static_cast<char>(code_unit);
+    } else if (code_unit < 0x800) {
+        result += static_cast<char>(0xC0 | (code_unit >> 6));
+        result += static_cast<char>(0x80 | (code_unit & 0x3F));
+    } else {
+        result += static_cast<char>(0xE0 | (code_unit >> 12));
+        result += static_cast<char>(0x80 | ((code_unit >> 6) & 0x3F));
+        result += static_cast<char>(0x80 | (code_unit & 0x3F));
+    }
+
+    return result;
 }
 
 void Lexer::add_error(const std::string& message) {

@@ -7638,15 +7638,59 @@ void Context::setup_global_bindings() {
             }
             std::string result;
 
-            for (char c : input) {
+            // Convert UTF-8 string to UTF-16 code units
+            std::u16string utf16;
+            size_t i = 0;
+            while (i < input.length()) {
+                unsigned char byte = static_cast<unsigned char>(input[i]);
+                uint32_t codepoint;
+
+                if (byte < 0x80) {
+                    codepoint = byte;
+                    i++;
+                } else if ((byte & 0xE0) == 0xC0) {
+                    codepoint = ((byte & 0x1F) << 6) | (input[i + 1] & 0x3F);
+                    i += 2;
+                } else if ((byte & 0xF0) == 0xE0) {
+                    codepoint = ((byte & 0x0F) << 12) | ((input[i + 1] & 0x3F) << 6) | (input[i + 2] & 0x3F);
+                    i += 3;
+                } else if ((byte & 0xF8) == 0xF0) {
+                    codepoint = ((byte & 0x07) << 18) | ((input[i + 1] & 0x3F) << 12) | ((input[i + 2] & 0x3F) << 6) | (input[i + 3] & 0x3F);
+                    i += 4;
+                    // Convert to surrogate pair
+                    if (codepoint > 0xFFFF) {
+                        codepoint -= 0x10000;
+                        utf16 += static_cast<char16_t>((codepoint >> 10) + 0xD800);
+                        utf16 += static_cast<char16_t>((codepoint & 0x3FF) + 0xDC00);
+                        continue;
+                    }
+                } else {
+                    i++;
+                    continue;
+                }
+
+                utf16 += static_cast<char16_t>(codepoint);
+            }
+
+            // Escape according to spec
+            for (char16_t code_unit : utf16) {
+                uint16_t c = static_cast<uint16_t>(code_unit);
+
                 if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                     c == '@' || c == '*' || c == '_' || c == '+' || c == '-' || c == '.' || c == '/') {
-                    result += c;
-                } else {
-                    unsigned char uc = static_cast<unsigned char>(c);
+                    result += static_cast<char>(c);
+                } else if (c < 256) {
+                    // %XX format for code units below 256
                     result += '%';
-                    result += "0123456789ABCDEF"[(uc >> 4) & 0xF];
-                    result += "0123456789ABCDEF"[uc & 0xF];
+                    result += "0123456789ABCDEF"[(c >> 4) & 0xF];
+                    result += "0123456789ABCDEF"[c & 0xF];
+                } else {
+                    // %uXXXX format for code units >= 256
+                    result += "%u";
+                    result += "0123456789ABCDEF"[(c >> 12) & 0xF];
+                    result += "0123456789ABCDEF"[(c >> 8) & 0xF];
+                    result += "0123456789ABCDEF"[(c >> 4) & 0xF];
+                    result += "0123456789ABCDEF"[c & 0xF];
                 }
             }
 
@@ -7687,32 +7731,78 @@ void Context::setup_global_bindings() {
             } else {
                 input = arg.to_string();
             }
-            std::string result;
+            auto hex_to_num = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                return -1;
+            };
+
+            std::u16string utf16;
 
             for (size_t i = 0; i < input.length(); ++i) {
-                if (input[i] == '%' && i + 2 < input.length()) {
-                    char hex1 = input[i + 1];
-                    char hex2 = input[i + 2];
+                if (input[i] == '%') {
+                    // Check for %uXXXX format
+                    if (i + 5 < input.length() && input[i + 1] == 'u') {
+                        int val1 = hex_to_num(input[i + 2]);
+                        int val2 = hex_to_num(input[i + 3]);
+                        int val3 = hex_to_num(input[i + 4]);
+                        int val4 = hex_to_num(input[i + 5]);
 
-                    auto hex_to_num = [](char c) -> int {
-                        if (c >= '0' && c <= '9') return c - '0';
-                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                        return -1;
-                    };
-
-                    int val1 = hex_to_num(hex1);
-                    int val2 = hex_to_num(hex2);
-
-                    if (val1 >= 0 && val2 >= 0) {
-                        char decoded = static_cast<char>((val1 << 4) | val2);
-                        result += decoded;
-                        i += 2;
-                    } else {
-                        result += input[i];
+                        if (val1 >= 0 && val2 >= 0 && val3 >= 0 && val4 >= 0) {
+                            uint16_t code_unit = (val1 << 12) | (val2 << 8) | (val3 << 4) | val4;
+                            utf16 += static_cast<char16_t>(code_unit);
+                            i += 5;
+                            continue;
+                        }
                     }
+                    // Check for %XX format
+                    if (i + 2 < input.length()) {
+                        int val1 = hex_to_num(input[i + 1]);
+                        int val2 = hex_to_num(input[i + 2]);
+
+                        if (val1 >= 0 && val2 >= 0) {
+                            uint8_t byte = (val1 << 4) | val2;
+                            utf16 += static_cast<char16_t>(byte);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                }
+                // Not an escape sequence, add as-is
+                utf16 += static_cast<char16_t>(static_cast<unsigned char>(input[i]));
+            }
+
+            // Convert UTF-16 back to UTF-8
+            std::string result;
+            for (size_t i = 0; i < utf16.length(); ++i) {
+                uint16_t code_unit = static_cast<uint16_t>(utf16[i]);
+
+                // Check for surrogate pair
+                if (code_unit >= 0xD800 && code_unit <= 0xDBFF && i + 1 < utf16.length()) {
+                    uint16_t next = static_cast<uint16_t>(utf16[i + 1]);
+                    if (next >= 0xDC00 && next <= 0xDFFF) {
+                        uint32_t codepoint = 0x10000 + ((code_unit - 0xD800) << 10) + (next - 0xDC00);
+                        // Encode to UTF-8
+                        result += static_cast<char>(0xF0 | (codepoint >> 18));
+                        result += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                        i++;
+                        continue;
+                    }
+                }
+
+                // Single code unit
+                if (code_unit < 0x80) {
+                    result += static_cast<char>(code_unit);
+                } else if (code_unit < 0x800) {
+                    result += static_cast<char>(0xC0 | (code_unit >> 6));
+                    result += static_cast<char>(0x80 | (code_unit & 0x3F));
                 } else {
-                    result += input[i];
+                    result += static_cast<char>(0xE0 | (code_unit >> 12));
+                    result += static_cast<char>(0x80 | ((code_unit >> 6) & 0x3F));
+                    result += static_cast<char>(0x80 | (code_unit & 0x3F));
                 }
             }
 
