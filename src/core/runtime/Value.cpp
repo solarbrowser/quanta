@@ -117,8 +117,19 @@ double Value::to_number() const {
     if (is_string()) {
         const std::string& str = as_string()->str();
         if (str.empty()) return 0.0;
+
+        // Trim whitespace
+        size_t start = 0;
+        size_t end = str.length();
+        while (start < end && std::isspace(static_cast<unsigned char>(str[start]))) start++;
+        while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) end--;
+
+        // If only whitespace, return 0
+        if (start >= end) return 0.0;
+
+        std::string trimmed = str.substr(start, end - start);
         try {
-            return std::stod(str);
+            return std::stod(trimmed);
         } catch (...) {
             return std::numeric_limits<double>::quiet_NaN();
         }
@@ -154,8 +165,15 @@ bool Value::to_boolean() const {
     if (is_boolean()) return as_boolean();
     if (is_undefined() || is_null()) return false;
     if (is_number()) {
+        // NaN is falsy
+        if (is_nan()) return false;
+
         double num = as_number();
-        return !std::isnan(num) && num != 0.0;
+        // 0 and -0 are falsy
+        if (num == 0.0 || num == -0.0) {
+            return false;
+        }
+        return true;
     }
     if (is_string()) {
         return !as_string()->str().empty();

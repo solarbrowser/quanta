@@ -202,7 +202,9 @@ public:
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF) ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF);
     }
-    inline bool is_nan() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN); }
+    inline bool is_nan() const {
+        return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN);
+    }
     inline bool is_positive_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF); }
     inline bool is_negative_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF); }
     inline bool is_string() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }

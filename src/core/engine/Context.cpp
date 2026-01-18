@@ -3660,13 +3660,32 @@ void Context::initialize_built_ins() {
     string_constructor->set_property("concat", Value(string_concat_static.release()));
 
 
-    auto anchor_fn = ObjectFactory::create_native_function("anchor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+    // Helper lambda for HTML escaping attribute values
+    auto html_escape_attr = [](const std::string& s) -> std::string {
+        std::string result;
+        for (char c : s) {
+            switch (c) {
+                case '"': result += "&quot;"; break;
+                case '&': result += "&amp;"; break;
+                default: result += c;
+            }
+        }
+        return result;
+    };
 
-            std::string name = args.size() > 0 ? args[0].to_string() : "";
-            return Value("<a name=\"" + name + "\">" + str + "</a>");
+    auto anchor_fn = ObjectFactory::create_native_function("anchor",
+        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+
+            // RequireObjectCoercible
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call String.prototype.anchor on null or undefined");
+                return Value();
+            }
+
+            std::string str = this_value.to_string();
+            std::string name = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
+            return Value(std::string("<a name=\"") + name + "\">" + str + "</a>");
         }, 1);
     PropertyDescriptor anchor_desc(Value(anchor_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3676,8 +3695,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<big>" + str + "</big>");
+            return Value(std::string("<big>") + str + "</big>");
         }, 0);
     PropertyDescriptor big_desc(Value(big_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3687,8 +3710,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<blink>" + str + "</blink>");
+            return Value(std::string("<blink>") + str + "</blink>");
         }, 0);
     PropertyDescriptor blink_desc(Value(blink_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3698,8 +3725,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<b>" + str + "</b>");
+            return Value(std::string("<b>") + str + "</b>");
         }, 0);
     PropertyDescriptor bold_desc(Value(bold_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3709,32 +3740,42 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<tt>" + str + "</tt>");
+            return Value(std::string("<tt>") + str + "</tt>");
         }, 0);
     PropertyDescriptor fixed_desc(Value(fixed_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("fixed", fixed_desc);
 
     auto fontcolor_fn = ObjectFactory::create_native_function("fontcolor",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-
-            std::string color = args.size() > 0 ? args[0].to_string() : "";
-            return Value("<font color=\"" + color + "\">" + str + "</font>");
+            std::string color = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
+            return Value(std::string("<font color=\"") + color + "\">" + str + "</font>");
         }, 1);
     PropertyDescriptor fontcolor_desc(Value(fontcolor_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("fontcolor", fontcolor_desc);
 
     auto fontsize_fn = ObjectFactory::create_native_function("fontsize",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-
-            std::string size = args.size() > 0 ? args[0].to_string() : "";
-            return Value("<font size=\"" + size + "\">" + str + "</font>");
+            std::string size = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
+            return Value(std::string("<font size=\"") + size + "\">" + str + "</font>");
         }, 1);
     PropertyDescriptor fontsize_desc(Value(fontsize_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3744,20 +3785,27 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<i>" + str + "</i>");
+            return Value(std::string("<i>") + str + "</i>");
         }, 0);
     PropertyDescriptor italics_desc(Value(italics_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("italics", italics_desc);
 
     auto link_fn = ObjectFactory::create_native_function("link",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [html_escape_attr](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-
-            std::string url = args.size() > 0 ? args[0].to_string() : "";
-            return Value("<a href=\"" + url + "\">" + str + "</a>");
+            std::string url = args.size() > 0 ? html_escape_attr(args[0].to_string()) : "";
+            return Value(std::string("<a href=\"") + url + "\">" + str + "</a>");
         }, 1);
     PropertyDescriptor link_desc(Value(link_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3767,8 +3815,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<small>" + str + "</small>");
+            return Value(std::string("<small>") + str + "</small>");
         }, 0);
     PropertyDescriptor small_desc(Value(small_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3778,8 +3830,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<strike>" + str + "</strike>");
+            return Value(std::string("<strike>") + str + "</strike>");
         }, 0);
     PropertyDescriptor strike_desc(Value(strike_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3789,8 +3845,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<sub>" + str + "</sub>");
+            return Value(std::string("<sub>") + str + "</sub>");
         }, 0);
     PropertyDescriptor sub_desc(Value(sub_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3800,8 +3860,12 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (this_value.is_null() || this_value.is_undefined()) {
+                ctx.throw_type_error("Cannot call method on null or undefined");
+                return Value();
+            }
             std::string str = this_value.to_string();
-            return Value("<sup>" + str + "</sup>");
+            return Value(std::string("<sup>") + str + "</sup>");
         }, 0);
     PropertyDescriptor sup_desc(Value(sup_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -4357,17 +4421,12 @@ void Context::initialize_built_ins() {
     
     auto numberIsNaN_fn = ObjectFactory::create_native_function("isNaN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            // ES6 Number.isNaN: only returns true for actual NaN values (no type coercion)
             if (args.empty()) return Value(false);
-            
-            if (!args[0].is_number()) {
-                if (args[0].is_object()) {
-                    return Value(true);
-                }
-                return Value(false);
-            }
-            
-            double val = args[0].to_number();
-            return Value(val != val);
+            // Must be a number type AND NaN value
+            if (!args[0].is_number()) return Value(false);
+            return Value(args[0].is_nan());
         }, 1);
     number_constructor->set_property("isNaN", Value(numberIsNaN_fn.release()), PropertyAttributes::BuiltinFunction);
     
@@ -4592,13 +4651,16 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("constructor", number_constructor_desc);
 
-    auto isNaN_fn = ObjectFactory::create_native_function("isNaN",
+    auto isNaN_fn2 = ObjectFactory::create_native_function("isNaN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty() || !args[0].is_number()) return Value(false);
-            return Value(std::isnan(args[0].to_number()));
+            // ES6 Number.isNaN: only returns true for actual NaN values (no type coercion)
+            if (args.empty()) return Value(false);
+            // Must be a number type AND NaN value
+            if (!args[0].is_number()) return Value(false);
+            return Value(args[0].is_nan());
         }, 1);
-    number_constructor->set_property("isNaN", Value(isNaN_fn.release()), PropertyAttributes::BuiltinFunction);
+    number_constructor->set_property("isNaN", Value(isNaN_fn2.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -7397,16 +7459,21 @@ void Context::setup_global_bindings() {
         }, 1);
     lexical_environment_->create_binding("parseFloat", Value(parseFloat_fn.release()), false);
     
-    auto isNaN_fn = ObjectFactory::create_native_function("isNaN",
+    auto isNaN_global_fn = ObjectFactory::create_native_function("isNaN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Global isNaN: coerce to number first, then check if NaN
             if (args.empty()) return Value(true);
-            
+
+            // If already NaN, return true
             if (args[0].is_nan()) return Value(true);
-            
-            double num = args[0].to_number();
-            return Value(std::isnan(num));
+
+            // Convert to number (may produce NaN for non-numeric values like "abc")
+            Value num_val(args[0].to_number());
+
+            // Check if conversion resulted in NaN
+            return Value(num_val.is_nan());
         }, 1);
-    lexical_environment_->create_binding("isNaN", Value(isNaN_fn.release()), false);
+    lexical_environment_->create_binding("isNaN", Value(isNaN_global_fn.release()), false);
     
     auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

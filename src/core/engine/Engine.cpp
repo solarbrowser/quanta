@@ -623,12 +623,21 @@ void Engine::setup_built_in_functions() {
     });
     
     register_function("isNaN", [](const std::vector<Value>& args) -> Value {
+        // Global isNaN: coerce to number first, then check if NaN
         if (args.empty()) {
             return Value(true);
         }
-        
-        double num = args[0].to_number();
-        return Value(std::isnan(num));
+
+        // If already NaN, return true
+        if (args[0].is_nan()) {
+            return Value(true);
+        }
+
+        // Convert to number (may produce NaN for non-numeric values like "abc")
+        Value num_val(args[0].to_number());
+
+        // Check if conversion resulted in NaN
+        return Value(num_val.is_nan());
     });
     
     register_function("isFinite", [](const std::vector<Value>& args) -> Value {

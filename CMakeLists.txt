@@ -80,14 +80,14 @@ else()
 endif()
 
 # Core source files
-file(GLOB CORE_SOURCES
-    ${CMAKE_SOURCE_DIR}/core/src/*.cpp
+file(GLOB_RECURSE CORE_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/core/*.cpp
 )
 
 # Platform-specific sources
 file(GLOB PLATFORM_SOURCES
-    ${CMAKE_SOURCE_DIR}/core/src/platform/NativeAPI.cpp
-    ${CMAKE_SOURCE_DIR}/core/src/platform/APIRouter.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/platform/NativeAPI.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/platform/APIRouter.cpp
 )
 
 # Add platform sources
@@ -98,12 +98,12 @@ list(FILTER CORE_SOURCES EXCLUDE REGEX ".*WindowsNativeAPI\\.cpp$")
 
 # Lexer source files
 file(GLOB_RECURSE LEXER_SOURCES
-    ${CMAKE_SOURCE_DIR}/lexer/src/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/lexer/*.cpp
 )
 
 # Parser source files
 file(GLOB_RECURSE PARSER_SOURCES
-    ${CMAKE_SOURCE_DIR}/parser/src/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/parser/*.cpp
 )
 
 # Create static library
@@ -117,6 +117,11 @@ add_library(quantalib STATIC
 set_target_properties(quantalib PROPERTIES
     OUTPUT_NAME quanta
     ARCHIVE_OUTPUT_NAME quanta
+)
+
+# Add include directories
+target_include_directories(quantalib PUBLIC
+    ${CMAKE_SOURCE_DIR}/include
 )
 
 # Console executable
