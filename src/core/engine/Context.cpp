@@ -3812,43 +3812,59 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
-            int64_t len = static_cast<int64_t>(str.length());
+            int64_t size = static_cast<int64_t>(str.length());
 
-            // Get start parameter
-            int64_t start = 0;
+            double start_val = 0;
             if (!args.empty()) {
-                start = static_cast<int64_t>(args[0].to_number());
+                start_val = args[0].to_number();
             }
 
-            // If start is negative, it's treated as max(len + start, 0)
-            if (start < 0) {
-                start = std::max(static_cast<int64_t>(0), len + start);
-            } else if (start >= len) {
-                return Value("");
+            int64_t intStart;
+            if (std::isnan(start_val)) {
+                intStart = 0;
+            } else if (std::isinf(start_val)) {
+                if (start_val < 0) {
+                    intStart = 0; 
+                } else {
+                    intStart = size; 
+                }
+            } else {
+                intStart = static_cast<int64_t>(std::trunc(start_val));
             }
 
-            // Get length parameter
-            int64_t length;
+            if (intStart < 0) {
+                intStart = std::max(static_cast<int64_t>(0), size + intStart);
+            }
+            intStart = std::min(intStart, size);
+
+            int64_t intLength;
             if (args.size() > 1) {
                 double length_val = args[1].to_number();
-                // Negative or NaN length should return empty string
-                if (std::isnan(length_val) || length_val < 0) {
-                    return Value("");
+                // ToIntegerOrInfinity
+                if (std::isnan(length_val)) {
+                    intLength = 0;
+                } else if (std::isinf(length_val)) {
+                    if (length_val < 0) {
+                        intLength = 0;
+                    } else {
+                        intLength = size;
+                    }
+                } else {
+                    intLength = static_cast<int64_t>(std::trunc(length_val));
                 }
-                length = static_cast<int64_t>(length_val);
             } else {
-                // If length not specified, use rest of string
-                length = len - start;
+                intLength = size;
             }
 
-            // Clamp length to available characters
-            length = std::min(length, len - start);
+            intLength = std::min(std::max(intLength, static_cast<int64_t>(0)), size);
 
-            if (length <= 0) {
+            int64_t intEnd = std::min(intStart + intLength, size);
+
+            if (intEnd <= intStart) {
                 return Value("");
             }
 
-            return Value(str.substr(static_cast<size_t>(start), static_cast<size_t>(length)));
+            return Value(str.substr(static_cast<size_t>(intStart), static_cast<size_t>(intEnd - intStart)));
         }, 2);
     PropertyDescriptor substr_desc(Value(substr_fn.release()),
         PropertyAttributes::BuiltinFunction);

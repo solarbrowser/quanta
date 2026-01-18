@@ -3307,30 +3307,56 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         return Value(-1.0);
         
     } else if (method_name == "substr") {
+        int size = static_cast<int>(str.length());
+
         int start = 0;
-        int length = static_cast<int>(str.length());
-        
         if (arguments_.size() > 0) {
             Value start_val = arguments_[0]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            start = static_cast<int>(start_val.to_number());
-            
-            if (start < 0) {
-                start = std::max(0, static_cast<int>(str.length()) + start);
-            }
-            if (start >= static_cast<int>(str.length())) {
-                return Value("");
+            double start_num = start_val.to_number();
+
+            // ToIntegerOrInfinity
+            if (std::isnan(start_num)) {
+                start = 0;
+            } else if (std::isinf(start_num)) {
+                start = (start_num < 0) ? 0 : size;
+            } else {
+                start = static_cast<int>(std::trunc(start_num));
             }
         }
-        
+
+        if (start < 0) {
+            start = std::max(0, size + start);
+        }
+        start = std::min(start, size);
+
+        int length;
         if (arguments_.size() > 1) {
             Value length_val = arguments_[1]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            length = static_cast<int>(length_val.to_number());
-            if (length < 0) return Value("");
+            double length_num = length_val.to_number();
+
+            // ToIntegerOrInfinity
+            if (std::isnan(length_num)) {
+                length = 0;
+            } else if (std::isinf(length_num)) {
+                length = (length_num < 0) ? 0 : size;
+            } else {
+                length = static_cast<int>(std::trunc(length_num));
+            }
+        } else {
+            length = size;
         }
-        
-        return Value(str.substr(start, length));
+
+        length = std::min(std::max(length, 0), size);
+
+        int end = std::min(start + length, size);
+
+        if (end <= start) {
+            return Value(std::string(""));
+        }
+
+        return Value(str.substr(start, end - start));
         
     } else if (method_name == "slice") {
         int start = 0;
@@ -3786,12 +3812,12 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     if (ctx.has_exception()) {
         return Value();
     }
-    
+
     if (object_value.is_null() || object_value.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
-    
+
     if (object_value.is_string()) {
         std::string str_value = object_value.to_string();
         
@@ -4512,11 +4538,53 @@ Value MemberExpression::evaluate(Context& ctx) {
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
                     if (args.empty()) return Value(str_value);
-                    int start = static_cast<int>(args[0].to_number());
-                    int length = args.size() > 1 ? static_cast<int>(args[1].to_number()) : str_value.length();
-                    if (start < 0) start = std::max(0, static_cast<int>(str_value.length()) + start);
-                    start = std::min(start, static_cast<int>(str_value.length()));
-                    return Value(str_value.substr(start, length));
+
+                    int size = static_cast<int>(str_value.length());
+
+                    // Convert start to integer (ToIntegerOrInfinity)
+                    double start_num = args[0].to_number();
+                    int start;
+                    if (std::isnan(start_num)) {
+                        start = 0;
+                    } else if (std::isinf(start_num)) {
+                        start = (start_num < 0) ? 0 : size;
+                    } else {
+                        start = static_cast<int>(std::trunc(start_num));
+                    }
+
+                    // Handle negative start
+                    if (start < 0) {
+                        start = std::max(0, size + start);
+                    }
+                    start = std::min(start, size);
+
+                    // Convert length to integer (ToIntegerOrInfinity)
+                    int length;
+                    if (args.size() > 1) {
+                        double length_num = args[1].to_number();
+                        if (std::isnan(length_num)) {
+                            length = 0;
+                        } else if (std::isinf(length_num)) {
+                            length = (length_num < 0) ? 0 : size;
+                        } else {
+                            length = static_cast<int>(std::trunc(length_num));
+                        }
+                    } else {
+                        length = size;
+                    }
+
+                    // Clamp length to [0, size]
+                    length = std::min(std::max(length, 0), size);
+
+                    // Calculate end position
+                    int end = std::min(start + length, size);
+
+                    // Return substring
+                    if (end <= start) {
+                        return Value(std::string(""));
+                    }
+
+                    return Value(str_value.substr(start, end - start));
                 });
             return Value(substr_fn.release());
         }
