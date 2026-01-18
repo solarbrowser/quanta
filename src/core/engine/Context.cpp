@@ -1422,7 +1422,18 @@ void Context::initialize_built_ins() {
     propertyIsEnumerable_length_desc.set_writable(false);
     proto_propertyIsEnumerable_fn->set_property_descriptor("length", propertyIsEnumerable_length_desc);
 
+    auto proto_valueOf_fn = ObjectFactory::create_native_function("valueOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                return Value(this_obj);
+            }
+            return Value();
+        }, 0);
+
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+    object_prototype->set_property("valueOf", Value(proto_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -2705,25 +2716,48 @@ void Context::initialize_built_ins() {
 
     auto slice_fn = ObjectFactory::create_native_function("slice",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            (void)args;
+            printf("slice called\n");
+            fflush(stdout);
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
+            printf("this_obj: %p\n", (void*)this_obj);
+            fflush(stdout);
+            if (!this_obj) {
+                auto empty = ObjectFactory::create_array();
+                return Value(empty.release());
+            }
 
-            auto result = ObjectFactory::create_array();
+            printf("Getting length...\n");
+            fflush(stdout);
             uint32_t length = this_obj->get_length();
+            printf("length: %u\n", length);
+            fflush(stdout);
 
-            int32_t start = args.empty() ? 0 : static_cast<int32_t>(args[0].to_number());
-            int32_t end = args.size() < 2 ? length : static_cast<int32_t>(args[1].to_number());
+            int32_t start = 0;
+            int32_t end = static_cast<int32_t>(length);
 
-            if (start < 0) start = length + start;
-            if (end < 0) end = length + end;
+            if (!args.empty()) {
+                start = static_cast<int32_t>(args[0].to_number());
+            }
+            if (args.size() >= 2) {
+                end = static_cast<int32_t>(args[1].to_number());
+            }
+
+            if (start < 0) start = std::max(0, static_cast<int32_t>(length) + start);
+            if (end < 0) end = std::max(0, static_cast<int32_t>(length) + end);
             if (start < 0) start = 0;
             if (end > static_cast<int32_t>(length)) end = length;
+            if (start > end) start = end;
 
+            auto result = ObjectFactory::create_array();
             uint32_t result_index = 0;
             for (int32_t i = start; i < end; i++) {
-                result->set_element(result_index++, this_obj->get_element(i));
+                Value elem = this_obj->get_element(static_cast<uint32_t>(i));
+                result->set_element(result_index++, elem);
             }
             result->set_length(result_index);
+
             return Value(result.release());
         }, 2);
     PropertyDescriptor slice_desc(Value(slice_fn.release()),
@@ -3076,6 +3110,7 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
                 this_obj->set_property("value", Value(str_value));
+                this_obj->set_property("[[PrimitiveValue]]", Value(str_value));
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
                     static_cast<PropertyAttributes>(PropertyAttributes::None));
                 this_obj->set_property_descriptor("length", length_desc);
@@ -4390,8 +4425,15 @@ void Context::initialize_built_ins() {
     
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(0.0);
-            return Value(args[0].to_number());
+            double num_value = args.empty() ? 0.0 : args[0].to_number();
+
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                this_obj->set_property("[[PrimitiveValue]]", Value(num_value));
+                return Value(this_obj);
+            }
+
+            return Value(num_value);
         });
     PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);
     number_constructor->set_property_descriptor("MAX_VALUE", max_value_desc);
@@ -4537,7 +4579,39 @@ void Context::initialize_built_ins() {
                     return Value();
                 }
 
-                return Value(std::to_string(num));
+                int radix = 10;
+                if (!args.empty()) {
+                    radix = static_cast<int>(args[0].to_number());
+                    if (radix < 2 || radix > 36) {
+                        ctx.throw_exception(Value("RangeError: radix must be between 2 and 36"));
+                        return Value();
+                    }
+                }
+
+                if (radix == 10) {
+                    return Value(std::to_string(num));
+                }
+
+                if (std::isnan(num)) return Value("NaN");
+                if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
+
+                bool negative = num < 0;
+                if (negative) num = -num;
+
+                int64_t int_part = static_cast<int64_t>(num);
+                std::string result;
+                if (int_part == 0) {
+                    result = "0";
+                } else {
+                    while (int_part > 0) {
+                        int digit = int_part % radix;
+                        result = (digit < 10 ? char('0' + digit) : char('a' + digit - 10)) + result;
+                        int_part /= radix;
+                    }
+                }
+
+                if (negative) result = "-" + result;
+                return Value(result);
             } catch (...) {
                 ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
                 return Value();
