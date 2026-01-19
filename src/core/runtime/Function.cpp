@@ -237,7 +237,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);
-            Value closure_value = this->get_property(key);
+
+            Value closure_value;
+            if (closure_context_ && closure_context_->has_binding(var_name)) {
+                closure_value = closure_context_->get_binding(var_name);
+            } else {
+                closure_value = this->get_property(key);
+            }
+
             function_context.create_binding(var_name, closure_value, true);
         }
     }
@@ -331,7 +338,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     }
 
                     if (values_different) {
-                        this->set_property(key, current_value);
+                        PropertyDescriptor new_desc(current_value, PropertyAttributes::None);
+                        this->set_property_descriptor(key, new_desc);
 
                         if (closure_context_) {
                             closure_context_->set_binding(var_name, current_value);

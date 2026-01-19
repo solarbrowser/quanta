@@ -6787,39 +6787,23 @@ Value FunctionExpression::evaluate(Context& ctx) {
         if (var_env) {
             auto var_binding_names = var_env->get_binding_names();
             for (const auto& name : var_binding_names) {
-                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) { 
+                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
                     Value value = ctx.get_binding(name);
-                    if (!value.is_undefined()) {
+                    if (!value.is_undefined() && !value.is_function()) {
                         function->set_property("__closure_" + name, value);
                     }
                 }
             }
         }
-        
+
         auto lex_env = ctx.get_lexical_environment();
         if (lex_env && lex_env != var_env) {
             auto lex_binding_names = lex_env->get_binding_names();
             for (const auto& name : lex_binding_names) {
-                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) { 
+                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
                     Value value = ctx.get_binding(name);
-                    if (!value.is_undefined()) {
+                    if (!value.is_undefined() && !value.is_function()) {
                         function->set_property("__closure_" + name, value);
-                    }
-                }
-            }
-        }
-        
-        std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
-        for (const auto& var_name : potential_vars) {
-            if (param_names.find(var_name) != param_names.end()) {
-                continue;
-            }
-            
-            if (ctx.has_binding(var_name)) {
-                Value value = ctx.get_binding(var_name);
-                if (!value.is_undefined()) {
-                    if (!function->has_property("__closure_" + var_name)) {
-                        function->set_property("__closure_" + var_name, value);
                     }
                 }
             }
