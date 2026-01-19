@@ -2718,21 +2718,13 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             (void)args;
-            printf("slice called\n");
-            fflush(stdout);
             Object* this_obj = ctx.get_this_binding();
-            printf("this_obj: %p\n", (void*)this_obj);
-            fflush(stdout);
             if (!this_obj) {
                 auto empty = ObjectFactory::create_array();
                 return Value(empty.release());
             }
 
-            printf("Getting length...\n");
-            fflush(stdout);
             uint32_t length = this_obj->get_length();
-            printf("length: %u\n", length);
-            fflush(stdout);
 
             int32_t start = 0;
             int32_t end = static_cast<int32_t>(length);
