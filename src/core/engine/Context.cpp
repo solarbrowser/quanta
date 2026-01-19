@@ -3078,6 +3078,35 @@ void Context::initialize_built_ins() {
 
     function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    auto function_toString_fn = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* function_obj = ctx.get_this_binding();
+            if (!function_obj || !function_obj->is_function()) {
+                ctx.throw_type_error("Function.prototype.toString called on non-function");
+                return Value();
+            }
+
+            Function* func = static_cast<Function*>(function_obj);
+            std::string func_name = "anonymous";
+
+            Value name_val = func->get_property("name");
+            if (!name_val.is_undefined() && !name_val.to_string().empty()) {
+                func_name = name_val.to_string();
+            }
+
+            return Value("function " + func_name + "() { [native code] }");
+        });
+
+    PropertyDescriptor function_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
+    function_toString_length_desc.set_enumerable(false);
+    function_toString_length_desc.set_writable(false);
+    function_toString_fn->set_property_descriptor("length", function_toString_length_desc);
+
+    function_toString_fn->set_property("name", Value("toString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+
+    function_prototype->set_property("toString", Value(function_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
     function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
 
     // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods

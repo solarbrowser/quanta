@@ -1748,6 +1748,10 @@ std::unique_ptr<Object> create_array(uint32_t length) {
 }
 
 std::unique_ptr<Object> create_function() {
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        return std::make_unique<Object>(func_proto, Object::ObjectType::Function);
+    }
     return std::make_unique<Object>(Object::ObjectType::Function);
 }
 

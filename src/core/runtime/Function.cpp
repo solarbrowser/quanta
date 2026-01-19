@@ -549,14 +549,24 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
                                              const std::vector<std::string>& params,
                                              std::unique_ptr<ASTNode> body,
                                              Context* closure_context) {
-    return std::make_unique<Function>(name, params, std::move(body), closure_context);
+    auto func = std::make_unique<Function>(name, params, std::move(body), closure_context);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        func->set_prototype(func_proto);
+    }
+    return func;
 }
 
 std::unique_ptr<Function> create_js_function(const std::string& name,
                                              std::vector<std::unique_ptr<Parameter>> params,
                                              std::unique_ptr<ASTNode> body,
                                              Context* closure_context) {
-    return std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
+    auto func = std::make_unique<Function>(name, std::move(params), std::move(body), closure_context);
+    Object* func_proto = get_function_prototype();
+    if (func_proto) {
+        func->set_prototype(func_proto);
+    }
+    return func;
 }
 
 std::unique_ptr<Function> create_native_function(const std::string& name,

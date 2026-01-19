@@ -4007,7 +4007,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_number()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        
+
         if (method_value.is_function()) {
             std::vector<Value> arg_values;
             for (const auto& arg : arguments_) {
@@ -4015,10 +4015,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 arg_values.push_back(val);
             }
-            
+
             Function* method = method_value.as_function();
-            
-            
             return method->call(ctx, arg_values, object_value);
         } else {
             ctx.throw_exception(Value("Property is not a function"));
@@ -4121,8 +4119,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
 
-    if (object_value.is_object() && !computed_) {
-        Object* obj = object_value.as_object();
+    if ((object_value.is_object() || object_value.is_function()) && !computed_) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
@@ -4172,8 +4170,8 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
     
-    if (object_value.is_object() && computed_) {
-        Object* obj = object_value.as_object();
+    if ((object_value.is_object() || object_value.is_function()) && computed_) {
+        Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
 
         //  ufp: Constant array index
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
@@ -4917,99 +4915,19 @@ Value MemberExpression::evaluate(Context& ctx) {
     }
     
     else if (object_value.is_number()) {
-        double num_value = object_value.to_number();
-        
-        if (prop_name == "toString") {
-            auto to_string_fn = ObjectFactory::create_native_function("toString",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    std::string result = std::to_string(num_value);
-                    if (result.find('.') != std::string::npos) {
-                        result.erase(result.find_last_not_of('0') + 1, std::string::npos);
-                        result.erase(result.find_last_not_of('.') + 1, std::string::npos);
-                    }
-                    return Value(result);
-                });
-            return Value(to_string_fn.release());
-        }
-        
-        if (prop_name == "valueOf") {
-            auto value_of_fn = ObjectFactory::create_native_function("valueOf",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    return Value(num_value);
-                });
-            return Value(value_of_fn.release());
-        }
-        
-        if (prop_name == "toFixed") {
-            auto to_fixed_fn = ObjectFactory::create_native_function("toFixed",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    int digits = args.empty() ? 0 : static_cast<int>(args[0].to_number());
-                    std::ostringstream oss;
-                    oss << std::fixed << std::setprecision(digits) << num_value;
-                    return Value(oss.str());
-                });
-            return Value(to_fixed_fn.release());
+        Value number_ctor = ctx.get_binding("Number");
+        if (number_ctor.is_function()) {
+            Function* number_fn = number_ctor.as_function();
+            Value prototype = number_fn->get_property("prototype");
+            if (prototype.is_object()) {
+                Object* number_prototype = prototype.as_object();
+                Value method = number_prototype->get_property(prop_name);
+                if (!method.is_undefined()) {
+                    return method;
+                }
+            }
         }
 
-        if (prop_name == "toPrecision") {
-            auto to_precision_fn = ObjectFactory::create_native_function("toPrecision",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    int precision = args.empty() ? 6 : static_cast<int>(args[0].to_number());
-                    if (precision < 1 || precision > 100) {
-                        return Value("RangeError: toPrecision() argument must be between 1 and 100");
-                    }
-                    std::ostringstream oss;
-                    oss << std::setprecision(precision) << num_value;
-                    return Value(oss.str());
-                });
-            return Value(to_precision_fn.release());
-        }
-
-        if (prop_name == "toExponential") {
-            auto to_exponential_fn = ObjectFactory::create_native_function("toExponential",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                    int digits = args.empty() ? 6 : static_cast<int>(args[0].to_number());
-                    if (digits < 0 || digits > 100) {
-                        return Value("RangeError: toExponential() argument must be between 0 and 100");
-                    }
-                    std::ostringstream oss;
-                    oss << std::scientific << std::setprecision(digits) << num_value;
-                    return Value(oss.str());
-                });
-            return Value(to_exponential_fn.release());
-        }
-
-        if (prop_name == "toLocaleString") {
-            auto to_locale_string_fn = ObjectFactory::create_native_function("toLocaleString",
-                [num_value](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    std::ostringstream oss;
-                    
-                    if (num_value >= 1000 || num_value <= -1000) {
-                        std::string num_str = std::to_string(static_cast<long long>(num_value));
-                        std::string result;
-                        int count = 0;
-                        
-                        for (int i = num_str.length() - 1; i >= 0; --i) {
-                            if (count > 0 && count % 3 == 0 && num_str[i] != '-') {
-                                result = "," + result;
-                            }
-                            result = num_str[i] + result;
-                            if (num_str[i] != '-') count++;
-                        }
-                        return Value(result);
-                    } else {
-                        return Value(std::to_string(static_cast<long long>(num_value)));
-                    }
-                });
-            return Value(to_locale_string_fn.release());
-        }
-        
         return Value();
     }
     
