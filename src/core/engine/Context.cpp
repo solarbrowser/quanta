@@ -588,7 +588,7 @@ void Context::initialize_built_ins() {
     auto create_fn = ObjectFactory::create_native_function("create",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value("TypeError: Object.create requires at least 1 argument"));
+                ctx.throw_type_error("Object.create requires at least 1 argument");
                 return Value();
             }
 
@@ -613,13 +613,13 @@ void Context::initialize_built_ins() {
                 new_obj_ptr = new_obj.release();
             }
             else {
-                ctx.throw_exception(Value("TypeError: Object prototype may only be an Object or null"));
+                ctx.throw_type_error("Object prototype may only be an Object or null");
                 return Value();
             }
 
             if (args.size() > 1 && !args[1].is_undefined()) {
                 if (!args[1].is_object()) {
-                    ctx.throw_exception(Value("TypeError: Property descriptors must be an object"));
+                    ctx.throw_type_error("Property descriptors must be an object");
                     return Value();
                 }
 
@@ -916,12 +916,12 @@ void Context::initialize_built_ins() {
     auto defineProperty_fn = ObjectFactory::create_native_function("defineProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 3) {
-                ctx.throw_exception(Value("TypeError: Object.defineProperty requires 3 arguments"));
+                ctx.throw_type_error("Object.defineProperty requires 3 arguments");
                 return Value();
             }
 
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.defineProperty called on non-object"));
+                ctx.throw_type_error("Object.defineProperty called on non-object");
                 return Value();
             }
 
@@ -972,7 +972,7 @@ void Context::initialize_built_ins() {
 
                 bool success = obj->set_property_descriptor(prop_name, prop_desc);
                 if (!success) {
-                    ctx.throw_exception(Value("TypeError: Cannot define property"));
+                    ctx.throw_type_error("Cannot define property");
                     return Value();
                 }
             }
@@ -1008,19 +1008,19 @@ void Context::initialize_built_ins() {
     auto defineProperties_fn = ObjectFactory::create_native_function("defineProperties",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value("TypeError: Object.defineProperties requires 2 arguments"));
+                ctx.throw_type_error("Object.defineProperties requires 2 arguments");
                 return Value();
             }
 
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.defineProperties called on non-object"));
+                ctx.throw_type_error("Object.defineProperties called on non-object");
                 return Value();
             }
 
             Object* obj = args[0].as_object();
 
             if (!args[1].is_object()) {
-                ctx.throw_exception(Value("TypeError: Properties argument must be an object"));
+                ctx.throw_type_error("Properties argument must be an object");
                 return Value();
             }
 
@@ -2136,7 +2136,7 @@ void Context::initialize_built_ins() {
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array()) {
+            if (!this_obj) {
                 return Value(-1.0);
             }
 
@@ -2186,8 +2186,8 @@ void Context::initialize_built_ins() {
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array()) {
-                ctx.throw_type_error("Array.prototype.reduceRight called on non-array");
+            if (!this_obj) {
+                ctx.throw_type_error("Array.prototype.reduceRight called on null or undefined");
                 return Value();
             }
 
@@ -2384,11 +2384,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_array = ctx.get_this_binding();
             if (!this_array) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-object"));
-                return Value();
-            }
-            if (!this_array->is_array()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on non-array"));
+                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on null or undefined"));
                 return Value();
             }
 
