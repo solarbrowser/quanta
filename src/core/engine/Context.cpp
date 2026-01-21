@@ -51,7 +51,7 @@ Context::Context(Engine* engine, Type type)
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
       return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
-      strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr),
+      is_in_constructor_call_(false), strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr),
       gc_(engine ? engine->get_garbage_collector() : nullptr) {
 
     if (type == Type::Global) {
@@ -64,8 +64,8 @@ Context::Context(Engine* engine, Context* parent, Type type)
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(parent ? parent->global_object_ : nullptr),
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
-      has_break_(false), has_continue_(false), strict_mode_(parent ? parent->strict_mode_ : false),
-      engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"),
+      has_break_(false), has_continue_(false), is_in_constructor_call_(false),
+      strict_mode_(parent ? parent->strict_mode_ : false), engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"),
       web_api_interface_(parent ? parent->web_api_interface_ : nullptr),
       gc_(engine ? engine->get_garbage_collector() : nullptr) {
 
@@ -5567,6 +5567,17 @@ void Context::initialize_built_ins() {
 
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
         [date_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            // If called as function (not constructor), return current time string
+            if (!ctx.is_in_constructor_call()) {
+                auto now = std::chrono::system_clock::now();
+                std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+                std::tm* now_tm = std::localtime(&now_time);
+                char buffer[100];
+                std::strftime(buffer, sizeof(buffer), "%a %b %d %Y %H:%M:%S", now_tm);
+                return Value(std::string(buffer));
+            }
+
+            // Otherwise construct Date object
             Value date_obj = Date::date_constructor(ctx, args);
 
             if (date_obj.is_object()) {

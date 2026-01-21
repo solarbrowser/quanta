@@ -513,8 +513,10 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     
     std::vector<std::string> initial_properties = new_object->get_own_property_keys();
     size_t initial_prop_count = initial_properties.size();
-    
+
+    ctx.set_in_constructor_call(true);
     Value result = call(ctx, args, this_value);
+    ctx.set_in_constructor_call(false);
     
     std::vector<std::string> final_properties = new_object->get_own_property_keys();
     bool constructor_did_work = (final_properties.size() > initial_prop_count);

@@ -66,12 +66,14 @@ private:
     Value current_exception_;
     bool has_exception_;
     std::vector<std::pair<size_t, size_t>> try_catch_blocks_;
-    
+
     Value return_value_;
     bool has_return_value_;
-    
+
     bool has_break_;
     bool has_continue_;
+
+    bool is_in_constructor_call_;
     
     bool strict_mode_;
     
@@ -155,6 +157,9 @@ public:
     void set_break();
     void set_continue();
     void clear_break_continue();
+
+    bool is_in_constructor_call() const { return is_in_constructor_call_; }
+    void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
 
     void register_built_in_object(const std::string& name, Object* object);
     void register_built_in_function(const std::string& name, Function* function);
