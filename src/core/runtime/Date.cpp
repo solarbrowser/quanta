@@ -26,7 +26,7 @@ Date::Date(int year, int month, int day, int hour, int minute, int second, int m
 
     std::tm tm = {};
     tm.tm_year = year - 1900;
-    tm.tm_mon = month - 1;
+    tm.tm_mon = month;
     tm.tm_mday = day;
     tm.tm_hour = hour;
     tm.tm_min = minute;
@@ -88,30 +88,70 @@ Value Date::UTC(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::getTime(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    return Value(static_cast<double>(date.getTimestamp()));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    return timestamp_val;
 }
 
 Value Date::getFullYear(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_year + 1900));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_year + 1900));
 }
 
 Value Date::getMonth(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_mon));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_mon));
 }
 
 Value Date::getDate(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_mday));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_mday));
 }
 
 Value Date::getDay(Context& ctx, const std::vector<Value>& args) {

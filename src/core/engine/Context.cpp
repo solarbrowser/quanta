@@ -5562,17 +5562,20 @@ void Context::initialize_built_ins() {
         date_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
     };
     
+    auto date_prototype = ObjectFactory::create_object();
+    Object* date_proto_ptr = date_prototype.get();
+
     auto date_constructor_fn = ObjectFactory::create_native_constructor("Date",
-        [add_date_instance_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [date_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Value date_obj = Date::date_constructor(ctx, args);
-            
+
             if (date_obj.is_object()) {
-                add_date_instance_methods(date_obj.as_object());
+                date_obj.as_object()->set_prototype(date_proto_ptr);
             }
-            
+
             return date_obj;
         });
-    
+
     auto date_now = ObjectFactory::create_native_function("now", Date::now);
     auto date_parse = ObjectFactory::create_native_function("parse", Date::parse);
     auto date_UTC = ObjectFactory::create_native_function("UTC", Date::UTC);
@@ -5580,9 +5583,7 @@ void Context::initialize_built_ins() {
     date_constructor_fn->set_property("now", Value(date_now.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("parse", Value(date_parse.release()), PropertyAttributes::BuiltinFunction);
     date_constructor_fn->set_property("UTC", Value(date_UTC.release()), PropertyAttributes::BuiltinFunction);
-    
-    auto date_prototype = ObjectFactory::create_object();
-    
+
     auto getTime_fn = ObjectFactory::create_native_function("getTime", Date::getTime);
     auto getFullYear_fn = ObjectFactory::create_native_function("getFullYear", Date::getFullYear);
     auto getMonth_fn = ObjectFactory::create_native_function("getMonth", Date::getMonth);
