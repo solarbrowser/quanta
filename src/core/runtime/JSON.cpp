@@ -491,6 +491,9 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_boolean()) {
         return stringify_boolean(value.to_boolean());
     } else if (value.is_number()) {
+        if (value.is_nan() || value.is_positive_infinity() || value.is_negative_infinity()) {
+            return "null";
+        }
         return stringify_number(value.as_number());
     } else if (value.is_string()) {
         return stringify_string(value.to_string());
@@ -611,14 +614,7 @@ std::string JSON::Stringifier::stringify_string(const std::string& str) {
 std::string JSON::Stringifier::stringify_number(double num) {
     std::ostringstream oss;
     oss << num;
-    std::string result = oss.str();
-
-    if (result == "nan" || result == "inf" || result == "-inf" ||
-        result == "NaN" || result == "Infinity" || result == "-Infinity") {
-        return "null";
-    }
-
-    return result;
+    return oss.str();
 }
 
 std::string JSON::Stringifier::stringify_boolean(bool value) {
