@@ -3059,6 +3059,10 @@ void Context::initialize_built_ins() {
     
     auto function_prototype = ObjectFactory::create_object();
     
+    // Set function prototype early so create_native_function can use it
+    Object* function_proto_ptr = function_prototype.get();
+    ObjectFactory::set_function_prototype(function_proto_ptr);
+    
     auto call_fn = ObjectFactory::create_native_function("call",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
@@ -3208,9 +3212,6 @@ void Context::initialize_built_ins() {
     if (object_proto) {
         function_prototype->set_prototype(object_proto);
     }
-
-    Object* function_proto_ptr = function_prototype.get();
-    ObjectFactory::set_function_prototype(function_proto_ptr);
 
     function_constructor->set_property("prototype", Value(function_prototype.release()), PropertyAttributes::None);
 
