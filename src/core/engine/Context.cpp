@@ -2261,25 +2261,28 @@ void Context::initialize_built_ins() {
                 accumulator = args[1];
                 k = static_cast<int32_t>(length - 1);
             } else {
+                // Find last existing element in sparse array
                 k = static_cast<int32_t>(length - 1);
+                bool found = false;
                 while (k >= 0) {
-                    Value element = this_obj->get_element(static_cast<uint32_t>(k));
-                    if (!element.is_undefined()) {
-                        accumulator = element;
+                    if (this_obj->has_property(std::to_string(k))) {
+                        accumulator = this_obj->get_element(static_cast<uint32_t>(k));
                         k--;
+                        found = true;
                         break;
                     }
                     k--;
                 }
-                if (k < -1) {
+                if (!found) {
                     ctx.throw_type_error("Reduce of empty array with no initial value");
                     return Value();
                 }
             }
 
             while (k >= 0) {
-                Value element = this_obj->get_element(static_cast<uint32_t>(k));
-                if (!element.is_undefined()) {
+                // Skip missing elements in sparse arrays
+                if (this_obj->has_property(std::to_string(k))) {
+                    Value element = this_obj->get_element(static_cast<uint32_t>(k));
                     std::vector<Value> callback_args = {
                         accumulator,
                         element,
@@ -2471,6 +2474,10 @@ void Context::initialize_built_ins() {
             uint32_t length = this_obj->get_length();
 
             for (uint32_t i = 0; i < length; i++) {
+                // Skip missing elements in sparse arrays
+                if (!this_obj->has_property(std::to_string(i))) {
+                    continue;
+                }
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
@@ -2501,6 +2508,10 @@ void Context::initialize_built_ins() {
             uint32_t result_index = 0;
 
             for (uint32_t i = 0; i < length; i++) {
+                // Skip missing elements in sparse arrays
+                if (!this_obj->has_property(std::to_string(i))) {
+                    continue;
+                }
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value test_result = callback->call(ctx, callback_args, thisArg);
@@ -2527,6 +2538,10 @@ void Context::initialize_built_ins() {
 
             uint32_t length = this_obj->get_length();
             for (uint32_t i = 0; i < length; i++) {
+                // Skip missing elements in sparse arrays
+                if (!this_obj->has_property(std::to_string(i))) {
+                    continue;
+                }
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
                 callback->call(ctx, callback_args, this_arg);
@@ -2575,10 +2590,13 @@ void Context::initialize_built_ins() {
             uint32_t length = this_obj->get_length();
 
             for (uint32_t i = 0; i < length; i++) {
-                Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
-                Value mapped = callback->call(ctx, callback_args, thisArg);
-                result->set_element(i, mapped);
+                // Skip missing elements in sparse arrays
+                if (this_obj->has_property(std::to_string(i))) {
+                    Value element = this_obj->get_element(i);
+                    std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+                    Value mapped = callback->call(ctx, callback_args, thisArg);
+                    result->set_element(i, mapped);
+                }
             }
             result->set_length(length);
             return Value(result.release());
@@ -2609,11 +2627,26 @@ void Context::initialize_built_ins() {
             if (args.size() > 1) {
                 accumulator = args[1];
             } else {
-                accumulator = this_obj->get_element(0);
-                start_index = 1;
+                // Find first existing element in sparse array
+                bool found = false;
+                for (uint32_t i = 0; i < length; i++) {
+                    if (this_obj->has_property(std::to_string(i))) {
+                        accumulator = this_obj->get_element(i);
+                        start_index = i + 1;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+                }
             }
 
             for (uint32_t i = start_index; i < length; i++) {
+                // Skip missing elements in sparse arrays
+                if (!this_obj->has_property(std::to_string(i))) {
+                    continue;
+                }
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = {
                     accumulator,
@@ -2644,6 +2677,10 @@ void Context::initialize_built_ins() {
             uint32_t length = this_obj->get_length();
 
             for (uint32_t i = 0; i < length; i++) {
+                // Skip missing elements in sparse arrays
+                if (!this_obj->has_property(std::to_string(i))) {
+                    continue;
+                }
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
