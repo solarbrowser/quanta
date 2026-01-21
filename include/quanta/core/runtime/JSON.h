@@ -97,9 +97,10 @@ private:
         StringifyOptions options_;
         size_t depth_;
         std::set<const Object*> visited_;
+        Context* context_;
 
     public:
-        Stringifier(const StringifyOptions& options);
+        Stringifier(const StringifyOptions& options, Context* ctx = nullptr);
         
         std::string stringify(const Value& value);
         

@@ -22,7 +22,7 @@ Value JSON::parse(const std::string& json_string, const ParseOptions& options) {
 }
 
 std::string JSON::stringify(const Value& value, const StringifyOptions& options) {
-    Stringifier stringifier(options);
+    Stringifier stringifier(options, nullptr);
     return stringifier.stringify(value);
 }
 
@@ -77,7 +77,8 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
     }
     
     try {
-        std::string result = stringify(args[0], options);
+        Stringifier stringifier(options, &ctx);
+        std::string result = stringifier.stringify(args[0]);
         return Value(result);
     } catch (const std::exception& e) {
         ctx.throw_type_error(std::string(e.what()));
@@ -475,8 +476,8 @@ bool JSON::Parser::is_hex_digit(char ch) const {
 }
 
 
-JSON::Stringifier::Stringifier(const StringifyOptions& options) 
-    : options_(options), depth_(0) {
+JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx)
+    : options_(options), depth_(0), context_(ctx) {
 }
 
 std::string JSON::Stringifier::stringify(const Value& value) {
@@ -500,6 +501,18 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_object()) {
         const Object* obj = value.as_object();
         if (obj) {
+            if (obj->has_property("toJSON") && context_) {
+                Value toJSON_val = obj->get_property("toJSON");
+                if (toJSON_val.is_function()) {
+                    Function* toJSON_fn = toJSON_val.as_function();
+                    std::vector<Value> args;
+                    Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(obj)));
+                    if (!context_->has_exception()) {
+                        return stringify_value(result);
+                    }
+                }
+            }
+
             if (obj->is_array()) {
                 return stringify_array(obj);
             } else {
