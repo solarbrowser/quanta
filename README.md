@@ -174,6 +174,10 @@ We welcome contributions! Areas for enhancement:
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=solarbrowser/quanta&type=date&legend=top-left)](https://www.star-history.com/#solarbrowser/quanta&type=date&legend=top-left)
+
 ## License
 
 This project is licensed under the **Mozilla Public License 2.0** - see the LICENSE file for details.
