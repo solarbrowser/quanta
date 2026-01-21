@@ -45,18 +45,17 @@ Quanta is a modern JavaScript engine designed for the **Solar Project** with a f
 
 ## ECMAScript Compatibility
 
-Quanta has been tested against the official **Test262** ECMAScript test suite (51,216 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
+Quanta has been tested against the official **Test262** ECMAScript test suite (52,674 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
 
 ### Test262 Compliance Results
-**Last Test Date:** December 18, 2025 | **Engine Version:** q120525c153l
+**Last Test Date:** January 21, 2026 | **Engine Version:** v0.1.0c237
 
-| Metric | Count | % of Total | % of Executed |
-|--------|-------:|-----------:|---------------:|
-| **Total Tests** | 51,216 | 100.0% | - |
-| **Tests Run** | 35,697 | 69.7% | 100.00% |
-| **Passed** | 13,427 | 26.22% | **37.61%** |
-| **Failed** | 22,270 | 43.48% | 65.93% |
-| **Skipped** | 15,519 | 30.3% | - |
+| Metric | Count | % of Total |
+|--------|-------:|-----------:|
+| **Total Tests** | 52,674 | 100.0% |
+| **Tests Run** | 52,674 | 100.0% |
+| **Passed** | 17,745 | 33.69% | 
+| **Failed** | 34,929 | 66.31% | 
 
 **[View Detailed & Other Test Results →](docs/documents/test262-results.md)**
 
