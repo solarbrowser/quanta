@@ -80,8 +80,8 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         std::string result = stringify(args[0], options);
         return Value(result);
     } catch (const std::exception& e) {
-        ctx.throw_error("JSON.stringify error: " + std::string(e.what()));
-        return Value("null");
+        ctx.throw_type_error(std::string(e.what()));
+        return Value();
     }
 }
 
@@ -511,10 +511,16 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
 
 std::string JSON::Stringifier::stringify_object(const Object* obj) {
     if (!obj) return "null";
-    
+
+    if (visited_.find(obj) != visited_.end()) {
+        throw std::runtime_error("TypeError: Converting circular structure to JSON");
+    }
+
+    visited_.insert(obj);
+
     std::string result = "{";
     bool first = true;
-    
+
     std::vector<std::string> keys = obj->get_enumerable_keys();
     
     for (const std::string& key : keys) {
@@ -550,17 +556,24 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
             result += std::string((depth_ - 1) * options_.indent.length(), ' ');
         }
     }
-    
+
     result += "}";
+    visited_.erase(obj);
     return result;
 }
 
 std::string JSON::Stringifier::stringify_array(const Object* arr) {
     if (!arr) return "null";
-    
+
+    if (visited_.find(arr) != visited_.end()) {
+        throw std::runtime_error("TypeError: Converting circular structure to JSON");
+    }
+
+    visited_.insert(arr);
+
     std::string result = "[";
     bool first = true;
-    
+
     Value length_val = arr->get_property("length");
     uint32_t length = static_cast<uint32_t>(length_val.to_number());
     
@@ -585,8 +598,9 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
             result += std::string((depth_ - 1) * options_.indent.length(), ' ');
         }
     }
-    
+
     result += "]";
+    visited_.erase(arr);
     return result;
 }
 

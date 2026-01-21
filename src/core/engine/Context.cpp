@@ -278,24 +278,64 @@ void Context::throw_error(const std::string& message) {
 void Context::throw_type_error(const std::string& message) {
     auto error = Error::create_type_error(message);
     error->generate_stack_trace();
+
+    Value type_error_ctor = get_binding("TypeError");
+    if (type_error_ctor.is_function()) {
+        Function* ctor_fn = type_error_ctor.as_function();
+        Value proto = ctor_fn->get_property("prototype");
+        if (proto.is_object()) {
+            error->set_prototype(proto.as_object());
+        }
+    }
+
     throw_exception(Value(error.release()));
 }
 
 void Context::throw_reference_error(const std::string& message) {
     auto error = Error::create_reference_error(message);
     error->generate_stack_trace();
+
+    Value ref_error_ctor = get_binding("ReferenceError");
+    if (ref_error_ctor.is_function()) {
+        Function* ctor_fn = ref_error_ctor.as_function();
+        Value proto = ctor_fn->get_property("prototype");
+        if (proto.is_object()) {
+            error->set_prototype(proto.as_object());
+        }
+    }
+
     throw_exception(Value(error.release()));
 }
 
 void Context::throw_syntax_error(const std::string& message) {
     auto error = Error::create_syntax_error(message);
     error->generate_stack_trace();
+
+    Value syntax_error_ctor = get_binding("SyntaxError");
+    if (syntax_error_ctor.is_function()) {
+        Function* ctor_fn = syntax_error_ctor.as_function();
+        Value proto = ctor_fn->get_property("prototype");
+        if (proto.is_object()) {
+            error->set_prototype(proto.as_object());
+        }
+    }
+
     throw_exception(Value(error.release()));
 }
 
 void Context::throw_range_error(const std::string& message) {
     auto error = Error::create_range_error(message);
     error->generate_stack_trace();
+
+    Value range_error_ctor = get_binding("RangeError");
+    if (range_error_ctor.is_function()) {
+        Function* ctor_fn = range_error_ctor.as_function();
+        Value proto = ctor_fn->get_property("prototype");
+        if (proto.is_object()) {
+            error->set_prototype(proto.as_object());
+        }
+    }
+
     throw_exception(Value(error.release()));
 }
 

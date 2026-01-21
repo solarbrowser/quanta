@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/Object.h"
 #include <string>
 #include <memory>
+#include <set>
 
 namespace Quanta {
 
@@ -95,7 +96,8 @@ private:
     private:
         StringifyOptions options_;
         size_t depth_;
-        
+        std::set<const Object*> visited_;
+
     public:
         Stringifier(const StringifyOptions& options);
         
