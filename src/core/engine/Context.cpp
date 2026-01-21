@@ -640,6 +640,7 @@ void Context::initialize_built_ins() {
                     ctx.throw_exception(Value("Error: Failed to create object"));
                     return Value();
                 }
+                new_obj->set_prototype(nullptr);  // Set prototype to null
                 new_obj_ptr = new_obj.release();
             }
             else if (args[0].is_object()) {
@@ -3121,7 +3122,7 @@ void Context::initialize_built_ins() {
     apply_fn->set_property("name", Value("apply"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
-    
+
     auto bind_fn = ObjectFactory::create_native_function("bind",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
@@ -3129,23 +3130,36 @@ void Context::initialize_built_ins() {
                 ctx.throw_type_error("Function.prototype.bind called on non-function");
                 return Value();
             }
-            
+
             Function* target_func = static_cast<Function*>(function_obj);
             Value bound_this = args.size() > 0 ? args[0] : Value();
-            
+
             std::vector<Value> bound_args;
             for (size_t i = 1; i < args.size(); i++) {
                 bound_args.push_back(args[i]);
             }
-            
-            auto bound_function = ObjectFactory::create_native_function("bound",
+
+            // Calculate bound function arity: target length minus bound args count (minimum 0)
+            Value target_length_val = target_func->get_property("length");
+            double target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
+            double bound_length = target_length - static_cast<double>(bound_args.size());
+            if (bound_length < 0) bound_length = 0;
+            uint32_t bound_arity = static_cast<uint32_t>(bound_length);
+
+            // Create bound function that works both as regular call and constructor
+            auto bound_function = ObjectFactory::create_native_constructor("bound",
                 [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());
-                    
-                    return target_func->call(ctx, final_args, bound_this);
-                });
-            
+
+                    // If called as constructor, ignore bound this and use new object
+                    if (ctx.is_in_constructor_call()) {
+                        return target_func->construct(ctx, final_args);
+                    } else {
+                        return target_func->call(ctx, final_args, bound_this);
+                    }
+                }, bound_arity);
+
             return Value(bound_function.release());
         });
 

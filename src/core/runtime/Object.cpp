@@ -131,85 +131,9 @@ Value Object::get_property(const std::string& key) const {
             return Value(func->get_prototype());
         }
         
-        if (key == "call") {
-            auto call_fn = ObjectFactory::create_native_function("call",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* function_obj = ctx.get_this_binding();
-                    if (!function_obj || !function_obj->is_function()) {
-                        ctx.throw_exception(Value("Function.call called on non-function"));
-                        return Value();
-                    }
-                    
-                    Function* func = static_cast<Function*>(function_obj);
-                    Value this_arg = args.size() > 0 ? args[0] : Value();
-                    
-                    std::vector<Value> call_args;
-                    for (size_t i = 1; i < args.size(); i++) {
-                        call_args.push_back(args[i]);
-                    }
-                    
-                    return func->call(ctx, call_args, this_arg);
-                });
-            return Value(call_fn.release());
-        }
-        
-        if (key == "apply") {
-            auto apply_fn = ObjectFactory::create_native_function("apply",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* function_obj = ctx.get_this_binding();
-                    if (!function_obj || !function_obj->is_function()) {
-                        ctx.throw_exception(Value("Function.apply called on non-function"));
-                        return Value();
-                    }
-                    
-                    Function* func = static_cast<Function*>(function_obj);
-                    Value this_arg = args.size() > 0 ? args[0] : Value();
-                    
-                    std::vector<Value> call_args;
-                    if (args.size() > 1 && args[1].is_object()) {
-                        Object* args_array = args[1].as_object();
-                        if (args_array->is_array()) {
-                            uint32_t length = args_array->get_length();
-                            for (uint32_t i = 0; i < length; i++) {
-                                call_args.push_back(args_array->get_element(i));
-                            }
-                        }
-                    }
-                    
-                    return func->call(ctx, call_args, this_arg);
-                });
-            return Value(apply_fn.release());
-        }
-        
-        if (key == "bind") {
-            auto bind_fn = ObjectFactory::create_native_function("bind",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* function_obj = ctx.get_this_binding();
-                    if (!function_obj || !function_obj->is_function()) {
-                        ctx.throw_exception(Value("Function.bind called on non-function"));
-                        return Value();
-                    }
-                    
-                    Function* original_func = static_cast<Function*>(function_obj);
-                    Value bound_this = args.size() > 0 ? args[0] : Value();
-                    
-                    std::vector<Value> bound_args;
-                    for (size_t i = 1; i < args.size(); i++) {
-                        bound_args.push_back(args[i]);
-                    }
-                    
-                    auto bound_fn = ObjectFactory::create_native_function("bound " + original_func->get_name(),
-                        [original_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
-                            std::vector<Value> final_args = bound_args;
-                            final_args.insert(final_args.end(), call_args.begin(), call_args.end());
-                            
-                            return original_func->call(ctx, final_args, bound_this);
-                        });
-                    return Value(bound_fn.release());
-                });
-            return Value(bind_fn.release());
-        }
-        
+        // call, apply, bind are now handled via Function.prototype
+        // No need for special handling here anymore
+
         Value result = get_own_property(key);
         if (!result.is_undefined()) {
             return result;
