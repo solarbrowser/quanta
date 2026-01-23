@@ -13,12 +13,9 @@
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Temporal.h"
-#include "quanta/core/apis/WebAPIInterface.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/DataView.h"
-#include "quanta/core/wasm/WebAssembly.h"
-#include "quanta/core/apis/WebAPI.h"
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Generator.h"
@@ -30,7 +27,6 @@
 #include <fstream>
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
-#include "quanta/core/platform/NativeAPI.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/MapSet.h"
 #include <iostream>
@@ -51,7 +47,7 @@ Context::Context(Engine* engine, Type type)
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
       return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
-      is_in_constructor_call_(false), strict_mode_(false), engine_(engine), current_filename_("<unknown>"), web_api_interface_(nullptr),
+      is_in_constructor_call_(false), strict_mode_(false), engine_(engine), current_filename_("<unknown>"),
       gc_(engine ? engine->get_garbage_collector() : nullptr) {
 
     if (type == Type::Global) {
@@ -66,7 +62,6 @@ Context::Context(Engine* engine, Context* parent, Type type)
       current_exception_(), has_exception_(false), return_value_(), has_return_value_(false),
       has_break_(false), has_continue_(false), is_in_constructor_call_(false),
       strict_mode_(parent ? parent->strict_mode_ : false), engine_(engine), current_filename_(parent ? parent->current_filename_ : "<unknown>"),
-      web_api_interface_(parent ? parent->web_api_interface_ : nullptr),
       gc_(engine ? engine->get_garbage_collector() : nullptr) {
 
     // Use engine's GC (shared across all contexts)
@@ -7563,8 +7558,6 @@ void Context::initialize_built_ins() {
     
     register_typed_array_constructors();
     
-    WebAssemblyAPI::setup_webassembly(*this);
-    
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
     
@@ -8085,9 +8078,33 @@ void Context::setup_global_bindings() {
     unescape_fn.release();
 
     auto console_obj = ObjectFactory::create_object();
-    auto console_log_fn = ObjectFactory::create_native_function("log", WebAPI::console_log, 1);
-    auto console_error_fn = ObjectFactory::create_native_function("error", WebAPI::console_error);
-    auto console_warn_fn = ObjectFactory::create_native_function("warn", WebAPI::console_warn);
+    auto console_log_fn = ObjectFactory::create_native_function("log", 
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            for (size_t i = 0; i < args.size(); i++) {
+                if (i > 0) std::cout << " ";
+                std::cout << args[i].to_string();
+            }
+            std::cout << std::endl;
+            return Value();
+        }, 1);
+    auto console_error_fn = ObjectFactory::create_native_function("error",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            for (size_t i = 0; i < args.size(); i++) {
+                if (i > 0) std::cerr << " ";
+                std::cerr << args[i].to_string();
+            }
+            std::cerr << std::endl;
+            return Value();
+        });
+    auto console_warn_fn = ObjectFactory::create_native_function("warn",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            for (size_t i = 0; i < args.size(); i++) {
+                if (i > 0) std::cout << " ";
+                std::cout << args[i].to_string();
+            }
+            std::cout << std::endl;
+            return Value();
+        });
     
     console_obj->set_property("log", Value(console_log_fn.release()), PropertyAttributes::BuiltinFunction);
     console_obj->set_property("error", Value(console_error_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -8150,18 +8167,6 @@ void Context::setup_global_bindings() {
         });
     lexical_environment_->create_binding("gcStats", Value(gc_stats_fn.release()), false);
     
-    auto jit_stats_fn = ObjectFactory::create_native_function("jitStats",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.get_engine()) {
-                std::string stats = ctx.get_engine()->get_jit_stats();
-                std::cout << stats << std::endl;
-            } else {
-                std::cout << "Engine not available" << std::endl;
-            }
-            return Value();
-        });
-    lexical_environment_->create_binding("jitStats", Value(jit_stats_fn.release()), false);
-    
     auto force_gc_fn = ObjectFactory::create_native_function("forceGC",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.get_engine()) {
@@ -8181,10 +8186,22 @@ void Context::setup_global_bindings() {
         lexical_environment_->create_binding("Date", Value(built_in_objects_["Date"]), false);
     }
     
-    auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout", WebAPI::setTimeout);
-    auto setInterval_fn = ObjectFactory::create_native_function("setInterval", WebAPI::setInterval);
-    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout", WebAPI::clearTimeout);
-    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval", WebAPI::clearInterval);
+    auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return Value(1);
+        });
+    auto setInterval_fn = ObjectFactory::create_native_function("setInterval",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return Value(1);
+        });
+    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return Value();
+        });
+    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            return Value();
+        });
     
     lexical_environment_->create_binding("setTimeout", Value(setTimeout_fn.release()), false);
     lexical_environment_->create_binding("setInterval", Value(setInterval_fn.release()), false);
@@ -8580,18 +8597,6 @@ bool Environment::has_own_binding(const std::string& name) const {
     } else {
         return bindings_.find(name) != bindings_.end();
     }
-}
-
-
-bool Context::has_web_api(const std::string& name) const {
-    return web_api_interface_ && web_api_interface_->hasAPI(name);
-}
-
-Value Context::call_web_api(const std::string& name, const std::vector<Value>& args) {
-    if (web_api_interface_ && web_api_interface_->hasAPI(name)) {
-        return web_api_interface_->callAPI(name, *this, args);
-    }
-    return Value();
 }
 
 

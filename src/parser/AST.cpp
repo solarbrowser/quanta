@@ -23,14 +23,12 @@
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Promise.h"
-#include "quanta/core/apis/WebAPI.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/Math.h"
 #include <cstdlib>
-#include "quanta/core/jit/JIT.h"
 #include "quanta/core/runtime/String.h"
 #include <sstream>
 #include <iostream>
@@ -287,28 +285,6 @@ std::unique_ptr<ASTNode> Identifier::clone() const {
 
 
 Value BinaryExpression::evaluate(Context& ctx) {
-    // JIT: Try to execute with JIT compiler for hot arithmetic operations
-    // Skip JIT when inside any loop to avoid machine code execution issues
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && get_loop_depth() == 0) {
-        auto* jit = ctx.get_engine()->get_jit_compiler();
-
-        // Record execution for hotspot detection
-        auto start = std::chrono::high_resolution_clock::now();
-
-        // Try JIT execution
-        Value jit_result;
-        if (jit->try_execute_jit(this, ctx, jit_result)) {
-            // JIT executed successfully
-            auto end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            jit->record_execution(this, elapsed);
-            return jit_result;
-        }
-
-        // JIT not ready yet, record execution and fall back to interpreter
-        jit->record_execution(this, 0);
-    }
-
     if (operator_ == Operator::ASSIGN || 
         operator_ == Operator::PLUS_ASSIGN ||
         operator_ == Operator::MINUS_ASSIGN ||
@@ -454,11 +430,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 
                 PropertyDescriptor desc = obj->get_property_descriptor(key);
                 if (desc.is_accessor_descriptor() && desc.has_setter()) {
-                    
-                    if (key == "cookie") {
-                        WebAPI::document_setCookie(ctx, {result_value});
-                        return result_value;
-                    }
+                    // Cookie handling removed for simplicity
                 }
                 
                 obj->set_property(key, result_value);
@@ -1313,11 +1285,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (obj && !is_string_object) {
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
             if (desc.is_accessor_descriptor() && desc.has_setter()) {
-            
-            if (prop_name == "cookie") {
-                WebAPI::document_setCookie(ctx, {right_value});
-                return right_value;
-            }
+            // Cookie handling removed
             
             Object* setter = desc.get_setter();
             if (setter) {
@@ -2399,22 +2367,6 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
 }
 
 Value CallExpression::evaluate(Context& ctx) {
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-        auto* jit = ctx.get_engine()->get_jit_compiler();
-
-        auto start = std::chrono::high_resolution_clock::now();
-
-        Value jit_result;
-        if (jit->try_execute_jit(this, ctx, jit_result)) {
-            auto end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            jit->record_execution(this, elapsed);
-            return jit_result;
-        }
-
-        jit->record_execution(this, 0);
-    }
-
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         return handle_member_expression_call(ctx);
     }
@@ -5145,10 +5097,8 @@ Value MemberExpression::evaluate(Context& ctx) {
                 std::string prop_name = prop->get_name();
                 
                 if (prop_name == "cookie") {
-                    Value create_element = obj->get_property("createElement");
-                    if (create_element.is_function()) {
-                        return WebAPI::document_getCookie(ctx, {});
-                    }
+                    // Cookie handling removed, return empty string
+                    return Value("");
                 }
                 
                 Value result = obj->get_property(prop_name);
@@ -5609,34 +5559,6 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 
 Value ForStatement::evaluate(Context& ctx) {
     LoopDepthGuard guard;
-
-    bool nested_scenario = (get_loop_depth() > 1) || is_nested_loop();
-
-    if (nested_scenario) {
-        std::cout << "[LOOP-DEBUG] Nested loop scenario detected (depth=" << get_loop_depth()
-                  << "), JIT disabled" << std::endl;
-    }
-
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler() && !nested_scenario) {
-        auto* jit = ctx.get_engine()->get_jit_compiler();
-
-        if (get_loop_depth() == 1) {
-            jit->compile_to_machine_code(this);
-        }
-
-        auto start = std::chrono::high_resolution_clock::now();
-
-        Value jit_result;
-        if (jit->try_execute_jit(this, ctx, jit_result)) {
-            auto end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            jit->record_execution(this, elapsed);
-            loop_depth--;
-            return jit_result;
-        }
-
-        jit->record_execution(this, 0);
-    }
 
     // FAST PATH: Detect simple array filling loops
     if (init_ && test_ && update_ && body_ && body_->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
@@ -6215,27 +6137,6 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 
 
 Value WhileStatement::evaluate(Context& ctx) {
-    // JIT: Try to execute with JIT compiler
-    if (ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-        auto* jit = ctx.get_engine()->get_jit_compiler();
-
-        // Record execution for hotspot detection
-        auto start = std::chrono::high_resolution_clock::now();
-
-        // Try JIT execution
-        Value jit_result;
-        if (jit->try_execute_jit(this, ctx, jit_result)) {
-            // JIT executed successfully
-            auto end = std::chrono::high_resolution_clock::now();
-            auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-            jit->record_execution(this, elapsed);
-            return jit_result;
-        }
-
-        // JIT not ready yet, record execution and fall back to interpreter
-        jit->record_execution(this, 0);
-    }
-
     int safety_counter = 0;
     const int max_iterations = 1000000000;
 

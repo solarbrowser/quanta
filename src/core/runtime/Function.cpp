@@ -115,18 +115,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     execution_count_++;
     last_call_time_ = std::chrono::high_resolution_clock::now();
 
-    // JIT: Try to execute with JIT compiler for hot functions
-    if (!is_native_ && ctx.get_engine() && ctx.get_engine()->get_jit_compiler()) {
-        auto* jit = ctx.get_engine()->get_jit_compiler();
-
-        // Try JIT function execution
-        Value jit_result;
-        if (jit->try_execute_jit_function(this, ctx, args, jit_result)) {
-            // JIT executed successfully
-            return jit_result;
-        }
-    }
-
     if (execution_count_ >= 3) {
         #ifdef __GNUC__
         __builtin_prefetch(this, 0, 3);

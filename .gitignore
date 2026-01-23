@@ -41,6 +41,7 @@ tests/
 *.js
 neo/
 /logs/
+conformance/
 
 # other
 .eshostrc

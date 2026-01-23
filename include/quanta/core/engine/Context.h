@@ -22,7 +22,6 @@ class Function;
 class StackFrame;
 class Environment;
 class Error;
-class WebAPIInterface;
 class GarbageCollector;
 
 /**
@@ -80,8 +79,6 @@ private:
     Engine* engine_;
     
     std::string current_filename_;
-    
-    WebAPIInterface* web_api_interface_;
 
     // Garbage collector for memory management
     GarbageCollector* gc_;  // Points to engine's GC (not owned)
@@ -175,11 +172,6 @@ public:
     std::string debug_string() const;
 
     void mark_references() const;
-    
-    void set_web_api_interface(WebAPIInterface* interface) { web_api_interface_ = interface; }
-    WebAPIInterface* get_web_api_interface() const { return web_api_interface_; }
-    bool has_web_api(const std::string& name) const;
-    Value call_web_api(const std::string& name, const std::vector<Value>& args);
 
     // Garbage collector access
     GarbageCollector* get_gc() const { return gc_; }

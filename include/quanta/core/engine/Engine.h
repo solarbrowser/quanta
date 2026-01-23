@@ -12,7 +12,6 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/gc/GC.h"
-#include "quanta/core/jit/JIT.h"
 #include "quanta/parser/AST.h"
 #include <string>
 #include <memory>
@@ -23,7 +22,6 @@
 
 namespace Quanta {
 
-class WebAPIInterface;
 class ASTNode;
 
 /**
@@ -34,7 +32,6 @@ class Engine {
 public:
     struct Config {
         bool strict_mode = false;
-        bool enable_jit = true;
         bool enable_optimizations = true;
         size_t max_heap_size = 512 * 1024 * 1024;
         size_t initial_heap_size = 32 * 1024 * 1024;
@@ -62,7 +59,6 @@ private:
     std::unique_ptr<ModuleLoader> module_loader_;
 
     std::unique_ptr<GarbageCollector> garbage_collector_;
-    std::unique_ptr<JITCompiler> jit_compiler_;
 
     bool initialized_;
     uint64_t execution_count_;
@@ -101,19 +97,10 @@ public:
     Context* get_global_context() const { return global_context_.get(); }
     Context* get_current_context() const;
     
-    void set_web_api_interface(WebAPIInterface* interface);
-    WebAPIInterface* get_web_api_interface() const;
-    
     void collect_garbage();
     size_t get_heap_usage() const;
     size_t get_heap_size() const;
     void set_heap_limit(size_t limit);
-    
-    void enable_jit(bool enable);
-    bool is_jit_enabled() const;
-    void set_jit_threshold(uint32_t threshold);
-    std::string get_jit_stats() const;
-    
     
     void enable_gc(bool enable);
     void set_gc_mode(GarbageCollector::CollectionMode mode);
@@ -121,7 +108,6 @@ public:
     std::string get_gc_stats() const;
     
     class GarbageCollector* get_garbage_collector() const { return garbage_collector_.get(); }
-    class JITCompiler* get_jit_compiler() const { return jit_compiler_.get(); }
     
     void enable_profiler(bool enable);
     void enable_debugger(bool enable);
@@ -142,11 +128,6 @@ public:
     void register_default_export(const std::string& filename, const Value& value);
     Value get_default_export(const std::string& filename);
     bool has_default_export(const std::string& filename);
-
-    void inject_dom(Object* document);
-    void setup_nodejs_apis();
-    void setup_browser_globals();
-    void register_web_apis();
 
 private:
     void setup_global_object();

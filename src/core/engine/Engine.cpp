@@ -10,7 +10,6 @@
 #include "quanta/core/runtime/Math.h"
 #include "quanta/core/runtime/Date.h"
 #include "quanta/core/runtime/Symbol.h"
-#include "quanta/core/apis/NodeJS.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/Generator.h"
@@ -21,7 +20,6 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/lexer/Lexer.h"
-#include "quanta/core/interpreter/FastBytecode.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -36,10 +34,8 @@ Engine::Engine() : initialized_(false), execution_count_(0),
       total_allocations_(0), total_gc_runs_(0) {
 
     garbage_collector_ = std::make_unique<GarbageCollector>();
-    jit_compiler_ = std::make_unique<JITCompiler>();
 
     config_.strict_mode = false;
-    config_.enable_jit = false;  // JIT disabled for stability
     config_.enable_optimizations = true;
     config_.max_heap_size = 512 * 1024 * 1024;
     config_.initial_heap_size = 32 * 1024 * 1024;
@@ -54,7 +50,6 @@ Engine::Engine(const Config& config)
       total_allocations_(0), total_gc_runs_(0) {
 
     garbage_collector_ = std::make_unique<GarbageCollector>();
-    jit_compiler_ = std::make_unique<JITCompiler>();
 
     start_time_ = std::chrono::high_resolution_clock::now();
 }
@@ -288,19 +283,6 @@ Context* Engine::get_current_context() const {
     return global_context_.get();
 }
 
-void Engine::set_web_api_interface(WebAPIInterface* interface) {
-    if (global_context_) {
-        global_context_->set_web_api_interface(interface);
-    }
-}
-
-WebAPIInterface* Engine::get_web_api_interface() const {
-    if (global_context_) {
-        return global_context_->get_web_api_interface();
-    }
-    return nullptr;
-}
-
 void Engine::collect_garbage() {
     if (garbage_collector_) {
         garbage_collector_->collect_garbage();
@@ -361,113 +343,7 @@ std::string Engine::get_memory_stats() const {
     return oss.str();
 }
 
-void Engine::inject_dom(Object* document) {
-    if (!initialized_) return;
-    
-    set_global_property("document", Value(document));
-    
-}
 
-void Engine::setup_nodejs_apis() {
-    auto fs_obj = std::make_unique<Object>();
-    
-    auto fs_readFile = ObjectFactory::create_native_function("readFile", NodeJS::fs_readFile);
-    auto fs_writeFile = ObjectFactory::create_native_function("writeFile", NodeJS::fs_writeFile);
-    auto fs_appendFile = ObjectFactory::create_native_function("appendFile", NodeJS::fs_appendFile);
-    auto fs_exists = ObjectFactory::create_native_function("exists", NodeJS::fs_exists);
-    auto fs_mkdir = ObjectFactory::create_native_function("mkdir", NodeJS::fs_mkdir);
-    auto fs_rmdir = ObjectFactory::create_native_function("rmdir", NodeJS::fs_rmdir);
-    auto fs_unlink = ObjectFactory::create_native_function("unlink", NodeJS::fs_unlink);
-    auto fs_stat = ObjectFactory::create_native_function("stat", NodeJS::fs_stat);
-    auto fs_readdir = ObjectFactory::create_native_function("readdir", NodeJS::fs_readdir);
-    
-    auto fs_readFileSync = ObjectFactory::create_native_function("readFileSync", NodeJS::fs_readFileSync);
-    auto fs_writeFileSync = ObjectFactory::create_native_function("writeFileSync", NodeJS::fs_writeFileSync);
-    auto fs_existsSync = ObjectFactory::create_native_function("existsSync", NodeJS::fs_existsSync);
-    auto fs_mkdirSync = ObjectFactory::create_native_function("mkdirSync", NodeJS::fs_mkdirSync);
-    auto fs_statSync = ObjectFactory::create_native_function("statSync", NodeJS::fs_statSync);
-    auto fs_readdirSync = ObjectFactory::create_native_function("readdirSync", NodeJS::fs_readdirSync);
-    
-    fs_obj->set_property("readFile", Value(fs_readFile.release()));
-    fs_obj->set_property("writeFile", Value(fs_writeFile.release()));
-    fs_obj->set_property("appendFile", Value(fs_appendFile.release()));
-    fs_obj->set_property("exists", Value(fs_exists.release()));
-    fs_obj->set_property("mkdir", Value(fs_mkdir.release()));
-    fs_obj->set_property("rmdir", Value(fs_rmdir.release()));
-    fs_obj->set_property("unlink", Value(fs_unlink.release()));
-    fs_obj->set_property("stat", Value(fs_stat.release()));
-    fs_obj->set_property("readdir", Value(fs_readdir.release()));
-    fs_obj->set_property("readFileSync", Value(fs_readFileSync.release()));
-    fs_obj->set_property("writeFileSync", Value(fs_writeFileSync.release()));
-    fs_obj->set_property("existsSync", Value(fs_existsSync.release()));
-    fs_obj->set_property("mkdirSync", Value(fs_mkdirSync.release()));
-    fs_obj->set_property("statSync", Value(fs_statSync.release()));
-    fs_obj->set_property("readdirSync", Value(fs_readdirSync.release()));
-    
-    set_global_property("fs", Value(fs_obj.release()));
-    
-    auto path_obj = std::make_unique<Object>();
-    
-    auto path_join = ObjectFactory::create_native_function("join", NodeJS::path_join);
-    auto path_resolve = ObjectFactory::create_native_function("resolve", NodeJS::path_resolve);
-    auto path_dirname = ObjectFactory::create_native_function("dirname", NodeJS::path_dirname);
-    auto path_basename = ObjectFactory::create_native_function("basename", NodeJS::path_basename);
-    auto path_extname = ObjectFactory::create_native_function("extname", NodeJS::path_extname);
-    auto path_normalize = ObjectFactory::create_native_function("normalize", NodeJS::path_normalize);
-    auto path_isAbsolute = ObjectFactory::create_native_function("isAbsolute", NodeJS::path_isAbsolute);
-    
-    path_obj->set_property("join", Value(path_join.release()));
-    path_obj->set_property("resolve", Value(path_resolve.release()));
-    path_obj->set_property("dirname", Value(path_dirname.release()));
-    path_obj->set_property("basename", Value(path_basename.release()));
-    path_obj->set_property("extname", Value(path_extname.release()));
-    path_obj->set_property("normalize", Value(path_normalize.release()));
-    path_obj->set_property("isAbsolute", Value(path_isAbsolute.release()));
-    
-    set_global_property("path", Value(path_obj.release()));
-    
-    auto os_obj = std::make_unique<Object>();
-    
-    auto os_platform = ObjectFactory::create_native_function("platform", NodeJS::os_platform);
-    auto os_arch = ObjectFactory::create_native_function("arch", NodeJS::os_arch);
-    auto os_cpus = ObjectFactory::create_native_function("cpus", NodeJS::os_cpus);
-    auto os_hostname = ObjectFactory::create_native_function("hostname", NodeJS::os_hostname);
-    auto os_homedir = ObjectFactory::create_native_function("homedir", NodeJS::os_homedir);
-    auto os_tmpdir = ObjectFactory::create_native_function("tmpdir", NodeJS::os_tmpdir);
-    
-    os_obj->set_property("platform", Value(os_platform.release()));
-    os_obj->set_property("arch", Value(os_arch.release()));
-    os_obj->set_property("cpus", Value(os_cpus.release()));
-    os_obj->set_property("hostname", Value(os_hostname.release()));
-    os_obj->set_property("homedir", Value(os_homedir.release()));
-    os_obj->set_property("tmpdir", Value(os_tmpdir.release()));
-    
-    set_global_property("os", Value(os_obj.release()));
-    
-    auto process_obj = std::make_unique<Object>();
-    
-    auto process_exit = ObjectFactory::create_native_function("exit", NodeJS::process_exit);
-    auto process_cwd = ObjectFactory::create_native_function("cwd", NodeJS::process_cwd);
-    auto process_chdir = ObjectFactory::create_native_function("chdir", NodeJS::process_chdir);
-    
-    process_obj->set_property("exit", Value(process_exit.release()));
-    process_obj->set_property("cwd", Value(process_cwd.release()));
-    process_obj->set_property("chdir", Value(process_chdir.release()));
-    
-    set_global_property("process", Value(process_obj.release()));
-    
-    auto crypto_obj = std::make_unique<Object>();
-    
-    auto crypto_randomBytes = ObjectFactory::create_native_function("randomBytes", NodeJS::crypto_randomBytes);
-    auto crypto_createHash = ObjectFactory::create_native_function("createHash", NodeJS::crypto_createHash);
-    
-    crypto_obj->set_property("randomBytes", Value(crypto_randomBytes.release()));
-    crypto_obj->set_property("createHash", Value(crypto_createHash.release()));
-    
-    set_global_property("crypto", Value(crypto_obj.release()));
-    
-    
-}
 
 
 namespace EngineFactory {
@@ -656,20 +532,9 @@ void Engine::setup_error_types() {
 void Engine::initialize_gc() {
 }
 
-void Engine::register_web_apis() {
-}
-
 Engine::Result Engine::execute_internal(const std::string& source, const std::string& filename) {
     try {
         execution_count_++;
-        
-        FastBytecodeVM vm;
-        bool compiled = vm.compile_direct(source);
-        
-        if (compiled) {
-            Value result = vm.execute_fast();
-            return Result(result);
-        }
         
         Lexer lexer(source);
         auto tokens = lexer.tokenize();
@@ -787,35 +652,6 @@ std::string Engine::get_gc_stats() const {
         return "GC Stats: Memory managed by garbage collector";
     }
     return "GC Stats: Not available";
-}
-
-std::string Engine::get_jit_stats() const {
-    if (!jit_compiler_) {
-        return "JIT Stats: Not initialized";
-    }
-
-    const auto& stats = jit_compiler_->get_stats();
-
-    std::string result = "=== JIT Compiler Statistics ===\n";
-    result += "Total Compilations: " + std::to_string(stats.total_compilations) + "\n";
-    result += "  Bytecode: " + std::to_string(stats.bytecode_compilations) + "\n";
-    result += "  Optimized: " + std::to_string(stats.optimized_compilations) + "\n";
-    result += "  Machine Code: " + std::to_string(stats.machine_code_compilations) + "\n";
-    result += "\nCache Performance:\n";
-    result += "  Hits: " + std::to_string(stats.cache_hits) + "\n";
-    result += "  Misses: " + std::to_string(stats.cache_misses) + "\n";
-    result += "  Hit Ratio: " + std::to_string(stats.get_cache_hit_ratio() * 100.0) + "%\n";
-
-    if (stats.total_jit_time_ns > 0) {
-        result += "\nPerformance:\n";
-        result += "  Speedup: " + std::to_string(stats.get_speedup()) + "x\n";
-    }
-
-    if (jit_compiler_) {
-        jit_compiler_->print_property_cache_stats();
-    }
-
-    return result;
 }
 
 }
