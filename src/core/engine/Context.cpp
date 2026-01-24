@@ -2874,8 +2874,13 @@ void Context::initialize_built_ins() {
             uint32_t length = this_obj->get_length();
             if (length <= 1) return Value(this_obj);
 
+            // ES5: If compareFn is not undefined and is not a function, throw TypeError
             Function* compareFn = nullptr;
-            if (!args.empty() && !args[0].is_undefined() && args[0].is_function()) {
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (!args[0].is_function()) {
+                    ctx.throw_type_error("Array.prototype.sort: compareFn must be a function or undefined");
+                    return Value();
+                }
                 compareFn = args[0].as_function();
             }
 
