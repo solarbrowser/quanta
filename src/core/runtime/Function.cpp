@@ -375,8 +375,18 @@ Value Function::get_property(const std::string& key) const {
     if (!result.is_undefined()) {
         return result;
     }
-    
+
+    // Lazy initialization: if our internal prototype is not set yet,
+    // try to get Function.prototype (may be available now even if it wasn't during construction)
     Object* current = get_prototype();
+    if (!current) {
+        Object* func_proto = ObjectFactory::get_function_prototype();
+        if (func_proto) {
+            const_cast<Function*>(this)->set_prototype(func_proto);
+            current = func_proto;
+        }
+    }
+
     while (current) {
         Value result = current->get_own_property(key);
         if (!result.is_undefined()) {
@@ -475,6 +485,9 @@ std::unique_ptr<Function> create_js_function(const std::string& name,
     Object* func_proto = get_function_prototype();
     if (func_proto) {
         func->set_prototype(func_proto);
+    } else {
+        // If function_prototype not set yet, delay prototype assignment
+        // It will be set when the function is accessed
     }
     return func;
 }
