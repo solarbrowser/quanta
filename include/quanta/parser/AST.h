@@ -676,10 +676,11 @@ private:
 public:
     BlockStatement(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
         : ASTNode(Type::BLOCK_STATEMENT, start, end), statements_(std::move(statements)) {}
-    
+
     const std::vector<std::unique_ptr<ASTNode>>& get_statements() const { return statements_; }
     size_t statement_count() const { return statements_.size(); }
-    
+
+    void check_use_strict_directive(Context& ctx);
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

@@ -298,6 +298,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     if (body_) {
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            // Check for "use strict" directive before evaluating body
+            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+            block->check_use_strict_directive(function_context);
             scan_for_var_declarations(body_.get(), function_context);
         }
 
