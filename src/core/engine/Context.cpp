@@ -2558,7 +2558,31 @@ void Context::initialize_built_ins() {
             Value search_element = args[0];
 
             uint32_t length = this_obj->get_length();
-            for (uint32_t i = 0; i < length; i++) {
+
+            // Handle fromIndex parameter 
+            int32_t start_index = 0;
+            if (args.size() > 1) {
+                double from_index = args[1].to_number();
+
+                // If fromIndex is NaN, treat as 0
+                if (std::isnan(from_index)) {
+                    start_index = 0;
+                }
+                // If fromIndex is negative, calculate from end
+                else if (from_index < 0) {
+                    int32_t relative_index = static_cast<int32_t>(length) + static_cast<int32_t>(from_index);
+                    start_index = relative_index < 0 ? 0 : relative_index;
+                }
+                // If fromIndex is positive
+                else {
+                    start_index = static_cast<int32_t>(from_index);
+                    if (start_index >= static_cast<int32_t>(length)) {
+                        return Value(-1.0);
+                    }
+                }
+            }
+
+            for (uint32_t i = static_cast<uint32_t>(start_index); i < length; i++) {
                 Value element = this_obj->get_element(i);
                 if (element.strict_equals(search_element)) {
                     return Value(static_cast<double>(i));
