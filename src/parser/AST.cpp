@@ -5447,9 +5447,27 @@ std::unique_ptr<ASTNode> VariableDeclaration::clone() const {
 }
 
 
+void BlockStatement::check_use_strict_directive(Context& ctx) {
+    if (!statements_.empty()) {
+        auto* first_stmt = statements_[0].get();
+        if (first_stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+            auto* expr_stmt = static_cast<ExpressionStatement*>(first_stmt);
+            auto* expr = expr_stmt->get_expression();
+
+            if (expr && expr->get_type() == ASTNode::Type::STRING_LITERAL) {
+                auto* string_literal = static_cast<StringLiteral*>(expr);
+                std::string str_val = string_literal->get_value();
+                if (str_val == "use strict") {
+                    ctx.set_strict_mode(true);
+                }
+            }
+        }
+    }
+}
+
 Value BlockStatement::evaluate(Context& ctx) {
     Value last_value;
-    
+
     Environment* old_lexical_env = ctx.get_lexical_environment();
     auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
     Environment* block_env_ptr = block_env.release();
