@@ -533,6 +533,7 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     }
 
     visited_.insert(obj);
+    depth_++;  // Increase depth for nested objects
 
     std::string result = "{";
     bool first = true;
@@ -569,12 +570,16 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     if (!options_.indent.empty() && !first) {
         result += get_newline();
         if (depth_ > 0) {
-            result += std::string((depth_ - 1) * options_.indent.length(), ' ');
+            // Repeat the indent string (depth_ - 1) times
+            for (size_t i = 0; i < depth_ - 1; i++) {
+                result += options_.indent;
+            }
         }
     }
 
     result += "}";
     visited_.erase(obj);
+    depth_--;  // Decrease depth after object
     return result;
 }
 
@@ -586,6 +591,7 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
     }
 
     visited_.insert(arr);
+    depth_++;  // Increase depth for nested arrays
 
     std::string result = "[";
     bool first = true;
@@ -611,12 +617,16 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
     if (!options_.indent.empty() && !first) {
         result += get_newline();
         if (depth_ > 0) {
-            result += std::string((depth_ - 1) * options_.indent.length(), ' ');
+            // Repeat the indent string (depth_ - 1) times
+            for (size_t i = 0; i < depth_ - 1; i++) {
+                result += options_.indent;
+            }
         }
     }
 
     result += "]";
     visited_.erase(arr);
+    depth_--;  // Decrease depth after array
     return result;
 }
 
@@ -636,7 +646,12 @@ std::string JSON::Stringifier::stringify_boolean(bool value) {
 
 std::string JSON::Stringifier::get_indent() const {
     if (options_.indent.empty()) return "";
-    return std::string(depth_ * options_.indent.length(), ' ');
+    // Repeat the indent string depth_ times
+    std::string result;
+    for (size_t i = 0; i < depth_; i++) {
+        result += options_.indent;
+    }
+    return result;
 }
 
 std::string JSON::Stringifier::get_newline() const {
