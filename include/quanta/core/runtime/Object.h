@@ -360,7 +360,7 @@ private:
     std::vector<std::unique_ptr<class Parameter>> parameter_objects_;
     std::unique_ptr<class ASTNode> body_;
     class Context* closure_context_;
-    Object* prototype_;
+    mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
     bool is_native_;
     bool is_constructor_;  // Whether this function has [[Construct]] internal method
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;

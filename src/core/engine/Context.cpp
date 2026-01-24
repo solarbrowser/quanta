@@ -1037,10 +1037,15 @@ void Context::initialize_built_ins() {
             auto result = ObjectFactory::create_array();
 
             auto props = obj->get_own_property_keys();
+            uint32_t result_index = 0;
             for (size_t i = 0; i < props.size(); i++) {
-                result->set_element(static_cast<uint32_t>(i), Value(props[i]));
+                // Skip __proto__ as it's an internal property
+                if (props[i] == "__proto__") {
+                    continue;
+                }
+                result->set_element(result_index++, Value(props[i]));
             }
-            result->set_property("length", Value(static_cast<double>(props.size())));
+            result->set_property("length", Value(static_cast<double>(result_index)));
 
             return Value(result.release());
         }, 1);
@@ -3130,10 +3135,14 @@ void Context::initialize_built_ins() {
             if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
                 if (args[1].is_object()) {
                     Object* args_array = args[1].as_object();
-                    if (args_array->is_array()) {
-                        uint32_t length = args_array->get_length();
+                    // ES5: Accept any array-like object (object with length property)
+                    Value length_val = args_array->get_property("length");
+                    if (length_val.is_number()) {
+                        uint32_t length = static_cast<uint32_t>(length_val.to_number());
                         for (uint32_t i = 0; i < length; i++) {
-                            call_args.push_back(args_array->get_element(i));
+                            // Use get_property for array-like objects (not just arrays)
+                            Value element = args_array->get_property(std::to_string(i));
+                            call_args.push_back(element);
                         }
                     }
                 }
