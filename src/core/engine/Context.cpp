@@ -645,7 +645,12 @@ void Context::initialize_built_ins() {
                     ctx.throw_exception(Value("Error: Failed to create object with prototype"));
                     return Value();
                 }
-                new_obj->set_property("__proto__", args[0]);
+                // Set __proto__ as non-enumerable to prevent it from appearing in Object.keys()
+                PropertyDescriptor proto_desc(args[0], PropertyAttributes::None);
+                proto_desc.set_enumerable(false);
+                proto_desc.set_writable(true);
+                proto_desc.set_configurable(true);
+                new_obj->set_property_descriptor("__proto__", proto_desc);
                 new_obj_ptr = new_obj.release();
             }
             else {
