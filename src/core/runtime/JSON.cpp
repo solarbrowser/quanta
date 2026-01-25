@@ -31,16 +31,45 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_syntax_error("JSON.parse requires at least 1 argument");
         return Value();
     }
-    
+
     std::string json_string = args[0].to_string();
-    
+
     if (json_string.empty()) {
         ctx.throw_syntax_error("JSON.parse: unexpected end of input");
         return Value();
     }
-    
+
+    ParseOptions options;
+
+    // Process reviver parameter (args[1])
+    if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
+        if (args[1].is_function()) {
+            options.reviver_function = args[1].as_function();
+            options.context = &ctx;
+        }
+    }
+
     try {
-        return parse(json_string);
+        Value result = parse(json_string, options);
+
+        // Apply reviver to the root value
+        if (options.reviver_function && options.context) {
+            auto wrapper = std::make_unique<Object>();
+            wrapper->set_property("", result);
+
+            std::vector<Value> args;
+            args.push_back(Value(""));
+            args.push_back(result);
+
+            result = options.reviver_function->call(ctx, args, Value(wrapper.get()));
+            wrapper.release();
+
+            if (ctx.has_exception()) {
+                return Value();
+            }
+        }
+
+        return result;
     } catch (const std::exception& e) {
         ctx.throw_syntax_error("JSON.parse error: " + std::string(e.what()));
         return Value();
@@ -200,7 +229,26 @@ Value JSON::Parser::parse_object() {
         advance();
         
         Value value = parse_value();
-        obj->set_property(key, value);
+
+        // Apply reviver if present
+        if (options_.reviver_function && options_.context) {
+            std::vector<Value> args;
+            args.push_back(Value(key));
+            args.push_back(value);
+
+            value = options_.reviver_function->call(*options_.context, args, Value(obj.get()));
+
+            if (options_.context->has_exception()) {
+                depth_--;
+                obj.release();
+                return Value();
+            }
+        }
+
+        // If reviver returned undefined, don't set the property
+        if (!value.is_undefined()) {
+            obj->set_property(key, value);
+        }
         
         skip_whitespace();
         char ch = current_char();
