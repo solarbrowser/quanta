@@ -170,9 +170,12 @@ Value Math::max(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         return Value::negative_infinity();
     }
-    
+
     double result = -std::numeric_limits<double>::infinity();
     for (const Value& arg : args) {
+        if (arg.is_nan()) {
+            return Value(std::numeric_limits<double>::quiet_NaN());
+        }
         double value = safe_to_number(arg);
         if (std::isnan(value)) {
             return Value(std::numeric_limits<double>::quiet_NaN());
@@ -186,9 +189,12 @@ Value Math::min(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         return Value::positive_infinity();
     }
-    
+
     double result = std::numeric_limits<double>::infinity();
     for (const Value& arg : args) {
+        if (arg.is_nan()) {
+            return Value(std::numeric_limits<double>::quiet_NaN());
+        }
         double value = safe_to_number(arg);
         if (std::isnan(value)) {
             return Value(std::numeric_limits<double>::quiet_NaN());

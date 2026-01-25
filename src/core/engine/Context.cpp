@@ -5168,6 +5168,9 @@ void Context::initialize_built_ins() {
 
             double result = -std::numeric_limits<double>::infinity();
             for (const Value& arg : args) {
+                if (arg.is_nan()) {
+                    return Value(std::numeric_limits<double>::quiet_NaN());
+                }
                 double value = arg.to_number();
                 if (std::isnan(value)) {
                     return Value(std::numeric_limits<double>::quiet_NaN());
@@ -5186,6 +5189,9 @@ void Context::initialize_built_ins() {
 
             double result = std::numeric_limits<double>::infinity();
             for (const Value& arg : args) {
+                if (arg.is_nan()) {
+                    return Value(std::numeric_limits<double>::quiet_NaN());
+                }
                 double value = arg.to_number();
                 if (std::isnan(value)) {
                     return Value(std::numeric_limits<double>::quiet_NaN());
