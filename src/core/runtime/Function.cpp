@@ -291,6 +291,33 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         arguments_obj->set_element(i, args[i]);
     }
     arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+
+    // In strict mode, arguments.callee and arguments.caller throw TypeError
+    if (function_context.is_strict_mode()) {
+        auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                return Value();
+            });
+
+        PropertyDescriptor callee_desc;
+        callee_desc.set_getter(thrower.get());
+        callee_desc.set_setter(thrower.get());
+        callee_desc.set_configurable(false);
+        callee_desc.set_enumerable(false);
+        arguments_obj->set_property_descriptor("callee", callee_desc);
+
+        PropertyDescriptor caller_desc;
+        caller_desc.set_getter(thrower.get());
+        caller_desc.set_setter(thrower.get());
+        caller_desc.set_configurable(false);
+        caller_desc.set_enumerable(false);
+        arguments_obj->set_property_descriptor("caller", caller_desc);
+
+        thrower.release();
+    }
+
     function_context.create_binding("arguments", Value(arguments_obj.release()), false);
 
     // Use actual_this which respects strict mode (can be undefined in strict mode)

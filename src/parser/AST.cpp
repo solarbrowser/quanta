@@ -6728,8 +6728,56 @@ Value FunctionExpression::evaluate(Context& ctx) {
                 }
             }
         }
+
+        // Check if function is strict mode:
+        // 1. If defined in strict mode context, OR
+        // 2. If function body starts with "use strict"
+        bool is_strict = ctx.is_strict_mode();
+        if (!is_strict && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+            const auto& stmts = block->get_statements();
+            if (!stmts.empty()) {
+                auto* first_stmt = stmts[0].get();
+                if (first_stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+                    auto* expr_stmt = static_cast<ExpressionStatement*>(first_stmt);
+                    auto* expr = expr_stmt->get_expression();
+                    if (expr && expr->get_type() == ASTNode::Type::STRING_LITERAL) {
+                        auto* string_literal = static_cast<StringLiteral*>(expr);
+                        if (string_literal->get_value() == "use strict") {
+                            is_strict = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // In strict mode, function.caller and function.arguments throw TypeError
+        if (is_strict) {
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                    return Value();
+                });
+
+            PropertyDescriptor caller_desc;
+            caller_desc.set_getter(thrower.get());
+            caller_desc.set_setter(thrower.get());
+            caller_desc.set_configurable(false);
+            caller_desc.set_enumerable(false);
+            function->set_property_descriptor("caller", caller_desc);
+
+            PropertyDescriptor arguments_desc;
+            arguments_desc.set_getter(thrower.get());
+            arguments_desc.set_setter(thrower.get());
+            arguments_desc.set_configurable(false);
+            arguments_desc.set_enumerable(false);
+            function->set_property_descriptor("arguments", arguments_desc);
+
+            thrower.release();
+        }
     }
-    
+
     return Value(function.release());
 }
 
