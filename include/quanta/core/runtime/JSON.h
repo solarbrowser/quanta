@@ -38,8 +38,10 @@ public:
         size_t max_depth;
         bool quote_keys;
         bool escape_unicode;
-        
-        StringifyOptions() : indent(""), max_depth(100), quote_keys(true), escape_unicode(false) {}
+        Function* replacer_function;
+        std::vector<std::string> replacer_array;
+
+        StringifyOptions() : indent(""), max_depth(100), quote_keys(true), escape_unicode(false), replacer_function(nullptr) {}
     };
 
 public:

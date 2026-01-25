@@ -54,17 +54,38 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         return Value();
     }
-    
+
     if (args[0].is_undefined()) {
         return Value();
     }
-    
+
     if (args[0].is_object() && !args[0].as_object()) {
         return Value("null");
     }
-    
+
     StringifyOptions options;
-    
+
+    // Process replacer parameter (args[1])
+    if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
+        if (args[1].is_function()) {
+            options.replacer_function = args[1].as_function();
+        } else if (args[1].is_object()) {
+            Object* replacer_obj = args[1].as_object();
+            if (replacer_obj && replacer_obj->is_array()) {
+                Value length_val = replacer_obj->get_property("length");
+                uint32_t length = static_cast<uint32_t>(length_val.to_number());
+                for (uint32_t i = 0; i < length; i++) {
+                    Value item = replacer_obj->get_element(i);
+                    if (item.is_string()) {
+                        options.replacer_array.push_back(item.to_string());
+                    } else if (item.is_number()) {
+                        options.replacer_array.push_back(item.to_string());
+                    }
+                }
+            }
+        }
+    }
+
     if (args.size() > 2 && !args[2].is_undefined()) {
         if (args[2].is_number()) {
             int indent_count = static_cast<int>(args[2].to_number());
@@ -75,7 +96,7 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
             options.indent = args[2].to_string().substr(0, 10);
         }
     }
-    
+
     try {
         Stringifier stringifier(options, &ctx);
         std::string result = stringifier.stringify(args[0]);
@@ -481,6 +502,25 @@ JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx)
 }
 
 std::string JSON::Stringifier::stringify(const Value& value) {
+    // If replacer function exists, call it with empty string key for the root value
+    if (options_.replacer_function && context_) {
+        std::vector<Value> args;
+        args.push_back(Value(""));  // empty key for root
+        args.push_back(value);
+
+        // Create a wrapper object to hold the value
+        auto wrapper = std::make_unique<Object>();
+        wrapper->set_property("", value);
+
+        Value result = options_.replacer_function->call(*context_, args, Value(wrapper.get()));
+        wrapper.release();
+
+        if (context_->has_exception()) {
+            return "";
+        }
+        return stringify_value(result);
+    }
+
     return stringify_value(value);
 }
 
@@ -539,34 +579,61 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     bool first = true;
 
     std::vector<std::string> keys = obj->get_enumerable_keys();
-    
-    for (const std::string& key : keys) {
+
+    // If replacer array is provided, filter keys to only those in the array
+    std::vector<std::string> keys_to_process;
+    if (!options_.replacer_array.empty()) {
+        for (const std::string& key : keys) {
+            if (std::find(options_.replacer_array.begin(), options_.replacer_array.end(), key) != options_.replacer_array.end()) {
+                keys_to_process.push_back(key);
+            }
+        }
+    } else {
+        keys_to_process = keys;
+    }
+
+    for (const std::string& key : keys_to_process) {
         if (key.substr(0, 2) == "__") continue;
-        
+
         Value prop_value = obj->get_property(key);
-        
+
+        // If replacer function exists, call it
+        if (options_.replacer_function && context_) {
+            std::vector<Value> args;
+            args.push_back(Value(key));
+            args.push_back(prop_value);
+
+            Value result_val = options_.replacer_function->call(*context_, args, Value(const_cast<Object*>(obj)));
+            if (context_->has_exception()) {
+                visited_.erase(obj);
+                depth_--;
+                return "";
+            }
+            prop_value = result_val;
+        }
+
         if (prop_value.is_function() || prop_value.is_undefined()) continue;
-        
+
         if (!first) {
             result += ",";
         }
         first = false;
-        
+
         if (!options_.indent.empty()) {
             result += get_newline();
             result += get_indent();
         }
-        
+
         result += stringify_string(key);
         result += ":";
-        
+
         if (!options_.indent.empty()) {
             result += " ";
         }
-        
+
         result += stringify_value(prop_value);
     }
-    
+
     if (!options_.indent.empty() && !first) {
         result += get_newline();
         if (depth_ > 0) {
