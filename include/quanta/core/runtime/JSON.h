@@ -28,9 +28,11 @@ public:
         bool allow_trailing_commas;
         bool allow_single_quotes;
         size_t max_depth;
-        
-        ParseOptions() : allow_comments(false), allow_trailing_commas(false), 
-                        allow_single_quotes(false), max_depth(100) {}
+        Function* reviver_function;
+        Context* context;
+
+        ParseOptions() : allow_comments(false), allow_trailing_commas(false),
+                        allow_single_quotes(false), max_depth(100), reviver_function(nullptr), context(nullptr) {}
     };
 
     struct StringifyOptions {
