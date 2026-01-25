@@ -2432,8 +2432,9 @@ Value CallExpression::evaluate(Context& ctx) {
         
         Function* function = callee_value.as_function();
 
-
-        Value this_value = ctx.get_global_object() ? Value(ctx.get_global_object()) : Value();
+        // In ES5, 'this' should be undefined for non-method calls
+        // The function itself will convert to global object if not in strict mode
+        Value this_value = Value();  // undefined
 
         return function->call(ctx, arg_values, this_value);
     }
