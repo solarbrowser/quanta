@@ -1343,7 +1343,9 @@ void Context::initialize_built_ins() {
                 Object::ObjectType obj_type = this_obj->get_type();
 
 
-                if (this_obj->is_array()) {
+                if (obj_type == Object::ObjectType::Arguments) {
+                    builtinTag = "Arguments";
+                } else if (this_obj->is_array()) {
                     builtinTag = "Array";
                 } else if (obj_type == Object::ObjectType::String) {
                     builtinTag = "String";

@@ -291,6 +291,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         arguments_obj->set_element(i, args[i]);
     }
     arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+    // ES5: Arguments object [[Class]] is "Arguments"
+    arguments_obj->set_type(Object::ObjectType::Arguments);
 
     // In strict mode, arguments.callee and arguments.caller throw TypeError
     if (function_context.is_strict_mode()) {
