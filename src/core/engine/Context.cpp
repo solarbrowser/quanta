@@ -5163,9 +5163,9 @@ void Context::initialize_built_ins() {
     auto math_max_fn = ObjectFactory::create_native_function("max",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                return Value(-std::numeric_limits<double>::infinity());
+                return Value::negative_infinity();
             }
-            
+
             double result = -std::numeric_limits<double>::infinity();
             for (const Value& arg : args) {
                 double value = arg.to_number();
@@ -5175,15 +5175,15 @@ void Context::initialize_built_ins() {
                 result = std::max(result, value);
             }
             return Value(result);
-        }, 2);
+        }, 0);
     math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), PropertyAttributes::BuiltinFunction);
-    
+
     auto math_min_fn = ObjectFactory::create_native_function("min",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                return Value(std::numeric_limits<double>::infinity());
+                return Value::positive_infinity();
             }
-            
+
             double result = std::numeric_limits<double>::infinity();
             for (const Value& arg : args) {
                 double value = arg.to_number();
@@ -5193,7 +5193,7 @@ void Context::initialize_built_ins() {
                 result = std::min(result, value);
             }
             return Value(result);
-        }, 2);
+        }, 0);
     math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), PropertyAttributes::BuiltinFunction);
     
     auto math_round_fn = ObjectFactory::create_native_function("round",

@@ -2419,7 +2419,7 @@ Value CallExpression::evaluate(Context& ctx) {
             }
         }
     }
-    
+
     Value callee_value = callee_->evaluate(ctx);
     
     if (callee_value.is_undefined() && callee_value.is_function()) {
@@ -3728,7 +3728,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 arg_values.push_back(val);
             }
-            
+
             if (method_name == "abs") {
                 return Math::abs(ctx, arg_values);
             } else if (method_name == "sqrt") {
