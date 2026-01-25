@@ -17,7 +17,9 @@ Date::Date(int64_t timestamp) {
         time_point_ = std::chrono::system_clock::now();
     } else {
         is_invalid_ = false;
-        time_point_ = std::chrono::system_clock::from_time_t(timestamp / 1000);
+        // Use milliseconds directly instead of converting through time_t
+        auto duration = std::chrono::milliseconds(timestamp);
+        time_point_ = std::chrono::system_clock::time_point(duration);
     }
 }
 
@@ -74,7 +76,7 @@ Value Date::UTC(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
-    
+
     int year = static_cast<int>(args[0].to_number());
     int month = static_cast<int>(args[1].to_number());
     int day = args.size() > 2 ? static_cast<int>(args[2].to_number()) : 1;
@@ -82,9 +84,29 @@ Value Date::UTC(Context& ctx, const std::vector<Value>& args) {
     int minute = args.size() > 4 ? static_cast<int>(args[4].to_number()) : 0;
     int second = args.size() > 5 ? static_cast<int>(args[5].to_number()) : 0;
     int millisecond = args.size() > 6 ? static_cast<int>(args[6].to_number()) : 0;
-    
-    Date date(year, month + 1, day, hour, minute, second, millisecond);
-    return Value(static_cast<double>(date.getTimestamp()));
+
+    // Use UTC time (tm_year is years since 1900, tm_mon is 0-11)
+    std::tm tm = {};
+    tm.tm_year = year - 1900;
+    tm.tm_mon = month;  
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = minute;
+    tm.tm_sec = second;
+    tm.tm_isdst = 0;
+
+    // Convert UTC time to timestamp
+#ifdef _WIN32
+    std::time_t time = _mkgmtime(&tm);
+#else
+    std::time_t time = timegm(&tm);
+#endif
+    if (time == -1) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+
+    int64_t timestamp_ms = static_cast<int64_t>(time) * 1000 + millisecond;
+    return Value(static_cast<double>(timestamp_ms));
 }
 
 Value Date::getTime(Context& ctx, const std::vector<Value>& args) {
@@ -250,24 +272,88 @@ Value Date::toString(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::toISOString(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm utc_time = date.getUTCTime();
-    
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        ctx.throw_range_error("Invalid Date");
+        return Value();
+    }
+
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+
+    // If timestamp is NaN or infinite, throw RangeError
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        ctx.throw_range_error("Invalid Date");
+        return Value();
+    }
+
+    // Convert timestamp to UTC time
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* utc_time = std::gmtime(&tt);
+
+    if (!utc_time) {
+        ctx.throw_range_error("Invalid Date");
+        return Value();
+    }
+
+    // Get milliseconds
+    double ms_part = std::fmod(timestamp, 1000.0);
+    if (ms_part < 0) ms_part += 1000.0;
+    int milliseconds = static_cast<int>(ms_part);
+
     std::ostringstream oss;
     oss << std::setfill('0')
-        << std::setw(4) << (utc_time.tm_year + 1900) << "-"
-        << std::setw(2) << (utc_time.tm_mon + 1) << "-"
-        << std::setw(2) << utc_time.tm_mday << "T"
-        << std::setw(2) << utc_time.tm_hour << ":"
-        << std::setw(2) << utc_time.tm_min << ":"
-        << std::setw(2) << utc_time.tm_sec << ".000Z";
-    
+        << std::setw(4) << (utc_time->tm_year + 1900) << "-"
+        << std::setw(2) << (utc_time->tm_mon + 1) << "-"
+        << std::setw(2) << utc_time->tm_mday << "T"
+        << std::setw(2) << utc_time->tm_hour << ":"
+        << std::setw(2) << utc_time->tm_min << ":"
+        << std::setw(2) << utc_time->tm_sec << "."
+        << std::setw(3) << milliseconds << "Z";
+
     return Value(oss.str());
 }
 
 Value Date::toJSON(Context& ctx, const std::vector<Value>& args) {
-    return toISOString(ctx, args);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value::null();
+    }
+
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+
+    // If timestamp is NaN or infinite, return null (not throw error)
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value::null();
+    }
+
+    // Convert timestamp to UTC time
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* utc_time = std::gmtime(&tt);
+
+    if (!utc_time) {
+        return Value::null();
+    }
+
+    // Get milliseconds
+    double ms_part = std::fmod(timestamp, 1000.0);
+    if (ms_part < 0) ms_part += 1000.0;
+    int milliseconds = static_cast<int>(ms_part);
+
+    std::ostringstream oss;
+    oss << std::setfill('0')
+        << std::setw(4) << (utc_time->tm_year + 1900) << "-"
+        << std::setw(2) << (utc_time->tm_mon + 1) << "-"
+        << std::setw(2) << utc_time->tm_mday << "T"
+        << std::setw(2) << utc_time->tm_hour << ":"
+        << std::setw(2) << utc_time->tm_min << ":"
+        << std::setw(2) << utc_time->tm_sec << "."
+        << std::setw(3) << milliseconds << "Z";
+
+    return Value(oss.str());
 }
 
 double Date::getTimestamp() const {
