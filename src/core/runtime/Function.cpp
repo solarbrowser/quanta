@@ -201,6 +201,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
 
+    // Check for strict mode BEFORE setting up 'this' binding
+    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        BlockStatement* block = static_cast<BlockStatement*>(body_.get());
+        block->check_use_strict_directive(function_context);
+    }
+
     Value actual_this = this_value;
 
     if (!function_context.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
@@ -286,8 +292,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
     arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
     function_context.create_binding("arguments", Value(arguments_obj.release()), false);
-    
-    function_context.create_binding("this", this_value, false);
+
+    // Use actual_this which respects strict mode (can be undefined in strict mode)
+    function_context.create_binding("this", actual_this, false);
     
     if (this->has_property("__super_constructor__")) {
         Value super_constructor = this->get_property("__super_constructor__");
@@ -298,9 +305,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     if (body_) {
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-            // Check for "use strict" directive before evaluating body
-            BlockStatement* block = static_cast<BlockStatement*>(body_.get());
-            block->check_use_strict_directive(function_context);
             scan_for_var_declarations(body_.get(), function_context);
         }
 
