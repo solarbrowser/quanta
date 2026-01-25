@@ -122,7 +122,19 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             
         case TokenType::SWITCH:
             return parse_switch_statement();
-            
+
+        case TokenType::DEBUGGER:
+            {
+                Position start = current_token().get_start();
+                Position end = current_token().get_end();
+                advance();
+                if (current_token().get_type() == TokenType::SEMICOLON) {
+                    end = current_token().get_end();
+                    advance();
+                }
+                return std::make_unique<EmptyStatement>(start, end);
+            }
+
         case TokenType::IMPORT:
             if (peek_token().get_type() == TokenType::LEFT_PAREN) {
                 return parse_expression_statement();
@@ -841,7 +853,13 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::BIGINT_LITERAL:
             return parse_bigint_literal();
         case TokenType::UNDEFINED:
-            return parse_undefined_literal();
+            // In ES5, undefined is treated as an identifier (can be reassigned)
+            {
+                Position start = current_token().get_start();
+                Position end = current_token().get_end();
+                advance();
+                return std::make_unique<Identifier>("undefined", start, end);
+            }
         case TokenType::IDENTIFIER:
             return parse_identifier();
         case TokenType::HASH:
