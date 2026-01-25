@@ -7,6 +7,7 @@
 #include "quanta/core/runtime/Math.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/parser/AST.h"
 #include <cmath>
 #include <algorithm>
 #include <random>
@@ -48,8 +49,11 @@ std::unique_ptr<Object> Math::create_math_object() {
     math_obj->set_property("exp", Value("function exp() { [native code] }"));
     math_obj->set_property("floor", Value("function floor() { [native code] }"));
     math_obj->set_property("log", Value("function log() { [native code] }"));
-    math_obj->set_property("max", Value("function max() { [native code] }"));
-    math_obj->set_property("min", Value("function min() { [native code] }"));
+    auto max_fn = ObjectFactory::create_native_function("max", Math::max);
+    math_obj->set_property("max", Value(max_fn.release()));
+
+    auto min_fn = ObjectFactory::create_native_function("min", Math::min);
+    math_obj->set_property("min", Value(min_fn.release()));
     math_obj->set_property("pow", Value("function pow() { [native code] }"));
     math_obj->set_property("random", Value("function random() { [native code] }"));
     math_obj->set_property("round", Value("function round() { [native code] }"));
@@ -164,7 +168,7 @@ Value Math::log(Context& ctx, const std::vector<Value>& args) {
 
 Value Math::max(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        return Value(-std::numeric_limits<double>::infinity());
+        return Value::negative_infinity();
     }
     
     double result = -std::numeric_limits<double>::infinity();
@@ -180,7 +184,7 @@ Value Math::max(Context& ctx, const std::vector<Value>& args) {
 
 Value Math::min(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        return Value(std::numeric_limits<double>::infinity());
+        return Value::positive_infinity();
     }
     
     double result = std::numeric_limits<double>::infinity();
