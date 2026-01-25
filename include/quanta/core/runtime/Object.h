@@ -28,6 +28,7 @@ public:
     enum class ObjectType : uint8_t {
         Ordinary,
         Array,
+        Arguments,
         Function,
         String,
         Number,
@@ -80,6 +81,7 @@ public:
     Object& operator=(Object&& other) noexcept = default;
 
     ObjectType get_type() const { return header_.type; }
+    void set_type(ObjectType type) { header_.type = type; }
     bool is_array() const { return header_.type == ObjectType::Array; }
     bool is_function() const { return header_.type == ObjectType::Function; }
     bool is_primitive_wrapper() const {
