@@ -71,6 +71,8 @@ private:
 
     bool has_break_;
     bool has_continue_;
+    std::string break_label_;
+    std::string continue_label_;
 
     bool is_in_constructor_call_;
     
@@ -151,8 +153,10 @@ public:
     
     bool has_break() const { return has_break_; }
     bool has_continue() const { return has_continue_; }
-    void set_break();
-    void set_continue();
+    const std::string& get_break_label() const { return break_label_; }
+    const std::string& get_continue_label() const { return continue_label_; }
+    void set_break(const std::string& label = "");
+    void set_continue(const std::string& label = "");
     void clear_break_continue();
 
     bool is_in_constructor_call() const { return is_in_constructor_call_; }
