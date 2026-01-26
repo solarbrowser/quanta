@@ -1514,7 +1514,14 @@ void Context::initialize_built_ins() {
             if (args.empty()) {
                 return Value(ObjectFactory::create_array().release());
             } else if (args.size() == 1 && args[0].is_number()) {
-                uint32_t length = static_cast<uint32_t>(args[0].to_number());
+                double length_val = args[0].to_number();
+
+                if (length_val < 0 || length_val >= 4294967296.0 || length_val != std::floor(length_val)) {
+                    ctx.throw_range_error("Invalid array length");
+                    return Value();
+                }
+
+                uint32_t length = static_cast<uint32_t>(length_val);
                 auto array = ObjectFactory::create_array();
                 array->set_property("length", Value(static_cast<double>(length)));
                 return Value(array.release());
