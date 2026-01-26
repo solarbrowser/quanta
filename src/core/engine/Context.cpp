@@ -4994,10 +4994,10 @@ void Context::initialize_built_ins() {
     
     auto error_prototype = ObjectFactory::create_object();
 
-    PropertyDescriptor error_proto_name_desc(Value("Error"),
+    PropertyDescriptor error_proto_name_desc(Value(std::string("Error")),
         PropertyAttributes::BuiltinFunction);
     error_prototype->set_property_descriptor("name", error_proto_name_desc);
-    error_prototype->set_property("message", Value(""));
+    error_prototype->set_property("message", Value(std::string("")));
 
     // Add Error.prototype.toString method
     auto error_proto_toString = ObjectFactory::create_native_function("toString",
