@@ -135,7 +135,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     if (is_native_) {
         if (!ctx.check_execution_depth()) {
-            ctx.throw_exception(Value("call stack size exceeded"));
+            ctx.throw_exception(Value(std::string("call stack size exceeded")));
             return Value();
         }
         

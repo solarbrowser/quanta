@@ -50,11 +50,11 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
                     new_promise->fulfill(result);
                 } else {
                     new_promise->state_ = PromiseState::PENDING;
-                    new_promise->reject(Value("No execution context for callback"));
+                    new_promise->reject(Value(std::string("No execution context for callback")));
                 }
             } catch (...) {
                 new_promise->state_ = PromiseState::PENDING;
-                new_promise->reject(Value("Handler execution failed"));
+                new_promise->reject(Value(std::string("Handler execution failed")));
             }
         } else {
             new_promise->fulfill(value_);
@@ -71,7 +71,7 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
                     new_promise->fulfill(result);
                 } else {
                     new_promise->state_ = PromiseState::PENDING;
-                    new_promise->reject(Value("No execution context for callback"));
+                    new_promise->reject(Value(std::string("No execution context for callback")));
                 }
             } catch (...) {
                 new_promise->state_ = PromiseState::PENDING;
@@ -119,11 +119,11 @@ Promise* Promise::all(const std::vector<Promise*>& promises) {
     auto* result_promise = static_cast<Promise*>(promise_obj.release());
     
     if (promises.empty()) {
-        result_promise->fulfill(Value("empty_array"));
+        result_promise->fulfill(Value(std::string("empty_array")));
         return result_promise;
     }
     
-    result_promise->fulfill(Value("all_resolved"));
+    result_promise->fulfill(Value(std::string("all_resolved")));
     return result_promise;
 }
 
@@ -135,7 +135,7 @@ Promise* Promise::race(const std::vector<Promise*>& promises) {
         return result_promise;
     }
     
-    result_promise->fulfill(Value("race_winner"));
+    result_promise->fulfill(Value(std::string("race_winner")));
     return result_promise;
 }
 
@@ -189,7 +189,7 @@ Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
     auto reject_fn = ObjectFactory::create_native_function("reject",
         [promise](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            Value reject_value = args.empty() ? Value("Promise rejected") : args[0];
+            Value reject_value = args.empty() ? Value(std::string("Promise rejected")) : args[0];
             promise->reject(reject_value);
             return Value();
         });
@@ -203,7 +203,7 @@ Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
 
 Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     if (args.empty() || !args[0].is_function()) {
-        ctx.throw_exception(Value("Promise.try requires a function argument"));
+        ctx.throw_exception(Value(std::string("Promise.try requires a function argument")));
         return Value();
     }
     
@@ -242,14 +242,14 @@ void Promise::setup_promise_methods(Promise* promise) {
             if (args.size() > 0 && args[0].is_function()) {
                 Function* callback = args[0].as_function();
                 try {
-                    std::vector<Value> callback_args = {Value("resolved")};
+                    std::vector<Value> callback_args = {Value(std::string("resolved"))};
                     Value result = callback->call(ctx, callback_args);
                     new_promise->fulfill(result);
                 } catch (...) {
-                    new_promise->reject(Value("Callback execution failed"));
+                    new_promise->reject(Value(std::string("Callback execution failed")));
                 }
             } else {
-                new_promise->fulfill(Value("resolved"));
+                new_promise->fulfill(Value(std::string("resolved")));
             }
             return Value(new_promise);
         });
@@ -259,7 +259,7 @@ void Promise::setup_promise_methods(Promise* promise) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
-            new_promise->fulfill(Value("catch_resolved"));
+            new_promise->fulfill(Value(std::string("catch_resolved")));
             return Value(new_promise);
         });
     promise->set_property("catch", Value(catch_method.release()));
@@ -268,7 +268,7 @@ void Promise::setup_promise_methods(Promise* promise) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             auto promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* new_promise = static_cast<Promise*>(promise_obj.release());
-            new_promise->fulfill(Value("finally_resolved"));
+            new_promise->fulfill(Value(std::string("finally_resolved")));
             return Value(new_promise);
         });
     promise->set_property("finally", Value(finally_method.release()));

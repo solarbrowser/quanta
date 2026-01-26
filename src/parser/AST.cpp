@@ -423,7 +423,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
                         Identifier* prop = static_cast<Identifier*>(member->get_property());
                         key = prop->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property in assignment"));
+                        ctx.throw_exception(Value(std::string("Invalid property in assignment")));
                         return Value();
                     }
                 }
@@ -448,7 +448,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
                             Identifier* id = static_cast<Identifier*>(member->get_property());
                             prop_name = id->get_name();
                         } else {
-                            ctx.throw_exception(Value("Invalid property access"));
+                            ctx.throw_exception(Value(std::string("Invalid property access")));
                             return Value();
                         }
                     }
@@ -492,16 +492,16 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     
                     return result_value;
                 } else {
-                    ctx.throw_exception(Value("Cannot set property on non-object"));
+                    ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
                     return Value();
                 }
             } else {
-                ctx.throw_exception(Value("Cannot set property on non-object"));
+                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
                 return Value();
             }
         }
         
-        ctx.throw_exception(Value("Invalid left-hand side in assignment"));
+        ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
         return Value();
     }
     
@@ -729,7 +729,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
             return left_value.unsigned_right_shift(right_value);
             
         default:
-            ctx.throw_exception(Value("Unsupported binary operator"));
+            ctx.throw_exception(Value(std::string("Unsupported binary operator")));
             return Value();
     }
 }
@@ -914,7 +914,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
                         property_name = id->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property access in delete"));
+                        ctx.throw_exception(Value(std::string("Invalid property access in delete")));
                         return Value();
                     }
                 }
@@ -941,7 +941,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
-                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
                 
@@ -955,7 +955,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
                         prop_name = id->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property name"));
+                        ctx.throw_exception(Value(std::string("Invalid property name")));
                         return Value();
                     }
                 }
@@ -963,7 +963,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 obj.as_object()->set_property(prop_name, incremented);
                 return incremented;
             } else {
-                ctx.throw_exception(Value("Invalid left-hand side in assignment"));
+                ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();
             }
         }
@@ -983,7 +983,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
-                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
                 
@@ -997,7 +997,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
                         prop_name = id->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property name"));
+                        ctx.throw_exception(Value(std::string("Invalid property name")));
                         return Value();
                     }
                 }
@@ -1005,7 +1005,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 obj.as_object()->set_property(prop_name, incremented);
                 return current;
             } else {
-                ctx.throw_exception(Value("Invalid left-hand side in assignment"));
+                ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();
             }
         }
@@ -1025,7 +1025,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
-                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
                 
@@ -1039,7 +1039,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
                         prop_name = id->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property name"));
+                        ctx.throw_exception(Value(std::string("Invalid property name")));
                         return Value();
                     }
                 }
@@ -1047,7 +1047,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 obj.as_object()->set_property(prop_name, decremented);
                 return decremented;
             } else {
-                ctx.throw_exception(Value("Invalid left-hand side in assignment"));
+                ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();
             }
         }
@@ -1067,7 +1067,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
-                    ctx.throw_exception(Value("Cannot assign to property of non-object"));
+                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
                 
@@ -1081,7 +1081,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
                         prop_name = id->get_name();
                     } else {
-                        ctx.throw_exception(Value("Invalid property name"));
+                        ctx.throw_exception(Value(std::string("Invalid property name")));
                         return Value();
                     }
                 }
@@ -1089,12 +1089,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 obj.as_object()->set_property(prop_name, decremented);
                 return current;
             } else {
-                ctx.throw_exception(Value("Invalid left-hand side in assignment"));
+                ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();
             }
         }
         default:
-            ctx.throw_exception(Value("Unsupported unary operator"));
+            ctx.throw_exception(Value(std::string("Unsupported unary operator")));
             return Value();
     }
 }
@@ -1168,7 +1168,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return result;
             }
             default:
-                ctx.throw_exception(Value("Unsupported assignment operator"));
+                ctx.throw_exception(Value(std::string("Unsupported assignment operator")));
                 return Value();
         }
         
@@ -1245,11 +1245,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
                 is_string_object = true;
             } else {
-                ctx.throw_exception(Value("Cannot set property on non-object"));
+                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Cannot set property on non-object"));
+            ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
             return Value();
         }
         
@@ -1277,7 +1277,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 Identifier* id = static_cast<Identifier*>(member->get_property());
                 prop_name = id->get_name();
             } else {
-                ctx.throw_exception(Value("Invalid property access"));
+                ctx.throw_exception(Value(std::string("Invalid property access")));
                 return Value();
             }
         }
@@ -1398,7 +1398,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
             case Operator::MINUS_ASSIGN: {
                 if (is_string_object) {
-                    ctx.throw_exception(Value("Compound assignment not supported for string objects"));
+                    ctx.throw_exception(Value(std::string("Compound assignment not supported for string objects")));
                     return Value();
                 } else {
                     Value current_value = obj->get_property(prop_name);
@@ -1407,14 +1407,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 break;
             }
             default:
-                ctx.throw_exception(Value("Unsupported assignment operator for member expression"));
+                ctx.throw_exception(Value(std::string("Unsupported assignment operator for member expression")));
                 return Value();
         }
         
         return right_value;
     }
     
-    ctx.throw_exception(Value("Invalid assignment target"));
+    ctx.throw_exception(Value(std::string("Invalid assignment target")));
     return Value();
 }
 
@@ -1440,7 +1440,7 @@ std::unique_ptr<ASTNode> AssignmentExpression::clone() const {
 
 Value DestructuringAssignment::evaluate(Context& ctx) {
     if (!source_) {
-        ctx.throw_exception(Value("DestructuringAssignment: source is null"));
+        ctx.throw_exception(Value(std::string("DestructuringAssignment: source is null")));
         return Value();
     }
     
@@ -1533,7 +1533,7 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
                 }
             }
         } else {
-            ctx.throw_exception(Value("Cannot destructure non-object as array"));
+            ctx.throw_exception(Value(std::string("Cannot destructure non-object as array")));
             return Value();
         }
     } else {
@@ -1544,7 +1544,7 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Cannot destructure non-object"));
+            ctx.throw_exception(Value(std::string("Cannot destructure non-object")));
             return Value();
         }
     }
@@ -2457,7 +2457,7 @@ Value CallExpression::evaluate(Context& ctx) {
                 Value result = parent_constructor->call(ctx, arg_values, this_value);
                 return result;
             } else {
-                ctx.throw_exception(Value("super() called but no parent constructor found"));
+                ctx.throw_exception(Value(std::string("super() called but no parent constructor found")));
                 return Value();
             }
         }
@@ -2516,7 +2516,7 @@ Value CallExpression::evaluate(Context& ctx) {
         }
     }
     
-    ctx.throw_exception(Value("Function calls not yet implemented"));
+    ctx.throw_exception(Value(std::string("Function calls not yet implemented")));
     return Value();
 }
 
@@ -2633,11 +2633,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 array_data += "]";
                 return Value(array_data);
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.map requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.map requires a callback function")));
             return Value();
         }
         
@@ -2673,11 +2673,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 array_data += "]";
                 return Value(array_data);
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.filter requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.filter requires a callback function")));
             return Value();
         }
         
@@ -2691,7 +2691,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 uint32_t length = array->get_length();
                 
                 if (length == 0 && arguments_.size() < 2) {
-                    ctx.throw_exception(Value("Reduce of empty array with no initial value"));
+                    ctx.throw_exception(Value(std::string("Reduce of empty array with no initial value")));
                     return Value();
                 }
                 
@@ -2716,11 +2716,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 
                 return accumulator;
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.reduce requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.reduce requires a callback function")));
             return Value();
         }
         
@@ -2743,11 +2743,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 
                 return Value();
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.forEach requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.forEach requires a callback function")));
             return Value();
         }
         
@@ -2859,7 +2859,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 uint32_t length = array->get_length();
                 
                 if (length == 0 && arguments_.size() < 2) {
-                    ctx.throw_exception(Value("ReduceRight of empty array with no initial value"));
+                    ctx.throw_exception(Value(std::string("ReduceRight of empty array with no initial value")));
                     return Value();
                 }
                 
@@ -2872,7 +2872,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                     start_index = static_cast<int32_t>(length) - 1;
                 } else {
                     if (length == 0) {
-                        ctx.throw_exception(Value("ReduceRight of empty array with no initial value"));
+                        ctx.throw_exception(Value(std::string("ReduceRight of empty array with no initial value")));
                         return Value();
                     }
                     accumulator = array->get_element(length - 1);
@@ -2889,11 +2889,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 
                 return accumulator;
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.reduceRight requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.reduceRight requires a callback function")));
             return Value();
         }
         
@@ -3023,11 +3023,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 }
                 return Value();
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.find requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.find requires a callback function")));
             return Value();
         }
         
@@ -3053,11 +3053,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 }
                 return Value(-1.0);
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.findIndex requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.findIndex requires a callback function")));
             return Value();
         }
         
@@ -3083,11 +3083,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 }
                 return Value(false);
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.some requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.some requires a callback function")));
             return Value();
         }
         
@@ -3113,11 +3113,11 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 }
                 return Value(true);
             } else {
-                ctx.throw_exception(Value("Callback is not a function"));
+                ctx.throw_exception(Value(std::string("Callback is not a function")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("Array.every requires a callback function"));
+            ctx.throw_exception(Value(std::string("Array.every requires a callback function")));
             return Value();
         }
         
@@ -3132,7 +3132,7 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
                 if (ctx.has_exception()) return Value();
 
                 if (start_val.is_symbol()) {
-                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                     return Value();
                 }
 
@@ -3182,7 +3182,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         }
         
         if (index < 0 || index >= static_cast<int>(str.length())) {
-            return Value("");
+            return Value(std::string(""));
         }
         
         return Value(std::string(1, str[index]));
@@ -3324,7 +3324,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
                 start = std::max(0, static_cast<int>(str.length()) + start);
             }
             if (start >= static_cast<int>(str.length())) {
-                return Value("");
+                return Value(std::string(""));
             }
         }
         
@@ -3342,7 +3342,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         }
         
         if (start >= end) {
-            return Value("");
+            return Value(std::string(""));
         }
         
         return Value(str.substr(start, end - start));
@@ -3482,7 +3482,7 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
                 return Value(std::string(1, str[index]));
             }
         }
-        return Value("");
+        return Value(std::string(""));
         
     } else if (method_name == "charCodeAt") {
         if (arguments_.size() > 0) {
@@ -3784,7 +3784,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
                 method_name = prop->get_name();
             } else {
-                ctx.throw_exception(Value("Invalid method name"));
+                ctx.throw_exception(Value(std::string("Invalid method name")));
                 return Value();
             }
         }
@@ -3916,7 +3916,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 }
             }
             
-            ctx.throw_exception(Value("Method not found or not a function"));
+            ctx.throw_exception(Value(std::string("Method not found or not a function")));
             return Value();
         }
 
@@ -3950,7 +3950,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
                 method_name = prop->get_name();
             } else {
-                ctx.throw_exception(Value("Invalid method name"));
+                ctx.throw_exception(Value(std::string("Invalid method name")));
                 return Value();
             }
         }
@@ -3972,7 +3972,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
         } else {
-            ctx.throw_exception(Value("Property is not a function"));
+            ctx.throw_exception(Value(std::string("Property is not a function")));
             return Value();
         }
         
@@ -3993,7 +3993,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             
             return method->call(ctx, arg_values, object_value);
         } else {
-            ctx.throw_exception(Value("Property is not a function"));
+            ctx.throw_exception(Value(std::string("Property is not a function")));
             return Value();
         }
         
@@ -4010,7 +4010,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
                 method_name = prop->get_name();
             } else {
-                ctx.throw_exception(Value("Invalid method name"));
+                ctx.throw_exception(Value(std::string("Invalid method name")));
                 return Value();
             }
         }
@@ -4027,12 +4027,12 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
         } else {
-            ctx.throw_exception(Value("Property is not a function"));
+            ctx.throw_exception(Value(std::string("Property is not a function")));
             return Value();
         }
     }
     
-    ctx.throw_exception(Value("Unsupported method call"));
+    ctx.throw_exception(Value(std::string("Unsupported method call")));
     return Value();
 }
 
@@ -4425,12 +4425,12 @@ Value MemberExpression::evaluate(Context& ctx) {
             auto char_at_fn = ObjectFactory::create_native_function("charAt",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
-                    if (args.empty()) return Value("");
+                    if (args.empty()) return Value(std::string(""));
                     int index = static_cast<int>(args[0].to_number());
                     if (index >= 0 && index < static_cast<int>(str_value.length())) {
                         return Value(std::string(1, str_value[index]));
                     }
-                    return Value("");
+                    return Value(std::string(""));
                 });
             return Value(char_at_fn.release());
         }
@@ -4551,7 +4551,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     if (end < 0) end = std::max(0, static_cast<int>(str_value.length()) + end);
                     start = std::min(start, static_cast<int>(str_value.length()));
                     end = std::min(end, static_cast<int>(str_value.length()));
-                    if (start >= end) return Value("");
+                    if (start >= end) return Value(std::string(""));
                     return Value(str_value.substr(start, end - start));
                 });
             return Value(slice_fn.release());
@@ -4619,7 +4619,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     if (args.empty()) return Value(false);
 
                     if (args[0].is_symbol()) {
-                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                         return Value();
                     }
 
@@ -4627,7 +4627,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     int start = 0;
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
-                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                             return Value();
                         }
                         start = static_cast<int>(args[1].to_number());
@@ -4655,7 +4655,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     if (args.empty()) return Value(false);
 
                     if (args[0].is_symbol()) {
-                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                         return Value();
                     }
 
@@ -4663,7 +4663,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     size_t length = str_value.length();
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
-                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                             return Value();
                         }
                         if (!std::isnan(args[1].to_number())) {
@@ -4687,7 +4687,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     if (args.empty()) return Value(false);
 
                     if (args[0].is_symbol()) {
-                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                         return Value();
                     }
 
@@ -4696,7 +4696,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     int start = 0;
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
-                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                             return Value();
                         }
                         start = static_cast<int>(args[1].to_number());
@@ -4982,12 +4982,12 @@ Value MemberExpression::evaluate(Context& ctx) {
                 auto char_at_fn = ObjectFactory::create_native_function("charAt",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx;
-                        if (args.empty()) return Value("");
+                        if (args.empty()) return Value(std::string(""));
                         int index = static_cast<int>(args[0].to_number());
                         if (index >= 0 && index < static_cast<int>(str_value.length())) {
                             return Value(std::string(1, str_value[index]));
                         }
-                        return Value("");
+                        return Value(std::string(""));
                     });
                 return Value(char_at_fn.release());
             }
@@ -5099,7 +5099,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 
                 if (prop_name == "cookie") {
                     // Cookie handling removed, return empty string
-                    return Value("");
+                    return Value(std::string(""));
                 }
                 
                 Value result = obj->get_property(prop_name);
@@ -5639,7 +5639,7 @@ Value ForStatement::evaluate(Context& ctx) {
     while (true) {
         if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
             if (safety_counter > max_iterations) {
-                ctx.throw_exception(Value("For loop exceeded iterations"));
+                ctx.throw_exception(Value(std::string("For loop exceeded iterations")));
                 break;
             }
         }
@@ -5822,14 +5822,14 @@ Value ForInStatement::evaluate(Context& ctx) {
         }
         
         if (var_name.empty()) {
-            ctx.throw_exception(Value("For...in: Invalid loop variable"));
+            ctx.throw_exception(Value(std::string("For...in: Invalid loop variable")));
             return Value();
         }
         
         auto keys = obj->get_enumerable_keys();
         
         if (keys.size() > 50) {
-            ctx.throw_exception(Value("For...in: Object has too many properties (>50)"));
+            ctx.throw_exception(Value(std::string("For...in: Object has too many properties (>50)")));
             return Value();
         }
         
@@ -5865,7 +5865,7 @@ Value ForInStatement::evaluate(Context& ctx) {
         
         return Value();
     } else {
-        ctx.throw_exception(Value("For...in: Cannot iterate over non-object"));
+        ctx.throw_exception(Value(std::string("For...in: Cannot iterate over non-object")));
         return Value();
     }
 }
@@ -5939,7 +5939,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         }
 
                         if (var_name.empty()) {
-                            ctx.throw_exception(Value("For...of: Invalid loop variable"));
+                            ctx.throw_exception(Value(std::string("For...of: Invalid loop variable")));
                             return Value();
                         }
                         
@@ -5958,11 +5958,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     Function* next_fn_obj = next_method.as_function();
                                     result = next_fn_obj->call(ctx, {}, iterator_obj);
                                 } else {
-                                    ctx.throw_exception(Value("Iterator object has no next method"));
+                                    ctx.throw_exception(Value(std::string("Iterator object has no next method")));
                                     return Value();
                                 }
                             } else {
-                                ctx.throw_exception(Value("Iterator is not an object"));
+                                ctx.throw_exception(Value(std::string("Iterator is not an object")));
                                 return Value();
                             }
                             
@@ -6026,7 +6026,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         }
                         
                         if (iteration_count >= MAX_ITERATIONS) {
-                            ctx.throw_exception(Value("For...of loop exceeded iterations (50)"));
+                            ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
                             return Value();
                         }
                         
@@ -6040,7 +6040,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             uint32_t length = obj->get_length();
             
             if (length > 50) {
-                ctx.throw_exception(Value("For...of: Array too large (>50 elements)"));
+                ctx.throw_exception(Value(std::string("For...of: Array too large (>50 elements)")));
                 return Value();
             }
             
@@ -6062,7 +6062,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             }
             
             if (var_name.empty()) {
-                ctx.throw_exception(Value("For...of: Invalid loop variable"));
+                ctx.throw_exception(Value(std::string("For...of: Invalid loop variable")));
                 return Value();
             }
             
@@ -6123,15 +6123,15 @@ Value ForOfStatement::evaluate(Context& ctx) {
             }
             
             if (iteration_count >= MAX_ITERATIONS) {
-                ctx.throw_exception(Value("For...of loop exceeded iterations (50)"));
+                ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value("For...of: Only arrays are supported"));
+            ctx.throw_exception(Value(std::string("For...of: Only arrays are supported")));
             return Value();
         }
     } else {
-        ctx.throw_exception(Value("For...of: Not an iterable object"));
+        ctx.throw_exception(Value(std::string("For...of: Not an iterable object")));
         return Value();
     }
     
@@ -6176,7 +6176,7 @@ Value WhileStatement::evaluate(Context& ctx) {
                 test_value = test_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
             } catch (...) {
-                ctx.throw_exception(Value("Error evaluating while-loop condition"));
+                ctx.throw_exception(Value(std::string("Error evaluating while-loop condition")));
                 return Value();
             }
             
@@ -6191,12 +6191,12 @@ Value WhileStatement::evaluate(Context& ctx) {
                 if (safety_counter % 10 == 0) {
                 }
             } catch (...) {
-                ctx.throw_exception(Value("Error in while-loop body execution"));
+                ctx.throw_exception(Value(std::string("Error in while-loop body execution")));
                 return Value();
             }
         }
     } catch (...) {
-        ctx.throw_exception(Value("Fatal error in while-loop execution"));
+        ctx.throw_exception(Value(std::string("Fatal error in while-loop execution")));
         return Value();
     }
     
@@ -6243,7 +6243,7 @@ Value DoWhileStatement::evaluate(Context& ctx) {
                 }
                 
             } catch (...) {
-                ctx.throw_exception(Value("Error in do-while-loop body execution"));
+                ctx.throw_exception(Value(std::string("Error in do-while-loop body execution")));
                 return Value();
             }
             
@@ -6252,7 +6252,7 @@ Value DoWhileStatement::evaluate(Context& ctx) {
                 test_value = test_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
             } catch (...) {
-                ctx.throw_exception(Value("Error evaluating do-while-loop condition"));
+                ctx.throw_exception(Value(std::string("Error evaluating do-while-loop condition")));
                 return Value();
             }
             
@@ -6263,7 +6263,7 @@ Value DoWhileStatement::evaluate(Context& ctx) {
         } while (true);
         
     } catch (...) {
-        ctx.throw_exception(Value("Fatal error in do-while-loop execution"));
+        ctx.throw_exception(Value(std::string("Fatal error in do-while-loop execution")));
         return Value();
     }
     
@@ -6534,7 +6534,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         
         prototype.release();
     } else {
-        ctx.throw_exception(Value("Class setup failed: null constructor or prototype"));
+        ctx.throw_exception(Value(std::string("Class setup failed: null constructor or prototype")));
         return Value();
     }
     
@@ -6918,7 +6918,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
         if (promise && promise->get_state() == PromiseState::FULFILLED) {
             return promise->get_value();
         }
-        return Value("PromiseResult");
+        return Value(std::string("PromiseResult"));
     }
     
     return arg_value;
@@ -7094,7 +7094,7 @@ std::unique_ptr<ASTNode> ContinueStatement::clone() const {
 Value ObjectLiteral::evaluate(Context& ctx) {
     auto object = ObjectFactory::create_object();
     if (!object) {
-        ctx.throw_exception(Value("Failed to create object"));
+        ctx.throw_exception(Value(std::string("Failed to create object")));
         return Value();
     }
     
@@ -7107,18 +7107,18 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             SpreadElement* spread = static_cast<SpreadElement*>(prop->value.get());
             Value spread_value = spread->get_argument()->evaluate(ctx);
             if (ctx.has_exception()) {
-                ctx.throw_exception(Value("Error evaluating spread argument"));
+                ctx.throw_exception(Value(std::string("Error evaluating spread argument")));
                 return Value();
             }
             
             if (!spread_value.is_object()) {
-                ctx.throw_exception(Value("TypeError: Spread syntax can only be applied to objects"));
+                ctx.throw_exception(Value(std::string("TypeError: Spread syntax can only be applied to objects")));
                 return Value();
             }
             
             Object* spread_obj = spread_value.as_object();
             if (!spread_obj) {
-                ctx.throw_exception(Value("Error: Could not convert value to object"));
+                ctx.throw_exception(Value(std::string("Error: Could not convert value to object")));
                 return Value();
             }
             
@@ -7138,7 +7138,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         std::string key;
         
         if (!prop->key) {
-            ctx.throw_exception(Value("Property missing key"));
+            ctx.throw_exception(Value(std::string("Property missing key")));
             return Value();
         }
         
@@ -7162,7 +7162,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                     key = std::to_string(value);
                 }
             } else {
-                ctx.throw_exception(Value("Invalid property key in object literal"));
+                ctx.throw_exception(Value(std::string("Invalid property key in object literal")));
                 return Value();
             }
         }
@@ -7177,14 +7177,14 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                 value = id->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
             } else {
-                ctx.throw_exception(Value("Invalid shorthand property in object literal"));
+                ctx.throw_exception(Value(std::string("Invalid shorthand property in object literal")));
                 return Value();
             }
         }
         
         if (prop->type == ObjectLiteral::PropertyType::Getter || prop->type == ObjectLiteral::PropertyType::Setter) {
             if (!value.is_function()) {
-                ctx.throw_exception(Value("Getter/setter must be a function"));
+                ctx.throw_exception(Value(std::string("Getter/setter must be a function")));
                 return Value();
             }
 
@@ -7258,7 +7258,7 @@ Value ArrayLiteral::evaluate(Context& ctx) {
     
     auto array = ObjectFactory::create_array(0);
     if (!array) {
-        return Value("[]");
+        return Value(std::string("[]"));
     }
 
     
@@ -7322,7 +7322,7 @@ std::unique_ptr<ASTNode> ArrayLiteral::clone() const {
 Value TryStatement::evaluate(Context& ctx) {
     static int try_recursion_depth = 0;
     if (try_recursion_depth > 10) {
-        return Value("Max try-catch recursion exceeded");
+        return Value(std::string("Max try-catch recursion exceeded"));
     }
     
     try_recursion_depth++;
@@ -7344,7 +7344,7 @@ Value TryStatement::evaluate(Context& ctx) {
         exception_value = Value(std::string("Error: ") + e.what());
     } catch (...) {
         caught_exception = true;
-        exception_value = Value("Error: Unknown error");
+        exception_value = Value(std::string("Error: Unknown error"));
     }
     
     if (caught_exception && catch_clause_) {
@@ -7370,7 +7370,7 @@ Value TryStatement::evaluate(Context& ctx) {
                 ctx.clear_exception();
             }
         } catch (...) {
-            result = Value("CatchBlockError: Unknown error in catch");
+            result = Value(std::string("CatchBlockError: Unknown error in catch"));
             if (ctx.has_exception()) {
                 ctx.clear_exception();
             }
@@ -7593,13 +7593,13 @@ std::unique_ptr<ASTNode> ImportSpecifier::clone() const {
 Value ImportStatement::evaluate(Context& ctx) {
     Engine* engine = ctx.get_engine();
     if (!engine) {
-        ctx.throw_exception(Value("No engine available for module loading"));
+        ctx.throw_exception(Value(std::string("No engine available for module loading")));
         return Value();
     }
     
     ModuleLoader* module_loader = engine->get_module_loader();
     if (!module_loader) {
-        ctx.throw_exception(Value("ModuleLoader not available"));
+        ctx.throw_exception(Value(std::string("ModuleLoader not available")));
         return Value();
     }
     
@@ -7967,13 +7967,13 @@ Value JSXElement::evaluate(Context& ctx) {
     
     Value react = ctx.get_binding("React");
     if (!react.is_object()) {
-        ctx.throw_exception(Value("React is not defined - JSX requires React to be in scope"));
+        ctx.throw_exception(Value(std::string("React is not defined - JSX requires React to be in scope")));
         return Value();
     }
     
     Value createElement = static_cast<Object*>(react.as_object())->get_property("createElement");
     if (!createElement.is_function()) {
-        ctx.throw_exception(Value("React.createElement is not a function"));
+        ctx.throw_exception(Value(std::string("React.createElement is not a function")));
         return Value();
     }
     

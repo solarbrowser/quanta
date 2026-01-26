@@ -58,7 +58,7 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
             wrapper->set_property("", result);
 
             std::vector<Value> args;
-            args.push_back(Value(""));
+            args.push_back(Value(std::string("")));
             args.push_back(result);
 
             result = options.reviver_function->call(ctx, args, Value(wrapper.get()));
@@ -89,7 +89,7 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
     }
 
     if (args[0].is_object() && !args[0].as_object()) {
-        return Value("null");
+        return Value(std::string("null"));
     }
 
     StringifyOptions options;
@@ -139,8 +139,8 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
 std::unique_ptr<Object> JSON::create_json_object() {
     auto json_obj = std::make_unique<Object>();
     
-    json_obj->set_property("parse", Value("function JSON.parse() { [native code] }"));
-    json_obj->set_property("stringify", Value("function JSON.stringify() { [native code] }"));
+    json_obj->set_property("parse", Value(std::string("function JSON.parse() { [native code] }")));
+    json_obj->set_property("stringify", Value(std::string("function JSON.stringify() { [native code] }")));
     
     return json_obj;
 }
@@ -553,7 +553,7 @@ std::string JSON::Stringifier::stringify(const Value& value) {
     // If replacer function exists, call it with empty string key for the root value
     if (options_.replacer_function && context_) {
         std::vector<Value> args;
-        args.push_back(Value(""));  // empty key for root
+        args.push_back(Value(std::string("")));  // empty key for root
         args.push_back(value);
 
         // Create a wrapper object to hold the value

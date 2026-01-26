@@ -112,7 +112,7 @@ Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
 
 Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("Symbol.for requires a key argument"));
+        ctx.throw_exception(Value(std::string("Symbol.for requires a key argument")));
         return Value();
     }
     
@@ -123,7 +123,7 @@ Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
 
 Value Symbol::symbol_key_for(Context& ctx, const std::vector<Value>& args) {
     if (args.empty() || !args[0].is_symbol()) {
-        ctx.throw_exception(Value("Symbol.keyFor requires a symbol argument"));
+        ctx.throw_exception(Value(std::string("Symbol.keyFor requires a symbol argument")));
         return Value();
     }
     
@@ -140,7 +140,7 @@ Value Symbol::symbol_to_string(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_symbol()) {
-        ctx.throw_exception(Value("Symbol.prototype.toString called on non-symbol"));
+        ctx.throw_exception(Value(std::string("Symbol.prototype.toString called on non-symbol")));
         return Value();
     }
     
@@ -153,7 +153,7 @@ Value Symbol::symbol_value_of(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_symbol()) {
-        ctx.throw_exception(Value("Symbol.prototype.valueOf called on non-symbol"));
+        ctx.throw_exception(Value(std::string("Symbol.prototype.valueOf called on non-symbol")));
         return Value();
     }
     

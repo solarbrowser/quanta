@@ -39,34 +39,34 @@ std::unique_ptr<Object> Math::create_math_object() {
     math_obj->set_property("SQRT1_2", Value(SQRT1_2));
     math_obj->set_property("SQRT2", Value(SQRT2));
     
-    math_obj->set_property("abs", Value("function abs() { [native code] }"));
-    math_obj->set_property("acos", Value("function acos() { [native code] }"));
-    math_obj->set_property("asin", Value("function asin() { [native code] }"));
-    math_obj->set_property("atan", Value("function atan() { [native code] }"));
-    math_obj->set_property("atan2", Value("function atan2() { [native code] }"));
-    math_obj->set_property("ceil", Value("function ceil() { [native code] }"));
-    math_obj->set_property("cos", Value("function cos() { [native code] }"));
-    math_obj->set_property("exp", Value("function exp() { [native code] }"));
-    math_obj->set_property("floor", Value("function floor() { [native code] }"));
-    math_obj->set_property("log", Value("function log() { [native code] }"));
+    math_obj->set_property("abs", Value(std::string("function abs() { [native code] }")));
+    math_obj->set_property("acos", Value(std::string("function acos() { [native code] }")));
+    math_obj->set_property("asin", Value(std::string("function asin() { [native code] }")));
+    math_obj->set_property("atan", Value(std::string("function atan() { [native code] }")));
+    math_obj->set_property("atan2", Value(std::string("function atan2() { [native code] }")));
+    math_obj->set_property("ceil", Value(std::string("function ceil() { [native code] }")));
+    math_obj->set_property("cos", Value(std::string("function cos() { [native code] }")));
+    math_obj->set_property("exp", Value(std::string("function exp() { [native code] }")));
+    math_obj->set_property("floor", Value(std::string("function floor() { [native code] }")));
+    math_obj->set_property("log", Value(std::string("function log() { [native code] }")));
     auto max_fn = ObjectFactory::create_native_function("max", Math::max);
     math_obj->set_property("max", Value(max_fn.release()));
 
     auto min_fn = ObjectFactory::create_native_function("min", Math::min);
     math_obj->set_property("min", Value(min_fn.release()));
-    math_obj->set_property("pow", Value("function pow() { [native code] }"));
-    math_obj->set_property("random", Value("function random() { [native code] }"));
-    math_obj->set_property("round", Value("function round() { [native code] }"));
-    math_obj->set_property("sin", Value("function sin() { [native code] }"));
-    math_obj->set_property("sqrt", Value("function sqrt() { [native code] }"));
-    math_obj->set_property("tan", Value("function tan() { [native code] }"));
+    math_obj->set_property("pow", Value(std::string("function pow() { [native code] }")));
+    math_obj->set_property("random", Value(std::string("function random() { [native code] }")));
+    math_obj->set_property("round", Value(std::string("function round() { [native code] }")));
+    math_obj->set_property("sin", Value(std::string("function sin() { [native code] }")));
+    math_obj->set_property("sqrt", Value(std::string("function sqrt() { [native code] }")));
+    math_obj->set_property("tan", Value(std::string("function tan() { [native code] }")));
     
-    math_obj->set_property("trunc", Value("function trunc() { [native code] }"));
-    math_obj->set_property("sign", Value("function sign() { [native code] }"));
-    math_obj->set_property("cbrt", Value("function cbrt() { [native code] }"));
-    math_obj->set_property("hypot", Value("function hypot() { [native code] }"));
-    math_obj->set_property("clz32", Value("function clz32() { [native code] }"));
-    math_obj->set_property("imul", Value("function imul() { [native code] }"));
+    math_obj->set_property("trunc", Value(std::string("function trunc() { [native code] }")));
+    math_obj->set_property("sign", Value(std::string("function sign() { [native code] }")));
+    math_obj->set_property("cbrt", Value(std::string("function cbrt() { [native code] }")));
+    math_obj->set_property("hypot", Value(std::string("function hypot() { [native code] }")));
+    math_obj->set_property("clz32", Value(std::string("function clz32() { [native code] }")));
+    math_obj->set_property("imul", Value(std::string("function imul() { [native code] }")));
     
     return math_obj;
 }
