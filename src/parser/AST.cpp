@@ -5212,11 +5212,17 @@ std::unique_ptr<ASTNode> EmptyStatement::clone() const {
 
 
 Value LabeledStatement::evaluate(Context& ctx) {
+    ctx.set_next_statement_label(label_);
     Value result = statement_->evaluate(ctx);
+    ctx.set_next_statement_label("");
 
     if (ctx.has_break() && ctx.get_break_label() == label_) {
         ctx.clear_break_continue();
     }
+    if (ctx.has_continue() && ctx.get_continue_label() == label_) {
+        ctx.clear_break_continue();
+    }
+
     return result;
 }
 
@@ -5627,11 +5633,18 @@ Value ForStatement::evaluate(Context& ctx) {
 
     ctx.push_block_scope();
 
+    std::string this_loop_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+
+    std::string prev_loop_label = ctx.get_current_loop_label();
+    ctx.set_current_loop_label(this_loop_label);
+
     Value result;
     try {
         if (init_) {
             init_->evaluate(ctx);
             if (ctx.has_exception()) {
+                ctx.set_current_loop_label(prev_loop_label);
                 ctx.pop_block_scope();
                 return Value();
             }
@@ -5682,6 +5695,14 @@ Value ForStatement::evaluate(Context& ctx) {
                     ctx.clear_break_continue();
                     goto continue_loop;
                 }
+                // If continue has a label, check if it matches this loop's label
+                if (ctx.get_continue_label() == ctx.get_current_loop_label()) {
+                    // This continue is for THIS loop, consume it and continue
+                    ctx.clear_break_continue();
+                    goto continue_loop;
+                }
+                // If continue has a different label, it's for an outer labeled statement
+                // Exit this loop (break) so the labeled statement can handle it
                 break;
             }
             if (ctx.has_return_value()) {
@@ -5701,11 +5722,13 @@ Value ForStatement::evaluate(Context& ctx) {
     
         result = Value();
     } catch (...) {
+        ctx.set_current_loop_label(prev_loop_label);
         ctx.pop_block_scope();
         loop_depth--;
         throw;
     }
 
+    ctx.set_current_loop_label(prev_loop_label);
     ctx.pop_block_scope();
     loop_depth--;
     return result;
@@ -6169,6 +6192,12 @@ std::unique_ptr<ASTNode> ForOfStatement::clone() const {
 
 
 Value WhileStatement::evaluate(Context& ctx) {
+    std::string this_loop_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+
+    std::string prev_loop_label = ctx.get_current_loop_label();
+    ctx.set_current_loop_label(this_loop_label);
+
     int safety_counter = 0;
     const int max_iterations = 1000000000;
 
@@ -6216,21 +6245,31 @@ Value WhileStatement::evaluate(Context& ctx) {
                         ctx.clear_break_continue();
                         continue;
                     }
-                    break;  // Exit this loop so outer labeled statement can handle
+                    // If continue has a label, check if it matches this loop's label
+                    if (ctx.get_continue_label() == ctx.get_current_loop_label()) {
+                        // This continue is for THIS loop, consume it and continue
+                        ctx.clear_break_continue();
+                        continue;
+                    }
+                    // If continue has a different label, exit this loop so outer labeled statement can handle
+                    break;
                 }
 
                 if (safety_counter % 10 == 0) {
                 }
             } catch (...) {
                 ctx.throw_exception(Value(std::string("Error in while-loop body execution")));
+                ctx.set_current_loop_label(prev_loop_label);
                 return Value();
             }
         }
     } catch (...) {
         ctx.throw_exception(Value(std::string("Fatal error in while-loop execution")));
+        ctx.set_current_loop_label(prev_loop_label);
         return Value();
     }
-    
+
+    ctx.set_current_loop_label(prev_loop_label);
     return Value();
 }
 
