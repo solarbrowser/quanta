@@ -18,6 +18,8 @@
 
 namespace Quanta {
 
+thread_local Context* Object::current_context_ = nullptr;
+
 std::unordered_map<std::tuple<Shape*, std::string, PropertyAttributes>, Shape*, Object::ShapeTransitionHash> Object::shape_transition_cache_;
 std::unordered_map<std::string, std::string> Object::interned_keys_;
 uint32_t Shape::next_shape_id_ = 1;
@@ -309,6 +311,9 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         double length_double = value.to_number();
 
         if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
+            if (current_context_) {
+                current_context_->throw_range_error("Invalid array length");
+            }
             return false;
         }
 

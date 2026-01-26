@@ -50,6 +50,7 @@ public:
         Custom
     };
 
+    static thread_local Context* current_context_;
 
 private:
     struct ObjectHeader {
