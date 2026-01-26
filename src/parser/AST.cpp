@@ -7228,10 +7228,12 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             } else if (prop->key->get_type() == ASTNode::Type::NUMBER_LITERAL) {
                 NumberLiteral* num = static_cast<NumberLiteral*>(prop->key.get());
                 double value = num->get_value();
-                if (value == std::floor(value)) {
+                if (value == std::floor(value) && value >= LLONG_MIN && value <= LLONG_MAX) {
                     key = std::to_string(static_cast<long long>(value));
                 } else {
-                    key = std::to_string(value);
+                    std::ostringstream oss;
+                    oss << value;
+                    key = oss.str();
                 }
             } else {
                 ctx.throw_exception(Value(std::string("Invalid property key in object literal")));
