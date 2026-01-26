@@ -73,6 +73,8 @@ private:
     bool has_continue_;
     std::string break_label_;
     std::string continue_label_;
+    std::string current_loop_label_;  // Track the label of the current loop
+    std::string next_statement_label_;  // Label to be applied to the next statement
 
     bool is_in_constructor_call_;
     
@@ -158,6 +160,12 @@ public:
     void set_break(const std::string& label = "");
     void set_continue(const std::string& label = "");
     void clear_break_continue();
+
+    const std::string& get_current_loop_label() const { return current_loop_label_; }
+    void set_current_loop_label(const std::string& label) { current_loop_label_ = label; }
+
+    const std::string& get_next_statement_label() const { return next_statement_label_; }
+    void set_next_statement_label(const std::string& label) { next_statement_label_ = label; }
 
     bool is_in_constructor_call() const { return is_in_constructor_call_; }
     void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
