@@ -272,7 +272,7 @@ Value Object::get_own_property(const std::string& key) const {
             const PropertyDescriptor& desc = desc_it->second;
             if (desc.is_accessor_descriptor() && desc.has_getter()) {
                 if (key == "cookie") {
-                    return Value("");
+                    return Value(std::string(""));
                 }
                 Object* getter = desc.get_getter();
                 if (getter) {
@@ -1704,7 +1704,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         Object* array = ctx.get_this_binding();
         
         if (!array || !array->is_array()) {
-            ctx.throw_exception(Value("Array method called on non-array"));
+            ctx.throw_exception(Value(std::string("Array method called on non-array")));
             return Value();
         }
         
@@ -1714,7 +1714,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 auto result = array->map(args[0].as_function(), ctx, thisArg);
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
-                ctx.throw_exception(Value("TypeError: Array.map callback must be a function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.map callback must be a function")));
                 return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "filter") {
@@ -1723,7 +1723,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 auto result = array->filter(args[0].as_function(), ctx, thisArg);
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
-                ctx.throw_exception(Value("TypeError: Array.filter callback must be a function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.filter callback must be a function")));
                 return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "reduce") {
@@ -1820,7 +1820,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             if (args.size() > 0 && args[0].is_function()) {
                 return array->groupBy(args[0].as_function(), ctx);
             } else {
-                ctx.throw_exception(Value("GroupBy requires a callback function"));
+                ctx.throw_exception(Value(std::string("GroupBy requires a callback function")));
                 return Value();
             }
         } else if (method_name == "reverse") {
@@ -2118,7 +2118,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
             return Value(result.str());
         }
 
-        ctx.throw_exception(Value("Invalid array method call"));
+        ctx.throw_exception(Value(std::string("Invalid array method call")));
         return Value();
     };
 

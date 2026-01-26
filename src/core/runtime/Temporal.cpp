@@ -100,7 +100,7 @@ Value TemporalNow::instant(Context& ctx, const std::vector<Value>& args) {
     int64_t nanos = getCurrentNanoseconds();
     Object* instant = new Object();
     instant->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
-    instant->set_property("_class", Value("TemporalInstant"));
+    instant->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(instant);
 }
 
@@ -113,8 +113,8 @@ Value TemporalNow::plainDateISO(Context& ctx, const std::vector<Value>& args) {
     date->set_property("_year", Value(tm->tm_year + 1900));
     date->set_property("_month", Value(tm->tm_mon + 1));
     date->set_property("_day", Value(tm->tm_mday));
-    date->set_property("_calendar", Value("iso8601"));
-    date->set_property("_class", Value("TemporalPlainDate"));
+    date->set_property("_calendar", Value(std::string("iso8601")));
+    date->set_property("_class", Value(std::string("TemporalPlainDate")));
     return Value(date);
 }
 
@@ -131,7 +131,7 @@ Value TemporalNow::plainTimeISO(Context& ctx, const std::vector<Value>& args) {
     time->set_property("_millisecond", Value(static_cast<int>(ms.count())));
     time->set_property("_microsecond", Value(0));
     time->set_property("_nanosecond", Value(0));
-    time->set_property("_class", Value("TemporalPlainTime"));
+    time->set_property("_class", Value(std::string("TemporalPlainTime")));
     return Value(time);
 }
 
@@ -151,8 +151,8 @@ Value TemporalNow::plainDateTimeISO(Context& ctx, const std::vector<Value>& args
     dt->set_property("_millisecond", Value(static_cast<int>(ms.count())));
     dt->set_property("_microsecond", Value(0));
     dt->set_property("_nanosecond", Value(0));
-    dt->set_property("_calendar", Value("iso8601"));
-    dt->set_property("_class", Value("TemporalPlainDateTime"));
+    dt->set_property("_calendar", Value(std::string("iso8601")));
+    dt->set_property("_class", Value(std::string("TemporalPlainDateTime")));
     return Value(dt);
 }
 
@@ -166,13 +166,13 @@ Value TemporalNow::zonedDateTimeISO(Context& ctx, const std::vector<Value>& args
     Object* zdt = new Object();
     zdt->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
     zdt->set_property("_timezone", Value(timezone));
-    zdt->set_property("_calendar", Value("iso8601"));
-    zdt->set_property("_class", Value("TemporalZonedDateTime"));
+    zdt->set_property("_calendar", Value(std::string("iso8601")));
+    zdt->set_property("_class", Value(std::string("TemporalZonedDateTime")));
     return Value(zdt);
 }
 
 Value TemporalNow::timeZoneId(Context& ctx, const std::vector<Value>& args) {
-    return Value("UTC");
+    return Value(std::string("UTC"));
 }
 
 
@@ -180,7 +180,7 @@ TemporalInstant::TemporalInstant(int64_t nanoseconds) : nanoseconds_(nanoseconds
 
 Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant requires epochNanoseconds argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant requires epochNanoseconds argument")));
         return Value();
     }
 
@@ -192,13 +192,13 @@ Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args)
     }
 
     instant->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
-    instant->set_property("_class", Value("TemporalInstant"));
+    instant->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(instant);
 }
 
 Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant.from requires an argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.from requires an argument")));
         return Value();
     }
 
@@ -211,7 +211,7 @@ Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
 
 Value TemporalInstant::fromEpochMilliseconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant.fromEpochMilliseconds requires milliseconds argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.fromEpochMilliseconds requires milliseconds argument")));
         return Value();
     }
 
@@ -220,7 +220,7 @@ Value TemporalInstant::fromEpochMilliseconds(Context& ctx, const std::vector<Val
 
     Object* instant = new Object();
     instant->set_property("_nanoseconds", Value(static_cast<double>(nanos)));
-    instant->set_property("_class", Value("TemporalInstant"));
+    instant->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(instant);
 }
 
@@ -230,7 +230,7 @@ Value TemporalInstant::fromEpochNanoseconds(Context& ctx, const std::vector<Valu
 
 Value TemporalInstant::compare(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant.compare requires two arguments"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.compare requires two arguments")));
         return Value();
     }
 
@@ -310,7 +310,7 @@ Value TemporalInstant::toLocaleString(Context& ctx, const std::vector<Value>& ar
 }
 
 Value TemporalInstant::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.Instant does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant does not have a valueOf method")));
     return Value();
 }
 
@@ -319,7 +319,7 @@ Value TemporalInstant::add(Context& ctx, const std::vector<Value>& args) {
     if (!obj) return Value();
 
     if (args.size() < 2 || !args[1].is_object()) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant.add requires a duration argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.add requires a duration argument")));
         return Value();
     }
 
@@ -336,7 +336,7 @@ Value TemporalInstant::add(Context& ctx, const std::vector<Value>& args) {
 
     Object* result = new Object();
     result->set_property("_nanoseconds", Value(nanos));
-    result->set_property("_class", Value("TemporalInstant"));
+    result->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(result);
 }
 
@@ -345,7 +345,7 @@ Value TemporalInstant::subtract(Context& ctx, const std::vector<Value>& args) {
     if (!obj) return Value();
 
     if (args.size() < 2 || !args[1].is_object()) {
-        ctx.throw_exception(Value("TypeError: Temporal.Instant.subtract requires a duration argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.subtract requires a duration argument")));
         return Value();
     }
 
@@ -362,7 +362,7 @@ Value TemporalInstant::subtract(Context& ctx, const std::vector<Value>& args) {
 
     Object* result = new Object();
     result->set_property("_nanoseconds", Value(nanos));
-    result->set_property("_class", Value("TemporalInstant"));
+    result->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(result);
 }
 
@@ -381,7 +381,7 @@ Value TemporalInstant::until(Context& ctx, const std::vector<Value>& args) {
 
     Object* duration = new Object();
     duration->set_property("_nanoseconds", Value(diff));
-    duration->set_property("_class", Value("TemporalDuration"));
+    duration->set_property("_class", Value(std::string("TemporalDuration")));
     return Value(duration);
 }
 
@@ -400,7 +400,7 @@ Value TemporalInstant::since(Context& ctx, const std::vector<Value>& args) {
 
     Object* duration = new Object();
     duration->set_property("_nanoseconds", Value(diff));
-    duration->set_property("_class", Value("TemporalDuration"));
+    duration->set_property("_class", Value(std::string("TemporalDuration")));
     return Value(duration);
 }
 
@@ -413,7 +413,7 @@ Value TemporalInstant::round(Context& ctx, const std::vector<Value>& args) {
 
     Object* result = new Object();
     result->set_property("_nanoseconds", Value(nanos));
-    result->set_property("_class", Value("TemporalInstant"));
+    result->set_property("_class", Value(std::string("TemporalInstant")));
     return Value(result);
 }
 
@@ -438,7 +438,7 @@ TemporalPlainDate::TemporalPlainDate(int year, int month, int day, const std::st
 
 Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 3) {
-        ctx.throw_exception(Value("TypeError: Temporal.PlainDate requires year, month, and day arguments"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate requires year, month, and day arguments")));
         return Value();
     }
 
@@ -457,13 +457,13 @@ Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& arg
     date->set_property("_month", Value(month));
     date->set_property("_day", Value(day));
     date->set_property("_calendar", Value(calendar));
-    date->set_property("_class", Value("TemporalPlainDate"));
+    date->set_property("_class", Value(std::string("TemporalPlainDate")));
     return Value(date);
 }
 
 Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("TypeError: Temporal.PlainDate.from requires an argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate.from requires an argument")));
         return Value();
     }
 
@@ -482,7 +482,7 @@ Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
 
 Value TemporalPlainDate::compare(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value("TypeError: Temporal.PlainDate.compare requires two arguments"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate.compare requires two arguments")));
         return Value();
     }
 
@@ -623,7 +623,7 @@ Value TemporalPlainDate::toLocaleString(Context& ctx, const std::vector<Value>& 
 }
 
 Value TemporalPlainDate::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.PlainDate does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate does not have a valueOf method")));
     return Value();
 }
 
@@ -726,7 +726,7 @@ Value TemporalPlainDate::until(Context& ctx, const std::vector<Value>& args) {
     duration->set_property("_years", Value(y2 - y1));
     duration->set_property("_months", Value(m2 - m1));
     duration->set_property("_days", Value(d2 - d1));
-    duration->set_property("_class", Value("TemporalDuration"));
+    duration->set_property("_class", Value(std::string("TemporalDuration")));
     return Value(duration);
 }
 
@@ -751,7 +751,7 @@ Value TemporalPlainDate::since(Context& ctx, const std::vector<Value>& args) {
     duration->set_property("_years", Value(y1 - y2));
     duration->set_property("_months", Value(m1 - m2));
     duration->set_property("_days", Value(d1 - d2));
-    duration->set_property("_class", Value("TemporalDuration"));
+    duration->set_property("_class", Value(std::string("TemporalDuration")));
     return Value(duration);
 }
 
@@ -796,13 +796,13 @@ Value TemporalPlainTime::constructor(Context& ctx, const std::vector<Value>& arg
     time->set_property("_millisecond", Value(millisecond));
     time->set_property("_microsecond", Value(microsecond));
     time->set_property("_nanosecond", Value(nanosecond));
-    time->set_property("_class", Value("TemporalPlainTime"));
+    time->set_property("_class", Value(std::string("TemporalPlainTime")));
     return Value(time);
 }
 
 Value TemporalPlainTime::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value("TypeError: Temporal.PlainTime.from requires an argument"));
+        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainTime.from requires an argument")));
         return Value();
     }
 
@@ -897,7 +897,7 @@ Value TemporalPlainTime::toLocaleString(Context& ctx, const std::vector<Value>& 
 }
 
 Value TemporalPlainTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.PlainTime does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainTime does not have a valueOf method")));
     return Value();
 }
 
@@ -1013,8 +1013,8 @@ Value TemporalPlainDateTime::constructor(Context& ctx, const std::vector<Value>&
     dt->set_property("_millisecond", Value(0));
     dt->set_property("_microsecond", Value(0));
     dt->set_property("_nanosecond", Value(0));
-    dt->set_property("_calendar", Value("iso8601"));
-    dt->set_property("_class", Value("TemporalPlainDateTime"));
+    dt->set_property("_calendar", Value(std::string("iso8601")));
+    dt->set_property("_class", Value(std::string("TemporalPlainDateTime")));
     return Value(dt);
 }
 
@@ -1072,7 +1072,7 @@ TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toLocaleString)
 
 Value TemporalPlainDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.PlainDateTime does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDateTime does not have a valueOf method")));
     return Value();
 }
 
@@ -1111,7 +1111,7 @@ Value TemporalDuration::constructor(Context& ctx, const std::vector<Value>& args
     duration->set_property("_milliseconds", args.size() > 7 ? args[7] : Value(0));
     duration->set_property("_microseconds", args.size() > 8 ? args[8] : Value(0));
     duration->set_property("_nanoseconds", args.size() > 9 ? args[9] : Value(0));
-    duration->set_property("_class", Value("TemporalDuration"));
+    duration->set_property("_class", Value(std::string("TemporalDuration")));
     return Value(duration);
 }
 
@@ -1195,7 +1195,7 @@ TEMPORAL_STUB_METHOD(TemporalDuration, toJSON)
 TEMPORAL_STUB_METHOD(TemporalDuration, toLocaleString)
 
 Value TemporalDuration::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.Duration does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.Duration does not have a valueOf method")));
     return Value();
 }
 
@@ -1207,9 +1207,9 @@ Value TemporalZonedDateTime::constructor(Context& ctx, const std::vector<Value>&
     }
 
     zdt->set_property("_nanoseconds", args.size() > 0 ? args[0] : Value(0));
-    zdt->set_property("_timezone", args.size() > 1 ? args[1] : Value("UTC"));
-    zdt->set_property("_calendar", Value("iso8601"));
-    zdt->set_property("_class", Value("TemporalZonedDateTime"));
+    zdt->set_property("_timezone", args.size() > 1 ? args[1] : Value(std::string("UTC")));
+    zdt->set_property("_calendar", Value(std::string("iso8601")));
+    zdt->set_property("_class", Value(std::string("TemporalZonedDateTime")));
     return Value(zdt);
 }
 
@@ -1236,7 +1236,7 @@ TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toLocaleString)
 
 Value TemporalZonedDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value("TypeError: Temporal.ZonedDateTime does not have a valueOf method"));
+    ctx.throw_exception(Value(std::string("TypeError: Temporal.ZonedDateTime does not have a valueOf method")));
     return Value();
 }
 
@@ -1253,8 +1253,8 @@ Value TemporalPlainYearMonth::constructor(Context& ctx, const std::vector<Value>
 
     ym->set_property("_year", args.size() > 0 ? args[0] : Value(1970));
     ym->set_property("_month", args.size() > 1 ? args[1] : Value(1));
-    ym->set_property("_calendar", Value("iso8601"));
-    ym->set_property("_class", Value("TemporalPlainYearMonth"));
+    ym->set_property("_calendar", Value(std::string("iso8601")));
+    ym->set_property("_class", Value(std::string("TemporalPlainYearMonth")));
     return Value(ym);
 }
 
@@ -1288,8 +1288,8 @@ Value TemporalPlainMonthDay::constructor(Context& ctx, const std::vector<Value>&
 
     md->set_property("_month", args.size() > 0 ? args[0] : Value(1));
     md->set_property("_day", args.size() > 1 ? args[1] : Value(1));
-    md->set_property("_calendar", Value("iso8601"));
-    md->set_property("_class", Value("TemporalPlainMonthDay"));
+    md->set_property("_calendar", Value(std::string("iso8601")));
+    md->set_property("_class", Value(std::string("TemporalPlainMonthDay")));
     return Value(md);
 }
 
@@ -1313,8 +1313,8 @@ Value TemporalCalendar::constructor(Context& ctx, const std::vector<Value>& args
         cal->set_prototype(g_calendar_prototype);
     }
 
-    cal->set_property("_id", args.size() > 0 ? args[0] : Value("iso8601"));
-    cal->set_property("_class", Value("TemporalCalendar"));
+    cal->set_property("_id", args.size() > 0 ? args[0] : Value(std::string("iso8601")));
+    cal->set_property("_class", Value(std::string("TemporalCalendar")));
     return Value(cal);
 }
 
@@ -1333,8 +1333,8 @@ Value TemporalTimeZone::constructor(Context& ctx, const std::vector<Value>& args
         tz->set_prototype(g_timeZone_prototype);
     }
 
-    tz->set_property("_id", args.size() > 0 ? args[0] : Value("UTC"));
-    tz->set_property("_class", Value("TemporalTimeZone"));
+    tz->set_property("_id", args.size() > 0 ? args[0] : Value(std::string("UTC")));
+    tz->set_property("_class", Value(std::string("TemporalTimeZone")));
     return Value(tz);
 }
 

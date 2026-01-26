@@ -89,7 +89,7 @@ bool Context::has_binding(const std::string& name) const {
 
 Value Context::get_binding(const std::string& name) const {
     if (!check_execution_depth()) {
-        const_cast<Context*>(this)->throw_exception(Value("execution depth exceeded"));
+        const_cast<Context*>(this)->throw_exception(Value(std::string("execution depth exceeded")));
         return Value();
     }
     
@@ -143,7 +143,7 @@ bool Context::delete_binding(const std::string& name) {
 
 void Context::push_frame(std::unique_ptr<StackFrame> frame) {
     if (is_stack_overflow()) {
-        throw_exception(Value("RangeError: call stack size exceeded"));
+        throw_exception(Value(std::string("RangeError: call stack size exceeded")));
         return;
     }
     call_stack_.push_back(std::move(frame));
@@ -463,21 +463,21 @@ void Context::initialize_built_ins() {
     auto keys_fn = ObjectFactory::create_native_function("keys", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value("TypeError: Object.keys requires at least 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.keys requires at least 1 argument")));
                 return Value();
             }
             
             if (args[0].is_null()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             if (args[0].is_undefined()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.keys called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.keys called on non-object")));
                 return Value();
             }
             
@@ -500,21 +500,21 @@ void Context::initialize_built_ins() {
     auto values_fn = ObjectFactory::create_native_function("values", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value("TypeError: Object.values requires at least 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.values requires at least 1 argument")));
                 return Value();
             }
             
             if (args[0].is_null()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             if (args[0].is_undefined()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.values called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.values called on non-object")));
                 return Value();
             }
             
@@ -534,21 +534,21 @@ void Context::initialize_built_ins() {
     auto entries_fn = ObjectFactory::create_native_function("entries", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value("TypeError: Object.entries requires at least 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.entries requires at least 1 argument")));
                 return Value();
             }
             
             if (args[0].is_null()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             if (args[0].is_undefined()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
             
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.entries called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.entries called on non-object")));
                 return Value();
             }
             
@@ -586,18 +586,18 @@ void Context::initialize_built_ins() {
     auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value("TypeError: Object.fromEntries requires at least 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries requires at least 1 argument")));
                 return Value();
             }
             
             if (!args[0].is_object()) {
-                ctx.throw_exception(Value("TypeError: Object.fromEntries called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries called on non-object")));
                 return Value();
             }
             
             Object* iterable = args[0].as_object();
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value("TypeError: Object.fromEntries expects an array"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries expects an array")));
                 return Value();
             }
             
@@ -632,7 +632,7 @@ void Context::initialize_built_ins() {
             if (args[0].is_null()) {
                 auto new_obj = ObjectFactory::create_object();
                 if (!new_obj) {
-                    ctx.throw_exception(Value("Error: Failed to create object"));
+                    ctx.throw_exception(Value(std::string("Error: Failed to create object")));
                     return Value();
                 }
                 new_obj->set_prototype(nullptr);  // Set prototype to null
@@ -642,7 +642,7 @@ void Context::initialize_built_ins() {
                 Object* prototype = args[0].as_object();
                 auto new_obj = ObjectFactory::create_object(prototype);
                 if (!new_obj) {
-                    ctx.throw_exception(Value("Error: Failed to create object with prototype"));
+                    ctx.throw_exception(Value(std::string("Error: Failed to create object with prototype")));
                     return Value();
                 }
                 // Set __proto__ as non-enumerable to prevent it from appearing in Object.keys()
@@ -720,14 +720,14 @@ void Context::initialize_built_ins() {
     auto assign_fn = ObjectFactory::create_native_function("assign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Object.assign requires at least one argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.assign requires at least one argument")));
                 return Value();
             }
             
             Value target = args[0];
             if (!target.is_object()) {
                 if (target.is_null() || target.is_undefined()) {
-                    ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                     return Value();
                 }
                 auto obj = ObjectFactory::create_object();
@@ -764,14 +764,14 @@ void Context::initialize_built_ins() {
     auto getPrototypeOf_fn = ObjectFactory::create_native_function("getPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Object.getPrototypeOf requires an argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.getPrototypeOf requires an argument")));
                 return Value();
             }
 
             Value obj_val = args[0];
             
             if (obj_val.is_null() || obj_val.is_undefined()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
 
@@ -822,7 +822,7 @@ void Context::initialize_built_ins() {
     auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value("TypeError: Object.setPrototypeOf requires 2 arguments"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.setPrototypeOf requires 2 arguments")));
                 return Value();
             }
 
@@ -830,7 +830,7 @@ void Context::initialize_built_ins() {
             Value proto_val = args[1];
 
             if (obj_val.is_null() || obj_val.is_undefined()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert undefined or null to object"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
                 return Value();
             }
 
@@ -840,7 +840,7 @@ void Context::initialize_built_ins() {
             } else if (obj_val.is_function()) {
                 obj = obj_val.as_function();
             } else {
-                ctx.throw_exception(Value("TypeError: Object.setPrototypeOf called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.setPrototypeOf called on non-object")));
                 return Value();
             }
 
@@ -851,7 +851,7 @@ void Context::initialize_built_ins() {
             } else if (proto_val.is_function()) {
                 obj->set_prototype(proto_val.as_function());
             } else {
-                ctx.throw_exception(Value("TypeError: Object prototype may only be an Object or null"));
+                ctx.throw_exception(Value(std::string("TypeError: Object prototype may only be an Object or null")));
                 return Value();
             }
 
@@ -862,7 +862,7 @@ void Context::initialize_built_ins() {
     auto hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value("TypeError: Object.hasOwnProperty requires 2 arguments"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.hasOwnProperty requires 2 arguments")));
                 return Value(false);
             }
 
@@ -880,7 +880,7 @@ void Context::initialize_built_ins() {
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value("TypeError: Object.getOwnPropertyDescriptor requires 2 arguments"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyDescriptor requires 2 arguments")));
                 return Value();
             }
 
@@ -1025,7 +1025,7 @@ void Context::initialize_built_ins() {
     auto getOwnPropertyNames_fn = ObjectFactory::create_native_function("getOwnPropertyNames",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Object.getOwnPropertyNames requires 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyNames requires 1 argument")));
                 return Value();
             }
 
@@ -1125,7 +1125,7 @@ void Context::initialize_built_ins() {
     auto getOwnPropertyDescriptors_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptors",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Object.getOwnPropertyDescriptors requires 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyDescriptors requires 1 argument")));
                 return Value();
             }
 
@@ -1323,10 +1323,10 @@ void Context::initialize_built_ins() {
 
 
             if (this_val.is_undefined()) {
-                return Value("[object Undefined]");
+                return Value(std::string("[object Undefined]"));
             }
             if (this_val.is_null()) {
-                return Value("[object Null]");
+                return Value(std::string("[object Null]"));
             }
 
             std::string builtinTag;
@@ -1366,7 +1366,7 @@ void Context::initialize_built_ins() {
             return Value("[object " + builtinTag + "]");
         });
 
-    PropertyDescriptor toString_name_desc(Value("toString"), PropertyAttributes::None);
+    PropertyDescriptor toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
     toString_name_desc.set_configurable(true);
     toString_name_desc.set_enumerable(false);
     toString_name_desc.set_writable(false);
@@ -1383,7 +1383,7 @@ void Context::initialize_built_ins() {
 
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: hasOwnProperty called on null or undefined"));
+                ctx.throw_exception(Value(std::string("TypeError: hasOwnProperty called on null or undefined")));
                 return Value(false);
             }
 
@@ -1391,7 +1391,7 @@ void Context::initialize_built_ins() {
             return Value(this_obj->has_own_property(prop_name));
         }, 1);
 
-    PropertyDescriptor hasOwnProperty_name_desc(Value("hasOwnProperty"), PropertyAttributes::None);
+    PropertyDescriptor hasOwnProperty_name_desc(Value(std::string("hasOwnProperty")), PropertyAttributes::None);
     hasOwnProperty_name_desc.set_configurable(true);
     hasOwnProperty_name_desc.set_enumerable(false);
     hasOwnProperty_name_desc.set_writable(false);
@@ -1424,7 +1424,7 @@ void Context::initialize_built_ins() {
             return Value(false);
         });
 
-    PropertyDescriptor isPrototypeOf_name_desc(Value("isPrototypeOf"), PropertyAttributes::None);
+    PropertyDescriptor isPrototypeOf_name_desc(Value(std::string("isPrototypeOf")), PropertyAttributes::None);
     isPrototypeOf_name_desc.set_configurable(true);
     isPrototypeOf_name_desc.set_enumerable(false);
     isPrototypeOf_name_desc.set_writable(false);
@@ -1443,7 +1443,7 @@ void Context::initialize_built_ins() {
 
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: propertyIsEnumerable called on null or undefined"));
+                ctx.throw_exception(Value(std::string("TypeError: propertyIsEnumerable called on null or undefined")));
                 return Value(false);
             }
 
@@ -1459,7 +1459,7 @@ void Context::initialize_built_ins() {
             return Value(desc.is_enumerable());
         }, 1);
 
-    PropertyDescriptor propertyIsEnumerable_name_desc(Value("propertyIsEnumerable"), PropertyAttributes::None);
+    PropertyDescriptor propertyIsEnumerable_name_desc(Value(std::string("propertyIsEnumerable")), PropertyAttributes::None);
     propertyIsEnumerable_name_desc.set_configurable(true);
     propertyIsEnumerable_name_desc.set_enumerable(false);
     propertyIsEnumerable_name_desc.set_writable(false);
@@ -1698,7 +1698,7 @@ void Context::initialize_built_ins() {
     find_length_desc.set_writable(false);
     find_fn->set_property_descriptor("length", find_length_desc);
 
-    find_fn->set_property("name", Value("find"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    find_fn->set_property("name", Value(std::string("find")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor find_desc(Value(find_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1708,18 +1708,18 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLast called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast called on non-object")));
                 return Value();
             }
 
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLast requires a callback function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast requires a callback function")));
                 return Value();
             }
 
             Value callback = args[0];
             if (!callback.is_function()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLast callback must be a function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast callback must be a function")));
                 return Value();
             }
 
@@ -1739,7 +1739,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 1);
 
-    findLast_fn->set_property("name", Value("findLast"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    findLast_fn->set_property("name", Value(std::string("findLast")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor findLast_desc(Value(findLast_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("findLast", findLast_desc);
@@ -1748,18 +1748,18 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLastIndex called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex called on non-object")));
                 return Value();
             }
 
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLastIndex requires a callback function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex requires a callback function")));
                 return Value();
             }
 
             Value callback = args[0];
             if (!callback.is_function()) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.findLastIndex callback must be a function"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex callback must be a function")));
                 return Value();
             }
 
@@ -1779,7 +1779,7 @@ void Context::initialize_built_ins() {
             return Value(-1.0);
         }, 1);
 
-    findLastIndex_fn->set_property("name", Value("findLastIndex"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    findLastIndex_fn->set_property("name", Value(std::string("findLastIndex")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor findLastIndex_desc(Value(findLastIndex_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("findLastIndex", findLastIndex_desc);
@@ -1788,7 +1788,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.with called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.with called on non-object")));
                 return Value();
             }
 
@@ -1826,7 +1826,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 2);
 
-    with_fn->set_property("name", Value("with"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    with_fn->set_property("name", Value(std::string("with")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor with_desc(Value(with_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("with", with_desc);
@@ -1835,7 +1835,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.at called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.at called on non-object")));
                 return Value();
             }
 
@@ -1857,7 +1857,7 @@ void Context::initialize_built_ins() {
             return this_obj->get_element(static_cast<uint32_t>(index));
         }, 1);
 
-    at_fn->set_property("name", Value("at"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    at_fn->set_property("name", Value(std::string("at")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor at_desc(Value(at_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("at", at_desc);
@@ -1867,7 +1867,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.includes called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.includes called on non-object")));
                 return Value();
             }
 
@@ -1879,7 +1879,7 @@ void Context::initialize_built_ins() {
             int64_t from_index = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                     return Value();
                 }
                 from_index = static_cast<int64_t>(args[1].to_number());
@@ -1913,7 +1913,7 @@ void Context::initialize_built_ins() {
         }, 1);
 
 
-    includes_fn->set_property("name", Value("includes"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    includes_fn->set_property("name", Value(std::string("includes")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor array_includes_desc(Value(includes_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1963,7 +1963,7 @@ void Context::initialize_built_ins() {
     PropertyDescriptor flat_length_desc(Value(0.0), PropertyAttributes::Configurable);
     flat_fn->set_property_descriptor("length", flat_length_desc);
 
-    flat_fn->set_property("name", Value("flat"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    flat_fn->set_property("name", Value(std::string("flat")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor flat_desc(Value(flat_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -2008,7 +2008,7 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
 
-    flatMap_fn->set_property("name", Value("flatMap"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    flatMap_fn->set_property("name", Value(std::string("flatMap")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     PropertyDescriptor flatMap_desc(Value(flatMap_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("flatMap", flatMap_desc);
@@ -2028,7 +2028,7 @@ void Context::initialize_built_ins() {
     PropertyDescriptor fill_length_desc(Value(1.0), PropertyAttributes::Configurable);
     fill_fn->set_property_descriptor("length", fill_length_desc);
 
-    fill_fn->set_property("name", Value("fill"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    fill_fn->set_property("name", Value(std::string("fill")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     PropertyDescriptor fill_desc(Value(fill_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -2081,7 +2081,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.toString called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.toString called on non-object")));
                 return Value();
             }
 
@@ -2101,7 +2101,7 @@ void Context::initialize_built_ins() {
 
                 return Value(result.str());
             } else {
-                return Value("[object Object]");
+                return Value(std::string("[object Object]"));
             }
         });
     PropertyDescriptor array_toString_desc(Value(array_toString_fn.release()),
@@ -2112,7 +2112,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.push called on non-object"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.push called on non-object")));
                 return Value();
             }
 
@@ -2319,7 +2319,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) return Value("");
+            if (!this_obj) return Value(std::string(""));
 
             uint32_t length = this_obj->get_length();
             std::string result;
@@ -2435,7 +2435,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_array = ctx.get_this_binding();
             if (!this_array) {
-                ctx.throw_exception(Value("TypeError: Array.prototype.concat called on null or undefined"));
+                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.concat called on null or undefined")));
                 return Value();
             }
 
@@ -2758,7 +2758,7 @@ void Context::initialize_built_ins() {
     auto join_fn = ObjectFactory::create_native_function("join",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) return Value("");
+            if (!this_obj) return Value(std::string(""));
 
             std::string separator = args.empty() ? "," : args[0].to_string();
             std::string result = "";
@@ -3123,7 +3123,7 @@ void Context::initialize_built_ins() {
     call_length_desc.set_writable(false);
     call_fn->set_property_descriptor("length", call_length_desc);
 
-    call_fn->set_property("name", Value("call"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    call_fn->set_property("name", Value(std::string("call")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("call", Value(call_fn.release()), PropertyAttributes::BuiltinFunction);
     
@@ -3163,7 +3163,7 @@ void Context::initialize_built_ins() {
     apply_length_desc.set_writable(false);
     apply_fn->set_property_descriptor("length", apply_length_desc);
 
-    apply_fn->set_property("name", Value("apply"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    apply_fn->set_property("name", Value(std::string("apply")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -3212,7 +3212,7 @@ void Context::initialize_built_ins() {
     bind_length_desc.set_writable(false);
     bind_fn->set_property_descriptor("length", bind_length_desc);
 
-    bind_fn->set_property("name", Value("bind"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    bind_fn->set_property("name", Value(std::string("bind")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("bind", Value(bind_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -3241,11 +3241,11 @@ void Context::initialize_built_ins() {
     function_toString_length_desc.set_writable(false);
     function_toString_fn->set_property_descriptor("length", function_toString_length_desc);
 
-    function_toString_fn->set_property("name", Value("toString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    function_toString_fn->set_property("name", Value(std::string("toString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     function_prototype->set_property("toString", Value(function_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    function_prototype->set_property("name", Value(""), PropertyAttributes::Configurable);
+    function_prototype->set_property("name", Value(std::string("")), PropertyAttributes::Configurable);
 
     // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods
     Object* object_proto = ObjectFactory::get_object_prototype();
@@ -3278,7 +3278,7 @@ void Context::initialize_built_ins() {
                         if (this_binding && this_binding->has_property("value")) {
                             return this_binding->get_property("value");
                         }
-                        return Value("");
+                        return Value(std::string(""));
                     });
                 this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
             }
@@ -3356,7 +3356,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(false);
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                 return Value();
             }
 
@@ -3364,7 +3364,7 @@ void Context::initialize_built_ins() {
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                     return Value();
                 }
                 position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -3393,7 +3393,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(false);
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                 return Value();
             }
 
@@ -3401,7 +3401,7 @@ void Context::initialize_built_ins() {
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                     return Value();
                 }
                 position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -3429,7 +3429,7 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(false);
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                 return Value();
             }
 
@@ -3521,7 +3521,7 @@ void Context::initialize_built_ins() {
                 Value this_value = ctx.get_binding("this");
                 str = this_value.to_string();
             } catch (...) {
-                return Value("");
+                return Value(std::string(""));
             }
 
             if (args.size() < 2) return Value(str);
@@ -3617,7 +3617,7 @@ void Context::initialize_built_ins() {
             std::string str = this_value.to_string();
 
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
-            if (start == std::string::npos) return Value("");
+            if (start == std::string::npos) return Value(std::string(""));
 
             size_t end = str.find_last_not_of(" \t\n\r\f\v");
             return Value(str.substr(start, end - start + 1));
@@ -3633,7 +3633,7 @@ void Context::initialize_built_ins() {
             std::string str = this_value.to_string();
 
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
-            if (start == std::string::npos) return Value("");
+            if (start == std::string::npos) return Value(std::string(""));
 
             return Value(str.substr(start));
         }, 0);
@@ -3649,7 +3649,7 @@ void Context::initialize_built_ins() {
             std::string str = this_value.to_string();
 
             size_t end = str.find_last_not_of(" \t\n\r\f\v");
-            if (end == std::string::npos) return Value("");
+            if (end == std::string::npos) return Value(std::string(""));
 
             return Value(str.substr(0, end + 1));
         }, 0);
@@ -3733,7 +3733,7 @@ void Context::initialize_built_ins() {
             }
 
             if (index >= str.length()) {
-                return Value("");
+                return Value(std::string(""));
             }
 
             return Value(std::string(1, str[index]));
@@ -4116,7 +4116,7 @@ void Context::initialize_built_ins() {
             int64_t intEnd = std::min(intStart + intLength, size);
 
             if (intEnd <= intStart) {
-                return Value("");
+                return Value(std::string(""));
             }
 
             return Value(str.substr(static_cast<size_t>(intStart), static_cast<size_t>(intEnd - intStart)));
@@ -4149,7 +4149,7 @@ void Context::initialize_built_ins() {
                 Value this_value = ctx.get_binding("this");
                 str = this_value.to_string();
             } catch (...) {
-                return Value("");
+                return Value(std::string(""));
             }
             return Value(str);
         }, 0);
@@ -4164,17 +4164,17 @@ void Context::initialize_built_ins() {
                 Value this_value = ctx.get_binding("this");
                 str = this_value.to_string();
             } catch (...) {
-                return Value("");
+                return Value(std::string(""));
             }
 
-            if (args.empty()) return Value("");
+            if (args.empty()) return Value(std::string(""));
 
             int count = static_cast<int>(args[0].to_number());
             if (count < 0 || std::isinf(args[0].to_number())) {
                 throw std::runtime_error("RangeError: Invalid count value");
             }
 
-            if (count == 0) return Value("");
+            if (count == 0) return Value(std::string(""));
 
             std::string result;
             result.reserve(str.length() * count);
@@ -4194,7 +4194,7 @@ void Context::initialize_built_ins() {
     auto string_raw_fn = ObjectFactory::create_native_function("raw",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("TypeError: String.raw requires at least 1 argument"));
+                ctx.throw_exception(Value(std::string("TypeError: String.raw requires at least 1 argument")));
                 return Value();
             }
 
@@ -4209,7 +4209,7 @@ void Context::initialize_built_ins() {
                 }
             }
 
-            return Value("");
+            return Value(std::string(""));
         }, 1);
 
     string_constructor->set_property("raw", Value(string_raw_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -4241,7 +4241,7 @@ void Context::initialize_built_ins() {
             for (const auto& arg : args) {
                 double num = arg.to_number();
                 if (num < 0 || num > 0x10FFFF || num != std::floor(num)) {
-                    ctx.throw_exception(Value("RangeError: Invalid code point"));
+                    ctx.throw_exception(Value(std::string("RangeError: Invalid code point")));
                     return Value();
                 }
                 uint32_t code = static_cast<uint32_t>(num);
@@ -4280,14 +4280,14 @@ void Context::initialize_built_ins() {
                     std::string str = this_value.to_string();
                     if (args.empty()) return Value(false);
                     if (args[0].is_symbol()) {
-                        ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a string"));
+                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                         return Value();
                     }
                     std::string search_string = args[0].to_string();
                     size_t position = 0;
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
-                            ctx.throw_exception(Value("TypeError: Cannot convert a Symbol value to a number"));
+                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
                             return Value();
                         }
                         position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -4314,7 +4314,7 @@ void Context::initialize_built_ins() {
                         try {
                             this_val = ctx.get_binding("this");
                         } catch (...) {
-                            ctx.throw_exception(Value("TypeError: String.prototype.valueOf called on non-object"));
+                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.valueOf called on non-object")));
                             return Value();
                         }
                     }
@@ -4339,7 +4339,7 @@ void Context::initialize_built_ins() {
             string_valueOf_length_desc.set_writable(false);
             string_valueOf_fn->set_property_descriptor("length", string_valueOf_length_desc);
 
-            PropertyDescriptor string_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+            PropertyDescriptor string_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
             string_valueOf_name_desc.set_configurable(true);
             string_valueOf_name_desc.set_enumerable(false);
             string_valueOf_name_desc.set_writable(false);
@@ -4357,7 +4357,7 @@ void Context::initialize_built_ins() {
                         try {
                             this_val = ctx.get_binding("this");
                         } catch (...) {
-                            ctx.throw_exception(Value("TypeError: String.prototype.toString called on non-object"));
+                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.toString called on non-object")));
                             return Value();
                         }
                     }
@@ -4382,7 +4382,7 @@ void Context::initialize_built_ins() {
             string_toString_length_desc.set_writable(false);
             string_toString_fn->set_property_descriptor("length", string_toString_length_desc);
 
-            PropertyDescriptor string_toString_name_desc(Value("toString"), PropertyAttributes::None);
+            PropertyDescriptor string_toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
             string_toString_name_desc.set_configurable(true);
             string_toString_name_desc.set_enumerable(false);
             string_toString_name_desc.set_writable(false);
@@ -4448,7 +4448,7 @@ void Context::initialize_built_ins() {
     auto bigint_constructor = ObjectFactory::create_native_constructor("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value("BigInt constructor requires an argument"));
+                ctx.throw_exception(Value(std::string("BigInt constructor requires an argument")));
                 return Value();
             }
             
@@ -4456,7 +4456,7 @@ void Context::initialize_built_ins() {
                 if (args[0].is_number()) {
                     double num = args[0].as_number();
                     if (std::floor(num) != num) {
-                        ctx.throw_exception(Value("Cannot convert non-integer Number to BigInt"));
+                        ctx.throw_exception(Value(std::string("Cannot convert non-integer Number to BigInt")));
                         return Value();
                     }
                     auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(num));
@@ -4465,7 +4465,7 @@ void Context::initialize_built_ins() {
                     auto bigint = std::make_unique<BigInt>(args[0].to_string());
                     return Value(bigint.release());
                 } else {
-                    ctx.throw_exception(Value("Cannot convert value to BigInt"));
+                    ctx.throw_exception(Value(std::string("Cannot convert value to BigInt")));
                     return Value();
                 }
             } catch (const std::exception& e) {
@@ -4694,15 +4694,15 @@ void Context::initialize_built_ins() {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
-                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.valueOf called on non-number")));
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value("TypeError: Number.prototype.valueOf called on non-number"));
+                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.valueOf called on non-number")));
                 return Value();
             }
         }, 0);
 
-    PropertyDescriptor number_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+    PropertyDescriptor number_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
     number_valueOf_name_desc.set_configurable(true);
     number_valueOf_name_desc.set_enumerable(false);
     number_valueOf_name_desc.set_writable(false);
@@ -4727,11 +4727,11 @@ void Context::initialize_built_ins() {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
                         num = primitive.as_number();
                     } else {
-                        ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                        ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
                         return Value();
                     }
                 } else {
-                    ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                    ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
                     return Value();
                 }
 
@@ -4739,7 +4739,7 @@ void Context::initialize_built_ins() {
                 if (!args.empty()) {
                     radix = static_cast<int>(args[0].to_number());
                     if (radix < 2 || radix > 36) {
-                        ctx.throw_exception(Value("RangeError: radix must be between 2 and 36"));
+                        ctx.throw_exception(Value(std::string("RangeError: radix must be between 2 and 36")));
                         return Value();
                     }
                 }
@@ -4748,7 +4748,7 @@ void Context::initialize_built_ins() {
                     return Value(std::to_string(num));
                 }
 
-                if (std::isnan(num)) return Value("NaN");
+                if (std::isnan(num)) return Value(std::string("NaN"));
                 if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
 
                 bool negative = num < 0;
@@ -4769,12 +4769,12 @@ void Context::initialize_built_ins() {
                 if (negative) result = "-" + result;
                 return Value(result);
             } catch (...) {
-                ctx.throw_exception(Value("TypeError: Number.prototype.toString called on non-number"));
+                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
                 return Value();
             }
         }, 1);
 
-    PropertyDescriptor number_toString_name_desc(Value("toString"), PropertyAttributes::None);
+    PropertyDescriptor number_toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
     number_toString_name_desc.set_configurable(true);
     number_toString_name_desc.set_enumerable(false);
     number_toString_name_desc.set_writable(false);
@@ -4801,7 +4801,7 @@ void Context::initialize_built_ins() {
             if (!args.empty() && !args[0].is_undefined()) {
                 precision = static_cast<int>(args[0].to_number());
                 if (precision < 0 || precision > 100) {
-                    ctx.throw_exception(Value("RangeError: toExponential() precision out of range"));
+                    ctx.throw_exception(Value(std::string("RangeError: toExponential() precision out of range")));
                     return Value();
                 }
             }
@@ -4828,7 +4828,7 @@ void Context::initialize_built_ins() {
             if (!args.empty()) {
                 precision = static_cast<int>(args[0].to_number());
                 if (precision < 0 || precision > 100) {
-                    ctx.throw_exception(Value("RangeError: toFixed() precision out of range"));
+                    ctx.throw_exception(Value(std::string("RangeError: toFixed() precision out of range")));
                     return Value();
                 }
             }
@@ -4853,7 +4853,7 @@ void Context::initialize_built_ins() {
 
             int precision = static_cast<int>(args[0].to_number());
             if (precision < 1 || precision > 100) {
-                ctx.throw_exception(Value("RangeError: toPrecision() precision out of range"));
+                ctx.throw_exception(Value(std::string("RangeError: toPrecision() precision out of range")));
                 return Value();
             }
 
@@ -4925,15 +4925,15 @@ void Context::initialize_built_ins() {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.valueOf called on non-boolean")));
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.valueOf called on non-boolean"));
+                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.valueOf called on non-boolean")));
                 return Value();
             }
         }, 0);
 
-    PropertyDescriptor boolean_valueOf_name_desc(Value("valueOf"), PropertyAttributes::None);
+    PropertyDescriptor boolean_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
     boolean_valueOf_name_desc.set_configurable(true);
     boolean_valueOf_name_desc.set_enumerable(false);
     boolean_valueOf_name_desc.set_writable(false);
@@ -4959,15 +4959,15 @@ void Context::initialize_built_ins() {
                         return Value(primitive.to_boolean() ? "true" : "false");
                     }
                 }
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.toString called on non-boolean")));
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value("TypeError: Boolean.prototype.toString called on non-boolean"));
+                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.toString called on non-boolean")));
                 return Value();
             }
         }, 0);
 
-    PropertyDescriptor boolean_toString_name_desc(Value("toString"), PropertyAttributes::None);
+    PropertyDescriptor boolean_toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
     boolean_toString_name_desc.set_configurable(true);
     boolean_toString_name_desc.set_enumerable(false);
     boolean_toString_name_desc.set_writable(false);
@@ -5005,7 +5005,7 @@ void Context::initialize_built_ins() {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                return Value("Error");
+                return Value(std::string("Error"));
             }
 
             Value name_val = this_obj->get_property("name");
@@ -5072,7 +5072,7 @@ void Context::initialize_built_ins() {
                     (void)args;
                     Object* this_obj = ctx.get_this_binding();
                     if (!this_obj) {
-                        return Value("Error");
+                        return Value(std::string("Error"));
                     }
 
                     Value name_val = this_obj->get_property("name");
@@ -5708,34 +5708,34 @@ void Context::initialize_built_ins() {
 
     auto toDateString_fn = ObjectFactory::create_native_function("toDateString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value("Wed Jan 01 2020");
+            return Value(std::string("Wed Jan 01 2020"));
         }, 0);
 
     auto toLocaleDateString_fn = ObjectFactory::create_native_function("toLocaleDateString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value("1/1/2020");
+            return Value(std::string("1/1/2020"));
         }, 0);
 
     auto date_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value("1/1/2020, 12:00:00 AM");
+            return Value(std::string("1/1/2020, 12:00:00 AM"));
         }, 0);
 
     auto toLocaleTimeString_fn = ObjectFactory::create_native_function("toLocaleTimeString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value("12:00:00 AM");
+            return Value(std::string("12:00:00 AM"));
         }, 0);
 
     auto toTimeString_fn = ObjectFactory::create_native_function("toTimeString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value("00:00:00 GMT+0000 (UTC)");
+            return Value(std::string("00:00:00 GMT+0000 (UTC)"));
         }, 0);
 
-    toDateString_fn->set_property("name", Value("toDateString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    toLocaleDateString_fn->set_property("name", Value("toLocaleDateString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    date_toLocaleString_fn->set_property("name", Value("toLocaleString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    toLocaleTimeString_fn->set_property("name", Value("toLocaleTimeString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-    toTimeString_fn->set_property("name", Value("toTimeString"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    toDateString_fn->set_property("name", Value(std::string("toDateString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    toLocaleDateString_fn->set_property("name", Value(std::string("toLocaleDateString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    date_toLocaleString_fn->set_property("name", Value(std::string("toLocaleString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    toLocaleTimeString_fn->set_property("name", Value(std::string("toLocaleTimeString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    toTimeString_fn->set_property("name", Value(std::string("toTimeString")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     auto getYear_fn = ObjectFactory::create_native_function("getYear", Date::getYear);
     auto setYear_fn = ObjectFactory::create_native_function("setYear", Date::setYear);
@@ -5921,7 +5921,7 @@ void Context::initialize_built_ins() {
     date_prototype.release();
     
     auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    type_error_prototype->set_property("name", Value("TypeError"));
+    type_error_prototype->set_property("name", Value(std::string("TypeError")));
     Object* type_error_proto_ptr = type_error_prototype.get();
 
     auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
@@ -5968,7 +5968,7 @@ void Context::initialize_built_ins() {
     type_error_length_desc.set_writable(false);
     type_error_constructor->set_property_descriptor("length", type_error_length_desc);
 
-    type_error_constructor->set_property("name", Value("TypeError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    type_error_constructor->set_property("name", Value(std::string("TypeError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
         type_error_constructor->set_prototype(error_ctor);
@@ -5977,7 +5977,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("TypeError", type_error_constructor.release());
     
     auto reference_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    reference_error_prototype->set_property("name", Value("ReferenceError"));
+    reference_error_prototype->set_property("name", Value(std::string("ReferenceError")));
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
     auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
@@ -6023,7 +6023,7 @@ void Context::initialize_built_ins() {
     reference_error_length_desc.set_writable(false);
     reference_error_constructor->set_property_descriptor("length", reference_error_length_desc);
 
-    reference_error_constructor->set_property("name", Value("ReferenceError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    reference_error_constructor->set_property("name", Value(std::string("ReferenceError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
         reference_error_constructor->set_prototype(error_ctor);
@@ -6032,7 +6032,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("ReferenceError", reference_error_constructor.release());
     
     auto syntax_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    syntax_error_prototype->set_property("name", Value("SyntaxError"));
+    syntax_error_prototype->set_property("name", Value(std::string("SyntaxError")));
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
     auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
@@ -6078,7 +6078,7 @@ void Context::initialize_built_ins() {
     syntax_error_length_desc.set_writable(false);
     syntax_error_constructor->set_property_descriptor("length", syntax_error_length_desc);
 
-    syntax_error_constructor->set_property("name", Value("SyntaxError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    syntax_error_constructor->set_property("name", Value(std::string("SyntaxError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
         syntax_error_constructor->set_prototype(error_ctor);
@@ -6087,7 +6087,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("SyntaxError", syntax_error_constructor.release());
 
     auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    range_error_prototype->set_property("name", Value("RangeError"));
+    range_error_prototype->set_property("name", Value(std::string("RangeError")));
     Object* range_error_proto_ptr = range_error_prototype.get();
 
     auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
@@ -6134,7 +6134,7 @@ void Context::initialize_built_ins() {
     range_error_length_desc.set_writable(false);
     range_error_constructor->set_property_descriptor("length", range_error_length_desc);
 
-    range_error_constructor->set_property("name", Value("RangeError"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    range_error_constructor->set_property("name", Value(std::string("RangeError")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
 
     if (error_ctor) {
         range_error_constructor->set_prototype(error_ctor);
@@ -6143,7 +6143,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("RangeError", range_error_constructor.release());
 
     auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    uri_error_prototype->set_property("name", Value("URIError"));
+    uri_error_prototype->set_property("name", Value(std::string("URIError")));
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
     auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
@@ -6191,7 +6191,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("URIError", uri_error_constructor.release());
 
     auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    eval_error_prototype->set_property("name", Value("EvalError"));
+    eval_error_prototype->set_property("name", Value(std::string("EvalError")));
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
     auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
@@ -6239,7 +6239,7 @@ void Context::initialize_built_ins() {
     register_built_in_object("EvalError", eval_error_constructor.release());
 
     auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    aggregate_error_prototype->set_property("name", Value("AggregateError"));
+    aggregate_error_prototype->set_property("name", Value(std::string("AggregateError")));
     
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 
@@ -6311,7 +6311,7 @@ void Context::initialize_built_ins() {
     constructor_desc.set_configurable(true);
     aggregate_error_prototype->set_property_descriptor("constructor", constructor_desc);
 
-    PropertyDescriptor name_desc(Value("AggregateError"), PropertyAttributes::None);
+    PropertyDescriptor name_desc(Value(std::string("AggregateError")), PropertyAttributes::None);
     name_desc.set_configurable(true);
     name_desc.set_enumerable(false);
     name_desc.set_writable(false);
@@ -6337,7 +6337,7 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("TypeError: RegExp.prototype.compile called on null or undefined"));
+                ctx.throw_exception(Value(std::string("TypeError: RegExp.prototype.compile called on null or undefined")));
                 return Value();
             }
 
@@ -6497,7 +6497,7 @@ void Context::initialize_built_ins() {
     auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_function()) {
-                ctx.throw_exception(Value("Promise executor must be a function"));
+                ctx.throw_exception(Value(std::string("Promise executor must be a function")));
                 return Value();
             }
             
@@ -6529,7 +6529,7 @@ void Context::initialize_built_ins() {
             try {
                 executor->call(ctx, executor_args);
             } catch (...) {
-                promise->reject(Value("Promise executor threw"));
+                promise->reject(Value(std::string("Promise executor threw")));
             }
             
             add_promise_methods(promise.get());
@@ -6542,7 +6542,7 @@ void Context::initialize_built_ins() {
     auto promise_try = ObjectFactory::create_native_function("try",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_function()) {
-                ctx.throw_exception(Value("Promise.try requires a function"));
+                ctx.throw_exception(Value(std::string("Promise.try requires a function")));
                 return Value();
             }
             
@@ -6553,7 +6553,7 @@ void Context::initialize_built_ins() {
                 Value result = fn->call(ctx, {});
                 promise->fulfill(result);
             } catch (...) {
-                promise->reject(Value("Function threw in Promise.try"));
+                promise->reject(Value(std::string("Function threw in Promise.try")));
             }
             
             return Value(promise.release());
@@ -6596,13 +6596,13 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("Promise.prototype.then called on non-object"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.then called on non-object")));
                 return Value();
             }
             
             Promise* promise = dynamic_cast<Promise*>(this_obj);
             if (!promise) {
-                ctx.throw_exception(Value("Promise.prototype.then called on non-Promise"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.then called on non-Promise")));
                 return Value();
             }
             
@@ -6625,13 +6625,13 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("Promise.prototype.catch called on non-object"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.catch called on non-object")));
                 return Value();
             }
             
             Promise* promise = dynamic_cast<Promise*>(this_obj);
             if (!promise) {
-                ctx.throw_exception(Value("Promise.prototype.catch called on non-Promise"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.catch called on non-Promise")));
                 return Value();
             }
             
@@ -6649,13 +6649,13 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value("Promise.prototype.finally called on non-object"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.finally called on non-object")));
                 return Value();
             }
             
             Promise* promise = dynamic_cast<Promise*>(this_obj);
             if (!promise) {
-                ctx.throw_exception(Value("Promise.prototype.finally called on non-Promise"));
+                ctx.throw_exception(Value(std::string("Promise.prototype.finally called on non-Promise")));
                 return Value();
             }
             
@@ -6706,13 +6706,13 @@ void Context::initialize_built_ins() {
     auto promise_all_static = ObjectFactory::create_native_function("all",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value("Promise.all expects an iterable"));
+                ctx.throw_exception(Value(std::string("Promise.all expects an iterable")));
                 return Value();
             }
 
             Object* iterable = args[0].as_object();
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value("Promise.all expects an array"));
+                ctx.throw_exception(Value(std::string("Promise.all expects an array")));
                 return Value();
             }
 
@@ -6761,13 +6761,13 @@ void Context::initialize_built_ins() {
     auto promise_race_static = ObjectFactory::create_native_function("race",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value("Promise.race expects an iterable"));
+                ctx.throw_exception(Value(std::string("Promise.race expects an iterable")));
                 return Value();
             }
 
             Object* iterable = args[0].as_object();
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value("Promise.race expects an array"));
+                ctx.throw_exception(Value(std::string("Promise.race expects an array")));
                 return Value();
             }
 
@@ -6799,13 +6799,13 @@ void Context::initialize_built_ins() {
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value("Promise.allSettled expects an iterable"));
+                ctx.throw_exception(Value(std::string("Promise.allSettled expects an iterable")));
                 return Value();
             }
 
             Object* iterable = args[0].as_object();
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value("Promise.allSettled expects an array"));
+                ctx.throw_exception(Value(std::string("Promise.allSettled expects an array")));
                 return Value();
             }
 
@@ -6833,13 +6833,13 @@ void Context::initialize_built_ins() {
     auto promise_any_static = ObjectFactory::create_native_function("any",
         [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value("Promise.any expects an iterable"));
+                ctx.throw_exception(Value(std::string("Promise.any expects an iterable")));
                 return Value();
             }
 
             Object* iterable = args[0].as_object();
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value("Promise.any expects an array"));
+                ctx.throw_exception(Value(std::string("Promise.any expects an array")));
                 return Value();
             }
 
@@ -6849,7 +6849,7 @@ void Context::initialize_built_ins() {
             result_promise->set_property("_isPromise", Value(true));
 
             if (length == 0) {
-                ctx.throw_exception(Value("AggregateError: All promises were rejected"));
+                ctx.throw_exception(Value(std::string("AggregateError: All promises were rejected")));
                 return Value();
             }
 
@@ -7506,7 +7506,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 2);
 
-    ab_slice_fn->set_property("name", Value("slice"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    ab_slice_fn->set_property("name", Value(std::string("slice")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("slice", Value(ab_slice_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_resize_fn = ObjectFactory::create_native_function("resize",
@@ -7514,7 +7514,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 1);
 
-    ab_resize_fn->set_property("name", Value("resize"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    ab_resize_fn->set_property("name", Value(std::string("resize")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("resize", Value(ab_resize_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_transfer_fn = ObjectFactory::create_native_function("transfer",
@@ -7522,7 +7522,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 0);
 
-    ab_transfer_fn->set_property("name", Value("transfer"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    ab_transfer_fn->set_property("name", Value(std::string("transfer")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("transfer", Value(ab_transfer_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ab_maxByteLength_fn = ObjectFactory::create_native_function("get maxByteLength",
@@ -7579,7 +7579,7 @@ void Context::initialize_built_ins() {
             return Value();
         }, 0);
 
-    ab_transferToFixedLength_fn->set_property("name", Value("transferToFixedLength"), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    ab_transferToFixedLength_fn->set_property("name", Value(std::string("transferToFixedLength")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("transferToFixedLength", Value(ab_transferToFixedLength_fn.release()), PropertyAttributes::BuiltinFunction);
 
     arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
@@ -7749,7 +7749,7 @@ void Context::setup_global_bindings() {
                     return Value();
                 }
             } catch (...) {
-                ctx.throw_exception(Value("SyntaxError: Invalid code in eval"));
+                ctx.throw_exception(Value(std::string("SyntaxError: Invalid code in eval")));
                 return Value();
             }
         }, 1);
@@ -7790,7 +7790,7 @@ void Context::setup_global_bindings() {
     auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value("");
+            if (args.empty()) return Value(std::string(""));
             std::string input = args[0].to_string();
             std::string result;
 
@@ -7814,7 +7814,7 @@ void Context::setup_global_bindings() {
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value("");
+            if (args.empty()) return Value(std::string(""));
             std::string input = args[0].to_string();
             std::string result;
 
@@ -7838,7 +7838,7 @@ void Context::setup_global_bindings() {
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value("");
+            if (args.empty()) return Value(std::string(""));
             std::string input = args[0].to_string();
             std::string result;
 
@@ -7860,7 +7860,7 @@ void Context::setup_global_bindings() {
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value("");
+            if (args.empty()) return Value(std::string(""));
             std::string input = args[0].to_string();
             std::string result;
 
