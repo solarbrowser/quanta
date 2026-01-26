@@ -598,14 +598,14 @@ uint32_t Object::get_length() const {
 }
 
 void Object::set_length(uint32_t length) {
-    if (header_.type == ObjectType::Array) {
-        PropertyDescriptor length_desc(Value(static_cast<double>(length)),
-            static_cast<PropertyAttributes>(PropertyAttributes::Writable));
-        set_property_descriptor("length", length_desc);
+    // Set length property for generic objects (not just arrays)
+    PropertyDescriptor length_desc(Value(static_cast<double>(length)),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable));
+    set_property_descriptor("length", length_desc);
 
-        if (length < elements_.size()) {
-            elements_.resize(length);
-        }
+    // Resize elements array if this is actually an Array
+    if (header_.type == ObjectType::Array && length < elements_.size()) {
+        elements_.resize(length);
     }
 }
 
