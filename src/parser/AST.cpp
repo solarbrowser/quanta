@@ -5241,8 +5241,10 @@ std::unique_ptr<ASTNode> LabeledStatement::clone() const {
 
 
 Value Program::evaluate(Context& ctx) {
+    Object::current_context_ = &ctx;
+
     Value last_value;
-    
+
     check_use_strict_directive(ctx);
     
     for (const auto& statement : statements_) {
