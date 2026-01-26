@@ -5212,7 +5212,12 @@ std::unique_ptr<ASTNode> EmptyStatement::clone() const {
 
 
 Value LabeledStatement::evaluate(Context& ctx) {
-    return statement_->evaluate(ctx);
+    Value result = statement_->evaluate(ctx);
+
+    if (ctx.has_break() && ctx.get_break_label() == label_) {
+        ctx.clear_break_continue();
+    }
+    return result;
 }
 
 std::string LabeledStatement::to_string() const {
@@ -5664,12 +5669,20 @@ Value ForStatement::evaluate(Context& ctx) {
             }
             
             if (ctx.has_break()) {
-                ctx.clear_break_continue();
+                // If break has no label or empty label, consume it and exit loop
+                if (ctx.get_break_label().empty()) {
+                    ctx.clear_break_continue();
+                    break;
+                }
                 break;
             }
             if (ctx.has_continue()) {
-                ctx.clear_break_continue();
-                goto continue_loop;
+                // If continue has no label or empty label, consume it and continue loop
+                if (ctx.get_continue_label().empty()) {
+                    ctx.clear_break_continue();
+                    goto continue_loop;
+                }
+                break;
             }
             if (ctx.has_return_value()) {
                 return ctx.get_return_value();
@@ -6187,7 +6200,25 @@ Value WhileStatement::evaluate(Context& ctx) {
             try {
                 Value body_result = body_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                
+
+                // Handle break and continue
+                if (ctx.has_break()) {
+                    // If break has no label or empty label, consume it and exit loop
+                    if (ctx.get_break_label().empty()) {
+                        ctx.clear_break_continue();
+                        break;
+                    }
+                    break;
+                }
+                if (ctx.has_continue()) {
+                    // If continue has no label or empty label, consume it and continue loop
+                    if (ctx.get_continue_label().empty()) {
+                        ctx.clear_break_continue();
+                        continue;
+                    }
+                    break;  // Exit this loop so outer labeled statement can handle
+                }
+
                 if (safety_counter % 10 == 0) {
                 }
             } catch (...) {
@@ -7064,21 +7095,21 @@ std::unique_ptr<ASTNode> ReturnStatement::clone() const {
 
 
 Value BreakStatement::evaluate(Context& ctx) {
-    ctx.set_break();
+    ctx.set_break(label_);
     return Value();
 }
 
 std::string BreakStatement::to_string() const {
-    return "break;";
+    return label_.empty() ? "break;" : "break " + label_ + ";";
 }
 
 std::unique_ptr<ASTNode> BreakStatement::clone() const {
-    return std::make_unique<BreakStatement>(start_, end_);
+    return std::make_unique<BreakStatement>(start_, end_, label_);
 }
 
 
 Value ContinueStatement::evaluate(Context& ctx) {
-    ctx.set_continue();
+    ctx.set_continue(label_);
     return Value();
 }
 

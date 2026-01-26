@@ -8435,17 +8435,21 @@ void Context::clear_return_value() {
 }
 
 
-void Context::set_break() {
+void Context::set_break(const std::string& label) {
     has_break_ = true;
+    break_label_ = label;
 }
 
-void Context::set_continue() {
+void Context::set_continue(const std::string& label) {
     has_continue_ = true;
+    continue_label_ = label;
 }
 
 void Context::clear_break_continue() {
     has_break_ = false;
     has_continue_ = false;
+    break_label_.clear();
+    continue_label_.clear();
 }
 
 
