@@ -134,13 +134,28 @@ public:
     explicit Value(bool b) : bits_(QUIET_NAN | (b ? TAG_TRUE : TAG_FALSE)) {}
     
     explicit Value(double d) {
-        if (std::isnan(d)) {
-            bits_ = QUIET_NAN | TAG_NAN;
-        } else if (std::isinf(d)) {
-            bits_ = QUIET_NAN | (d > 0 ? TAG_POS_INF : TAG_NEG_INF);
-        } else {
-            number_ = d;
+        // NOTE: std::isnan and std::isinf are broken in this build environment
+        // First store as number, then check bit pattern
+        number_ = d;
+
+        // Check if it's NaN or Infinity by examining the bit pattern
+        uint64_t exponent = (bits_ >> 52) & 0x7FF;
+        uint64_t mantissa = bits_ & 0xFFFFFFFFFFFFFULL;
+
+        if (exponent == 0x7FF) {  // NaN or Infinity
+            if (mantissa != 0) {
+                // NaN
+                bits_ = QUIET_NAN | TAG_NAN;
+            } else {
+                // Infinity (check sign bit)
+                if (bits_ & 0x8000000000000000ULL) {
+                    bits_ = QUIET_NAN | TAG_NEG_INF;
+                } else {
+                    bits_ = QUIET_NAN | TAG_POS_INF;
+                }
+            }
         }
+        // else: normal number, already stored in number_
     }
     explicit Value(int32_t i) : number_(static_cast<double>(i)) {}
     explicit Value(uint32_t i) : number_(static_cast<double>(i)) {}
