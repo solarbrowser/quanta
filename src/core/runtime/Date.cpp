@@ -177,38 +177,93 @@ Value Date::getDate(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::getDay(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_wday));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_wday));
 }
 
 Value Date::getHours(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_hour));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_hour));
 }
 
 Value Date::getMinutes(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_min));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_min));
 }
 
 Value Date::getSeconds(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::tm local_time = date.getLocalTime();
-    return Value(static_cast<double>(local_time.tm_sec));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* local_tm = std::localtime(&tt);
+    if (!local_tm) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    return Value(static_cast<double>(local_tm->tm_sec));
 }
 
 Value Date::getMilliseconds(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        date.time_point_.time_since_epoch()).count() % 1000;
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    int64_t ms = static_cast<int64_t>(timestamp) % 1000;
     return Value(static_cast<double>(ms));
 }
 
@@ -261,9 +316,17 @@ Value Date::setMilliseconds(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::toString(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    Date date;
-    std::time_t time = date.getTimeT();
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::string("Invalid Date"));
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::string("Invalid Date"));
+    }
+    std::time_t time = static_cast<std::time_t>(timestamp / 1000);
     std::string time_str = std::ctime(&time);
     if (!time_str.empty() && time_str.back() == '\n') {
         time_str.pop_back();
