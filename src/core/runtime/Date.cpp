@@ -557,64 +557,128 @@ Value Date::getTimezoneOffset(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::getUTCDate(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_mday)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCDay(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_wday)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCFullYear(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_year + 1900)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCHours(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_hour)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-    return Value(static_cast<double>(ms % 1000));
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    int64_t ms = static_cast<int64_t>(timestamp) % 1000;
+    return Value(static_cast<double>(ms));
 }
 
 Value Date::getUTCMinutes(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_min)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCMonth(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_mon)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
 
 Value Date::getUTCSeconds(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
-    auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::numeric_limits<double>::quiet_NaN());
+    }
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
     std::tm* utc_tm = std::gmtime(&tt);
     return utc_tm ? Value(static_cast<double>(utc_tm->tm_sec)) : Value(std::numeric_limits<double>::quiet_NaN());
 }
