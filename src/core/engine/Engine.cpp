@@ -520,9 +520,14 @@ void Engine::setup_built_in_functions() {
         if (args.empty()) {
             return Value(false);
         }
-        
-        double num = args[0].to_number();
-        return Value(std::isfinite(num));
+
+        // NOTE: std::isfinite/std::isinf are broken in this build environment
+        // (they work in standalone g++ but not with our Makefile flags)
+        // Use Value's NaN-boxing bit pattern checks instead
+        if (args[0].is_nan() || args[0].is_positive_infinity() || args[0].is_negative_infinity()) {
+            return Value(false);
+        }
+        return Value(true);
     });
 }
 
