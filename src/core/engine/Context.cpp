@@ -4601,12 +4601,14 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             double num_value = args.empty() ? 0.0 : args[0].to_number();
 
+            // If this_obj exists (constructor call), set [[PrimitiveValue]]
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
                 this_obj->set_property("[[PrimitiveValue]]", Value(num_value));
-                return Value(this_obj);
             }
 
+            // Always return primitive number
+            // Function::construct will return the created object if called as constructor
             return Value(num_value);
         });
     PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);
@@ -4948,12 +4950,14 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
+            // If this_obj exists (constructor call), set [[PrimitiveValue]]
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
                 this_obj->set_property("[[PrimitiveValue]]", Value(value));
-                return Value(this_obj);
             }
 
+            // Always return primitive boolean
+            // Function::construct will return the created object if called as constructor
             return Value(value);
         });
 
