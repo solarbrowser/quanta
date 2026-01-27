@@ -7776,14 +7776,6 @@ void Context::setup_global_bindings() {
             return Value(num_val.is_nan());
         }, 1);
     lexical_environment_->create_binding("isNaN", Value(isNaN_global_fn.release()), false);
-    
-    auto isFinite_fn = ObjectFactory::create_native_function("isFinite",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(false);
-            double num = args[0].to_number();
-            return Value(std::isfinite(num));
-        }, 1);
-    lexical_environment_->create_binding("isFinite", Value(isFinite_fn.release()), false);
 
 
     auto eval_fn = ObjectFactory::create_native_function("eval",
