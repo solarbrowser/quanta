@@ -1490,6 +1490,11 @@ void Context::initialize_built_ins() {
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
+
+    PropertyDescriptor object_proto_ctor_desc(Value(object_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    object_proto_ptr->set_property_descriptor("constructor", object_proto_ctor_desc);
+
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
     global_object_->set_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
@@ -3261,6 +3266,10 @@ void Context::initialize_built_ins() {
     if (object_proto) {
         function_prototype->set_prototype(object_proto);
     }
+
+    PropertyDescriptor function_proto_ctor_desc(Value(function_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    function_proto_ptr->set_property_descriptor("constructor", function_proto_ctor_desc);
 
     function_constructor->set_property("prototype", Value(function_prototype.release()), PropertyAttributes::None);
 
@@ -7749,16 +7758,11 @@ void Context::setup_global_bindings() {
             Engine* engine = ctx.get_engine();
             if (!engine) return Value();
 
-            try {
-                auto result = engine->evaluate(code);
-                if (result.success) {
-                    return result.value;
-                } else {
-                    ctx.throw_exception(Value("SyntaxError: " + result.error_message));
-                    return Value();
-                }
-            } catch (...) {
-                ctx.throw_exception(Value(std::string("SyntaxError: Invalid code in eval")));
+            auto result = engine->evaluate(code);
+            if (result.success) {
+                return result.value;
+            } else {
+                ctx.throw_syntax_error(result.error_message);
                 return Value();
             }
         }, 1);
