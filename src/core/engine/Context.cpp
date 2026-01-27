@@ -4708,7 +4708,7 @@ void Context::initialize_built_ins() {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                    if (this_obj->has_property("[[PrimitiveValue]]")) {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
@@ -4741,7 +4741,7 @@ void Context::initialize_built_ins() {
                     num = this_val.as_number();
                 } else if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Number) {
+                    if (this_obj->has_property("[[PrimitiveValue]]")) {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
                         num = primitive.as_number();
                     } else {
@@ -4753,6 +4753,9 @@ void Context::initialize_built_ins() {
                     return Value();
                 }
 
+                if (std::isnan(num)) return Value(std::string("NaN"));
+                if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
+
                 int radix = 10;
                 if (!args.empty()) {
                     radix = static_cast<int>(args[0].to_number());
@@ -4763,11 +4766,31 @@ void Context::initialize_built_ins() {
                 }
 
                 if (radix == 10) {
-                    return Value(std::to_string(num));
-                }
+                    // Check if number is an integer
+                    if (num == std::floor(num) && std::abs(num) < 1e15) {
+                        // Format as integer
+                        std::ostringstream oss;
+                        oss << std::fixed << std::setprecision(0) << num;
+                        return Value(oss.str());
+                    } else {
+                        // Use default formatting for decimal numbers
+                        std::ostringstream oss;
+                        oss << num;
+                        std::string result = oss.str();
 
-                if (std::isnan(num)) return Value(std::string("NaN"));
-                if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
+                        // Remove trailing zeros after decimal point
+                        size_t dot_pos = result.find('.');
+                        if (dot_pos != std::string::npos) {
+                            size_t last_nonzero = result.find_last_not_of('0');
+                            if (last_nonzero > dot_pos) {
+                                result = result.substr(0, last_nonzero + 1);
+                            } else if (last_nonzero == dot_pos) {
+                                result = result.substr(0, dot_pos);
+                            }
+                        }
+                        return Value(result);
+                    }
+                }
 
                 bool negative = num < 0;
                 if (negative) num = -num;
@@ -4923,8 +4946,15 @@ void Context::initialize_built_ins() {
     
     auto boolean_constructor = ObjectFactory::create_native_constructor("Boolean",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(false);
-            return Value(args[0].to_boolean());
+            bool value = args.empty() ? false : args[0].to_boolean();
+
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                this_obj->set_property("[[PrimitiveValue]]", Value(value));
+                return Value(this_obj);
+            }
+
+            return Value(value);
         });
 
     auto boolean_prototype = ObjectFactory::create_object();
@@ -4939,7 +4969,7 @@ void Context::initialize_built_ins() {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                    if (this_obj->has_property("[[PrimitiveValue]]")) {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
@@ -4972,7 +5002,7 @@ void Context::initialize_built_ins() {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->get_type() == Object::ObjectType::Boolean) {
+                    if (this_obj->has_property("[[PrimitiveValue]]")) {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
                         return Value(primitive.to_boolean() ? "true" : "false");
                     }

@@ -1700,7 +1700,7 @@ std::unique_ptr<Object> create_number(double value) {
 
 std::unique_ptr<Object> create_boolean(bool value) {
     auto bool_obj = std::make_unique<Object>(Object::ObjectType::Boolean);
-    bool_obj->set_property("value", Value(value));
+    bool_obj->set_property("[[PrimitiveValue]]", Value(value));
     return bool_obj;
 }
 
