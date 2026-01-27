@@ -434,7 +434,18 @@ void Engine::setup_built_in_functions() {
                 radix = static_cast<int>(r);
             }
         }
-        
+
+        // If radix not specified and string starts with "0x" or "0X", use radix 16
+        if (args.size() <= 1 && start + 1 < str.length() &&
+            str[start] == '0' && (str[start + 1] == 'x' || str[start + 1] == 'X')) {
+            radix = 16;
+            start += 2; 
+        }
+
+        if (start >= str.length()) {
+            return Value::nan();
+        }
+
         char first_char = str[start];
         bool has_valid_start = false;
         
