@@ -5953,8 +5953,12 @@ void Context::initialize_built_ins() {
     auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toString);
     date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    PropertyDescriptor date_proto_ctor_desc(Value(date_constructor_fn.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    date_prototype->set_property_descriptor("constructor", date_proto_ctor_desc);
+
     date_constructor_fn->set_property("prototype", Value(date_prototype.get()));
-    
+
     register_built_in_object("Date", date_constructor_fn.get());
     
     if (lexical_environment_) {
