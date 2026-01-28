@@ -949,7 +949,7 @@ double Lexer::parse_decimal_literal() {
             }
         }
     }
-    
+
     return std::strtod(number_str.c_str(), nullptr);
 }
 
