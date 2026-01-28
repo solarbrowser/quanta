@@ -4079,6 +4079,27 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
     }
 
+    if (object_value.is_boolean() && !computed_) {
+        if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+            Identifier* prop = static_cast<Identifier*>(property_.get());
+            std::string prop_name = prop->get_name();
+
+            Value boolean_ctor = ctx.get_binding("Boolean");
+            if (boolean_ctor.is_object() || boolean_ctor.is_function()) {
+                Object* boolean_fn = boolean_ctor.is_object() ? boolean_ctor.as_object() : boolean_ctor.as_function();
+                Value prototype = boolean_fn->get_property("prototype");
+                if (prototype.is_object()) {
+                    Object* boolean_prototype = prototype.as_object();
+                    Value method = boolean_prototype->get_property(prop_name);
+
+                    if (!method.is_undefined()) {
+                        return method;
+                    }
+                }
+            }
+        }
+    }
+
     if ((object_value.is_object() || object_value.is_function()) && !computed_) {
         Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
