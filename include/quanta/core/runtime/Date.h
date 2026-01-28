@@ -80,7 +80,11 @@ public:
     static Value toString(Context& ctx, const std::vector<Value>& args);
     static Value toISOString(Context& ctx, const std::vector<Value>& args);
     static Value toJSON(Context& ctx, const std::vector<Value>& args);
-    
+    static Value valueOf(Context& ctx, const std::vector<Value>& args);
+    static Value toUTCString(Context& ctx, const std::vector<Value>& args);
+    static Value toGMTString(Context& ctx, const std::vector<Value>& args);
+    static Value toLocaleString(Context& ctx, const std::vector<Value>& args);
+
     double getTimestamp() const;
     std::time_t getTimeT() const;
     std::tm getLocalTime() const;

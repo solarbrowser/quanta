@@ -5757,6 +5757,8 @@ void Context::initialize_built_ins() {
     auto toString_fn = ObjectFactory::create_native_function("toString", Date::toString);
     auto toISOString_fn = ObjectFactory::create_native_function("toISOString", Date::toISOString);
     auto toJSON_fn = ObjectFactory::create_native_function("toJSON", Date::toJSON);
+    auto valueOf_fn = ObjectFactory::create_native_function("valueOf", Date::valueOf);
+    auto toUTCString_fn = ObjectFactory::create_native_function("toUTCString", Date::toUTCString);
 
     auto toDateString_fn = ObjectFactory::create_native_function("toDateString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -5828,6 +5830,12 @@ void Context::initialize_built_ins() {
     PropertyDescriptor toJSON_desc(Value(toJSON_fn.release()),
         PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toJSON", toJSON_desc);
+    PropertyDescriptor valueOf_desc(Value(valueOf_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    date_prototype->set_property_descriptor("valueOf", valueOf_desc);
+    PropertyDescriptor toUTCString_desc(Value(toUTCString_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    date_prototype->set_property_descriptor("toUTCString", toUTCString_desc);
     PropertyDescriptor toDateString_desc(Value(toDateString_fn.release()),
         PropertyAttributes::BuiltinFunction);
     date_prototype->set_property_descriptor("toDateString", toDateString_desc);
@@ -5950,7 +5958,7 @@ void Context::initialize_built_ins() {
     date_prototype->set_property("getYear", Value(getYear_fn.release()), PropertyAttributes::BuiltinFunction);
     date_prototype->set_property("setYear", Value(setYear_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toString);
+    auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toGMTString);
     date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     PropertyDescriptor date_proto_ctor_desc(Value(date_constructor_fn.get()),
