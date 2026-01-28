@@ -3349,14 +3349,21 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
         
     } else if (method_name == "split") {
         auto result_array = ObjectFactory::create_array(0);
-        
+
         if (arguments_.size() == 0) {
             result_array->set_element(0, Value(str));
             return Value(result_array.release());
         }
-        
+
         Value separator_val = arguments_[0]->evaluate(ctx);
         if (ctx.has_exception()) return Value();
+
+        // ES1: If separator is undefined, return array with entire string
+        if (separator_val.is_undefined()) {
+            result_array->set_element(0, Value(str));
+            return Value(result_array.release());
+        }
+
         std::string separator = separator_val.to_string();
         
         if (separator.empty()) {

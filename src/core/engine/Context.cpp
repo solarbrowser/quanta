@@ -3834,6 +3834,45 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
+    auto str_split_fn = ObjectFactory::create_native_function("split",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+
+            auto result_array = ObjectFactory::create_array(0);
+
+            // ES1: If separator is undefined, return array with entire string
+            if (args.empty() || args[0].is_undefined()) {
+                result_array->set_element(0, Value(str));
+                return Value(result_array.release());
+            }
+
+            std::string separator = args[0].to_string();
+
+            // ES1: If separator is empty string, split into individual characters
+            if (separator.empty()) {
+                for (size_t i = 0; i < str.length(); ++i) {
+                    result_array->set_element(i, Value(std::string(1, str[i])));
+                }
+            } else {
+                // Split by separator string
+                size_t start = 0;
+                size_t end = 0;
+                uint32_t index = 0;
+
+                while ((end = str.find(separator, start)) != std::string::npos) {
+                    result_array->set_element(index++, Value(str.substr(start, end - start)));
+                    start = end + separator.length();
+                }
+                result_array->set_element(index, Value(str.substr(start)));
+            }
+
+            return Value(result_array.release());
+        }, 1);
+    PropertyDescriptor string_split_desc(Value(str_split_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("split", string_split_desc);
+
     auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
