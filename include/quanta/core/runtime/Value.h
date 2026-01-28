@@ -132,7 +132,10 @@ public:
     }
     
     explicit Value(bool b) : bits_(QUIET_NAN | (b ? TAG_TRUE : TAG_FALSE)) {}
-    
+
+    // Prevent const char* from being implicitly converted to bool
+    explicit Value(const char* str) : Value(std::string(str)) {}
+
     explicit Value(double d) {
         // NOTE: std::isnan and std::isinf are broken in this build environment
         // First store as number, then check bit pattern
