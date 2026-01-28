@@ -4057,8 +4057,8 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
 
             Value string_ctor = ctx.get_binding("String");
-            if (string_ctor.is_object()) {
-                Object* string_fn = string_ctor.as_object();
+            if (string_ctor.is_object() || string_ctor.is_function()) {
+                Object* string_fn = string_ctor.is_object() ? string_ctor.as_object() : string_ctor.as_function();
                 Value prototype = string_fn->get_property("prototype");
                 if (prototype.is_object()) {
                     Object* string_prototype = prototype.as_object();

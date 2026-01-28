@@ -3816,14 +3816,20 @@ void Context::initialize_built_ins() {
             }
 
             std::string search = args[0].to_string();
-            uint32_t start = 0;
+            size_t start = 0;
             if (args.size() > 1) {
-                start = static_cast<uint32_t>(std::max(0.0, args[1].to_number()));
+                double pos = args[1].to_number();
+                // ES1: If position is NaN, treat as 0; if negative, treat as 0
+                if (std::isnan(pos) || pos < 0) {
+                    start = 0;
+                } else {
+                    start = static_cast<size_t>(pos);
+                }
             }
 
-            size_t pos = str.find(search, start);
-            return Value(pos == std::string::npos ? -1.0 : static_cast<double>(pos));
-        });
+            size_t found_pos = str.find(search, start);
+            return Value(found_pos == std::string::npos ? -1.0 : static_cast<double>(found_pos));
+        }, 1);
     PropertyDescriptor string_indexOf_desc(Value(str_indexOf_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
