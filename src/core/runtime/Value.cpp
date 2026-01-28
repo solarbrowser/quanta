@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Error.h"
 #include <sstream>
+#include <iomanip>
 #include <cmath>
 #include <limits>
 #include <iostream>
@@ -73,9 +74,54 @@ std::string Value::to_string() const {
             }
         }
 
+        // -0 should convert to "0"
+        if (num == 0.0) {
+            return "0";
+        }
+
+        // Use exponential notation only if:
+        // - abs value < 1e-6 (excluding 0), or
+        // - abs value >= 1e21
+        // Otherwise use decimal notation
+        double abs_num = std::abs(num);
+        bool use_exponential = (abs_num < 1e-6 && abs_num != 0.0) || abs_num >= 1e21;
+
         std::ostringstream oss;
-        oss << num;
-        return oss.str();
+        if (use_exponential) {
+            oss << num;
+        } else {
+            // Use fixed notation for numbers in range
+            // Check if it's effectively an integer
+            if (num == std::floor(num)) {
+                oss << std::fixed << std::setprecision(0) << num;
+            } else {
+                // For non-integers, use enough precision
+                oss << std::setprecision(16) << num;
+            }
+        }
+        std::string result = oss.str();
+
+        // Fix exponential notation format (e-07 → e-7, e+21 → e+21)
+        size_t e_pos = result.find('e');
+        if (e_pos != std::string::npos && e_pos + 2 < result.length()) {
+            // Check if next char is + or -
+            if (result[e_pos + 1] == '+' || result[e_pos + 1] == '-') {
+                // Remove leading zeros from exponent
+                size_t exp_start = e_pos + 2;
+                size_t first_nonzero = exp_start;
+                while (first_nonzero < result.length() && result[first_nonzero] == '0') {
+                    first_nonzero++;
+                }
+                // If all zeros or no zeros to remove, keep at least one digit
+                if (first_nonzero >= result.length()) {
+                    result = result.substr(0, e_pos + 2) + "0";
+                } else if (first_nonzero > exp_start) {
+                    result = result.substr(0, e_pos + 2) + result.substr(first_nonzero);
+                }
+            }
+        }
+
+        return result;
     }
     if (is_string()) {
         String* str_ptr = as_string();
