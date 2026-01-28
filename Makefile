@@ -14,7 +14,7 @@ CXXFLAGS += -msse4.2 -mavx
 CXXFLAGS += -faggressive-loop-optimizations
 CXXFLAGS += -fomit-frame-pointer
 # NOTE: -ffast-math breaks denormal number handling (flushes them to zero)
-# which causes ES1 conformance test failures. Removed for IEEE 754 compliance.
+# Removed for IEEE 754 compliance.
 # CXXFLAGS += -ffast-math
 # CXXFLAGS += -fno-signed-zeros -fno-trapping-math
 CXXFLAGS += -pthread
