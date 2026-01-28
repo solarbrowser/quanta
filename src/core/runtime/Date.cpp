@@ -750,7 +750,6 @@ Value Date::setYear(Context& ctx, const std::vector<Value>& args) {
 
     int year = static_cast<int>(year_value);
 
-    // ES1 B.2.5: If year is 0-99, add 1900
     if (year >= 0 && year <= 99) {
         year += 1900;
     }
@@ -1201,6 +1200,54 @@ Value Date::setUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
 
     date_obj->set_property("_timestamp", Value(new_timestamp));
     return Value(new_timestamp);
+}
+
+Value Date::valueOf(Context& ctx, const std::vector<Value>& args) {
+    // valueOf returns the same as getTime
+    return Date::getTime(ctx, args);
+}
+
+Value Date::toUTCString(Context& ctx, const std::vector<Value>& args) {
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || !date_obj->has_property("_timestamp")) {
+        return Value(std::string("Invalid Date"));
+    }
+    Value timestamp_val = date_obj->get_property("_timestamp");
+    double timestamp = timestamp_val.to_number();
+    if (std::isnan(timestamp) || std::isinf(timestamp)) {
+        return Value(std::string("Invalid Date"));
+    }
+
+    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
+    std::tm* utc_tm = std::gmtime(&tt);
+    if (!utc_tm) {
+        return Value(std::string("Invalid Date"));
+    }
+
+    // Format: "Day, DD Mon YYYY HH:MM:SS GMT"
+    const char* days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+    std::ostringstream oss;
+    oss << days[utc_tm->tm_wday] << ", "
+        << std::setfill('0') << std::setw(2) << utc_tm->tm_mday << " "
+        << months[utc_tm->tm_mon] << " "
+        << (utc_tm->tm_year + 1900) << " "
+        << std::setfill('0') << std::setw(2) << utc_tm->tm_hour << ":"
+        << std::setfill('0') << std::setw(2) << utc_tm->tm_min << ":"
+        << std::setfill('0') << std::setw(2) << utc_tm->tm_sec << " GMT";
+
+    return Value(oss.str());
+}
+
+Value Date::toGMTString(Context& ctx, const std::vector<Value>& args) {
+    return Date::toUTCString(ctx, args);
+}
+
+Value Date::toLocaleString(Context& ctx, const std::vector<Value>& args) {
+    // For now, just return toString
+    return Date::toString(ctx, args);
 }
 
 }
