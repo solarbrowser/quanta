@@ -3,7 +3,7 @@
 
   # Quanta
 
-  *A high-performance, modular JavaScript engine written in C++*
+  *Spec-first, experimental JavaScript engine written in C++.*
  <br><br>
   <span>
     <img src="https://img.shields.io/github/stars/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
@@ -18,46 +18,114 @@
 
 ## Table of Contents
 
+- [Motivation](#motivation)
 - [What is Quanta](#what-is-quanta)
+- [Project Goals](#project-goals)
+- [Current Status](#current-status)
 - [ECMAScript Compatibility](#ecmascript-compatibility)
+- [Design Philosophy](#design-philosophy)
+- [Known Limitations](#known-limitations)
+- [What Quanta is NOT](#what-quanta-is-not)
+- [Roadmap](#roadmap)
 - [For Developers](#for-developers)
-- [Planned Release Date](#planned-release-date)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
+- [Star History](#star-history)
+- [Author](#author)
 - [License](#license)
 
 ---
 
+## Motivation
+
+Quanta originally started as a part of my personal browser project. However, modern browsers consist of many complex subsystems, and implementing all of them solo, including a JavaScript engine, quickly became unrealistic.
+
+Instead of building everything superficially, I decided to focus deeply on one core component: the JavaScript engine. Quanta exists as a result of that decision.
+
+--- 
+
 ## What is Quanta
 
-Quanta is a modern JavaScript engine designed for the **Solar Project** with a focus on **modular architecture** and **high performance**. Built from the ground up in C++17, Quanta provides:
+Quanta is a spec-first JavaScript engine written in C++.
 
-### Core Features
-- **Modular Architecture** - Clean separation of concerns with 15+ focused modules
-- **High Performance** - Optimized execution with advanced compilation techniques
-- **Cross Platform** - Windows, Linux, and macOS support
+It is built to explore how JavaScript actually works beneath the surface, not how fast it can run, but how precisely it follows the ECMAScript specification. The project emphasizes correctness, explicit semantics, and test-driven validation using the official Test262 suite.
 
-### JavaScript Support
-- **ES6+ Compatibility** - Modern JavaScript features
-- **Complete Built-ins** - Math, String, Array, Object, JSON, Date
-- **Advanced Operations** - Nested objects, complex arrays, functional programming
+---
+
+## Project Goals
+
+- Achieve 80%+ overall Test262 pass rate
+- Maintain spec-correct behavior before performance optimizations
+- Become fast enough to handle complex real-world computations
+- Serve as a long-term learning and research project in language implementation
+
+---
+
+## Current Status
+
+**Quanta is not production-ready.** It is currently in an early development stage and not performance-optimized. The project prioritizes correctness, explicit semantics, and long-term maintainability over short-term speed gains.
 
 ---
 
 ## ECMAScript Compatibility
 
-Quanta has been tested against the official **Test262** ECMAScript test suite (52,674 tests). Results demonstrate strong foundational JavaScript support with ongoing development for advanced features.
+Quanta has been tested multiple times against the official **Test262** test suite.
+
+Early test runs can be misleading: while fixing ES1, ES3, and ES5 behavior, overall pass rates temporarily dropped. This was expected, as earlier results contained false positives caused by incomplete or incorrect implementations.
+
+Additionally, Quanta does **not yet have a fully mature Test262 runner**, so some results may still include false passes or failures.
+
+**Current Approximate Results**
+
+- ECMAScript 1: ~90% pass rate
+- ECMAScript 3: ~70% pass rate
+- ECMAScript 5: ~88% pass rate
+
+*Tested with conformance of **[JavaScript Engines zoo.](https://github.com/ivankra/javascript-zoo/tree/master/conformance)***
 
 ### Test262 Compliance Results
-**Last Test Date:** January 21, 2026 | **Engine Version:** v0.1.0c237
 
-| Metric | Count | % of Total |
-|--------|-------:|-----------:|
-| **Total Tests** | 52,674 | 100.0% |
-| **Tests Run** | 52,674 | 100.0% |
-| **Passed** | 17,745 | 33.69% | 
-| **Failed** | 34,929 | 66.31% | 
+**Can be MISLEADING.**
 
-**[View Detailed & Other Test Results →](docs/documents/test262-results.md)**
+**[View Test Results →](docs/documents/test262-results.md)**
+
+---
+
+## Design Philosophy
+
+- Specification-first implementation
+- Correctness over performance
+- Explicit behavior over implicit shortcuts
+- Minimal abstractions
+- Test-driven development using Test262
+
+---
+
+## Known Limitations
+
+- Most ES6+ features are not implemented
+- Performance is currently slow
+- No JIT or advanced optimization pipeline
+
+---
+
+## What Quanta Is Not
+
+- Not a production browser engine
+- Not a V8, SpiderMonkey, or JavaScriptCore replacement
+- Not optimized for benchmarks
+
+**Quanta is a learning-oriented, correctness-driven engine, not a commercial runtime.**
+
+---
+
+## Roadmap
+
+- Improve performance
+- Reach 80%+ overall Test262 pass rate
+- Implement core ECMAScript 2015 (ES6) features
+- Improve memory management
+- Stabilize the Test262 runner
 
 ---
 
@@ -92,19 +160,8 @@ make -j$(nproc)      # Makefile build
 ./build.sh cmake     # CMake build
 ```
 
-#### Build System Options
-
-1. **CMake** (Cross-platform, native compilers)
-   - Windows: MSVC with `/O2 /GL /LTCG` optimizations
-   - Linux: GCC with `-O3 -march=native`
-   - macOS: Clang with native optimizations
-
-2. **Makefile** (GCC/MinGW)
-   - Traditional make-based build
-   - Works on all platforms with GCC
-
 #### Build Outputs
-- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native) * REPL not works on release mode ⚠️⚠️⚠️⚠️⚠️⚠️
+- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native) * REPL not works on release mode 
 - **Windows MinGW**: `build/bin/quanta.exe`
 - **Linux/macOS**: `build/bin/quanta`
 - **Static Library**: `libquanta.a` or `quanta.lib` (MSVC)
@@ -125,24 +182,9 @@ make -j$(nproc)      # Makefile build
 
 ---
 
-## Planned Release Date
+## Documentation
 
-### Development Timeline
-
-- **2025 Q3**: Engine foundations (parser, lexer, core modules)
-- **2025 Q4**: Modern JavaScript features implementation, testing and ECMAScript compatibility verification
-- **2026 Q1 & Q2**: Performance optimizations and improvements, testing and ECMAScript compatibility verification
-- **2026, 24th of June**: Production release
-
-### Milestones
-- [x] Modular architecture implementation
-- [x] Core JavaScript functionality
-- [x] Build system optimization
-- [x] Comprehensive testing framework
-- [X] (little bit of) Modern JavaScript features (ES6+)
-- [ ] ECMAScript compliance verification
-- [ ] Performance benchmarking
-- [ ] Production deployment
+Documentation website is not yet available. It will be added once the public site is ready.
 
 ---
 
@@ -177,14 +219,16 @@ We welcome contributions! Areas for enhancement:
 
 [![Star History Chart](https://api.star-history.com/svg?repos=solarbrowser/quanta&type=date&legend=top-left)](https://www.star-history.com/#solarbrowser/quanta&type=date&legend=top-left)
 
+---
+
+## Author
+
+Quanta is developed by a single student developer as a long-term systems programming project,
+with the goal of deeply understanding JavaScript semantics, ECMAScript specifications, and language runtime design.
+
+---
+
 ## License
 
 This project is licensed under the **Mozilla Public License 2.0** - see the LICENSE file for details.
 
----
-
-<div align="center">
-  <strong>Built with ❤️ for the Solar Project</strong>
-  <br>
-  <sub>Modular • Fast • Reliable</sub>
-</div>
