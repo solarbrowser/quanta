@@ -75,7 +75,7 @@ Early test runs can be misleading: while fixing ES1, ES3, and ES5 behavior, over
 
 Additionally, Quanta does **not yet have a fully mature Test262 runner**, so some results may still include false passes or failures.
 
-**Current Approximate Results**
+**Current Approximate Results (as of Jan 2026)**
 
 - ECMAScript 1: ~90% pass rate
 - ECMAScript 3: ~70% pass rate
