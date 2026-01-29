@@ -85,7 +85,7 @@ Additionally, Quanta does **not yet have a fully mature Test262 runner**, so som
 
 ### Test262 Compliance Results
 
-**Can be MISLEADING.**
+**Test262 results should be interpreted with caution, as the runner is still under active development.**
 
 **[View Test Results →](docs/documents/test262-results.md)**
 
