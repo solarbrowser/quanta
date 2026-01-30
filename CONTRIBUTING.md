@@ -1,6 +1,6 @@
 # Contributing to Quanta
 
-Thank you for your interest in contributing to Solar! We welcome contributions of all kinds including bug reports, feature requests, documentation improvements, and code.
+Thank you for your interest in contributing to Quanta! We welcome contributions of all kinds including bug reports, feature requests, documentation improvements, and code.
 
 ## How to Contribute
 
@@ -29,7 +29,7 @@ Thank you for your interest in contributing to Solar! We welcome contributions o
 
 ## Code of Conduct
 
-By contributing to Solar, you agree to abide by our [Code of Conduct](./CODE_OF_CONDUCT.md). Please read it to understand the community expectations.
+By contributing to Quanta, you agree to abide by our [Code of Conduct](./CODE_OF_CONDUCT.md). Please read it to understand the community expectations.
 
 ## Getting Help
 
