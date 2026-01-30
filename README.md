@@ -184,7 +184,7 @@ make -j$(nproc)      # Makefile build
 
 ## Documentation
 
-Documentation website is not yet available. It will be added once the public site is ready.
+You can reach all the documentation files from [here](https://quanta.js.org/pages/docs/docs.html).
 
 ---
 
