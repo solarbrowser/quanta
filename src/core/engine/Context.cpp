@@ -115,16 +115,17 @@ bool Context::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
-bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding) {
+bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
     if (variable_environment_) {
-        return variable_environment_->create_binding(name, value, mutable_binding);
+        return variable_environment_->create_binding(name, value, mutable_binding, deletable);
     }
     return false;
 }
 
 bool Context::create_var_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (variable_environment_) {
-        return variable_environment_->create_binding(name, value, mutable_binding);
+        // ES1: Variables declared with 'var' have DontDelete attribute (not deletable)
+        return variable_environment_->create_binding(name, value, mutable_binding, false);
     }
     return false;
 }
@@ -137,8 +138,10 @@ bool Context::create_lexical_binding(const std::string& name, const Value& value
 }
 
 bool Context::delete_binding(const std::string& name) {
-    if (lexical_environment_) {
-        return lexical_environment_->delete_binding(name);
+    // ES1: Delete from variable environment (where 'var' and global assignments go)
+    // This matches where create_binding puts bindings
+    if (variable_environment_) {
+        return variable_environment_->delete_binding(name);
     }
     return false;
 }
@@ -3740,10 +3743,29 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("localeCompare", localeCompare_desc);
 
 
+    // Helper to convert this value to string for String.prototype methods
+    auto toString_helper = [](Context& ctx, const Value& this_value) -> std::string {
+        // ES1: If this is an object, try to call its toString method
+        if (this_value.is_object() || this_value.is_function()) {
+            Object* obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+            Value toString_method = obj->get_property("toString");
+            if (!toString_method.is_undefined() && toString_method.is_function()) {
+                Function* toString_fn = toString_method.as_function();
+                std::vector<Value> empty_args;
+                Value result = toString_fn->call(ctx, empty_args, this_value);
+                if (ctx.has_exception()) {
+                    return "";
+                }
+                return result.to_string();
+            }
+        }
+        return this_value.to_string();
+    };
+
     auto charAt_fn = ObjectFactory::create_native_function("charAt",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             uint32_t index = 0;
             if (args.size() > 0) {
@@ -3787,9 +3809,9 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("at", string_at_desc);
 
     auto charCodeAt_fn = ObjectFactory::create_native_function("charCodeAt",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             uint32_t index = 0;
             if (args.size() > 0) {
@@ -3807,9 +3829,9 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
 
     auto str_indexOf_fn = ObjectFactory::create_native_function("indexOf",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             if (args.empty()) {
                 return Value(-1.0);
@@ -3835,9 +3857,9 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
     auto str_split_fn = ObjectFactory::create_native_function("split",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             auto result_array = ObjectFactory::create_array(0);
 
@@ -3874,10 +3896,10 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("split", string_split_desc);
 
     auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             std::transform(str.begin(), str.end(), str.begin(),
                 [](unsigned char c) { return std::tolower(c); });
@@ -3889,10 +3911,10 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("toLowerCase", toLowerCase_desc);
 
     auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
-            std::string str = this_value.to_string();
+            std::string str = toString_helper(ctx, this_value);
 
             std::transform(str.begin(), str.end(), str.begin(),
                 [](unsigned char c) { return std::toupper(c); });
@@ -3902,6 +3924,92 @@ void Context::initialize_built_ins() {
     PropertyDescriptor toUpperCase_desc(Value(toUpperCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toUpperCase", toUpperCase_desc);
+
+    // ES1: 15.5.4.7 String.prototype.lastIndexOf(searchString, position)
+    auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = toString_helper(ctx, this_value);
+
+            if (args.empty()) {
+                return Value(-1.0);
+            }
+
+            std::string search = args[0].to_string();
+            size_t start = str.length();
+
+            if (args.size() > 1) {
+                double pos = args[1].to_number();
+                if (std::isnan(pos) || pos >= static_cast<double>(str.length())) {
+                    start = str.length();
+                } else if (pos < 0) {
+                    start = 0;
+                } else {
+                    start = static_cast<size_t>(pos) + search.length();
+                    if (start > str.length()) {
+                        start = str.length();
+                    }
+                }
+            }
+
+            // Search backwards from start position
+            if (search.empty()) {
+                return Value(static_cast<double>(std::min(start, str.length())));
+            }
+
+            size_t found_pos = str.rfind(search, start);
+            return Value(found_pos == std::string::npos ? -1.0 : static_cast<double>(found_pos));
+        }, 1);
+    PropertyDescriptor str_lastIndexOf_desc(Value(str_lastIndexOf_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("lastIndexOf", str_lastIndexOf_desc);
+
+    // ES1: 15.5.4.10 String.prototype.substring(start, end)
+    auto str_substring_fn = ObjectFactory::create_native_function("substring",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = toString_helper(ctx, this_value);
+
+            size_t len = str.length();
+            size_t start = 0;
+            size_t end = len;
+
+            if (args.size() > 0) {
+                double start_num = args[0].to_number();
+                if (std::isnan(start_num) || start_num < 0) {
+                    start = 0;
+                } else if (start_num > static_cast<double>(len)) {
+                    start = len;
+                } else {
+                    start = static_cast<size_t>(start_num);
+                }
+            }
+
+            if (args.size() > 1) {
+                double end_num = args[1].to_number();
+                if (std::isnan(end_num) || end_num < 0) {
+                    end = 0;
+                } else if (end_num > static_cast<double>(len)) {
+                    end = len;
+                } else {
+                    end = static_cast<size_t>(end_num);
+                }
+            }
+
+            // ES1: If start > end, swap them
+            if (start > end) {
+                std::swap(start, end);
+            }
+
+            if (start >= len) {
+                return Value(std::string(""));
+            }
+
+            return Value(str.substr(start, end - start));
+        }, 2);
+    PropertyDescriptor str_substring_desc(Value(str_substring_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("substring", str_substring_desc);
 
     auto string_concat_static = ObjectFactory::create_native_function("concat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -8685,18 +8793,25 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
-bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding) {
+bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
     if (has_own_binding(name)) {
         return false;
     }
 
     if (type_ == Type::Object && binding_object_) {
-        PropertyDescriptor desc(value, PropertyAttributes::BuiltinFunction);
+        // ES1: Set Configurable attribute based on deletable flag
+        // Configurable = true means deletable, Configurable = false means DontDelete
+        // TEMP: Always use Configurable to test
+        PropertyAttributes attrs = static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable
+        );
+        PropertyDescriptor desc(value, attrs);
         return binding_object_->set_property_descriptor(name, desc);
     } else {
         bindings_[name] = value;
         mutable_flags_[name] = mutable_binding;
         initialized_flags_[name] = true;
+        deletable_flags_[name] = deletable;  // ES1: DontDelete attribute
         return true;
     }
 }
@@ -8706,13 +8821,23 @@ bool Environment::delete_binding(const std::string& name) {
         if (type_ == Type::Object && binding_object_) {
             return binding_object_->delete_property(name);
         } else {
+            // ES1: Check if binding is deletable (DontDelete attribute)
+            auto it = deletable_flags_.find(name);
+            bool deletable = (it != deletable_flags_.end()) ? it->second : false;
+
+            if (!deletable) {
+                // ES1: Bindings with DontDelete attribute cannot be deleted
+                return false;
+            }
+
             bindings_.erase(name);
             mutable_flags_.erase(name);
             initialized_flags_.erase(name);
+            deletable_flags_.erase(name);
             return true;
         }
     }
-    
+
     return false;
 }
 
