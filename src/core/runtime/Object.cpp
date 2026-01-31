@@ -409,30 +409,45 @@ bool Object::delete_property(const std::string& key) {
     if (!desc.is_configurable()) {
         return false;
     }
-    
+
     uint32_t index;
     if (is_array_index(key, &index)) {
         return delete_element(index);
     }
-    
+
     if (overflow_properties_) {
         auto it = overflow_properties_->find(key);
         if (it != overflow_properties_->end()) {
             overflow_properties_->erase(it);
+
+            // ES1: Also erase from descriptors to ensure property is fully deleted
+            if (descriptors_) {
+                descriptors_->erase(key);
+            }
+
             header_.property_count--;
             update_hash_code();
             return true;
         }
     }
-    
+
     if (header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
+            // ES1: Mark property as deleted by clearing value and removing descriptor
+            // has_own_property will check: if value is undefined AND no descriptor, property is deleted
             properties_[info.offset] = Value();
+
+            if (descriptors_) {
+                descriptors_->erase(key);
+            }
+
+            header_.property_count--;
+            update_hash_code();
             return true;
         }
     }
-    
+
     return false;
 }
 

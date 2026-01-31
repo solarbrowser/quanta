@@ -6,6 +6,7 @@
 
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include <iostream>
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/JSON.h"
 #include "quanta/core/runtime/Date.h"
@@ -8800,18 +8801,20 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
 
     if (type_ == Type::Object && binding_object_) {
         // ES1: Set Configurable attribute based on deletable flag
-        // Configurable = true means deletable, Configurable = false means DontDelete
-        // TEMP: Always use Configurable to test
-        PropertyAttributes attrs = static_cast<PropertyAttributes>(
-            PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable
-        );
+        // Configurable = true means deletable 
+        // Configurable = false means DontDelete 
+        int attrs_value = PropertyAttributes::Writable | PropertyAttributes::Enumerable;
+        if (deletable) {
+            attrs_value |= PropertyAttributes::Configurable;
+        }
+        PropertyAttributes attrs = static_cast<PropertyAttributes>(attrs_value);
         PropertyDescriptor desc(value, attrs);
         return binding_object_->set_property_descriptor(name, desc);
     } else {
         bindings_[name] = value;
         mutable_flags_[name] = mutable_binding;
         initialized_flags_[name] = true;
-        deletable_flags_[name] = deletable;  // ES1: DontDelete attribute
+        deletable_flags_[name] = deletable;
         return true;
     }
 }
@@ -8826,7 +8829,6 @@ bool Environment::delete_binding(const std::string& name) {
             bool deletable = (it != deletable_flags_.end()) ? it->second : false;
 
             if (!deletable) {
-                // ES1: Bindings with DontDelete attribute cannot be deleted
                 return false;
             }
 

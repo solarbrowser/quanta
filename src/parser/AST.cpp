@@ -11,6 +11,7 @@
 #include <set>
 #include <map>
 #include <cstdio>
+#include <iostream>
 
 #ifdef __GNUC__
     #define LIKELY(x) __builtin_expect(!!(x), 1)
@@ -1184,10 +1185,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
-        
+
         switch (operator_) {
             case Operator::ASSIGN: {
-                if (!ctx.has_binding(name)) {
+                bool has_it = ctx.has_binding(name);
+                if (!has_it) {
                     if (ctx.is_strict_mode()) {
                         ctx.throw_reference_error("'" + name + "' is not defined");
                         return Value();
