@@ -214,15 +214,40 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             add_error("Expected expression after assignment operator");
             return left;
         }
-        
-        BinaryExpression::Operator op = token_to_binary_operator(op_token);
+
+        // Convert TokenType to AssignmentExpression::Operator
+        AssignmentExpression::Operator assign_op;
+        switch (op_token) {
+            case TokenType::ASSIGN:
+                assign_op = AssignmentExpression::Operator::ASSIGN;
+                break;
+            case TokenType::PLUS_ASSIGN:
+                assign_op = AssignmentExpression::Operator::PLUS_ASSIGN;
+                break;
+            case TokenType::MINUS_ASSIGN:
+                assign_op = AssignmentExpression::Operator::MINUS_ASSIGN;
+                break;
+            case TokenType::MULTIPLY_ASSIGN:
+                assign_op = AssignmentExpression::Operator::MUL_ASSIGN;
+                break;
+            case TokenType::DIVIDE_ASSIGN:
+                assign_op = AssignmentExpression::Operator::DIV_ASSIGN;
+                break;
+            case TokenType::MODULO_ASSIGN:
+                assign_op = AssignmentExpression::Operator::MOD_ASSIGN;
+                break;
+            default:
+                add_error("Unknown assignment operator");
+                return left;
+        }
+
         Position end = right->get_end();
-        
-        return std::make_unique<BinaryExpression>(
-            std::move(left), op, std::move(right), op_start, end
+
+        return std::make_unique<AssignmentExpression>(
+            std::move(left), assign_op, std::move(right), op_start, end
         );
     }
-    
+
     return left;
 }
 
