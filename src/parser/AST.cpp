@@ -957,6 +957,16 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 
                 bool deleted = obj->delete_property(property_name);
                 return Value(deleted);
+            } else if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                // ES1: delete on identifier
+                // In non-strict mode, deleting a global variable (not declared with var)
+                // should succeed. Variables declared with var cannot be deleted.
+                Identifier* id = static_cast<Identifier*>(operand_.get());
+                std::string name = id->get_name();
+
+                // Try to delete the binding from the context
+                bool deleted = ctx.delete_binding(name);
+                return Value(deleted);
             } else {
                 return Value(true);
             }
@@ -1182,7 +1192,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_reference_error("'" + name + "' is not defined");
                         return Value();
                     } else {
-                        ctx.create_var_binding(name, right_value);
+                        // ES1: Assignments without 'var' create deletable global bindings
+                        ctx.create_binding(name, right_value, true, true);
                     }
                 } else {
                     ctx.set_binding(name, right_value);

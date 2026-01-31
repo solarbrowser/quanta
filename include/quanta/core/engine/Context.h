@@ -122,7 +122,7 @@ public:
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);
-    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
+    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool create_lexical_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool delete_binding(const std::string& name);
@@ -286,6 +286,7 @@ private:
     std::unordered_map<std::string, Value> bindings_;
     std::unordered_map<std::string, bool> mutable_flags_;
     std::unordered_map<std::string, bool> initialized_flags_;
+    std::unordered_map<std::string, bool> deletable_flags_;  // ES1: DontDelete attribute (false = DontDelete)
     Object* binding_object_;
 
 public:
@@ -301,7 +302,7 @@ public:
     Value get_binding(const std::string& name) const;
     Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
-    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
+    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     bool delete_binding(const std::string& name);
 
     bool is_mutable_binding(const std::string& name) const;
