@@ -1216,7 +1216,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return right_value;
             }
             case Operator::PLUS_ASSIGN: {
-                Value result = Value(left_value.to_number() + right_value.to_number());
+                // Use add() method to handle both string concatenation and numeric addition
+                Value result = left_value.add(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
