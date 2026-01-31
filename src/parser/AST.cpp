@@ -1178,14 +1178,26 @@ std::string UnaryExpression::operator_to_string(Operator op) {
 
 
 Value AssignmentExpression::evaluate(Context& ctx) {
-    Value right_value = right_->evaluate(ctx);
-    if (ctx.has_exception()) {
-        return Value();
-    }
+    // Declare right_value at function scope (will be evaluated at the right time)
+    Value right_value;
 
     if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
+
+        // For compound assignments, capture left value BEFORE evaluating right side
+        // This ensures correct ES1 left-to-right evaluation order
+        Value left_value;
+        if (operator_ != Operator::ASSIGN) {
+            left_value = ctx.get_binding(name);
+            if (ctx.has_exception()) return Value();
+        }
+
+        // Now evaluate right side
+        right_value = right_->evaluate(ctx);
+        if (ctx.has_exception()) {
+            return Value();
+        }
 
         switch (operator_) {
             case Operator::ASSIGN: {
@@ -1204,36 +1216,26 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return right_value;
             }
             case Operator::PLUS_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = Value(left_value.to_number() + right_value.to_number());
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::MINUS_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = Value(left_value.to_number() - right_value.to_number());
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::MUL_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = Value(left_value.to_number() * right_value.to_number());
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::DIV_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = Value(left_value.to_number() / right_value.to_number());
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::MOD_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 double left_num = left_value.to_number();
                 double right_num = right_value.to_number();
                 Value result = Value(std::fmod(left_num, right_num));
@@ -1241,43 +1243,31 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return result;
             }
             case Operator::BITWISE_AND_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.bitwise_and(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::BITWISE_OR_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.bitwise_or(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::BITWISE_XOR_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.bitwise_xor(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::LEFT_SHIFT_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.left_shift(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::RIGHT_SHIFT_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.right_shift(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
             case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
-                Value left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
                 Value result = left_value.unsigned_right_shift(right_value);
                 ctx.set_binding(name, result);
                 return result;
@@ -1292,8 +1282,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
-        
+
+        // For member expressions, evaluate object first, then right side
         Value object_value = member->get_object()->evaluate(ctx);
+        if (ctx.has_exception()) {
+            return Value();
+        }
+
+        // Now evaluate right side
+        right_value = right_->evaluate(ctx);
         if (ctx.has_exception()) {
             return Value();
         }
