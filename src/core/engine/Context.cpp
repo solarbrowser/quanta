@@ -8,6 +8,8 @@
 #include "quanta/core/engine/Engine.h"
 #include <iostream>
 #include "quanta/core/runtime/Error.h"
+#include "quanta/lexer/Lexer.h"
+#include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/JSON.h"
 #include "quanta/core/runtime/Date.h"
 #include "quanta/core/runtime/RegExp.h"
@@ -3108,7 +3110,72 @@ void Context::initialize_built_ins() {
     
     auto function_constructor = ObjectFactory::create_native_constructor("Function",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(ObjectFactory::create_function().release());
+            // ES1: new Function([arg1[, arg2[, ... argN]],] functionBody)
+            // Last argument is the function body, previous arguments are parameter names
+
+            std::string params = "";
+            std::string body = "";
+
+            if (args.size() == 0) {
+                // new Function() - empty function
+                body = "";
+            } else if (args.size() == 1) {
+                // new Function(body) - no parameters
+                body = args[0].to_string();
+            } else {
+                // new Function(param1, param2, ..., body)
+                for (size_t i = 0; i < args.size() - 1; i++) {
+                    if (i > 0) params += ", ";
+                    params += args[i].to_string();
+                }
+                body = args[args.size() - 1].to_string();
+            }
+
+            // Create function code string - wrap in parens to make it an expression
+            std::string func_code = "(function(" + params + ") { " + body + " })";
+
+            // Parse and create the function
+            try {
+                Lexer lexer(func_code);
+                TokenSequence tokens = lexer.tokenize();
+                Parser parser(tokens);
+                auto expr = parser.parse_expression();
+
+                // The expression should be a function expression
+                if (expr && expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                    FunctionExpression* func_expr = static_cast<FunctionExpression*>(expr.get());
+
+                    // Convert Parameter objects to strings
+                    std::vector<std::string> param_names;
+                    for (const auto& param : func_expr->get_params()) {
+                        Identifier* id = param->get_name();
+                        if (id) {
+                            param_names.push_back(id->get_name());
+                        }
+                    }
+
+                    std::unique_ptr<Function> func = ObjectFactory::create_js_function(
+                        "", // Anonymous function
+                        param_names,
+                        func_expr->get_body()->clone(),
+                        &ctx
+                    );
+                    if (!func) {
+                        ctx.throw_syntax_error("Failed to create function object");
+                        return Value();
+                    }
+
+                    // Return the created function
+                    Function* raw_func = func.release();
+                    return Value{raw_func};
+                }
+            } catch (...) {
+                ctx.throw_syntax_error("Invalid function body in Function constructor");
+                return Value();
+            }
+
+            ctx.throw_syntax_error("Failed to create function");
+            return Value();
         });
     
     auto function_prototype = ObjectFactory::create_object();

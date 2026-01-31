@@ -49,10 +49,15 @@ Value::Value(Object* obj) {
         return;
     }
 
-
     uint64_t ptr_value = reinterpret_cast<uint64_t>(obj);
     uint64_t masked_value = ptr_value & PAYLOAD_MASK;
-    bits_ = QUIET_NAN | TAG_OBJECT | masked_value;
+
+    // Check if the object is actually a Function
+    if (obj->is_function()) {
+        bits_ = QUIET_NAN | TAG_FUNCTION | masked_value;
+    } else {
+        bits_ = QUIET_NAN | TAG_OBJECT | masked_value;
+    }
 }
 
 Value::Value(const std::string& str) {

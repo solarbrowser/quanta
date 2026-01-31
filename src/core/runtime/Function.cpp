@@ -492,7 +492,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         }
     }
     
-    if (result.is_object() && result.as_object() != new_object.get()) {
+    // If constructor explicitly returned an object or function, use that
+    if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
         return result;
     } else {
         return Value(new_object.release());
