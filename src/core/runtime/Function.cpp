@@ -318,6 +318,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         arguments_obj->set_property_descriptor("caller", caller_desc);
 
         thrower.release();
+    } else {
+        // ES1: In non-strict mode, arguments.callee is the function itself
+        PropertyDescriptor callee_desc(Value(this), PropertyAttributes::Default);
+        arguments_obj->set_property_descriptor("callee", callee_desc);
     }
 
     function_context.create_binding("arguments", Value(arguments_obj.release()), false);
