@@ -20,6 +20,24 @@
 
 namespace Quanta {
 
+// ES1 9.5 ToInt32: Convert to signed 32-bit integer
+static int32_t ToInt32(double number) {
+    if (std::isnan(number) || std::isinf(number) || number == 0.0) {
+        return 0;
+    }
+
+    // 2. Compute number modulo 2^32
+    double int32bit = std::fmod(number, 4294967296.0);  // 2^32
+
+    // 3. If result >= 2^31, subtract 2^32 to get signed value
+    if (int32bit >= 2147483648.0) {  // 2^31
+        int32bit -= 4294967296.0;  // 2^32
+    } else if (int32bit < -2147483648.0) {  // -2^31
+        int32bit += 4294967296.0;  // 2^32
+    }
+
+    return static_cast<int32_t>(int32bit);
+}
 
 #if PLATFORM_POINTER_COMPRESSION
 thread_local uintptr_t Value::heap_base_ = 0;
@@ -516,43 +534,45 @@ Value Value::logical_not() const {
 }
 
 Value Value::bitwise_not() const {
-    int32_t num = static_cast<int32_t>(to_number());
+    int32_t num = ToInt32(to_number());
     return Value(static_cast<double>(~num));
 }
 
 Value Value::left_shift(const Value& other) const {
-    int32_t left = static_cast<int32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number()) & 0x1F;
+    int32_t left = ToInt32(to_number());
+    int32_t right = ToInt32(other.to_number()) & 0x1F;
     return Value(static_cast<double>(left << right));
 }
 
 Value Value::right_shift(const Value& other) const {
-    int32_t left = static_cast<int32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number()) & 0x1F;
+    int32_t left = ToInt32(to_number());
+    int32_t right = ToInt32(other.to_number()) & 0x1F;
     return Value(static_cast<double>(left >> right));
 }
 
 Value Value::unsigned_right_shift(const Value& other) const {
-    uint32_t left = static_cast<uint32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number()) & 0x1F;
+    // ES1 9.6 ToUint32: unsigned right shift uses ToUint32 on left operand
+    int32_t left_signed = ToInt32(to_number());
+    uint32_t left = static_cast<uint32_t>(left_signed);
+    int32_t right = ToInt32(other.to_number()) & 0x1F;
     return Value(static_cast<double>(left >> right));
 }
 
 Value Value::bitwise_and(const Value& other) const {
-    int32_t left = static_cast<int32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number());
+    int32_t left = ToInt32(to_number());
+    int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left & right));
 }
 
 Value Value::bitwise_or(const Value& other) const {
-    int32_t left = static_cast<int32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number());
+    int32_t left = ToInt32(to_number());
+    int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left | right));
 }
 
 Value Value::bitwise_xor(const Value& other) const {
-    int32_t left = static_cast<int32_t>(to_number());
-    int32_t right = static_cast<int32_t>(other.to_number());
+    int32_t left = ToInt32(to_number());
+    int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left ^ right));
 }
 
