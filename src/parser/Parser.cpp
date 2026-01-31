@@ -236,6 +236,24 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             case TokenType::MODULO_ASSIGN:
                 assign_op = AssignmentExpression::Operator::MOD_ASSIGN;
                 break;
+            case TokenType::BITWISE_AND_ASSIGN:
+                assign_op = AssignmentExpression::Operator::BITWISE_AND_ASSIGN;
+                break;
+            case TokenType::BITWISE_OR_ASSIGN:
+                assign_op = AssignmentExpression::Operator::BITWISE_OR_ASSIGN;
+                break;
+            case TokenType::BITWISE_XOR_ASSIGN:
+                assign_op = AssignmentExpression::Operator::BITWISE_XOR_ASSIGN;
+                break;
+            case TokenType::LEFT_SHIFT_ASSIGN:
+                assign_op = AssignmentExpression::Operator::LEFT_SHIFT_ASSIGN;
+                break;
+            case TokenType::RIGHT_SHIFT_ASSIGN:
+                assign_op = AssignmentExpression::Operator::RIGHT_SHIFT_ASSIGN;
+                break;
+            case TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN:
+                assign_op = AssignmentExpression::Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN;
+                break;
             default:
                 add_error("Unknown assignment operator");
                 return left;
