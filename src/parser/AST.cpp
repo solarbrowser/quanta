@@ -11,6 +11,7 @@
 #include <set>
 #include <map>
 #include <cstdio>
+#include <cmath>
 #include <iostream>
 
 #ifdef __GNUC__
@@ -1213,6 +1214,71 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 Value left_value = ctx.get_binding(name);
                 if (ctx.has_exception()) return Value();
                 Value result = Value(left_value.to_number() - right_value.to_number());
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::MUL_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = Value(left_value.to_number() * right_value.to_number());
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::DIV_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = Value(left_value.to_number() / right_value.to_number());
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::MOD_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                double left_num = left_value.to_number();
+                double right_num = right_value.to_number();
+                Value result = Value(std::fmod(left_num, right_num));
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::BITWISE_AND_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.bitwise_and(right_value);
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::BITWISE_OR_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.bitwise_or(right_value);
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::BITWISE_XOR_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.bitwise_xor(right_value);
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::LEFT_SHIFT_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.left_shift(right_value);
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::RIGHT_SHIFT_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.right_shift(right_value);
+                ctx.set_binding(name, result);
+                return result;
+            }
+            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
+                Value left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+                Value result = left_value.unsigned_right_shift(right_value);
                 ctx.set_binding(name, result);
                 return result;
             }
