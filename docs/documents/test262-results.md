@@ -1,7 +1,7 @@
 # Test262 Compliance Test Results
 
 ## Navigation
-- [Februray 1, 2026](#february-1-2026)
+- [February 1, 2026](#february-1-2026)
 The tests below here considered as "early run", so they can be misleading even the tests above here!
 - [January 21, 2026](#january-21-2026)
 - [December 18, 2025](#december-18-2025)
@@ -28,7 +28,7 @@ The tests below here considered as "early run", so they can be misleading even t
 | **Total Tests** | 53,082 | 100.0% |
 | **Tests Run** | 53,082 | 100.0% |
 | **Passed** | 11,552 | 21.76% | 
-| **Failed** | 41,530 | 78.23% | 
+| **Failed** | 41,458 | 78.23% | 
 | **Timeout**| 72 | 00.01% |
 
 ### January 21, 2026
