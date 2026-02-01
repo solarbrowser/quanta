@@ -469,21 +469,32 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
 std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
     auto expr = parse_call_expression();
     if (!expr) return nullptr;
-    
-    while (current_token().get_type() == TokenType::INCREMENT || 
+
+    while (current_token().get_type() == TokenType::INCREMENT ||
            current_token().get_type() == TokenType::DECREMENT) {
+
+        // ES1 ASI: postfix ++ and -- are "restricted productions"
+        // If there's a line terminator between expression and ++/--, insert semicolon
+        Position expr_end = expr->get_end();
+        Position op_start = current_token().get_start();
+
+        if (expr_end.line < op_start.line) {
+            // Line terminator found - apply ASI, don't parse as postfix
+            break;
+        }
+
         TokenType op_token = current_token().get_type();
         Position start = expr->get_start();
         Position end = current_token().get_end();
         advance();
-        
-        UnaryExpression::Operator op = (op_token == TokenType::INCREMENT) ? 
-            UnaryExpression::Operator::POST_INCREMENT : 
+
+        UnaryExpression::Operator op = (op_token == TokenType::INCREMENT) ?
+            UnaryExpression::Operator::POST_INCREMENT :
             UnaryExpression::Operator::POST_DECREMENT;
-        
+
         expr = std::make_unique<UnaryExpression>(op, std::move(expr), false, start, end);
     }
-    
+
     return expr;
 }
 
@@ -1231,6 +1242,13 @@ const Token& Parser::current_token() const {
 
 const Token& Parser::peek_token(size_t offset) const {
     return tokens_[current_token_index_ + offset];
+}
+
+const Token& Parser::previous_token() const {
+    if (current_token_index_ > 0) {
+        return tokens_[current_token_index_ - 1];
+    }
+    return tokens_[0];
 }
 
 void Parser::advance() {
