@@ -276,13 +276,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     arg_value = Value();
                 }
                 
-                function_context.create_binding(param->get_name()->get_name(), arg_value, false);
+                // ES1: Function parameters are mutable bindings
+                function_context.create_binding(param->get_name()->get_name(), arg_value, true);
             }
         }
     } else {
         for (size_t i = 0; i < parameters_.size(); ++i) {
             Value arg_value = (i < args.size()) ? args[i] : Value();
-            function_context.create_binding(parameters_[i], arg_value, false);
+            // ES1: Function parameters are mutable bindings
+            function_context.create_binding(parameters_[i], arg_value, true);
         }
     }
     
