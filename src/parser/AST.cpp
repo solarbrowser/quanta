@@ -6495,17 +6495,27 @@ std::unique_ptr<ASTNode> DoWhileStatement::clone() const {
 
 
 Value WithStatement::evaluate(Context& ctx) {
-    Value obj = object_->evaluate(ctx);
+    Value obj_value = object_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
 
+    // ES1: with statement extends the scope chain with the object
+    if (!obj_value.is_object() && !obj_value.is_function()) {
+        // ES1 converts primitives to objects, but for now just skip
+        ctx.throw_type_error("with statement requires an object");
+        return Value();
+    }
 
-    ctx.push_block_scope();
+    Object* obj = obj_value.is_function() ? obj_value.as_function() : obj_value.as_object();
+
+    // Push with scope - object properties should be accessible as variables
+    ctx.push_with_scope(obj);
 
     try {
         Value result = body_->evaluate(ctx);
-        ctx.pop_block_scope();
+        ctx.pop_with_scope();
         return result;
     } catch (...) {
-        ctx.pop_block_scope();
+        ctx.pop_with_scope();
         throw;
     }
 }

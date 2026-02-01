@@ -9007,6 +9007,20 @@ void Context::pop_block_scope() {
     }
 }
 
+void Context::push_with_scope(Object* obj) {
+    // Create object environment for with statement
+    auto new_env = std::make_unique<Environment>(obj, lexical_environment_);
+    lexical_environment_ = new_env.release();
+}
+
+void Context::pop_with_scope() {
+    if (lexical_environment_ && lexical_environment_->get_outer()) {
+        Environment* old_env = lexical_environment_;
+        lexical_environment_ = lexical_environment_->get_outer();
+        delete old_env;
+    }
+}
+
 void Context::register_typed_array_constructors() {
     auto uint8array_constructor = ObjectFactory::create_native_function("Uint8Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

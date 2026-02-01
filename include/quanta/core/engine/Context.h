@@ -118,6 +118,8 @@ public:
     
     void push_block_scope();
     void pop_block_scope();
+    void push_with_scope(class Object* obj);
+    void pop_with_scope();
 
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
