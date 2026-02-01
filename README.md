@@ -77,7 +77,7 @@ Additionally, Quanta does **not yet have a fully mature Test262 runner**, so som
 
 **Current Approximate Results (as of Jan 2026)**
 
-- ECMAScript 1: ~90% pass rate
+- ECMAScript 1: 100% pass rate (as of February 1, 2026)
 - ECMAScript 3: ~70% pass rate
 - ECMAScript 5: ~88% pass rate
 

@@ -1358,12 +1358,18 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
                 is_string_object = true;
             } else {
-                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
-                return Value();
+                // ES1: In non-strict mode, setting property on primitive fails silently
+                if (ctx.is_strict_mode()) {
+                    ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
+                }
+                return right_value;
             }
         } else {
-            ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
-            return Value();
+            // ES1: In non-strict mode, setting property on primitive fails silently
+            if (ctx.is_strict_mode()) {
+                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
+            }
+            return right_value;
         }
         
         if (member->is_computed() && obj && obj->is_array()) {
@@ -5556,7 +5562,12 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         
         if (has_local) {
             if (kind == VariableDeclarator::Kind::VAR) {
-                ctx.set_binding(name, init_value);
+                // ES1: Only set if there's an initializer
+                // var a; should not override existing binding (like parameters)
+                if (declarator->get_init()) {
+                    ctx.set_binding(name, init_value);
+                }
+                // If no initializer, keep existing value (important for parameters)
             } else {
                 ctx.throw_exception(Value("SyntaxError: Identifier '" + name + "' has already been declared"));
                 return Value();
