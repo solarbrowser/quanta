@@ -1040,13 +1040,37 @@ std::string Lexer::parse_string_literal(char quote) {
 
 std::string Lexer::parse_escape_sequence() {
     advance();
-    
+
     if (at_end()) {
         add_error("Unexpected end of input in escape sequence");
         return "\\";
     }
-    
-    char ch = advance();
+
+    char ch = current_char();
+
+    // ES1: Octal escape sequences \0-\377 (up to 3 octal digits)
+    if (ch >= '0' && ch <= '7') {
+        int octal_value = 0;
+        int digit_count = 0;
+
+        // Read up to 3 octal digits
+        while (digit_count < 3 && !at_end() && current_char() >= '0' && current_char() <= '7') {
+            octal_value = octal_value * 8 + (current_char() - '0');
+            advance();
+            digit_count++;
+
+            // Stop if value would exceed 255 (max \377)
+            if (octal_value > 255) {
+                position_--;
+                octal_value /= 8;
+                break;
+            }
+        }
+
+        return std::string(1, static_cast<char>(octal_value));
+    }
+
+    advance();
     switch (ch) {
         case 'n': return "\n";
         case 't': return "\t";
@@ -1054,7 +1078,6 @@ std::string Lexer::parse_escape_sequence() {
         case 'b': return "\b";
         case 'f': return "\f";
         case 'v': return "\v";
-        case '0': return "\0";
         case '\\': return "\\";
         case '\'': return "'";
         case '"': return "\"";
