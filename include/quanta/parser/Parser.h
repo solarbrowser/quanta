@@ -139,6 +139,7 @@ public:
     
     const Token& current_token() const;
     const Token& peek_token(size_t offset = 1) const;
+    const Token& previous_token() const;
     void advance();
     bool match(TokenType type);
     bool match_any(const std::vector<TokenType>& types);
