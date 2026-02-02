@@ -11,21 +11,21 @@ NC='\033[0m'
 
 # Print functions
 print_header() {
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}"
+    echo -e "${BLUE}===============================================================${NC}"
+    echo -e "${BLUE}  $1${NC}"
+    echo -e "${BLUE}===============================================================${NC}"
 }
 
 print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+    echo -e "${GREEN}[OK] $1${NC}"
 }
 
 print_error() {
-    echo -e "${RED}✗ $1${NC}"
+    echo -e "${RED}[ERROR] $1${NC}"
 }
 
 print_info() {
-    echo -e "${YELLOW}→ $1${NC}"
+    echo -e "${YELLOW}[INFO] $1${NC}"
 }
 
 # Detect OS
@@ -201,7 +201,7 @@ main() {
 
     # Print header
     echo ""
-    print_header "Quanta JavaScript Engine"
+    print_header "Building Quanta"
     echo ""
 
     # Build
@@ -212,7 +212,7 @@ main() {
     fi
 
     echo ""
-    print_success "All done! 🚀"
+    print_success "All done!"
     echo ""
 }
 
