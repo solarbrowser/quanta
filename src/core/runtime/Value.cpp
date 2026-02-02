@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/parser/AST.h"
 #include <sstream>
 #include <iomanip>
 #include <cmath>

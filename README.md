@@ -133,52 +133,83 @@ Additionally, Quanta does **not yet have a fully mature Test262 runner**, so som
 
 ### Building Quanta
 
-Quanta uses **platform-native compilers** for optimal performance:
-- **Windows**: MSVC (Visual Studio) - Native Windows build
-- **Linux**: GCC - Native Linux build
-- **macOS**: Clang/AppleClang - Native macOS build
+Quanta uses **Clang++** across all platforms.
+
+#### Requirements
+
+- C++17 compatible compiler
+- Clang/LLVM 10 or higher
+- Make (for Makefile builds)
+
+**Windows:**
+1. Download LLVM from [llvm.org/releases](https://github.com/llvm/llvm-project/releases)
+2. Install and add to PATH
+3. Verify: `clang++ --version`
+
+**Linux:**
+```bash
+# Ubuntu/Debian
+sudo apt install clang lld
+
+# Fedora
+sudo dnf install clang lld
+
+# Arch
+sudo pacman -S clang lld
+```
+
+**macOS:**
+```bash
+# Clang included with Xcode Command Line Tools
+xcode-select --install
+```
 
 #### Quick Start
 
-**Universal Build Script** (Recommended):
+Clone the repository:
 ```bash
-./build.sh           # Build with Makefile
-./build.sh cmake     # Build with CMake
-./build.sh clean     # Clean all builds
+git clone https://github.com/solarbrowser/quanta
+cd quanta
 ```
 
-**Windows (Native MSVC)**:
+**Windows:**
 ```cmd
-build-windows.bat    # MSVC
+build-windows.bat
 ```
-*Requires: Visual Studio 2019/2022 + CMake*
 
-**Linux/macOS**:
+**Linux/macOS:**
 ```bash
-make -j$(nproc)      # Makefile build
+./build.sh
 # or
-./build.sh cmake     # CMake build
+make -j$(nproc)
 ```
 
 #### Build Outputs
-- **Windows MSVC**: `build-cmake/bin/Release/quanta.exe` (native) * REPL not works on release mode 
-- **Windows MinGW**: `build/bin/quanta.exe`
+
+- **Windows**: `build/bin/quanta.exe`
 - **Linux/macOS**: `build/bin/quanta`
-- **Static Library**: `libquanta.a` or `quanta.lib` (MSVC)
+- **Static Library**: `build/libquanta.a`
+- **Logs**: `build/build.log`, `build/errors.log`
 
 ### Testing
 
-#### Run Test Suite
 ```bash
-# Execute JavaScript code directly
-./build/bin/quanta -c "console.log('Hello World');"
-
 # Execute JavaScript file
-./build/bin/quanta example_file.js
+./build/bin/quanta example.js
 
 # Interactive REPL
 ./build/bin/quanta
 ```
+
+### Troubleshooting
+
+**Clang not found:**
+- Windows: Verify LLVM is in PATH, restart terminal
+- Linux: Install clang and lld packages
+
+**Build errors:**
+- Clean: `make clean` or delete `build/` directory
+- Check: `build/errors.log`
 
 ---
 
