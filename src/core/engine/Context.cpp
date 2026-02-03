@@ -3556,11 +3556,53 @@ void Context::initialize_built_ins() {
             if (pattern.is_object()) {
                 Object* regex_obj = pattern.as_object();
 
+                Value global_val = regex_obj->get_property("global");
+                bool is_global = global_val.is_boolean() && global_val.to_boolean();
+
                 Value exec_method = regex_obj->get_property("exec");
-                if (exec_method.is_object() && exec_method.as_object()->is_function()) {
-                    std::vector<Value> exec_args = { Value(str) };
-                    Function* exec_func = static_cast<Function*>(exec_method.as_object());
-                    return exec_func->call(ctx, exec_args, pattern);
+                if (exec_method.is_function()) {
+                    Function* exec_func = exec_method.as_function();
+
+                    if (is_global) {
+                        regex_obj->set_property("lastIndex", Value(0.0));
+
+                        auto result_array = ObjectFactory::create_array();
+                        size_t match_count = 0;
+                        size_t safety_counter = 0;
+                        const size_t max_iterations = str.length() + 1;
+
+                        while (safety_counter++ < max_iterations) {
+                            Value last_index_before = regex_obj->get_property("lastIndex");
+                            int index_before = last_index_before.is_number() ? static_cast<int>(last_index_before.to_number()) : 0;
+
+                            std::vector<Value> exec_args = { Value(str) };
+                            Value match_result = exec_func->call(ctx, exec_args, pattern);
+
+                            if (match_result.is_null() || !match_result.is_object()) {
+                                break;
+                            }
+
+                            Object* match_obj = match_result.as_object();
+                            Value matched_str = match_obj->get_element(0);
+                            result_array->set_element(match_count++, matched_str);
+
+                            Value last_index_after = regex_obj->get_property("lastIndex");
+                            int index_after = last_index_after.is_number() ? static_cast<int>(last_index_after.to_number()) : 0;
+
+                            if (index_after == index_before) {
+                                regex_obj->set_property("lastIndex", Value(static_cast<double>(index_after + 1)));
+                            }
+                        }
+
+                        if (match_count == 0) {
+                            return Value::null();
+                        }
+
+                        return Value(result_array.release());
+                    } else {
+                        std::vector<Value> exec_args = { Value(str) };
+                        return exec_func->call(ctx, exec_args, pattern);
+                    }
                 }
             }
 
@@ -3575,7 +3617,7 @@ void Context::initialize_built_ins() {
                 return Value(result.release());
             }
 
-            return Value();
+            return Value::null();
         });
     PropertyDescriptor match_desc(Value(match_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -6674,19 +6716,45 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("sticky", Value(regexp_impl->get_sticky()));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
                 
+                Object* regex_obj_ptr = regex_obj.get();
+
                 auto test_fn = ObjectFactory::create_native_function("test",
-                    [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                         if (args.empty()) return Value(false);
                         std::string str = args[0].to_string();
-                        return Value(regexp_impl->test(str));
+
+                        if (regexp_impl->get_global()) {
+                            Value lastIndex_val = regex_obj_ptr->get_property("lastIndex");
+                            if (lastIndex_val.is_number()) {
+                                regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
+                            }
+                        }
+
+                        bool result = regexp_impl->test(str);
+
+                        if (regexp_impl->get_global()) {
+                            regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+                        }
+
+                        return Value(result);
                     });
                 regex_obj->set_property("test", Value(test_fn.release()), PropertyAttributes::BuiltinFunction);
-                
+
                 auto exec_fn = ObjectFactory::create_native_function("exec",
-                    [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                         if (args.empty()) return Value::null();
                         std::string str = args[0].to_string();
-                        return regexp_impl->exec(str);
+
+                        Value lastIndex_val = regex_obj_ptr->get_property("lastIndex");
+                        if (lastIndex_val.is_number()) {
+                            regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
+                        }
+
+                        Value result = regexp_impl->exec(str);
+
+                        regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+
+                        return result;
                     });
                 regex_obj->set_property("exec", Value(exec_fn.release()), PropertyAttributes::BuiltinFunction);
 

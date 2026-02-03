@@ -8120,12 +8120,12 @@ Value RegexLiteral::evaluate(Context& ctx) {
     (void)ctx;
     try {
         auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
-        
+
         obj->set_property("_isRegExp", Value(true));
-        
+
         obj->set_property("__pattern__", Value(pattern_));
         obj->set_property("__flags__", Value(flags_));
-        
+
         obj->set_property("source", Value(pattern_));
         obj->set_property("flags", Value(flags_));
         obj->set_property("global", Value(flags_.find('g') != std::string::npos));
@@ -8134,43 +8134,61 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("unicode", Value(flags_.find('u') != std::string::npos));
         obj->set_property("sticky", Value(flags_.find('y') != std::string::npos));
         obj->set_property("lastIndex", Value(0.0));
-        
-        std::string pattern_copy = pattern_;
-        std::string flags_copy = flags_;
-        
+
+        auto regexp_impl = std::make_shared<RegExp>(pattern_, flags_);
+        Object* obj_ptr = obj.get();
+
         auto test_fn = ObjectFactory::create_native_function("test",
-            [pattern_copy, flags_copy](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
+            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)ctx;
                 if (args.empty()) return Value(false);
-                
+
+                if (regexp_impl->get_global()) {
+                    Value lastIndex_val = obj_ptr->get_property("lastIndex");
+                    if (lastIndex_val.is_number()) {
+                        regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
+                    }
+                }
+
                 std::string str = args[0].to_string();
-                RegExp regex(pattern_copy, flags_copy);
-                return Value(regex.test(str));
+                bool result = regexp_impl->test(str);
+
+                if (regexp_impl->get_global()) {
+                    obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+                }
+
+                return Value(result);
             });
-        
+
         auto exec_fn = ObjectFactory::create_native_function("exec",
-            [pattern_copy, flags_copy](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
+            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)ctx;
                 if (args.empty()) return Value::null();
-                
+
+                Value lastIndex_val = obj_ptr->get_property("lastIndex");
+                if (lastIndex_val.is_number()) {
+                    regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
+                }
+
                 std::string str = args[0].to_string();
-                RegExp regex(pattern_copy, flags_copy);
-                return regex.exec(str);
+                Value result = regexp_impl->exec(str);
+
+                obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+
+                return result;
             });
-        
+
         auto toString_fn = ObjectFactory::create_native_function("toString",
-            [pattern_copy, flags_copy](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
-                (void)ctx; (void)args;
-                return Value("/" + pattern_copy + "/" + flags_copy);
+            [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx;
+                (void)args;
+                return Value(regexp_impl->to_string());
             });
-        
+
         obj->set_property("test", Value(test_fn.release()));
         obj->set_property("exec", Value(exec_fn.release()));
         obj->set_property("toString", Value(toString_fn.release()));
-        
+
         return Value(obj.release());
     } catch (const std::exception& e) {
         return Value::null();

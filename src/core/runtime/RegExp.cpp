@@ -26,8 +26,33 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
 
 bool RegExp::test(const std::string& str) {
     try {
-        return std::regex_search(str, regex_);
+        std::smatch match;
+        std::string::const_iterator start = str.begin();
+
+        if (global_ && last_index_ > 0) {
+            if (last_index_ >= static_cast<int>(str.length())) {
+                last_index_ = 0;
+                return false;
+            }
+            start = str.begin() + last_index_;
+        }
+
+        bool result = std::regex_search(start, str.end(), match, regex_);
+
+        if (global_) {
+            if (result) {
+                size_t actual_position = (start - str.begin()) + match.position();
+                last_index_ = actual_position + match.length();
+            } else {
+                last_index_ = 0;
+            }
+        }
+
+        return result;
     } catch (const std::regex_error& e) {
+        if (global_) {
+            last_index_ = 0;
+        }
         return false;
     }
 }
@@ -41,7 +66,7 @@ Value RegExp::exec(const std::string& str) {
             start = str.begin() + last_index_;
         } else if (global_ && last_index_ >= str.length()) {
             last_index_ = 0;
-            return Value();
+            return Value::null();
         }
 
         if (std::regex_search(start, str.end(), match, regex_)) {
@@ -68,7 +93,7 @@ Value RegExp::exec(const std::string& str) {
     } catch (const std::regex_error& e) {
     }
 
-    return Value();
+    return Value::null();
 }
 
 std::string RegExp::to_string() const {
