@@ -4139,6 +4139,14 @@ void Context::initialize_built_ins() {
 
             auto result_array = ObjectFactory::create_array(0);
 
+            int limit = -1;
+            if (args.size() >= 2 && args[1].is_number()) {
+                limit = static_cast<int>(args[1].to_number());
+                if (limit == 0) {
+                    return Value(result_array.release());
+                }
+            }
+
             if (args.empty() || args[0].is_undefined()) {
                 result_array->set_element(0, Value(str));
                 return Value(result_array.release());
@@ -4153,11 +4161,28 @@ void Context::initialize_built_ins() {
                 if (exec_method.is_function()) {
                     Function* exec_func = exec_method.as_function();
 
+                    if (str.empty()) {
+                        std::vector<Value> exec_args = { Value(str) };
+                        Value match_result = exec_func->call(ctx, exec_args, sep_val);
+
+                        if (!match_result.is_null() && match_result.is_object()) {
+                            Object* match_obj = match_result.as_object();
+                            Value matched_val = match_obj->get_element(0);
+                            if (matched_val.to_string().empty()) {
+                                return Value(result_array.release());
+                            }
+                        }
+                        result_array->set_element(0, Value(str));
+                        return Value(result_array.release());
+                    }
+
                     uint32_t arr_index = 0;
                     size_t search_pos = 0;
                     bool last_was_empty_at_start = false;
 
                     while (search_pos <= str.length()) {
+                        if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
+
                         std::string remaining = str.substr(search_pos);
                         if (remaining.empty()) break;
 
@@ -4189,10 +4214,13 @@ void Context::initialize_built_ins() {
                         } else {
                             result_array->set_element(arr_index++, Value(str.substr(search_pos, actual_match_pos - search_pos)));
 
+                            if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
+
                             Value length_val = match_obj->get_property("length");
                             if (length_val.is_number()) {
                                 int num_captures = static_cast<int>(length_val.to_number());
                                 for (int i = 1; i < num_captures; ++i) {
+                                    if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
                                     Value capture = match_obj->get_element(i);
                                     result_array->set_element(arr_index++, capture);
                                 }
@@ -4207,8 +4235,10 @@ void Context::initialize_built_ins() {
                         }
                     }
 
-                    if (search_pos < str.length() || (search_pos == str.length() && !last_was_empty_at_start)) {
-                        result_array->set_element(arr_index, Value(str.substr(search_pos)));
+                    if (limit < 0 || static_cast<int>(arr_index) < limit) {
+                        if (search_pos < str.length() || (search_pos == str.length() && !last_was_empty_at_start)) {
+                            result_array->set_element(arr_index, Value(str.substr(search_pos)));
+                        }
                     }
 
                     return Value(result_array.release());
@@ -4219,6 +4249,7 @@ void Context::initialize_built_ins() {
 
             if (separator.empty()) {
                 for (size_t i = 0; i < str.length(); ++i) {
+                    if (limit >= 0 && static_cast<int>(i) >= limit) break;
                     result_array->set_element(i, Value(std::string(1, str[i])));
                 }
             } else {
@@ -4227,10 +4258,13 @@ void Context::initialize_built_ins() {
                 uint32_t index = 0;
 
                 while ((end = str.find(separator, start)) != std::string::npos) {
+                    if (limit >= 0 && static_cast<int>(index) >= limit) break;
                     result_array->set_element(index++, Value(str.substr(start, end - start)));
                     start = end + separator.length();
                 }
-                result_array->set_element(index, Value(str.substr(start)));
+                if (limit < 0 || static_cast<int>(index) < limit) {
+                    result_array->set_element(index, Value(str.substr(start)));
+                }
             }
 
             return Value(result_array.release());
