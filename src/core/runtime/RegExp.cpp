@@ -83,7 +83,11 @@ Value RegExp::exec(const std::string& str) {
             result->set_property("length", Value(static_cast<double>(match.size())));
 
             for (size_t i = 1; i < match.size(); ++i) {
-                result->set_property(std::to_string(i), Value(match[i].str()));
+                if (match[i].matched) {
+                    result->set_property(std::to_string(i), Value(match[i].str()));
+                } else {
+                    result->set_property(std::to_string(i), Value());
+                }
             }
 
             return Value(result);

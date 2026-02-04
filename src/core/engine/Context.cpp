@@ -3738,26 +3738,114 @@ void Context::initialize_built_ins() {
             Value search_val = args[0];
             std::string replacement = args[1].to_string();
 
+            auto process_replacement = [](const std::string& repl, Object* match_obj, const std::string& orig_str, int match_pos) -> std::string {
+                std::string result;
+                for (size_t i = 0; i < repl.length(); ++i) {
+                    if (repl[i] == '$' && i + 1 < repl.length()) {
+                        if (repl[i + 1] == '$') {
+                            result += '$';
+                            ++i;
+                        } else if (repl[i + 1] == '&') {
+                            Value matched = match_obj->get_element(0);
+                            if (!matched.is_undefined()) {
+                                result += matched.to_string();
+                            }
+                            ++i;
+                        } else if (repl[i + 1] == '`') {
+                            result += orig_str.substr(0, match_pos);
+                            ++i;
+                        } else if (repl[i + 1] == '\'') {
+                            Value matched = match_obj->get_element(0);
+                            if (!matched.is_undefined()) {
+                                std::string matched_str = matched.to_string();
+                                int after_pos = match_pos + matched_str.length();
+                                if (after_pos < static_cast<int>(orig_str.length())) {
+                                    result += orig_str.substr(after_pos);
+                                }
+                            }
+                            ++i;
+                        } else if (isdigit(repl[i + 1])) {
+                            size_t j = i + 1;
+                            while (j < repl.length() && isdigit(repl[j])) {
+                                ++j;
+                            }
+                            std::string num_str = repl.substr(i + 1, j - i - 1);
+                            int capture_num = std::stoi(num_str);
+
+                            Value capture_val = match_obj->get_element(capture_num);
+                            if (!capture_val.is_undefined()) {
+                                result += capture_val.to_string();
+                            }
+
+                            i = j - 1;
+                        } else {
+                            result += repl[i];
+                        }
+                    } else {
+                        result += repl[i];
+                    }
+                }
+                return result;
+            };
+
             if (search_val.is_object()) {
                 Object* regex_obj = search_val.as_object();
 
+                Value global_val = regex_obj->get_property("global");
+                bool is_global = global_val.is_boolean() && global_val.to_boolean();
+
                 Value exec_method = regex_obj->get_property("exec");
-                if (exec_method.is_object() && exec_method.as_object()->is_function()) {
-                    std::vector<Value> exec_args = { Value(str) };
-                    Function* exec_func = static_cast<Function*>(exec_method.as_object());
-                    Value match_result = exec_func->call(ctx, exec_args, search_val);
+                if (exec_method.is_function()) {
+                    Function* exec_func = exec_method.as_function();
 
-                    if (match_result.is_object()) {
-                        Object* match_arr = match_result.as_object();
-                        Value index_val = match_arr->get_property("index");
-                        Value match_str = match_arr->get_element(0);
+                    if (is_global) {
+                        regex_obj->set_property("lastIndex", Value(0.0));
 
-                        if (index_val.is_number() && !match_str.is_undefined()) {
-                            size_t pos = static_cast<size_t>(index_val.to_number());
-                            std::string matched = match_str.to_string();
+                        std::string result = str;
+                        int offset = 0;
 
-                            str.replace(pos, matched.length(), replacement);
-                            return Value(str);
+                        while (true) {
+                            std::vector<Value> exec_args = { Value(str) };
+                            Value match_result = exec_func->call(ctx, exec_args, search_val);
+
+                            if (match_result.is_null() || !match_result.is_object()) {
+                                break;
+                            }
+
+                            Object* match_obj = match_result.as_object();
+                            Value index_val = match_obj->get_property("index");
+                            Value matched_str = match_obj->get_element(0);
+
+                            if (index_val.is_number()) {
+                                int match_index = static_cast<int>(index_val.to_number());
+                                std::string matched = matched_str.to_string();
+
+                                std::string processed_repl = process_replacement(replacement, match_obj, str, match_index);
+
+                                result.replace(match_index + offset, matched.length(), processed_repl);
+                                offset += processed_repl.length() - matched.length();
+                            }
+                        }
+
+                        return Value(result);
+                    } else {
+                        std::vector<Value> exec_args = { Value(str) };
+                        Value match_result = exec_func->call(ctx, exec_args, search_val);
+
+                        if (match_result.is_object()) {
+                            Object* match_arr = match_result.as_object();
+                            Value index_val = match_arr->get_property("index");
+                            Value match_str = match_arr->get_element(0);
+
+                            if (index_val.is_number() && !match_str.is_undefined()) {
+                                size_t pos = static_cast<size_t>(index_val.to_number());
+                                std::string matched = match_str.to_string();
+
+                                std::string processed_repl = process_replacement(replacement, match_arr, str, static_cast<int>(pos));
+
+                                str.replace(pos, matched.length(), processed_repl);
+                                return Value(str);
+                            }
                         }
                     }
                 }
@@ -4051,21 +4139,89 @@ void Context::initialize_built_ins() {
 
             auto result_array = ObjectFactory::create_array(0);
 
-            // ES1: If separator is undefined, return array with entire string
             if (args.empty() || args[0].is_undefined()) {
                 result_array->set_element(0, Value(str));
                 return Value(result_array.release());
             }
 
-            std::string separator = args[0].to_string();
+            Value sep_val = args[0];
 
-            // ES1: If separator is empty string, split into individual characters
+            if (sep_val.is_object()) {
+                Object* regex_obj = sep_val.as_object();
+                Value exec_method = regex_obj->get_property("exec");
+
+                if (exec_method.is_function()) {
+                    Function* exec_func = exec_method.as_function();
+
+                    uint32_t arr_index = 0;
+                    size_t search_pos = 0;
+                    bool last_was_empty_at_start = false;
+
+                    while (search_pos <= str.length()) {
+                        std::string remaining = str.substr(search_pos);
+                        if (remaining.empty()) break;
+
+                        std::vector<Value> exec_args = { Value(remaining) };
+                        Value match_result = exec_func->call(ctx, exec_args, sep_val);
+
+                        if (match_result.is_null() || !match_result.is_object()) {
+                            break;
+                        }
+
+                        Object* match_obj = match_result.as_object();
+                        Value index_val = match_obj->get_property("index");
+                        Value matched_val = match_obj->get_element(0);
+
+                        if (!index_val.is_number()) break;
+
+                        size_t match_pos_in_remaining = static_cast<size_t>(index_val.to_number());
+                        size_t actual_match_pos = search_pos + match_pos_in_remaining;
+                        std::string matched = matched_val.to_string();
+
+                        if (matched.empty() && match_pos_in_remaining == 0) {
+                            if (search_pos < str.length()) {
+                                result_array->set_element(arr_index++, Value(std::string(1, str[search_pos])));
+                                search_pos++;
+                                last_was_empty_at_start = true;
+                            } else {
+                                break;
+                            }
+                        } else {
+                            result_array->set_element(arr_index++, Value(str.substr(search_pos, actual_match_pos - search_pos)));
+
+                            Value length_val = match_obj->get_property("length");
+                            if (length_val.is_number()) {
+                                int num_captures = static_cast<int>(length_val.to_number());
+                                for (int i = 1; i < num_captures; ++i) {
+                                    Value capture = match_obj->get_element(i);
+                                    result_array->set_element(arr_index++, capture);
+                                }
+                            }
+
+                            if (matched.empty()) {
+                                search_pos = actual_match_pos + 1;
+                            } else {
+                                search_pos = actual_match_pos + matched.length();
+                            }
+                            last_was_empty_at_start = false;
+                        }
+                    }
+
+                    if (search_pos < str.length() || (search_pos == str.length() && !last_was_empty_at_start)) {
+                        result_array->set_element(arr_index, Value(str.substr(search_pos)));
+                    }
+
+                    return Value(result_array.release());
+                }
+            }
+
+            std::string separator = sep_val.to_string();
+
             if (separator.empty()) {
                 for (size_t i = 0; i < str.length(); ++i) {
                     result_array->set_element(i, Value(std::string(1, str[i])));
                 }
             } else {
-                // Split by separator string
                 size_t start = 0;
                 size_t end = 0;
                 uint32_t index = 0;
