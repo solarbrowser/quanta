@@ -4288,6 +4288,21 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toLowerCase", toLowerCase_desc);
 
+    auto str_concat_fn = ObjectFactory::create_native_function("concat",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string result = toString_helper(ctx, this_value);
+
+            for (const auto& arg : args) {
+                result += arg.to_string();
+            }
+
+            return Value(result);
+        });
+    PropertyDescriptor str_concat_desc(Value(str_concat_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("concat", str_concat_desc);
+
     auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
@@ -4302,6 +4317,36 @@ void Context::initialize_built_ins() {
     PropertyDescriptor toUpperCase_desc(Value(toUpperCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toUpperCase", toUpperCase_desc);
+
+    auto toLocaleLowerCase_fn = ObjectFactory::create_native_function("toLocaleLowerCase",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = toString_helper(ctx, this_value);
+
+            std::transform(str.begin(), str.end(), str.begin(),
+                [](unsigned char c) { return std::tolower(c); });
+
+            return Value(str);
+        });
+    PropertyDescriptor toLocaleLowerCase_desc(Value(toLocaleLowerCase_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("toLocaleLowerCase", toLocaleLowerCase_desc);
+
+    auto toLocaleUpperCase_fn = ObjectFactory::create_native_function("toLocaleUpperCase",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            std::string str = toString_helper(ctx, this_value);
+
+            std::transform(str.begin(), str.end(), str.begin(),
+                [](unsigned char c) { return std::toupper(c); });
+
+            return Value(str);
+        });
+    PropertyDescriptor toLocaleUpperCase_desc(Value(toLocaleUpperCase_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("toLocaleUpperCase", toLocaleUpperCase_desc);
 
     // ES1: 15.5.4.7 String.prototype.lastIndexOf(searchString, position)
     auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
