@@ -12,13 +12,14 @@
 namespace Quanta {
 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
-    : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false), 
+    : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false),
       multiline_(false), unicode_(false), sticky_(false), last_index_(0) {
-    
+
     parse_flags(flags);
-    
+
     try {
-        regex_ = std::regex(pattern_, get_regex_flags());
+        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(pattern_) : pattern_;
+        regex_ = std::regex(transformed_pattern, get_regex_flags());
     } catch (const std::regex_error& e) {
         regex_ = std::regex("(?!)");
     }
@@ -42,7 +43,14 @@ bool RegExp::test(const std::string& str) {
         if (global_) {
             if (result) {
                 size_t actual_position = (start - str.begin()) + match.position();
-                last_index_ = actual_position + match.length();
+                size_t match_len = match.length();
+
+                if (multiline_ && match_len > 0 && match[0].str()[0] == '\n') {
+                    actual_position++;
+                    match_len--;
+                }
+
+                last_index_ = actual_position + match_len;
             } else {
                 last_index_ = 0;
             }
@@ -71,13 +79,19 @@ Value RegExp::exec(const std::string& str) {
 
         if (std::regex_search(start, str.end(), match, regex_)) {
             size_t actual_position = (start - str.begin()) + match.position();
+            std::string matched_str = match[0].str();
+
+            if (multiline_ && !matched_str.empty() && matched_str[0] == '\n') {
+                actual_position++;
+                matched_str = matched_str.substr(1);
+            }
 
             if (global_) {
-                last_index_ = actual_position + match.length();
+                last_index_ = actual_position + matched_str.length();
             }
 
             auto result = new Object();
-            result->set_property("0", Value(match[0].str()));
+            result->set_property("0", Value(matched_str));
             result->set_property("index", Value(static_cast<double>(actual_position)));
             result->set_property("input", Value(str));
             result->set_property("length", Value(static_cast<double>(match.size())));
@@ -130,13 +144,60 @@ void RegExp::parse_flags(const std::string& flags) {
 
 std::regex::flag_type RegExp::get_regex_flags() const {
     std::regex::flag_type flags = std::regex::ECMAScript;
-    
+
     if (ignore_case_) {
         flags |= std::regex::icase;
     }
 
-
     return flags;
+}
+
+std::string RegExp::transform_pattern_for_multiline(const std::string& pattern) const {
+    std::string result;
+    bool in_char_class = false;
+    bool escaped = false;
+
+    for (size_t i = 0; i < pattern.length(); ++i) {
+        char ch = pattern[i];
+
+        if (escaped) {
+            result += ch;
+            escaped = false;
+            continue;
+        }
+
+        if (ch == '\\') {
+            result += ch;
+            escaped = true;
+            continue;
+        }
+
+        if (ch == '[') {
+            in_char_class = true;
+            result += ch;
+            continue;
+        }
+
+        if (ch == ']') {
+            in_char_class = false;
+            result += ch;
+            continue;
+        }
+
+        if (!in_char_class && ch == '^') {
+            result += "(?:(?:^)|(?:\\n))";
+            continue;
+        }
+
+        if (!in_char_class && ch == '$') {
+            result += "(?:$|(?=\\n))";
+            continue;
+        }
+
+        result += ch;
+    }
+
+    return result;
 }
 
 }

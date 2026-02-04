@@ -49,6 +49,7 @@ public:
 private:
     void parse_flags(const std::string& flags);
     std::regex::flag_type get_regex_flags() const;
+    std::string transform_pattern_for_multiline(const std::string& pattern) const;
 };
 
 }
