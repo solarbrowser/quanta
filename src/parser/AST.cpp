@@ -729,15 +729,21 @@ Value BinaryExpression::evaluate(Context& ctx) {
             return Value(left_value.compare(right_value) >= 0);
             
         case Operator::INSTANCEOF:
-            return Value(left_value.instanceof_check(right_value));
-            
-        case Operator::IN: {
-            std::string property_name = left_value.to_string();
-            if (!right_value.is_object()) {
-                ctx.throw_error("TypeError: Cannot use 'in' operator on non-object");
+            if (!right_value.is_function()) {
+                ctx.throw_type_error("Right-hand side of instanceof is not callable");
                 return Value(false);
             }
-            Object* obj = right_value.as_object();
+            return Value(left_value.instanceof_check(right_value));
+
+        case Operator::IN: {
+            std::string property_name = left_value.to_string();
+            if (!right_value.is_object() && !right_value.is_function()) {
+                ctx.throw_type_error("Cannot use 'in' operator to search for '" + property_name + "' in " + right_value.to_string());
+                return Value(false);
+            }
+            Object* obj = right_value.is_function()
+                ? static_cast<Object*>(right_value.as_function())
+                : right_value.as_object();
             return Value(obj->has_property(property_name));
         }
         
@@ -2583,11 +2589,13 @@ Value CallExpression::evaluate(Context& ctx) {
         
         Value function_value = ctx.get_binding(func_name);
         
-        if (function_value.is_string() && function_value.to_string().find("[Function:") == 0) {
-            std::cout << "Calling function: " << func_name << "() -> [Function execution not fully implemented yet]" << std::endl;
-            return Value(42.0);
+        if (function_value.is_function()) {
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
+            Function* func = function_value.as_function();
+            return func->call(ctx, arg_values);
         } else {
-            std::cout << "Error: '" << func_name << "' is not a function" << std::endl;
+            ctx.throw_type_error(func_name + " is not a function");
             return Value();
         }
     }
@@ -2635,7 +2643,7 @@ Value CallExpression::evaluate(Context& ctx) {
         }
     }
     
-    ctx.throw_exception(Value(std::string("Function calls not yet implemented")));
+    ctx.throw_type_error(callee_->to_string() + " is not a function");
     return Value();
 }
 
@@ -5279,7 +5287,7 @@ Value NewExpression::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
     
     if (!constructor_value.is_function()) {
-        ctx.throw_exception(Value("TypeError: " + constructor_value.to_string() + " is not a constructor"));
+        ctx.throw_type_error(constructor_value.to_string() + " is not a constructor");
         return Value();
     }
     

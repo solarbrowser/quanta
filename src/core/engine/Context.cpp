@@ -341,6 +341,22 @@ void Context::throw_range_error(const std::string& message) {
     throw_exception(Value(error.release()));
 }
 
+void Context::throw_uri_error(const std::string& message) {
+    auto error = Error::create_uri_error(message);
+    error->generate_stack_trace();
+
+    Value uri_error_ctor = get_binding("URIError");
+    if (uri_error_ctor.is_function()) {
+        Function* ctor_fn = uri_error_ctor.as_function();
+        Value proto = ctor_fn->get_property("prototype");
+        if (proto.is_object()) {
+            error->set_prototype(proto.as_object());
+        }
+    }
+
+    throw_exception(Value(error.release()));
+}
+
 void Context::register_built_in_object(const std::string& name, Object* object) {
     built_in_objects_[name] = object;
 
@@ -8571,6 +8587,7 @@ void Context::setup_global_bindings() {
     auto eval_fn = ObjectFactory::create_native_function("eval",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value();
+            if (!args[0].is_string()) return args[0];
 
             std::string code = args[0].to_string();
             if (code.empty()) return Value();
@@ -8578,11 +8595,19 @@ void Context::setup_global_bindings() {
             Engine* engine = ctx.get_engine();
             if (!engine) return Value();
 
-            auto result = engine->evaluate(code);
-            if (result.success) {
-                return result.value;
-            } else {
-                ctx.throw_syntax_error(result.error_message);
+            try {
+                auto result = engine->evaluate(code);
+                if (result.success) {
+                    return result.value;
+                } else {
+                    ctx.throw_syntax_error(result.error_message);
+                    return Value();
+                }
+            } catch (const std::exception& e) {
+                ctx.throw_syntax_error(std::string(e.what()));
+                return Value();
+            } catch (...) {
+                ctx.throw_syntax_error("Unknown syntax error");
                 return Value();
             }
         }, 1);
@@ -8620,20 +8645,40 @@ void Context::setup_global_bindings() {
         global_object_->set_property_descriptor("undefined", undef_desc);
     }
     
+    auto is_hex_digit = [](char c) -> bool {
+        return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f');
+    };
+
+    auto hex_to_int = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        return 0;
+    };
+
+    auto is_uri_reserved = [](unsigned char c) -> bool {
+        return c == ';' || c == '/' || c == '?' || c == ':' || c == '@' ||
+               c == '&' || c == '=' || c == '+' || c == '$' || c == ',' || c == '#';
+    };
+
     auto encode_uri_fn = ObjectFactory::create_native_function("encodeURI",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            if (args.empty()) return Value(std::string(""));
+            if (args.empty()) return Value(std::string("undefined"));
             std::string input = args[0].to_string();
             std::string result;
 
-            for (unsigned char c : input) {
+            for (size_t i = 0; i < input.length(); i++) {
+                unsigned char c = input[i];
+                if (c >= 0xD8 && c <= 0xDF) {
+                    ctx.throw_uri_error("URI malformed");
+                    return Value();
+                }
                 if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                     c == ';' || c == ',' || c == '/' || c == '?' || c == ':' || c == '@' ||
                     c == '&' || c == '=' || c == '+' || c == '$' || c == '-' || c == '_' ||
                     c == '.' || c == '!' || c == '~' || c == '*' || c == '\'' || c == '(' ||
                     c == ')' || c == '#') {
-                    result += c;
+                    result += static_cast<char>(c);
                 } else {
                     char hex[4];
                     snprintf(hex, sizeof(hex), "%%%02X", c);
@@ -8645,20 +8690,61 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("encodeURI", Value(encode_uri_fn.release()), false);
 
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            if (args.empty()) return Value(std::string(""));
+        [is_hex_digit, hex_to_int, is_uri_reserved](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(std::string("undefined"));
             std::string input = args[0].to_string();
             std::string result;
 
             for (size_t i = 0; i < input.length(); i++) {
-                if (input[i] == '%' && i + 2 < input.length()) {
-                    int value;
-                    if (sscanf(input.substr(i + 1, 2).c_str(), "%x", &value) == 1) {
-                        result += static_cast<char>(value);
+                if (input[i] == '%') {
+                    if (i + 2 >= input.length()) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
+                    if (!is_hex_digit(input[i + 1]) || !is_hex_digit(input[i + 2])) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
+                    int byte1 = hex_to_int(input[i + 1]) * 16 + hex_to_int(input[i + 2]);
+                    if (byte1 < 0x80) {
+                        if (is_uri_reserved(static_cast<unsigned char>(byte1))) {
+                            result += input[i];
+                            result += input[i + 1];
+                            result += input[i + 2];
+                        } else {
+                            result += static_cast<char>(byte1);
+                        }
                         i += 2;
                     } else {
-                        result += input[i];
+                        int num_bytes = 0;
+                        if ((byte1 & 0xE0) == 0xC0) num_bytes = 2;
+                        else if ((byte1 & 0xF0) == 0xE0) num_bytes = 3;
+                        else if ((byte1 & 0xF8) == 0xF0) num_bytes = 4;
+                        else {
+                            ctx.throw_uri_error("URI malformed");
+                            return Value();
+                        }
+                        std::string utf8;
+                        utf8 += static_cast<char>(byte1);
+                        for (int j = 1; j < num_bytes; j++) {
+                            if (i + 2 + j * 3 >= input.length() || input[i + j * 3] != '%') {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            size_t pos = i + j * 3;
+                            if (!is_hex_digit(input[pos + 1]) || !is_hex_digit(input[pos + 2])) {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            int cb = hex_to_int(input[pos + 1]) * 16 + hex_to_int(input[pos + 2]);
+                            if ((cb & 0xC0) != 0x80) {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            utf8 += static_cast<char>(cb);
+                        }
+                        result += utf8;
+                        i += num_bytes * 3 - 1;
                     }
                 } else {
                     result += input[i];
@@ -8670,16 +8756,20 @@ void Context::setup_global_bindings() {
 
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            if (args.empty()) return Value(std::string(""));
+            if (args.empty()) return Value(std::string("undefined"));
             std::string input = args[0].to_string();
             std::string result;
 
-            for (unsigned char c : input) {
+            for (size_t i = 0; i < input.length(); i++) {
+                unsigned char c = input[i];
+                if (c >= 0xD8 && c <= 0xDF) {
+                    ctx.throw_uri_error("URI malformed");
+                    return Value();
+                }
                 if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                     c == '-' || c == '_' || c == '.' || c == '!' || c == '~' || c == '*' ||
                     c == '\'' || c == '(' || c == ')') {
-                    result += c;
+                    result += static_cast<char>(c);
                 } else {
                     char hex[4];
                     snprintf(hex, sizeof(hex), "%%%02X", c);
@@ -8691,23 +8781,56 @@ void Context::setup_global_bindings() {
     lexical_environment_->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), false);
 
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            if (args.empty()) return Value(std::string(""));
+        [is_hex_digit, hex_to_int](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(std::string("undefined"));
             std::string input = args[0].to_string();
             std::string result;
 
             for (size_t i = 0; i < input.length(); i++) {
-                if (input[i] == '%' && i + 2 < input.length()) {
-                    int value;
-                    if (sscanf(input.substr(i + 1, 2).c_str(), "%x", &value) == 1) {
-                        result += static_cast<char>(value);
+                if (input[i] == '%') {
+                    if (i + 2 >= input.length()) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
+                    if (!is_hex_digit(input[i + 1]) || !is_hex_digit(input[i + 2])) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
+                    int byte1 = hex_to_int(input[i + 1]) * 16 + hex_to_int(input[i + 2]);
+                    if (byte1 < 0x80) {
+                        result += static_cast<char>(byte1);
                         i += 2;
                     } else {
-                        result += input[i];
+                        int num_bytes = 0;
+                        if ((byte1 & 0xE0) == 0xC0) num_bytes = 2;
+                        else if ((byte1 & 0xF0) == 0xE0) num_bytes = 3;
+                        else if ((byte1 & 0xF8) == 0xF0) num_bytes = 4;
+                        else {
+                            ctx.throw_uri_error("URI malformed");
+                            return Value();
+                        }
+                        std::string utf8;
+                        utf8 += static_cast<char>(byte1);
+                        for (int j = 1; j < num_bytes; j++) {
+                            if (i + 2 + j * 3 >= input.length() || input[i + j * 3] != '%') {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            size_t pos = i + j * 3;
+                            if (!is_hex_digit(input[pos + 1]) || !is_hex_digit(input[pos + 2])) {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            int cb = hex_to_int(input[pos + 1]) * 16 + hex_to_int(input[pos + 2]);
+                            if ((cb & 0xC0) != 0x80) {
+                                ctx.throw_uri_error("URI malformed");
+                                return Value();
+                            }
+                            utf8 += static_cast<char>(cb);
+                        }
+                        result += utf8;
+                        i += num_bytes * 3 - 1;
                     }
-                } else if (input[i] == '+') {
-                    result += ' ';
                 } else {
                     result += input[i];
                 }

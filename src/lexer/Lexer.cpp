@@ -160,7 +160,12 @@ Token Lexer::next_token() {
     }
     
     if (is_line_terminator(ch)) {
-        advance();
+        int ltb = utf8_line_terminator_bytes();
+        if (ltb > 0) {
+            for (int i = 0; i < ltb; i++) advance();
+        } else {
+            advance();
+        }
         return create_token(TokenType::NEWLINE, start);
     }
     
@@ -252,8 +257,18 @@ char Lexer::advance() {
 }
 
 void Lexer::skip_whitespace() {
-    while (!at_end() && is_whitespace(current_char())) {
-        advance();
+    while (!at_end()) {
+        char ch = current_char();
+        if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
+            advance();
+            continue;
+        }
+        int wb = utf8_whitespace_bytes();
+        if (wb > 0) {
+            for (int i = 0; i < wb; i++) advance();
+            continue;
+        }
+        break;
     }
 }
 
@@ -816,6 +831,8 @@ bool Lexer::is_identifier_start(char ch) const {
         return true;
     }
     if (uch >= 0x80) {
+        if (utf8_whitespace_bytes() > 0) return false;
+        if (utf8_line_terminator_bytes() > 0) return false;
         return true;
     }
     return false;
@@ -827,6 +844,8 @@ bool Lexer::is_identifier_part(char ch) const {
         return true;
     }
     if (uch >= 0x80) {
+        if (utf8_whitespace_bytes() > 0) return false;
+        if (utf8_line_terminator_bytes() > 0) return false;
         return true;
     }
     return false;
@@ -896,22 +915,56 @@ bool Lexer::is_regex_context() const {
     }
 }
 
-bool Lexer::is_whitespace(char ch) const {
-    unsigned char uch = static_cast<unsigned char>(ch);
+int Lexer::utf8_whitespace_bytes() const {
+    if (position_ >= source_.length()) return 0;
+    unsigned char b1 = static_cast<unsigned char>(source_[position_]);
+    if (b1 == 0xC2 && position_ + 1 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        if (b2 == 0xA0) return 2;
+    }
+    if (b1 == 0xE2 && position_ + 2 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+        if (b2 == 0x80 && b3 >= 0x80 && b3 <= 0x8B) return 3;
+        if (b2 == 0x80 && b3 == 0xAF) return 3;
+        if (b2 == 0x81 && b3 == 0x9F) return 3;
+    }
+    if (b1 == 0xE3 && position_ + 2 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+        if (b2 == 0x80 && b3 == 0x80) return 3;
+    }
+    if (b1 == 0xEF && position_ + 2 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+        if (b2 == 0xBB && b3 == 0xBF) return 3;
+    }
+    return 0;
+}
 
+int Lexer::utf8_line_terminator_bytes() const {
+    if (position_ >= source_.length()) return 0;
+    unsigned char b1 = static_cast<unsigned char>(source_[position_]);
+    if (b1 == 0xE2 && position_ + 2 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+        if (b2 == 0x80 && (b3 == 0xA8 || b3 == 0xA9)) return 3;
+    }
+    return 0;
+}
+
+bool Lexer::is_whitespace(char ch) const {
     if (ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\r') {
         return true;
     }
-
-    if (uch == 0xC2 || uch == 0xA0) {
-        return true;
-    }
-
+    if (utf8_whitespace_bytes() > 0) return true;
     return false;
 }
 
 bool Lexer::is_line_terminator(char ch) const {
-    return ch == '\n' || ch == '\r';
+    if (ch == '\n' || ch == '\r') return true;
+    if (utf8_line_terminator_bytes() > 0) return true;
+    return false;
 }
 
 double Lexer::parse_decimal_literal() {
