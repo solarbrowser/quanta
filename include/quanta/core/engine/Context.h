@@ -149,6 +149,7 @@ public:
     void throw_reference_error(const std::string& message);
     void throw_syntax_error(const std::string& message);
     void throw_range_error(const std::string& message);
+    void throw_uri_error(const std::string& message);
     
     bool has_return_value() const { return has_return_value_; }
     const Value& get_return_value() const { return return_value_; }

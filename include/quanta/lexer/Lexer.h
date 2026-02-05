@@ -93,6 +93,8 @@ private:
     bool is_octal_digit(char ch) const;
     bool is_whitespace(char ch) const;
     bool is_line_terminator(char ch) const;
+    int utf8_whitespace_bytes() const;
+    int utf8_line_terminator_bytes() const;
     bool is_regex_context() const;
     bool is_at_line_start() const;
     
