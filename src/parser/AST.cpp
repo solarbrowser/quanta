@@ -7674,7 +7674,7 @@ Value ThrowStatement::evaluate(Context& ctx) {
     Value exception_value = expression_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
-    ctx.throw_exception(exception_value);
+    ctx.throw_exception(exception_value, true);
     return Value();
 }
 

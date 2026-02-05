@@ -141,7 +141,7 @@ public:
 
     bool has_exception() const { return has_exception_; }
     const Value& get_exception() const { return current_exception_; }
-    void throw_exception(const Value& exception);
+    void throw_exception(const Value& exception, bool raw = false);
     void clear_exception();
     
     void throw_error(const std::string& message);
