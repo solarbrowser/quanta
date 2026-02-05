@@ -174,9 +174,8 @@ StackFrame* Context::current_frame() const {
     return call_stack_.back().get();
 }
 
-void Context::throw_exception(const Value& exception) {
-    // If exception is a string, convert it to an Error object
-    if (exception.is_string()) {
+void Context::throw_exception(const Value& exception, bool raw) {
+    if (exception.is_string() && !raw) {
         std::string error_msg = exception.to_string();
 
         // Parse error type from message prefix (e.g., "TypeError: message")
@@ -1493,6 +1492,23 @@ void Context::initialize_built_ins() {
     object_prototype->set_property("hasOwnProperty", Value(proto_hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("isPrototypeOf", Value(proto_isPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
     object_prototype->set_property("propertyIsEnumerable", Value(proto_propertyIsEnumerable_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto obj_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_value = ctx.get_binding("this");
+            if (this_value.is_object()) {
+                Object* obj = this_value.as_object();
+                Value toString_method = obj->get_property("toString");
+                if (toString_method.is_function()) {
+                    Function* fn = toString_method.as_function();
+                    std::vector<Value> empty_args;
+                    return fn->call(ctx, empty_args, this_value);
+                }
+            }
+            return Value(this_value.to_string());
+        });
+    object_prototype->set_property("toLocaleString", Value(obj_toLocaleString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Object* object_proto_ptr = object_prototype.get();
     ObjectFactory::set_object_prototype(object_proto_ptr);
@@ -3538,13 +3554,31 @@ void Context::initialize_built_ins() {
     PropertyDescriptor endsWith_desc(Value(endsWith_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("endsWith", endsWith_desc);
-    
+
+    // Helper to convert this value to string for String.prototype methods
+    auto toString_helper = [](Context& ctx, const Value& this_value) -> std::string {
+        if (this_value.is_object() || this_value.is_function()) {
+            Object* obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
+            Value toString_method = obj->get_property("toString");
+            if (!toString_method.is_undefined() && toString_method.is_function()) {
+                Function* toString_fn = toString_method.as_function();
+                std::vector<Value> empty_args;
+                Value result = toString_fn->call(ctx, empty_args, this_value);
+                if (ctx.has_exception()) {
+                    return "";
+                }
+                return result.to_string();
+            }
+        }
+        return this_value.to_string();
+    };
+
     auto match_fn = ObjectFactory::create_native_function("match",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str = "";
             try {
                 Value this_value = ctx.get_binding("this");
-                str = this_value.to_string();
+                str = toString_helper(ctx, this_value);
             } catch (...) {
                 return Value();
             }
@@ -3646,11 +3680,11 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("matchAll", matchAll_desc);
 
     auto search_fn = ObjectFactory::create_native_function("search",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str = "";
             try {
                 Value this_value = ctx.get_binding("this");
-                str = this_value.to_string();
+                str = toString_helper(ctx, this_value);
             } catch (...) {
                 return Value(-1.0);
             }
@@ -3724,11 +3758,11 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("search", search_desc);
 
     auto replace_fn = ObjectFactory::create_native_function("replace",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string str = "";
             try {
                 Value this_value = ctx.get_binding("this");
-                str = this_value.to_string();
+                str = toString_helper(ctx, this_value);
             } catch (...) {
                 return Value(std::string(""));
             }
@@ -4017,26 +4051,6 @@ void Context::initialize_built_ins() {
     PropertyDescriptor localeCompare_desc(Value(localeCompare_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("localeCompare", localeCompare_desc);
-
-
-    // Helper to convert this value to string for String.prototype methods
-    auto toString_helper = [](Context& ctx, const Value& this_value) -> std::string {
-        // ES1: If this is an object, try to call its toString method
-        if (this_value.is_object() || this_value.is_function()) {
-            Object* obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
-            Value toString_method = obj->get_property("toString");
-            if (!toString_method.is_undefined() && toString_method.is_function()) {
-                Function* toString_fn = toString_method.as_function();
-                std::vector<Value> empty_args;
-                Value result = toString_fn->call(ctx, empty_args, this_value);
-                if (ctx.has_exception()) {
-                    return "";
-                }
-                return result.to_string();
-            }
-        }
-        return this_value.to_string();
-    };
 
     auto charAt_fn = ObjectFactory::create_native_function("charAt",
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -4347,6 +4361,31 @@ void Context::initialize_built_ins() {
     PropertyDescriptor toLocaleUpperCase_desc(Value(toLocaleUpperCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toLocaleUpperCase", toLocaleUpperCase_desc);
+
+    auto str_slice_fn = ObjectFactory::create_native_function("slice",
+        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = toString_helper(ctx, this_value);
+            int len = static_cast<int>(str.length());
+
+            if (args.empty()) return Value(str);
+
+            int start = static_cast<int>(args[0].to_number());
+            int end = (args.size() > 1 && !args[1].is_undefined())
+                ? static_cast<int>(args[1].to_number()) : len;
+
+            if (start < 0) start = std::max(len + start, 0);
+            else start = std::min(start, len);
+
+            if (end < 0) end = std::max(len + end, 0);
+            else end = std::min(end, len);
+
+            if (start >= end) return Value(std::string(""));
+            return Value(str.substr(start, end - start));
+        }, 2);
+    PropertyDescriptor str_slice_desc(Value(str_slice_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("slice", str_slice_desc);
 
     // ES1: 15.5.4.7 String.prototype.lastIndexOf(searchString, position)
     auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
@@ -5416,23 +5455,71 @@ void Context::initialize_built_ins() {
             Value this_val = ctx.get_binding("this");
             double num = this_val.to_number();
 
-            int precision = 0;
-            if (!args.empty() && !args[0].is_undefined()) {
-                precision = static_cast<int>(args[0].to_number());
-                if (precision < 0 || precision > 100) {
+            if (std::isnan(num)) return Value(std::string("NaN"));
+            if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
+
+            bool has_frac = !args.empty() && !args[0].is_undefined();
+            int frac = 0;
+            if (has_frac) {
+                frac = static_cast<int>(args[0].to_number());
+                if (frac < 0 || frac > 100) {
                     ctx.throw_exception(Value(std::string("RangeError: toExponential() precision out of range")));
                     return Value();
                 }
             }
 
-            char buffer[128];
-            if (args.empty() || args[0].is_undefined()) {
-                snprintf(buffer, sizeof(buffer), "%e", num);
-            } else {
-                std::string format = "%." + std::to_string(precision) + "e";
-                snprintf(buffer, sizeof(buffer), format.c_str(), num);
+            bool negative = num < 0;
+            double abs_num = negative ? -num : num;
+
+            int exp = 0;
+            if (abs_num != 0) {
+                exp = static_cast<int>(std::floor(std::log10(abs_num)));
+                double test_m = abs_num / std::pow(10.0, exp);
+                if (test_m >= 10.0) { exp++; }
+                else if (test_m < 1.0) { exp--; }
             }
-            return Value(std::string(buffer));
+
+            double mantissa = (abs_num == 0) ? 0.0 : abs_num / std::pow(10.0, exp);
+
+            if (!has_frac) {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "%.17e", abs_num);
+                std::string s(buf);
+                size_t e_pos = s.find('e');
+                if (e_pos != std::string::npos) {
+                    std::string m_part = s.substr(0, e_pos);
+                    if (m_part.find('.') != std::string::npos) {
+                        size_t last = m_part.find_last_not_of('0');
+                        if (last != std::string::npos && m_part[last] == '.')
+                            m_part = m_part.substr(0, last);
+                        else if (last != std::string::npos)
+                            m_part = m_part.substr(0, last + 1);
+                    }
+                    int parsed_exp = std::stoi(s.substr(e_pos + 1));
+                    std::string result;
+                    if (negative) result += "-";
+                    result += m_part;
+                    result += "e";
+                    result += (parsed_exp >= 0) ? "+" : "-";
+                    result += std::to_string(std::abs(parsed_exp));
+                    return Value(result);
+                }
+            }
+
+            double factor = std::pow(10.0, frac);
+            mantissa = std::floor(mantissa * factor + 0.5) / factor;
+            if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
+
+            char buf[64];
+            snprintf(buf, sizeof(buf), ("%." + std::to_string(frac) + "f").c_str(), mantissa);
+
+            std::string result;
+            if (negative) result += "-";
+            result += buf;
+            result += "e";
+            result += (exp >= 0) ? "+" : "-";
+            result += std::to_string(std::abs(exp));
+            return Value(result);
         });
     PropertyDescriptor toExponential_desc(Value(toExponential_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -5452,10 +5539,22 @@ void Context::initialize_built_ins() {
                 }
             }
 
-            char buffer[128];
+            if (std::isnan(num)) return Value(std::string("NaN"));
+            if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
+
+            bool negative = num < 0;
+            double abs_num = negative ? -num : num;
+            double factor = std::pow(10.0, precision);
+            abs_num = std::floor(abs_num * factor + 0.5) / factor;
+
+            char buffer[256];
             std::string format = "%." + std::to_string(precision) + "f";
-            snprintf(buffer, sizeof(buffer), format.c_str(), num);
-            return Value(std::string(buffer));
+            snprintf(buffer, sizeof(buffer), format.c_str(), abs_num);
+
+            std::string result;
+            if (negative && abs_num != 0) result += "-";
+            result += buffer;
+            return Value(result);
         });
     PropertyDescriptor toFixed_desc(Value(toFixed_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -5467,7 +5566,9 @@ void Context::initialize_built_ins() {
             double num = this_val.to_number();
 
             if (args.empty() || args[0].is_undefined()) {
-                return Value(std::to_string(num));
+                if (std::isnan(num)) return Value(std::string("NaN"));
+                if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
+                return Value(this_val.to_string());
             }
 
             int precision = static_cast<int>(args[0].to_number());
@@ -5476,10 +5577,61 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            char buffer[128];
-            std::string format = "%." + std::to_string(precision - 1) + "g";
-            snprintf(buffer, sizeof(buffer), format.c_str(), num);
-            return Value(std::string(buffer));
+            if (std::isnan(num)) return Value(std::string("NaN"));
+            if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
+
+            bool negative = num < 0;
+            double abs_num = negative ? -num : num;
+
+            int exp = 0;
+            if (abs_num != 0) {
+                exp = static_cast<int>(std::floor(std::log10(abs_num)));
+                double test_m = abs_num / std::pow(10.0, exp);
+                if (test_m >= 10.0) exp++;
+                else if (test_m < 1.0) exp--;
+            }
+
+            char buf[256];
+            if (exp >= 0 && exp < precision) {
+                int frac_digits = precision - exp - 1;
+                double factor = std::pow(10.0, frac_digits);
+                double rounded = std::floor(abs_num * factor + 0.5) / factor;
+                snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), rounded);
+                std::string result;
+                if (negative) result += "-";
+                result += buf;
+                return Value(result);
+            } else if (exp < 0 && exp >= -6) {
+                int frac_digits = precision - exp - 1;
+                double factor = std::pow(10.0, frac_digits);
+                double rounded = std::floor(abs_num * factor + 0.5) / factor;
+                snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), rounded);
+                std::string result;
+                if (negative) result += "-";
+                result += buf;
+                return Value(result);
+            } else {
+                int frac_digits = precision - 1;
+                double mantissa = (abs_num == 0) ? 0.0 : abs_num / std::pow(10.0, exp);
+                if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
+                else if (mantissa < 1.0 && mantissa > 0) { mantissa *= 10.0; exp--; }
+                double factor = std::pow(10.0, frac_digits);
+                mantissa = std::floor(mantissa * factor + 0.5) / factor;
+                if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
+
+                if (frac_digits > 0)
+                    snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), mantissa);
+                else
+                    snprintf(buf, sizeof(buf), "%.0f", mantissa);
+
+                std::string result;
+                if (negative) result += "-";
+                result += buf;
+                result += "e";
+                result += (exp >= 0) ? "+" : "-";
+                result += std::to_string(std::abs(exp));
+                return Value(result);
+            }
         });
     PropertyDescriptor toPrecision_desc(Value(toPrecision_fn.release()),
         PropertyAttributes::BuiltinFunction);
