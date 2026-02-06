@@ -163,6 +163,9 @@ Token Lexer::next_token() {
         int ltb = utf8_line_terminator_bytes();
         if (ltb > 0) {
             for (int i = 0; i < ltb; i++) advance();
+            // Multi-byte line terminators (U+2028, U+2029) must update line position
+            current_position_.line++;
+            current_position_.column = 1;
         } else {
             advance();
         }
