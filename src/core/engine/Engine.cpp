@@ -381,34 +381,8 @@ void Engine::setup_built_in_objects() {
 }
 
 void Engine::setup_built_in_functions() {
-    register_function("eval", [this](const std::vector<Value>& args) -> Value {
-        if (args.empty()) {
-            return Value();
-        }
-        
-        std::string code = args[0].to_string();
-        if (code.empty()) {
-            return Value();
-        }
-        
-        try {
-            Result result = execute(code);
-            if (result.success) {
-                return result.value;
-            } else {
-                throw std::runtime_error("SyntaxError: " + result.error_message);
-            }
-        } catch (const std::runtime_error& e) {
-            std::string error_msg = e.what();
-            if (error_msg.find("SyntaxError:") == 0) {
-                throw e;
-            }
-            throw std::runtime_error("EvalError: " + error_msg);
-        } catch (const std::exception& e) {
-            throw std::runtime_error("EvalError: " + std::string(e.what()));
-        }
-    });
-    
+    // eval is registered in Context.cpp with proper exception handling
+
     register_function("parseInt", [](const std::vector<Value>& args) -> Value {
         if (args.empty()) {
             return Value::nan();

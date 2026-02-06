@@ -382,8 +382,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         // Write back modified closure variables to this function object
-        auto prop_keys = this->get_own_property_keys();
-        for (const auto& key : prop_keys) {
+        auto prop_keys2 = this->get_own_property_keys();
+        for (const auto& key : prop_keys2) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
                 std::string var_name = key.substr(10);
 

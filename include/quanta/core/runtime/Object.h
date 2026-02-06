@@ -410,7 +410,7 @@ public:
     Value construct(Context& ctx, const std::vector<Value>& args);
     
     Value get_property(const std::string& key) const override;
-    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::None) override;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
 
     Object* get_function_prototype() const { return prototype_; }
     void set_function_prototype(Object* proto) { prototype_ = proto; }

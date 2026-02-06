@@ -252,15 +252,15 @@ Value Object::get_own_property(const std::string& key) const {
     if (is_array_index(key, &index)) {
         return get_element(index);
     }
-    
-    
+
+
     if (header_.shape && header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
             return properties_[info.offset];
         }
     }
-    
+
     if (overflow_properties_) {
         auto it = overflow_properties_->find(key);
         if (it != overflow_properties_->end()) {
