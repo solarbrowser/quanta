@@ -2546,7 +2546,8 @@ Value CallExpression::evaluate(Context& ctx) {
     }
 
     Value callee_value = callee_->evaluate(ctx);
-    
+    if (ctx.has_exception()) return Value();
+
     if (callee_value.is_undefined() && callee_value.is_function()) {
         throw std::runtime_error("Invalid Value state: NaN-boxing corruption detected");
     }

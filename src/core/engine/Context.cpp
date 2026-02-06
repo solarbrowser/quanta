@@ -8669,9 +8669,13 @@ void Context::setup_global_bindings() {
 
             for (size_t i = 0; i < input.length(); i++) {
                 unsigned char c = input[i];
-                if (c >= 0xD8 && c <= 0xDF) {
-                    ctx.throw_uri_error("URI malformed");
-                    return Value();
+                // Detect UTF-8 encoded surrogates (U+D800-U+DFFF): 0xED 0xA0-0xBF ...
+                if (c == 0xED && i + 1 < input.length()) {
+                    unsigned char c2 = static_cast<unsigned char>(input[i + 1]);
+                    if (c2 >= 0xA0 && c2 <= 0xBF) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
                 }
                 if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                     c == ';' || c == ',' || c == '/' || c == '?' || c == ':' || c == '@' ||
@@ -8762,9 +8766,13 @@ void Context::setup_global_bindings() {
 
             for (size_t i = 0; i < input.length(); i++) {
                 unsigned char c = input[i];
-                if (c >= 0xD8 && c <= 0xDF) {
-                    ctx.throw_uri_error("URI malformed");
-                    return Value();
+                // Detect UTF-8 encoded surrogates (U+D800-U+DFFF): 0xED 0xA0-0xBF ...
+                if (c == 0xED && i + 1 < input.length()) {
+                    unsigned char c2 = static_cast<unsigned char>(input[i + 1]);
+                    if (c2 >= 0xA0 && c2 <= 0xBF) {
+                        ctx.throw_uri_error("URI malformed");
+                        return Value();
+                    }
                 }
                 if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
                     c == '-' || c == '_' || c == '.' || c == '!' || c == '~' || c == '*' ||

@@ -332,6 +332,56 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
         Value result = body_->evaluate(function_context);
 
+        // Re-capture closure variables on function objects in this scope.
+        // This handles the case where function declarations are hoisted before
+        // var initializations, so their __closure_ properties had stale values.
+        {
+            auto var_env = function_context.get_variable_environment();
+            if (var_env) {
+                auto binding_names = var_env->get_binding_names();
+
+                std::vector<std::pair<std::string, Value>> var_values;
+                std::vector<Function*> func_objects;
+
+                for (const auto& bname : binding_names) {
+                    if (bname == "this" || bname == "arguments") continue;
+                    Value val = function_context.get_binding(bname);
+                    if (val.is_function()) {
+                        func_objects.push_back(val.as_function());
+                    } else {
+                        var_values.push_back({bname, val});
+                    }
+                }
+
+                for (auto* func : func_objects) {
+                    for (auto& [vname, vval] : var_values) {
+                        func->set_property("__closure_" + vname, vval);
+                    }
+                }
+
+                // Also update the return value if it's a function not already in scope
+                if (function_context.has_return_value()) {
+                    Value ret_val = function_context.get_return_value();
+                    if (ret_val.is_function()) {
+                        Function* ret_func = ret_val.as_function();
+                        bool already_updated = false;
+                        for (auto* func : func_objects) {
+                            if (func == ret_func) {
+                                already_updated = true;
+                                break;
+                            }
+                        }
+                        if (!already_updated) {
+                            for (auto& [vname, vval] : var_values) {
+                                ret_func->set_property("__closure_" + vname, vval);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Write back modified closure variables to this function object
         auto prop_keys = this->get_own_property_keys();
         for (const auto& key : prop_keys) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
@@ -339,25 +389,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
                 if (function_context.has_binding(var_name)) {
                     Value current_value = function_context.get_binding(var_name);
-                    Value original_value = this->get_property(key);
-
-                    bool values_different = false;
-                    if (current_value.get_type() != original_value.get_type()) {
-                        values_different = true;
-                    } else if (current_value.is_number() && original_value.is_number()) {
-                        values_different = (current_value.as_number() != original_value.as_number());
-                    } else if (current_value.is_string() && original_value.is_string()) {
-                        values_different = (current_value.as_string() != original_value.as_string());
-                    } else if (current_value.is_boolean() && original_value.is_boolean()) {
-                        values_different = (current_value.as_boolean() != original_value.as_boolean());
-                    } else {
-                        values_different = true;
-                    }
-
-                    if (values_different) {
-                        PropertyDescriptor new_desc(current_value, PropertyAttributes::None);
-                        this->set_property_descriptor(key, new_desc);
-                    }
+                    this->set_property(key, current_value);
                 }
             }
         }
