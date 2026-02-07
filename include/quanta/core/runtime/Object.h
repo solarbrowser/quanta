@@ -366,6 +366,7 @@ private:
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
     bool is_native_;
     bool is_constructor_;  // Whether this function has [[Construct]] internal method
+    bool is_arrow_;        // Arrow functions have lexical this binding
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
@@ -400,6 +401,8 @@ public:
     bool is_native() const { return is_native_; }
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
+    bool is_arrow() const { return is_arrow_; }
+    void set_is_arrow(bool value) { is_arrow_ = value; }
     
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }
