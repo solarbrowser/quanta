@@ -109,6 +109,10 @@ std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) con
 }
 
 Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor Map requires 'new'");
+        return Value();
+    }
     auto map = std::make_unique<Map>();
     
     if (Map::prototype_object) {
@@ -287,7 +291,7 @@ Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Map::setup_map_prototype(Context& ctx) {
-    auto map_constructor_fn = ObjectFactory::create_native_function("Map", map_constructor);
+    auto map_constructor_fn = ObjectFactory::create_native_constructor("Map", map_constructor, 0);
     
     auto map_prototype = ObjectFactory::create_object();
     
@@ -311,6 +315,65 @@ void Map::setup_map_prototype(Context& ctx) {
     map_prototype->set_property("size", Value(size_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
+    // forEach method
+    auto forEach_fn = ObjectFactory::create_native_function("forEach",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Map) {
+                ctx.throw_type_error("Map.prototype.forEach called on non-Map");
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("forEach requires a callback function");
+                return Value();
+            }
+            Map* map = static_cast<Map*>(obj);
+            Function* callback = args[0].as_function();
+            Value this_arg = args.size() > 1 ? args[1] : Value();
+            auto entries = map->entries();
+            for (const auto& entry : entries) {
+                std::vector<Value> cb_args = {entry.second, entry.first, Value(obj)};
+                callback->call(ctx, cb_args, this_arg);
+                if (ctx.has_exception()) return Value();
+            }
+            return Value();
+        }, 1);
+    map_prototype->set_property("forEach", Value(forEach_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // keys method
+    auto keys_fn = ObjectFactory::create_native_function("keys",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Map) {
+                ctx.throw_type_error("Map.prototype.keys called on non-Map");
+                return Value();
+            }
+            Map* map = static_cast<Map*>(obj);
+            auto iterator = std::make_unique<MapIterator>(map, MapIterator::Kind::Keys);
+            return Value(iterator.release());
+        }, 0);
+    map_prototype->set_property("keys", Value(keys_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // values method
+    auto values_fn = ObjectFactory::create_native_function("values",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Map) {
+                ctx.throw_type_error("Map.prototype.values called on non-Map");
+                return Value();
+            }
+            Map* map = static_cast<Map*>(obj);
+            auto iterator = std::make_unique<MapIterator>(map, MapIterator::Kind::Values);
+            return Value(iterator.release());
+        }, 0);
+    map_prototype->set_property("values", Value(values_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // entries method + Symbol.iterator
     auto entries_fn = ObjectFactory::create_native_function("entries", map_iterator_method, 0);
     map_prototype->set_property("entries", Value(entries_fn.get()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -438,6 +501,10 @@ std::vector<Value>::const_iterator Set::find_value(const Value& value) const {
 }
 
 Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor Set requires 'new'");
+        return Value();
+    }
     auto set = std::make_unique<Set>();
     
     if (Set::prototype_object) {
@@ -577,7 +644,7 @@ Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Set::setup_set_prototype(Context& ctx) {
-    auto set_constructor_fn = ObjectFactory::create_native_function("Set", set_constructor);
+    auto set_constructor_fn = ObjectFactory::create_native_constructor("Set", set_constructor, 0);
     
     auto set_prototype = ObjectFactory::create_object();
     
@@ -598,6 +665,68 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("size", Value(size_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
+    // forEach method
+    auto forEach_fn = ObjectFactory::create_native_function("forEach",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.forEach called on non-Set");
+                return Value();
+            }
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("forEach requires a callback function");
+                return Value();
+            }
+            Set* set = static_cast<Set*>(obj);
+            Function* callback = args[0].as_function();
+            Value this_arg = args.size() > 1 ? args[1] : Value();
+            auto vals = set->values();
+            for (const auto& val : vals) {
+                std::vector<Value> cb_args = {val, val, Value(obj)};
+                callback->call(ctx, cb_args, this_arg);
+                if (ctx.has_exception()) return Value();
+            }
+            return Value();
+        }, 1);
+    set_prototype->set_property("forEach", Value(forEach_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // values method
+    auto values_fn = ObjectFactory::create_native_function("values",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.values called on non-Set");
+                return Value();
+            }
+            Set* set = static_cast<Set*>(obj);
+            auto iterator = std::make_unique<SetIterator>(set, SetIterator::Kind::Values);
+            return Value(iterator.release());
+        }, 0);
+    set_prototype->set_property("values", Value(values_fn.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // keys is same as values for Set
+    set_prototype->set_property("keys", Value(values_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    // entries method
+    auto entries_fn = ObjectFactory::create_native_function("entries",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.entries called on non-Set");
+                return Value();
+            }
+            Set* set = static_cast<Set*>(obj);
+            auto iterator = std::make_unique<SetIterator>(set, SetIterator::Kind::Entries);
+            return Value(iterator.release());
+        }, 0);
+    set_prototype->set_property("entries", Value(entries_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
@@ -643,7 +772,7 @@ bool WeakMap::delete_key(Object* key) {
 }
 
 void WeakMap::setup_weakmap_prototype(Context& ctx) {
-    auto weakmap_constructor_fn = ObjectFactory::create_native_function("WeakMap", weakmap_constructor);
+    auto weakmap_constructor_fn = ObjectFactory::create_native_constructor("WeakMap", weakmap_constructor, 0);
     
     auto weakmap_prototype = ObjectFactory::create_object();
     
@@ -689,7 +818,7 @@ bool WeakSet::delete_value(Object* value) {
 }
 
 void WeakSet::setup_weakset_prototype(Context& ctx) {
-    auto weakset_constructor_fn = ObjectFactory::create_native_function("WeakSet", weakset_constructor);
+    auto weakset_constructor_fn = ObjectFactory::create_native_constructor("WeakSet", weakset_constructor, 0);
     
     auto weakset_prototype = ObjectFactory::create_object();
     
@@ -711,6 +840,10 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
 }
 
 Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor WeakMap requires 'new'");
+        return Value();
+    }
     (void)args;
     auto weakmap = std::make_unique<WeakMap>();
     
@@ -829,6 +962,10 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor WeakSet requires 'new'");
+        return Value();
+    }
     (void)args;
     auto weakset = std::make_unique<WeakSet>();
     
