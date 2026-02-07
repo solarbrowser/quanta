@@ -583,8 +583,6 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
     }
 
-    (*descriptors_)[key] = desc;
-
     if (desc.is_data_descriptor()) {
         uint32_t index;
         if (is_array_index(key, &index)) {
@@ -593,16 +591,28 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             }
             elements_[index] = desc.get_value();
         } else {
+            // Use set_property for proper array length handling etc.
             set_property(key, desc.get_value(), desc.get_attributes());
         }
-    } else if (desc.is_generic_descriptor()) {
+    } else if (desc.is_accessor_descriptor() || desc.is_generic_descriptor()) {
+        // Ensure the property exists in shape so has_own_property works
         uint32_t index;
         if (is_array_index(key, &index)) {
             if (index >= elements_.size()) {
                 elements_.resize(index + 1);
             }
+        } else if (!has_own_property(key)) {
+            if (store_in_shape(key, Value(), desc.get_attributes())) {
+                // stored in shape
+            } else {
+                store_in_overflow(key, Value());
+            }
         }
     }
+
+    // Store the authoritative descriptor AFTER set_property,
+    // so it doesn't get overwritten
+    (*descriptors_)[key] = desc;
 
     return true;
 }
@@ -1437,6 +1447,8 @@ void PropertyDescriptor::set_writable(bool writable) {
         attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Writable);
     }
     has_writable_ = true;
+    // ES5 8.10: A descriptor with [[Writable]] is a data descriptor
+    if (type_ == Generic) type_ = Data;
 }
 
 void PropertyDescriptor::set_enumerable(bool enumerable) {

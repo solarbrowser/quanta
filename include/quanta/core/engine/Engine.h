@@ -82,7 +82,7 @@ public:
     Result execute(const std::string& source, const std::string& filename);
     Result execute_file(const std::string& filename);
     
-    Result evaluate(const std::string& expression);
+    Result evaluate(const std::string& expression, bool strict_mode = false);
     
     Result load_module(const std::string& module_path);
     Result import_module(const std::string& module_name);

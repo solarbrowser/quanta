@@ -123,15 +123,20 @@ Engine::Result Engine::execute_file(const std::string& filename) {
     return execute(buffer.str(), filename);
 }
 
-Engine::Result Engine::evaluate(const std::string& expression) {
+Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode) {
     if (!initialized_) {
         return Result("Engine not initialized");
     }
-    
+
     try {
-        Lexer lexer(expression);
-        Parser parser(lexer.tokenize());
-        
+        Lexer::LexerOptions lex_opts;
+        lex_opts.strict_mode = strict_mode;
+        Lexer lexer(expression, lex_opts);
+
+        Parser::ParseOptions parse_opts;
+        parse_opts.strict_mode = strict_mode;
+        Parser parser(lexer.tokenize(), parse_opts);
+
         auto program_ast = parser.parse_program();
         if (parser.has_errors()) {
             auto& errors = parser.get_errors();
@@ -178,7 +183,7 @@ Engine::Result Engine::evaluate(const std::string& expression) {
 
             return Result(result);
         } else {
-            Parser expr_parser(lexer.tokenize());
+            Parser expr_parser(lexer.tokenize(), parse_opts);
             auto expr_ast = expr_parser.parse_expression();
             if (!expr_ast) {
                 return Result("Parse error: Failed to parse expression");
