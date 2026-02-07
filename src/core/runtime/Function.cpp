@@ -31,17 +31,17 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
-    
+
     this->set_property("prototype", Value(prototype_));
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
-    
+
 }
 
 Function::Function(const std::string& name,
@@ -50,7 +50,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
@@ -70,7 +70,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -91,7 +91,7 @@ Function::Function(const std::string& name,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -203,7 +203,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
     Value actual_this = this_value;
 
-    if (!function_context.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
+    // Arrow functions use their lexical this, ignoring the passed this_value
+    if (is_arrow_ && this->has_property("__arrow_this__")) {
+        actual_this = this->get_property("__arrow_this__");
+    }
+
+    if (!is_arrow_ && !function_context.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
         Object* global = function_context.get_global_object();
         if (global) {
             actual_this = Value(global);
@@ -275,45 +280,49 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
     
-    auto arguments_obj = ObjectFactory::create_array(args.size());
-    for (size_t i = 0; i < args.size(); i++) {
-        arguments_obj->set_element(i, args[i]);
+    // Arrow functions don't have their own arguments object - they use the
+    // lexical arguments captured from the enclosing scope via __closure_arguments
+    if (!is_arrow_) {
+        auto arguments_obj = ObjectFactory::create_array(args.size());
+        for (size_t i = 0; i < args.size(); i++) {
+            arguments_obj->set_element(i, args[i]);
+        }
+        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        // ES5: Arguments object [[Class]] is "Arguments"
+        arguments_obj->set_type(Object::ObjectType::Arguments);
+
+        // In strict mode, arguments.callee and arguments.caller throw TypeError
+        if (function_context.is_strict_mode()) {
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                    return Value();
+                });
+
+            PropertyDescriptor callee_desc;
+            callee_desc.set_getter(thrower.get());
+            callee_desc.set_setter(thrower.get());
+            callee_desc.set_configurable(false);
+            callee_desc.set_enumerable(false);
+            arguments_obj->set_property_descriptor("callee", callee_desc);
+
+            PropertyDescriptor caller_desc;
+            caller_desc.set_getter(thrower.get());
+            caller_desc.set_setter(thrower.get());
+            caller_desc.set_configurable(false);
+            caller_desc.set_enumerable(false);
+            arguments_obj->set_property_descriptor("caller", caller_desc);
+
+            thrower.release();
+        } else {
+            // ES1: In non-strict mode, arguments.callee is the function itself
+            PropertyDescriptor callee_desc(Value(this), PropertyAttributes::Default);
+            arguments_obj->set_property_descriptor("callee", callee_desc);
+        }
+
+        function_context.create_binding("arguments", Value(arguments_obj.release()), false);
     }
-    arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-    // ES5: Arguments object [[Class]] is "Arguments"
-    arguments_obj->set_type(Object::ObjectType::Arguments);
-
-    // In strict mode, arguments.callee and arguments.caller throw TypeError
-    if (function_context.is_strict_mode()) {
-        auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args;
-                ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                return Value();
-            });
-
-        PropertyDescriptor callee_desc;
-        callee_desc.set_getter(thrower.get());
-        callee_desc.set_setter(thrower.get());
-        callee_desc.set_configurable(false);
-        callee_desc.set_enumerable(false);
-        arguments_obj->set_property_descriptor("callee", callee_desc);
-
-        PropertyDescriptor caller_desc;
-        caller_desc.set_getter(thrower.get());
-        caller_desc.set_setter(thrower.get());
-        caller_desc.set_configurable(false);
-        caller_desc.set_enumerable(false);
-        arguments_obj->set_property_descriptor("caller", caller_desc);
-
-        thrower.release();
-    } else {
-        // ES1: In non-strict mode, arguments.callee is the function itself
-        PropertyDescriptor callee_desc(Value(this), PropertyAttributes::Default);
-        arguments_obj->set_property_descriptor("callee", callee_desc);
-    }
-
-    function_context.create_binding("arguments", Value(arguments_obj.release()), false);
 
     // Use actual_this which respects strict mode (can be undefined in strict mode)
     function_context.create_binding("this", actual_this, false);

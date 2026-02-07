@@ -4746,16 +4746,17 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         
         std::vector<std::unique_ptr<Identifier>> targets;
         std::vector<std::pair<std::string, std::string>> property_mappings;
-        
+        std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> obj_default_exprs;
+
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
             if (current_token().get_type() == TokenType::ELLIPSIS) {
                 advance();
-                
+
                 if (current_token().get_type() != TokenType::IDENTIFIER) {
                     add_error("Expected identifier after '...' in object destructuring");
                     return nullptr;
                 }
-                
+
                 auto rest_id = std::make_unique<Identifier>(
                     "..." + current_token().get_value(),
                     current_token().get_start(),
@@ -4763,13 +4764,13 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 );
                 targets.push_back(std::move(rest_id));
                 advance();
-                
+
                 if (match(TokenType::COMMA)) {
                     add_error("Rest element must be last element in object destructuring");
                     return nullptr;
                 }
                 break;
-                
+
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                 auto id = std::make_unique<Identifier>(
                     current_token().get_value(),
@@ -4778,7 +4779,7 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 );
                 targets.push_back(std::move(id));
                 advance();
-                
+
                 if (match(TokenType::COLON)) {
                     advance();
                     
@@ -4871,10 +4872,32 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         
                         property_mappings.emplace_back(original_name, new_name);
                         advance();
+
+                        // Handle default value after renamed identifier: {x: a = expr}
+                        if (match(TokenType::ASSIGN)) {
+                            advance();
+                            auto default_expr = parse_assignment_expression();
+                            if (!default_expr) {
+                                add_error("Expected expression after '=' in object destructuring default");
+                                return nullptr;
+                            }
+                            size_t target_index = targets.size() - 1;
+                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
+                        }
                     } else {
                         add_error("Expected identifier or nested pattern after ':'");
                         return nullptr;
                     }
+                } else if (match(TokenType::ASSIGN)) {
+                    // Handle shorthand default: {a = expr}
+                    advance();
+                    auto default_expr = parse_assignment_expression();
+                    if (!default_expr) {
+                        add_error("Expected expression after '=' in object destructuring default");
+                        return nullptr;
+                    }
+                    size_t target_index = targets.size() - 1;
+                    obj_default_exprs.emplace_back(target_index, std::move(default_expr));
                 }
             } else {
                 add_error("Expected identifier in object destructuring");
@@ -4901,7 +4924,11 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         for (const auto& mapping : property_mappings) {
             destructuring->add_property_mapping(mapping.first, mapping.second);
         }
-        
+
+        for (auto& default_pair : obj_default_exprs) {
+            destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
+        }
+
         return std::move(destructuring);
     }
     

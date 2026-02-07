@@ -1510,22 +1510,36 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         }
         
         if (obj && !is_string_object) {
+            // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            if (!desc.is_accessor_descriptor()) {
+                // Walk prototype chain for accessor descriptor
+                Object* proto = obj->get_prototype();
+                while (proto) {
+                    PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
+                    if (proto_desc.is_accessor_descriptor()) {
+                        desc = proto_desc;
+                        break;
+                    }
+                    if (proto_desc.has_value()) break;
+                    proto = proto->get_prototype();
+                }
+            }
             if (desc.is_accessor_descriptor() && desc.has_setter()) {
-            Object* setter = desc.get_setter();
-            if (setter) {
-                Function* setter_fn = dynamic_cast<Function*>(setter);
-                if (setter_fn) {
-                    try {
-                        setter_fn->call(ctx, {right_value}, Value(obj));
-                        return right_value;
-                    } catch (const std::exception& e) {
-                        ctx.throw_exception(Value(std::string("Setter call failed: ") + e.what()));
-                        return Value();
+                Object* setter = desc.get_setter();
+                if (setter) {
+                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    if (setter_fn) {
+                        try {
+                            setter_fn->call(ctx, {right_value}, Value(obj));
+                            return right_value;
+                        } catch (const std::exception& e) {
+                            ctx.throw_exception(Value(std::string("Setter call failed: ") + e.what()));
+                            return Value();
+                        }
                     }
                 }
             }
-        }
         }
         
         switch (operator_) {
@@ -1949,6 +1963,21 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 }
             }
         } else {
+            // Apply default value if property is undefined: {x: a = expr}
+            if (prop_value.is_undefined()) {
+                for (size_t i = 0; i < targets_.size(); i++) {
+                    if (targets_[i]->get_name() == mapping.variable_name) {
+                        for (const auto& dv : default_values_) {
+                            if (dv.index == i) {
+                                prop_value = dv.expr->evaluate(ctx);
+                                if (ctx.has_exception()) return false;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
             bool binding_created = false;
             if (!ctx.has_binding(mapping.variable_name)) {
                 binding_created = ctx.create_binding(mapping.variable_name, prop_value, true);
@@ -2063,6 +2092,22 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 }
             } else {
                 Value prop_value = obj->get_property(prop_name);
+
+                // Apply default value if property is undefined: {a = expr}
+                if (prop_value.is_undefined()) {
+                    for (size_t ti = 0; ti < targets_.size(); ti++) {
+                        if (targets_[ti]->get_name() == prop_name) {
+                            for (const auto& dv : default_values_) {
+                                if (dv.index == ti) {
+                                    prop_value = dv.expr->evaluate(ctx);
+                                    if (ctx.has_exception()) return false;
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
 
                 extracted_props.insert(prop_name);
 
@@ -4361,6 +4406,24 @@ Value MemberExpression::evaluate(Context& ctx) {
                     }
                 }
                 return Value();
+            }
+
+            // Check prototype chain for accessor descriptors (e.g. class get/set)
+            {
+                Object* proto = obj->get_prototype();
+                while (proto) {
+                    PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
+                    if (proto_desc.is_accessor_descriptor() && proto_desc.has_getter()) {
+                        Function* getter_fn = dynamic_cast<Function*>(proto_desc.get_getter());
+                        if (getter_fn) {
+                            std::vector<Value> args;
+                            return getter_fn->call(ctx, args, object_value);
+                        }
+                        return Value();
+                    }
+                    if (proto_desc.has_value()) break;  // Found as data property, stop
+                    proto = proto->get_prototype();
+                }
             }
 
             if (__builtin_expect(shape != nullptr, 1)) {
@@ -6834,8 +6897,26 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
-                    prototype->set_property(method_name, Value(instance_method.release()),
-                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
+                        // Get/set accessor properties
+                        PropertyDescriptor existing = prototype->get_property_descriptor(method_name);
+                        PropertyDescriptor desc;
+                        if (existing.has_value()) {
+                            desc = existing;
+                        }
+                        if (method->get_kind() == MethodDefinition::GETTER) {
+                            desc.set_getter(instance_method.release());
+                        } else {
+                            desc.set_setter(instance_method.release());
+                        }
+                        desc.set_enumerable(false);
+                        desc.set_configurable(true);
+                        prototype->set_property_descriptor(method_name, desc);
+                    } else {
+                        prototype->set_property(method_name, Value(instance_method.release()),
+                            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    }
                 }
             }
         }
@@ -6917,8 +6998,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
-                    constructor_fn->set_property(method_name, Value(static_method.release()),
-                        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
+                        PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);
+                        PropertyDescriptor desc;
+                        if (existing.has_value()) {
+                            desc = existing;
+                        }
+                        if (method->get_kind() == MethodDefinition::GETTER) {
+                            desc.set_getter(static_method.release());
+                        } else {
+                            desc.set_setter(static_method.release());
+                        }
+                        desc.set_enumerable(false);
+                        desc.set_configurable(true);
+                        constructor_fn->set_property_descriptor(method_name, desc);
+                    } else {
+                        constructor_fn->set_property(method_name, Value(static_method.release()),
+                            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                    }
                 }
             }
         }
@@ -7185,22 +7283,43 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     );
 
     arrow_function->set_is_constructor(false);
+    arrow_function->set_is_arrow(true);
 
-    std::vector<std::string> common_vars = {"x", "y", "z", "i", "j", "k", "a", "b", "c", "value", "result", "data"};
-    
+    // Capture lexical this from enclosing scope
+    if (ctx.has_binding("this")) {
+        Value this_value = ctx.get_binding("this");
+        arrow_function->set_property("__arrow_this__", this_value);
+    }
+
+    // Capture closure variables from enclosing scope (including arguments for lexical arguments)
     std::set<std::string> param_names;
     for (const auto& param : params_) {
         param_names.insert(param->get_name()->get_name());
     }
-    
-    for (const std::string& var_name : common_vars) {
-        if (param_names.find(var_name) != param_names.end()) {
-            continue;
+
+    auto var_env = ctx.get_variable_environment();
+    if (var_env) {
+        auto var_binding_names = var_env->get_binding_names();
+        for (const auto& name : var_binding_names) {
+            if (name != "this" && param_names.find(name) == param_names.end()) {
+                Value value = ctx.get_binding(name);
+                if (!value.is_undefined()) {
+                    arrow_function->set_property("__closure_" + name, value);
+                }
+            }
         }
-        
-        if (ctx.has_binding(var_name)) {
-            Value var_value = ctx.get_binding(var_name);
-            arrow_function->set_property("__closure_" + var_name, var_value);
+    }
+
+    auto lex_env = ctx.get_lexical_environment();
+    if (lex_env && lex_env != var_env) {
+        auto lex_binding_names = lex_env->get_binding_names();
+        for (const auto& name : lex_binding_names) {
+            if (name != "this" && param_names.find(name) == param_names.end()) {
+                Value value = ctx.get_binding(name);
+                if (!value.is_undefined()) {
+                    arrow_function->set_property("__closure_" + name, value);
+                }
+            }
         }
     }
     
