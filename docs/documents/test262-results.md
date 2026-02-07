@@ -3,7 +3,7 @@
 The tests below here considered as "early run", so they can be misleading. Why? Because we don't have proper Test262 runner, so they can be false negative or false positive.
 
 ## Navigation
-- [February 7, 2026](#februray-7-2026)
+- [February 7, 2026](#february-7-2026)
 - [February 1, 2026](#february-1-2026)
 - [January 21, 2026](#january-21-2026)
 - [December 18, 2025](#december-18-2025)
