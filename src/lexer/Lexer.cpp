@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cmath>
 #include <iostream>
+#include <unordered_set>
 
 namespace Quanta {
 
@@ -488,7 +489,18 @@ Token Lexer::read_identifier() {
         add_error("SyntaxError: Unexpected reserved word '" + value + "' in strict mode");
         return create_token(TokenType::INVALID, value, start);
     }
-    
+
+    // ES5 7.6.1.2: Future reserved words in strict mode
+    if (options_.strict_mode && type == TokenType::IDENTIFIER) {
+        static const std::unordered_set<std::string> strict_reserved = {
+            "implements", "interface", "package", "private", "protected", "public"
+        };
+        if (strict_reserved.count(value)) {
+            add_error("SyntaxError: '" + value + "' is a reserved word in strict mode");
+            return create_token(TokenType::INVALID, value, start);
+        }
+    }
+
     return create_token(type, value, start);
 }
 
@@ -529,6 +541,11 @@ Token Lexer::read_number() {
             value = parse_octal_literal();
         } else if (std::isdigit(next)) {
             if (options_.strict_mode) {
+                // Skip past the entire octal literal to avoid infinite loop
+                advance(); // past '0'
+                while (!at_end() && is_octal_digit(current_char())) {
+                    advance();
+                }
                 add_error("SyntaxError: Octal literals are not allowed in strict mode");
                 return create_token(TokenType::INVALID, start);
             }
@@ -1106,6 +1123,12 @@ std::string Lexer::parse_escape_sequence() {
 
     // ES1: Octal escape sequences \0-\377 (up to 3 octal digits)
     if (ch >= '0' && ch <= '7') {
+        // ES5: Octal escapes not allowed in strict mode (except \0 not followed by digit)
+        if (options_.strict_mode) {
+            if (ch != '0' || (peek_char(1) >= '0' && peek_char(1) <= '7')) {
+                add_error("SyntaxError: Octal escape sequences are not allowed in strict mode");
+            }
+        }
         int octal_value = 0;
         int digit_count = 0;
 

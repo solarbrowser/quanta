@@ -326,6 +326,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
     
     if (body_) {
+        // ES5: Named function expressions have their name as an immutable binding
+        if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
+            function_context.create_binding(name_, Value(this), false);
+        }
+
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             scan_for_var_declarations(body_.get(), function_context);
         }
@@ -382,6 +387,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         // Write back modified closure variables to this function object
+        // and propagate to the parent context for live variable access
         auto prop_keys2 = this->get_own_property_keys();
         for (const auto& key : prop_keys2) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
@@ -390,6 +396,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 if (function_context.has_binding(var_name)) {
                     Value current_value = function_context.get_binding(var_name);
                     this->set_property(key, current_value);
+
+                    // Propagate modified closure variables back to the parent scope
+                    // so that closures defined and called in the same scope see updates
+                    if (parent_context->has_binding(var_name)) {
+                        parent_context->set_binding(var_name, current_value);
+                    }
                 }
             }
         }

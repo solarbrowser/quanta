@@ -75,11 +75,11 @@ Early test runs can be misleading: while fixing ES1, ES3, and ES5 behavior, over
 
 Additionally, Quanta does **not yet have a fully mature Test262 runner**, so some results may still include false passes or failures.
 
-**Current Approximate Results (as of Jan 2026)**
+**Current Approximate Results (as of February 2026)**
 
 - ECMAScript 1: 100% pass rate (as of February 1, 2026)
 - ECMAScript 3: 100% pass rate (as of February 6, 2026)
-- ECMAScript 5: ~88% pass rate
+- ECMAScript 5: 100% pass rate (as of February 7, 2026)
 
 *Tested with conformance of **[JavaScript Engines zoo.](https://github.com/ivankra/javascript-zoo/tree/master/conformance)***
 

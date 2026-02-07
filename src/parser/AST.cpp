@@ -357,7 +357,13 @@ Value BinaryExpression::evaluate(Context& ctx) {
         if (left_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* id = static_cast<Identifier*>(left_.get());
             std::string name = id->get_name();
-            
+
+            // ES5: Cannot assign to eval or arguments in strict mode
+            if (ctx.is_strict_mode() && (name == "eval" || name == "arguments")) {
+                ctx.throw_syntax_error("'" + name + "' cannot be assigned in strict mode");
+                return Value();
+            }
+
             if (operator_ == Operator::ASSIGN && !ctx.has_binding(name)) {
                 if (ctx.is_strict_mode()) {
                     ctx.throw_reference_error("'" + name + "' is not defined");
@@ -458,8 +464,21 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 if (desc.is_accessor_descriptor() && desc.has_setter()) {
                     // Cookie handling removed for simplicity
                 }
-                
-                obj->set_property(key, result_value);
+
+                // ES5: In strict mode, throw TypeError for non-writable/non-extensible assignments
+                if (ctx.is_strict_mode()) {
+                    // Getter-only property (accessor with no setter)
+                    if (desc.is_accessor_descriptor() && !desc.has_setter()) {
+                        ctx.throw_type_error("Cannot set property '" + key + "' which has only a getter");
+                        return Value();
+                    }
+                }
+
+                bool success = obj->set_property(key, result_value);
+                if (!success && ctx.is_strict_mode()) {
+                    ctx.throw_type_error("Cannot assign to read only property '" + key + "'");
+                    return Value();
+                }
                 return result_value;
             } else if (object_value.is_string()) {
                 std::string str_val = object_value.to_string();
@@ -941,12 +960,16 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value object_value = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                
-                if (!object_value.is_object()) {
+
+                Object* obj = nullptr;
+                if (object_value.is_object()) {
+                    obj = object_value.as_object();
+                } else if (object_value.is_function()) {
+                    obj = object_value.as_function();
+                }
+                if (!obj) {
                     return Value(true);
                 }
-                
-                Object* obj = object_value.as_object();
                 std::string property_name;
                 
                 if (member->is_computed()) {
@@ -964,8 +987,18 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 }
                 
                 bool deleted = obj->delete_property(property_name);
+                // ES5: Deleting non-configurable property throws TypeError in strict mode
+                if (!deleted && ctx.is_strict_mode()) {
+                    ctx.throw_type_error("Cannot delete property '" + property_name + "'");
+                    return Value();
+                }
                 return Value(deleted);
             } else if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                // ES5: Delete on identifier is SyntaxError in strict mode
+                if (ctx.is_strict_mode()) {
+                    ctx.throw_syntax_error("Delete of an unqualified identifier in strict mode");
+                    return Value();
+                }
                 // ES1: delete on identifier
                 // In non-strict mode, deleting a global variable (not declared with var)
                 // should succeed. Variables declared with var cannot be deleted.
@@ -980,6 +1013,14 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
         }
         case Operator::PRE_INCREMENT: {
+            // ES5: Cannot modify eval or arguments in strict mode
+            if (ctx.is_strict_mode() && operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<Identifier*>(operand_.get())->get_name();
+                if (n == "eval" || n == "arguments") {
+                    ctx.throw_syntax_error("'" + n + "' cannot be modified in strict mode");
+                    return Value();
+                }
+            }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
                 Value current = ctx.get_binding(id->get_name());
@@ -1022,6 +1063,14 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
         }
         case Operator::POST_INCREMENT: {
+            // ES5: Cannot modify eval or arguments in strict mode
+            if (ctx.is_strict_mode() && operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<Identifier*>(operand_.get())->get_name();
+                if (n == "eval" || n == "arguments") {
+                    ctx.throw_syntax_error("'" + n + "' cannot be modified in strict mode");
+                    return Value();
+                }
+            }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
                 Value current = ctx.get_binding(id->get_name());
@@ -1064,6 +1113,14 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
         }
         case Operator::PRE_DECREMENT: {
+            // ES5: Cannot modify eval or arguments in strict mode
+            if (ctx.is_strict_mode() && operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<Identifier*>(operand_.get())->get_name();
+                if (n == "eval" || n == "arguments") {
+                    ctx.throw_syntax_error("'" + n + "' cannot be modified in strict mode");
+                    return Value();
+                }
+            }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
                 Value current = ctx.get_binding(id->get_name());
@@ -1106,6 +1163,14 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
         }
         case Operator::POST_DECREMENT: {
+            // ES5: Cannot modify eval or arguments in strict mode
+            if (ctx.is_strict_mode() && operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& n = static_cast<Identifier*>(operand_.get())->get_name();
+                if (n == "eval" || n == "arguments") {
+                    ctx.throw_syntax_error("'" + n + "' cannot be modified in strict mode");
+                    return Value();
+                }
+            }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
                 Value current = ctx.get_binding(id->get_name());
@@ -1191,6 +1256,12 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Identifier* id = static_cast<Identifier*>(left_.get());
         std::string name = id->get_name();
 
+        // ES5: Cannot assign to eval or arguments in strict mode
+        if (ctx.is_strict_mode() && (name == "eval" || name == "arguments")) {
+            ctx.throw_syntax_error("'" + name + "' cannot be assigned in strict mode");
+            return Value();
+        }
+
         // For compound assignments, capture left value BEFORE evaluating right side
         // This ensures correct ES1 left-to-right evaluation order
         Value left_value;
@@ -1217,7 +1288,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.create_binding(name, right_value, true, true);
                     }
                 } else {
-                    ctx.set_binding(name, right_value);
+                    bool success = ctx.set_binding(name, right_value);
+                    if (!success && ctx.is_strict_mode()) {
+                        ctx.throw_type_error("Cannot assign to read only variable '" + name + "'");
+                        return Value();
+                    }
                 }
                 return right_value;
             }
@@ -1359,21 +1434,48 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             obj = object_value.as_object();
         } else if (object_value.is_function()) {
             obj = object_value.as_function();
-        } else if (object_value.is_string()) {
-            std::string str_val = object_value.to_string();
-            if (str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
+        } else if (object_value.is_string() || object_value.is_number() || object_value.is_boolean()) {
+            std::string str_val = object_value.is_string() ? object_value.to_string() : "";
+            if (object_value.is_string() && str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
                 is_string_object = true;
             } else {
-                // ES1: In non-strict mode, setting property on primitive fails silently
+                // ES5: Check for accessor setter on prototype before failing
+                std::string ctor_name = object_value.is_string() ? "String" :
+                    (object_value.is_number() ? "Number" : "Boolean");
+                std::string prop_name;
+                if (member->is_computed()) {
+                    Value pv = member->get_property()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = pv.to_string();
+                } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                    prop_name = static_cast<Identifier*>(member->get_property())->get_name();
+                }
+                if (!prop_name.empty()) {
+                    Value ctor = ctx.get_binding(ctor_name);
+                    if (ctor.is_function()) {
+                        Value proto = ctor.as_function()->get_property("prototype");
+                        if (proto.is_object()) {
+                            PropertyDescriptor desc = proto.as_object()->get_property_descriptor(prop_name);
+                            if (desc.is_accessor_descriptor() && desc.has_setter()) {
+                                Function* setter = dynamic_cast<Function*>(desc.get_setter());
+                                if (setter) {
+                                    setter->call(ctx, {right_value}, object_value);
+                                    return right_value;
+                                }
+                            }
+                        }
+                    }
+                }
+                // No setter found - silently fail or throw in strict mode
                 if (ctx.is_strict_mode()) {
-                    ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
+                    ctx.throw_type_error("Cannot set property on primitive");
                 }
                 return right_value;
             }
         } else {
             // ES1: In non-strict mode, setting property on primitive fails silently
             if (ctx.is_strict_mode()) {
-                ctx.throw_exception(Value(std::string("Cannot set property on non-object")));
+                ctx.throw_type_error("Cannot set property on non-object");
             }
             return right_value;
         }
@@ -1410,8 +1512,6 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (obj && !is_string_object) {
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
             if (desc.is_accessor_descriptor() && desc.has_setter()) {
-            // Cookie handling removed
-            
             Object* setter = desc.get_setter();
             if (setter) {
                 Function* setter_fn = dynamic_cast<Function*>(setter);
@@ -1454,8 +1554,19 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 } else {
                     if (obj) {
-                        obj->set_property(prop_name, right_value);
-                    } else {
+                        // ES5: Strict mode checks for property assignment
+                        if (ctx.is_strict_mode()) {
+                            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+                            if (desc.is_accessor_descriptor() && !desc.has_setter()) {
+                                ctx.throw_type_error("Cannot set property '" + prop_name + "' which has only a getter");
+                                return Value();
+                            }
+                        }
+                        bool success = obj->set_property(prop_name, right_value);
+                        if (!success && ctx.is_strict_mode()) {
+                            ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
+                            return Value();
+                        }
                     }
                 }
                 break;
@@ -4181,45 +4292,36 @@ Value MemberExpression::evaluate(Context& ctx) {
         return Value();
     }
 
-    if (object_value.is_string() && !computed_) {
+    // ES5: Property access on primitives - check prototype for accessors
+    if ((object_value.is_string() || object_value.is_number() || object_value.is_boolean()) && !computed_) {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
 
-            if (prop_name == "length") {
+            if (object_value.is_string() && prop_name == "length") {
                 std::string str_value = object_value.to_string();
                 return Value(static_cast<double>(str_value.length()));
             }
 
-            Value string_ctor = ctx.get_binding("String");
-            if (string_ctor.is_object() || string_ctor.is_function()) {
-                Object* string_fn = string_ctor.is_object() ? string_ctor.as_object() : string_ctor.as_function();
-                Value prototype = string_fn->get_property("prototype");
+            std::string ctor_name = object_value.is_string() ? "String" :
+                (object_value.is_number() ? "Number" : "Boolean");
+            Value ctor = ctx.get_binding(ctor_name);
+            if (ctor.is_object() || ctor.is_function()) {
+                Object* ctor_obj = ctor.is_object() ? ctor.as_object() : ctor.as_function();
+                Value prototype = ctor_obj->get_property("prototype");
                 if (prototype.is_object()) {
-                    Object* string_prototype = prototype.as_object();
-                    Value method = string_prototype->get_property(prop_name);
+                    Object* proto_obj = prototype.as_object();
 
-                    if (!method.is_undefined()) {
-                        return method;
+                    // Check for accessor getter on prototype
+                    PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
+                    if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                        if (getter) {
+                            return getter->call(ctx, {}, object_value);
+                        }
                     }
-                }
-            }
-        }
-    }
 
-    if (object_value.is_boolean() && !computed_) {
-        if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
-            Identifier* prop = static_cast<Identifier*>(property_.get());
-            std::string prop_name = prop->get_name();
-
-            Value boolean_ctor = ctx.get_binding("Boolean");
-            if (boolean_ctor.is_object() || boolean_ctor.is_function()) {
-                Object* boolean_fn = boolean_ctor.is_object() ? boolean_ctor.as_object() : boolean_ctor.as_function();
-                Value prototype = boolean_fn->get_property("prototype");
-                if (prototype.is_object()) {
-                    Object* boolean_prototype = prototype.as_object();
-                    Value method = boolean_prototype->get_property(prop_name);
-
+                    Value method = proto_obj->get_property(prop_name);
                     if (!method.is_undefined()) {
                         return method;
                     }
@@ -6515,6 +6617,12 @@ std::unique_ptr<ASTNode> DoWhileStatement::clone() const {
 
 
 Value WithStatement::evaluate(Context& ctx) {
+    // ES5: with statement is not allowed in strict mode
+    if (ctx.is_strict_mode()) {
+        ctx.throw_syntax_error("Strict mode code may not include a with statement");
+        return Value();
+    }
+
     Value obj_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 

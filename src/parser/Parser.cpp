@@ -459,7 +459,14 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
         
         UnaryExpression::Operator op = token_to_unary_operator(op_token);
         Position end = operand->get_end();
-        
+
+        // ES5: delete on identifier is SyntaxError in strict mode
+        if (options_.strict_mode && op == UnaryExpression::Operator::DELETE &&
+            operand->get_type() == ASTNode::Type::IDENTIFIER) {
+            add_error("Delete of an unqualified identifier in strict mode");
+            return nullptr;
+        }
+
         return std::make_unique<UnaryExpression>(op, std::move(operand), true, start, end);
     }
     
@@ -1551,8 +1558,17 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
-        
-        auto id = std::make_unique<Identifier>(current_token().get_value(), 
+
+        // ES5: eval and arguments cannot be used as variable names in strict mode
+        if (options_.strict_mode) {
+            const std::string& var_name = current_token().get_value();
+            if (var_name == "eval" || var_name == "arguments") {
+                add_error("'" + var_name + "' cannot be used as a variable name in strict mode");
+                return nullptr;
+            }
+        }
+
+        auto id = std::make_unique<Identifier>(current_token().get_value(),
                                              current_token().get_start(), current_token().get_end());
         advance();
         
@@ -2220,6 +2236,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             Position param_pos = get_current_position();
             param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // ES5: eval and arguments cannot be used as parameter names in strict mode
+            if (options_.strict_mode) {
+                const std::string& pname = current_token().get_value();
+                if (pname == "eval" || pname == "arguments") {
+                    add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    return nullptr;
+                }
+            }
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
             advance();
@@ -2227,7 +2251,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
+
         std::unique_ptr<ASTNode> default_value = nullptr;
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
@@ -2273,6 +2297,22 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
     
+    // ES5: Duplicate parameter names not allowed in strict mode
+    if (options_.strict_mode) {
+        for (size_t pi = 0; pi < params.size(); pi++) {
+            if (!params[pi]->get_name()) continue;
+            const std::string& pn = params[pi]->get_name()->get_name();
+            if (pn.empty()) continue;
+            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                if (!params[pj]->get_name()) continue;
+                if (params[pj]->get_name()->get_name() == pn) {
+                    add_error("Duplicate parameter name not allowed in strict mode");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     if (has_non_simple_params && body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
@@ -2918,6 +2958,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             Position param_pos = get_current_position();
             param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            // ES5: eval and arguments cannot be used as parameter names in strict mode
+            if (options_.strict_mode) {
+                const std::string& pname = current_token().get_value();
+                if (pname == "eval" || pname == "arguments") {
+                    add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    return nullptr;
+                }
+            }
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
             advance();
@@ -2925,7 +2973,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             add_error("Expected parameter name or destructuring pattern");
             return nullptr;
         }
-        
+
         std::unique_ptr<ASTNode> default_value = nullptr;
         if (!is_rest && match(TokenType::ASSIGN)) {
             has_non_simple_params = true;
@@ -2971,6 +3019,22 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         return nullptr;
     }
     
+    // ES5: Duplicate parameter names not allowed in strict mode
+    if (options_.strict_mode) {
+        for (size_t pi = 0; pi < params.size(); pi++) {
+            if (!params[pi]->get_name()) continue;
+            const std::string& pn = params[pi]->get_name()->get_name();
+            if (pn.empty()) continue;
+            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                if (!params[pj]->get_name()) continue;
+                if (params[pj]->get_name()->get_name() == pn) {
+                    add_error("Duplicate parameter name not allowed in strict mode");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     if (has_non_simple_params && body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
@@ -4136,6 +4200,13 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
         }
 
         parameter_name = current_token().get_value();
+
+        // ES5: eval and arguments cannot be used as catch parameter in strict mode
+        if (options_.strict_mode && (parameter_name == "eval" || parameter_name == "arguments")) {
+            add_error("'" + parameter_name + "' cannot be used as a catch parameter in strict mode");
+            return nullptr;
+        }
+
         advance();
 
         if (!consume(TokenType::RIGHT_PAREN)) {

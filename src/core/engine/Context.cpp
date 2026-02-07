@@ -3163,6 +3163,34 @@ void Context::initialize_built_ins() {
                 body = args[args.size() - 1].to_string();
             }
 
+            // Check if body contains "use strict" directive
+            bool is_strict = false;
+            {
+                std::string trimmed = body;
+                size_t start = trimmed.find_first_not_of(" \t\n\r");
+                if (start != std::string::npos) {
+                    std::string first = trimmed.substr(start);
+                    if (first.find("\"use strict\"") == 0 || first.find("'use strict'") == 0) {
+                        is_strict = true;
+                    }
+                }
+            }
+
+            // ES5: Check for duplicate parameters in strict mode
+            if (is_strict && args.size() > 2) {
+                std::vector<std::string> param_list;
+                for (size_t i = 0; i < args.size() - 1; i++) {
+                    std::string p = args[i].to_string();
+                    for (size_t j = 0; j < param_list.size(); j++) {
+                        if (param_list[j] == p) {
+                            ctx.throw_syntax_error("Duplicate parameter name not allowed in strict mode");
+                            return Value();
+                        }
+                    }
+                    param_list.push_back(p);
+                }
+            }
+
             // Create function code string - wrap in parens to make it an expression
             std::string func_code = "(function(" + params + ") { " + body + " })";
 
@@ -8595,13 +8623,70 @@ void Context::setup_global_bindings() {
             Engine* engine = ctx.get_engine();
             if (!engine) return Value();
 
+            bool strict = ctx.is_strict_mode();
+
             try {
-                auto result = engine->evaluate(code);
-                if (result.success) {
-                    return result.value;
-                } else {
-                    ctx.throw_syntax_error(result.error_message);
+                // Parse with strict mode if calling context is strict
+                Lexer::LexerOptions lex_opts;
+                lex_opts.strict_mode = strict;
+                Lexer lexer(code, lex_opts);
+                auto tokens = lexer.tokenize();
+
+                if (lexer.has_errors()) {
+                    auto& errors = lexer.get_errors();
+                    std::string msg = errors.empty() ? "SyntaxError" : errors[0];
+                    ctx.throw_syntax_error(msg);
                     return Value();
+                }
+
+                Parser::ParseOptions parse_opts;
+                parse_opts.strict_mode = strict;
+                Parser parser(tokens, parse_opts);
+                auto program = parser.parse_program();
+
+                if (parser.has_errors()) {
+                    auto& errors = parser.get_errors();
+                    std::string msg = errors.empty() ? "SyntaxError" : errors[0].message;
+                    ctx.throw_syntax_error(msg);
+                    return Value();
+                }
+
+                if (!program) {
+                    ctx.throw_syntax_error("Failed to parse eval code");
+                    return Value();
+                }
+
+                if (strict) {
+                    // ES5 10.4.2: Strict eval creates isolated variable environment
+                    Context eval_ctx(engine, &ctx, Context::Type::Eval);
+                    eval_ctx.set_strict_mode(true);
+                    auto eval_env = new Environment(
+                        Environment::Type::Declarative, ctx.get_lexical_environment());
+                    eval_ctx.set_lexical_environment(eval_env);
+                    eval_ctx.set_variable_environment(eval_env);
+                    eval_ctx.set_this_binding(ctx.get_this_binding());
+
+                    Value result = program->evaluate(eval_ctx);
+
+                    if (eval_ctx.has_exception()) {
+                        Value exception = eval_ctx.get_exception();
+                        eval_ctx.clear_exception();
+                        ctx.throw_exception(exception);
+                        delete eval_env;
+                        return Value();
+                    }
+
+                    delete eval_env;
+                    return result;
+                } else {
+                    // Non-strict eval: evaluate in calling context
+                    auto result = engine->evaluate(code);
+                    if (result.success) {
+                        return result.value;
+                    } else {
+                        ctx.throw_syntax_error(result.error_message);
+                        return Value();
+                    }
                 }
             } catch (const std::exception& e) {
                 ctx.throw_syntax_error(std::string(e.what()));
