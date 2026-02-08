@@ -5710,6 +5710,13 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         if (declarator->get_init()) {
             init_value = declarator->get_init()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            // ES6: SetFunctionName - infer name for anonymous functions/classes
+            if (init_value.is_function()) {
+                Function* fn = init_value.as_function();
+                if (fn->get_name().empty()) {
+                    fn->set_name(name);
+                }
+            }
         } else {
             init_value = Value();
         }
@@ -6951,7 +6958,6 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     if (constructor_fn.get() && proto_ptr) {
         constructor_fn->set_prototype(proto_ptr);
         constructor_fn->set_property("prototype", Value(proto_ptr));
-        constructor_fn->set_property("name", Value(class_name));
         proto_ptr->set_property("constructor", Value(constructor_fn.get()));
         
         prototype.release();
@@ -7004,8 +7010,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         desc.set_configurable(true);
                         constructor_fn->set_property_descriptor(method_name, desc);
                     } else {
-                        constructor_fn->set_property(method_name, Value(static_method.release()),
+                        PropertyDescriptor method_desc(Value(static_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                        constructor_fn->set_property_descriptor(method_name, method_desc);
                     }
                 }
             }
@@ -7126,7 +7133,7 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 
 
 Value FunctionExpression::evaluate(Context& ctx) {
-    std::string name = is_named() ? id_->get_name() : "<anonymous>";
+    std::string name = is_named() ? id_->get_name() : "";
     
     std::vector<std::unique_ptr<Parameter>> param_clones;
     for (const auto& param : params_) {
@@ -7643,7 +7650,21 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                 return Value();
             }
         }
-        
+
+        // ES6: SetFunctionName - infer name for anonymous functions in object properties
+        if (value.is_function()) {
+            Function* fn = value.as_function();
+            if (fn->get_name().empty()) {
+                if (prop->type == ObjectLiteral::PropertyType::Getter) {
+                    fn->set_name("get " + key);
+                } else if (prop->type == ObjectLiteral::PropertyType::Setter) {
+                    fn->set_name("set " + key);
+                } else {
+                    fn->set_name(key);
+                }
+            }
+        }
+
         if (prop->type == ObjectLiteral::PropertyType::Getter || prop->type == ObjectLiteral::PropertyType::Setter) {
             if (!value.is_function()) {
                 ctx.throw_exception(Value(std::string("Getter/setter must be a function")));

@@ -2377,6 +2377,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
+            current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
             current_token().get_type() == TokenType::HASH ||
@@ -2391,18 +2392,18 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             advance();
         }
     }
-    
+
     if (!match(TokenType::RIGHT_BRACE)) {
         add_error("Expected '}' to close class body");
         return nullptr;
     }
-    
+
     advance();
-    
+
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
-    
+
     Position end = get_current_position();
-    
+
     if (superclass) {
         return std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
@@ -2457,6 +2458,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
+            current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
             current_token().get_type() == TokenType::HASH ||

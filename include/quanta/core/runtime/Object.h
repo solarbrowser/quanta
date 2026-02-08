@@ -76,6 +76,7 @@ public:
     explicit Object(Object* prototype, ObjectType type = ObjectType::Ordinary);
     virtual ~Object() = default;
 
+    friend class Function;
     Object(const Object& other) = delete;
     Object& operator=(const Object& other) = delete;
     Object(Object&& other) noexcept = default;
@@ -396,6 +397,7 @@ public:
     virtual ~Function() = default;
 
     const std::string& get_name() const { return name_; }
+    void set_name(const std::string& name);
     const std::vector<std::string>& get_parameters() const { return parameters_; }
     size_t get_arity() const { return parameters_.size(); }
     bool is_native() const { return is_native_; }
