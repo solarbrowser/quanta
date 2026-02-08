@@ -579,6 +579,11 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    // Reject new properties on non-extensible objects
+    if (!is_extensible() && !has_own_property(key)) {
+        return false;
+    }
+
     if (!descriptors_) {
         descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
     }
