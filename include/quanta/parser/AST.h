@@ -1099,6 +1099,7 @@ public:
         std::unique_ptr<ASTNode> key;
         std::unique_ptr<ASTNode> value;
         bool computed;
+        bool shorthand = false;
         PropertyType type;
 
         Property(std::unique_ptr<ASTNode> k, std::unique_ptr<ASTNode> v, bool c = false, PropertyType t = PropertyType::Value)
