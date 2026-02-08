@@ -259,7 +259,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             } else {
                 Value arg_value;
                 
-                if (i < args.size()) {
+                if (i < args.size() && !args[i].is_undefined()) {
                     arg_value = args[i];
                 } else if (param->has_default()) {
                     arg_value = param->get_default_value()->evaluate(function_context);

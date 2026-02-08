@@ -5334,28 +5334,7 @@ void Context::initialize_built_ins() {
         }, 1);
     number_constructor->set_property("isSafeInteger", Value(isSafeInteger_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    auto numberParseFloat_fn = ObjectFactory::create_native_function("parseFloat",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                return Value(std::numeric_limits<double>::quiet_NaN());
-            }
-            
-            std::string str = args[0].to_string();
-            if (str.empty()) {
-                return Value(std::numeric_limits<double>::quiet_NaN());
-            }
-            
-            try {
-                size_t processed = 0;
-                double result = std::stod(str, &processed);
-                return Value(result);
-            } catch (...) {
-                return Value(std::numeric_limits<double>::quiet_NaN());
-            }
-        }, 1);
-    number_constructor->set_property("parseFloat", Value(numberParseFloat_fn.release()), PropertyAttributes::BuiltinFunction);
-
-    number_constructor->set_property("parseInt", this->get_binding("parseInt"));
+    // ES6: Number.parseFloat/parseInt set up later after global functions are defined
 
     auto number_prototype = ObjectFactory::create_object();
 
@@ -8559,8 +8538,9 @@ void Context::setup_global_bindings() {
                 return Value::nan();
             }
         }, 2);
+    Function* parseInt_raw = parseInt_fn.get();
     lexical_environment_->create_binding("parseInt", Value(parseInt_fn.release()), false);
-    
+
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value::nan();
@@ -8593,8 +8573,19 @@ void Context::setup_global_bindings() {
                 return Value::nan();
             }
         }, 1);
+    Function* parseFloat_raw = parseFloat_fn.get();
     lexical_environment_->create_binding("parseFloat", Value(parseFloat_fn.release()), false);
-    
+
+    // ES6: Number.parseFloat and Number.parseInt must be the same objects as globals
+    {
+        auto it = built_in_objects_.find("Number");
+        if (it != built_in_objects_.end()) {
+            Function* num_ctor = static_cast<Function*>(it->second);
+            num_ctor->set_property("parseFloat", Value(parseFloat_raw));
+            num_ctor->set_property("parseInt", Value(parseInt_raw));
+        }
+    }
+
     auto isNaN_global_fn = ObjectFactory::create_native_function("isNaN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             // Global isNaN: coerce to number first, then check if NaN

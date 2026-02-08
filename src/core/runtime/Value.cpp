@@ -198,6 +198,25 @@ double Value::to_number() const {
         if (start >= end) return 0.0;
 
         std::string trimmed = str.substr(start, end - start);
+
+        // ES6: Handle binary (0b/0B) and octal (0o/0O) string literals
+        if (trimmed.length() >= 3 && trimmed[0] == '0') {
+            if (trimmed[1] == 'b' || trimmed[1] == 'B') {
+                try {
+                    return static_cast<double>(std::stoull(trimmed.substr(2), nullptr, 2));
+                } catch (...) {
+                    return std::numeric_limits<double>::quiet_NaN();
+                }
+            }
+            if (trimmed[1] == 'o' || trimmed[1] == 'O') {
+                try {
+                    return static_cast<double>(std::stoull(trimmed.substr(2), nullptr, 8));
+                } catch (...) {
+                    return std::numeric_limits<double>::quiet_NaN();
+                }
+            }
+        }
+
         try {
             return std::stod(trimmed);
         } catch (...) {
