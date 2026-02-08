@@ -2629,10 +2629,24 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
             if (spread_value.is_object()) {
                 Object* spread_obj = spread_value.as_object();
                 uint32_t spread_length = spread_obj->get_length();
-                
+
                 for (uint32_t j = 0; j < spread_length; ++j) {
                     Value item = spread_obj->get_element(j);
                     arg_values.push_back(item);
+                }
+            } else if (spread_value.is_string()) {
+                // ES6: Spread on strings iterates over characters
+                const std::string& str = spread_value.as_string()->str();
+                size_t i = 0;
+                while (i < str.size()) {
+                    unsigned char c = str[i];
+                    size_t char_len = 1;
+                    if (c >= 0xF0) char_len = 4;
+                    else if (c >= 0xE0) char_len = 3;
+                    else if (c >= 0xC0) char_len = 2;
+                    std::string ch = str.substr(i, char_len);
+                    arg_values.push_back(Value(ch));
+                    i += char_len;
                 }
             } else {
                 arg_values.push_back(spread_value);
@@ -2772,12 +2786,8 @@ Value CallExpression::evaluate(Context& ctx) {
                 Value super_constructor = ctx.get_binding("__super__");
                 if (super_constructor.is_function() && super_constructor.as_function() == func) {
                     
-                    std::vector<Value> arg_values;
-                    for (const auto& arg : arguments_) {
-                        Value arg_value = arg->evaluate(ctx);
-                        if (ctx.has_exception()) return Value();
-                        arg_values.push_back(arg_value);
-                    }
+                    std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+                    if (ctx.has_exception()) return Value();
                     
                     Value this_value = ctx.get_binding("this");
                     
@@ -4012,13 +4022,9 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         if (obj->get_name() == "Math") {
             std::string method_name = prop->get_name();
-            
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value val = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(val);
-            }
+
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
 
             if (method_name == "abs") {
                 return Math::abs(ctx, arg_values);
@@ -4215,12 +4221,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (ctx.has_exception()) return Value();
 
         if (method_value.is_function()) {
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value val = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(val);
-            }
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
 
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -4253,12 +4255,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (ctx.has_exception()) return Value();
 
         if (method_value.is_function()) {
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value val = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(val);
-            }
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
 
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -4272,12 +4270,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (ctx.has_exception()) return Value();
         
         if (method_value.is_function()) {
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value val = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(val);
-            }
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
             
             Function* method = method_value.as_function();
             
@@ -4308,12 +4302,8 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         
         Value method_value = obj->get_property(method_name);
         if (method_value.is_function()) {
-            std::vector<Value> arg_values;
-            for (const auto& arg : arguments_) {
-                Value val = arg->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                arg_values.push_back(val);
-            }
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
 
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
@@ -7747,10 +7737,24 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             if (spread_value.is_object()) {
                 Object* spread_obj = spread_value.as_object();
                 uint32_t spread_length = spread_obj->get_length();
-                
+
                 for (uint32_t j = 0; j < spread_length; ++j) {
                     Value item = spread_obj->get_element(j);
                     array->set_element(array_index++, item);
+                }
+            } else if (spread_value.is_string()) {
+                // ES6: Spread on strings iterates over characters
+                const std::string& str = spread_value.as_string()->str();
+                size_t i = 0;
+                while (i < str.size()) {
+                    unsigned char c = str[i];
+                    size_t char_len = 1;
+                    if (c >= 0xF0) char_len = 4;
+                    else if (c >= 0xE0) char_len = 3;
+                    else if (c >= 0xC0) char_len = 2;
+                    std::string ch = str.substr(i, char_len);
+                    array->set_element(array_index++, Value(ch));
+                    i += char_len;
                 }
             } else {
                 array->set_element(array_index++, spread_value);
