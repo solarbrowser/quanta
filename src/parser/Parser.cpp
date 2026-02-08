@@ -4040,6 +4040,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     auto property = std::make_unique<ObjectLiteral::Property>(
                         std::move(key), std::move(value), computed, false
                     );
+                    property->shorthand = true;
                     properties.push_back(std::move(property));
                 } else {
                     add_error("Shorthand properties can only be used with identifier keys");

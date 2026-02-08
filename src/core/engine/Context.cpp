@@ -668,12 +668,6 @@ void Context::initialize_built_ins() {
                     ctx.throw_exception(Value(std::string("Error: Failed to create object with prototype")));
                     return Value();
                 }
-                // Set __proto__ as non-enumerable to prevent it from appearing in Object.keys()
-                PropertyDescriptor proto_desc(args[0], PropertyAttributes::None);
-                proto_desc.set_enumerable(false);
-                proto_desc.set_writable(true);
-                proto_desc.set_configurable(true);
-                new_obj->set_property_descriptor("__proto__", proto_desc);
                 new_obj_ptr = new_obj.release();
             }
             else {
@@ -1062,10 +1056,6 @@ void Context::initialize_built_ins() {
             auto props = obj->get_own_property_keys();
             uint32_t result_index = 0;
             for (size_t i = 0; i < props.size(); i++) {
-                // Skip __proto__ as it's an internal property
-                if (props[i] == "__proto__") {
-                    continue;
-                }
                 result->set_element(result_index++, Value(props[i]));
             }
             result->set_property("length", Value(static_cast<double>(result_index)));
@@ -1532,6 +1522,38 @@ void Context::initialize_built_ins() {
     PropertyDescriptor object_proto_ctor_desc(Value(object_constructor.get()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     object_proto_ptr->set_property_descriptor("constructor", object_proto_ctor_desc);
+
+    // ES6 Annex B: Object.prototype.__proto__ accessor property
+    auto proto_getter = ObjectFactory::create_native_function("get __proto__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                Object* proto = this_obj->get_prototype();
+                if (proto) {
+                    return Value(static_cast<Object*>(proto));
+                }
+                return Value::null();
+            }
+            return Value::null();
+        }, 0);
+    auto proto_setter = ObjectFactory::create_native_function("set __proto__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj && !args.empty()) {
+                if (args[0].is_object()) {
+                    this_obj->set_prototype(args[0].as_object());
+                } else if (args[0].is_null()) {
+                    this_obj->set_prototype(nullptr);
+                }
+            }
+            return Value();
+        }, 1);
+    PropertyDescriptor proto_desc;
+    proto_desc.set_getter(proto_getter.release());
+    proto_desc.set_setter(proto_setter.release());
+    proto_desc.set_enumerable(false);
+    proto_desc.set_configurable(true);
+    object_proto_ptr->set_property_descriptor("__proto__", proto_desc);
 
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
@@ -8603,6 +8625,13 @@ void Context::setup_global_bindings() {
         }, 1);
     lexical_environment_->create_binding("isNaN", Value(isNaN_global_fn.release()), false);
 
+    auto isFinite_global_fn = ObjectFactory::create_native_function("isFinite",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value(false);
+            double num = args[0].to_number();
+            return Value(std::isfinite(num));
+        }, 1);
+    lexical_environment_->create_binding("isFinite", Value(isFinite_global_fn.release()), false);
 
     auto eval_fn = ObjectFactory::create_native_function("eval",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

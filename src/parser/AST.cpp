@@ -7687,6 +7687,13 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             }
 
             object->set_property_descriptor(key, desc);
+        } else if (key == "__proto__" && !prop->computed && !prop->shorthand && prop->type == ObjectLiteral::PropertyType::Value) {
+            // ES6 Annex B: __proto__ in object literal sets the prototype
+            if (value.is_object()) {
+                object->set_prototype(value.as_object());
+            } else if (value.is_null()) {
+                object->set_prototype(nullptr);
+            }
         } else {
             object->set_property(key, value);
         }
@@ -7730,6 +7737,7 @@ std::unique_ptr<ASTNode> ObjectLiteral::clone() const {
             prop->computed,
             prop->type
         );
+        cloned_prop->shorthand = prop->shorthand;
         cloned_properties.push_back(std::move(cloned_prop));
     }
     

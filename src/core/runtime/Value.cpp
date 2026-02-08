@@ -716,10 +716,6 @@ bool Value::instanceof_check(const Value& constructor) const {
         return obj->get_type() == Object::ObjectType::Set;
     }
 
-    if (ctor_name == "Object") {
-        return true;
-    }
-    
     return false;
 }
 
