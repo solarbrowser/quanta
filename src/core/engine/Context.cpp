@@ -3215,7 +3215,7 @@ void Context::initialize_built_ins() {
                     }
 
                     std::unique_ptr<Function> func = ObjectFactory::create_js_function(
-                        "", // Anonymous function
+                        "anonymous", // ES6: new Function creates "anonymous" named function
                         param_names,
                         func_expr->get_body()->clone(),
                         &ctx
@@ -3335,8 +3335,9 @@ void Context::initialize_built_ins() {
             if (bound_length < 0) bound_length = 0;
             uint32_t bound_arity = static_cast<uint32_t>(bound_length);
 
-            // Create bound function that works both as regular call and constructor
-            auto bound_function = ObjectFactory::create_native_constructor("bound",
+            // ES6: bound function name is "bound " + target name
+            std::string bound_name = "bound " + target_func->get_name();
+            auto bound_function = ObjectFactory::create_native_constructor(bound_name,
                 [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());

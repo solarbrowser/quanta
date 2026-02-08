@@ -433,6 +433,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
 Value Function::get_property(const std::string& key) const {
     if (key == "name") {
+        // Check if a "name" property was explicitly overridden (e.g. static name() in class)
+        if (descriptors_) {
+            auto it = descriptors_->find("name");
+            if (it != descriptors_->end()) {
+                if (it->second.is_data_descriptor()) {
+                    Value desc_val = it->second.get_value();
+                    if (desc_val.is_function()) {
+                        return desc_val;
+                    }
+                }
+            }
+        }
         return Value(name_);
     }
     if (key == "length") {
@@ -474,6 +486,26 @@ Value Function::get_property(const std::string& key) const {
     }
     
     return Value();
+}
+
+void Function::set_name(const std::string& name) {
+    name_ = name;
+    // Force-update the name in descriptors and shape (bypasses writable check)
+    // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
+    if (descriptors_) {
+        auto it = descriptors_->find("name");
+        if (it != descriptors_->end() && it->second.is_data_descriptor()) {
+            if (!it->second.get_value().is_function()) {
+                it->second = PropertyDescriptor(Value(name_), it->second.get_attributes());
+            }
+        }
+    }
+    if (header_.shape && header_.shape->has_property("name")) {
+        auto info = header_.shape->get_property_info("name");
+        if (info.offset < properties_.size()) {
+            properties_[info.offset] = Value(name_);
+        }
+    }
 }
 
 bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
