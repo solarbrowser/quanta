@@ -169,7 +169,27 @@ Value TemplateLiteral::evaluate(Context& ctx) {
         } else if (element.type == Element::Type::EXPRESSION) {
             Value expr_value = element.expression->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            result += expr_value.to_string();
+            // ES6: Template literals use ToString which calls toString() on objects
+            if (expr_value.is_object() || expr_value.is_function()) {
+                Object* obj = expr_value.is_function() ?
+                    static_cast<Object*>(expr_value.as_function()) :
+                    expr_value.as_object();
+                Value toString_fn = obj->get_property("toString");
+                if (toString_fn.is_function()) {
+                    std::vector<Value> no_args;
+                    Value str_result = toString_fn.as_function()->call(ctx, no_args, expr_value);
+                    if (!ctx.has_exception() && str_result.is_string()) {
+                        result += str_result.to_string();
+                    } else {
+                        ctx.clear_exception();
+                        result += expr_value.to_string();
+                    }
+                } else {
+                    result += expr_value.to_string();
+                }
+            } else {
+                result += expr_value.to_string();
+            }
         }
     }
     
@@ -642,39 +662,45 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Value left_coerced = left_value;
             Value right_coerced = right_value;
 
-            if (left_value.is_object() && !left_value.is_string()) {
-                Object* obj = left_value.as_object();
-                if (obj && obj->has_property("valueOf")) {
-                    Value valueOf_method = obj->get_property("valueOf");
-                    if (valueOf_method.is_function()) {
+            // ES6 ToPrimitive: Date objects prefer toString, others prefer valueOf
+            auto toPrimitive = [&ctx](const Value& val) -> Value {
+                if (!val.is_object() || val.is_string()) return val;
+                Object* obj = val.as_object();
+                if (!obj) return val;
+                bool prefer_string = obj->has_property("_isDate");
+                if (prefer_string) {
+                    // Try toString first
+                    Value toString_method = obj->get_property("toString");
+                    if (toString_method.is_function()) {
                         try {
-                            Function* valueOf_fn = valueOf_method.as_function();
-                            Value coerced = valueOf_fn->call(ctx, {}, left_value);
-                            if (!coerced.is_object()) {
-                                left_coerced = coerced;
-                            }
-                        } catch (...) {
-                        }
+                            Value result = toString_method.as_function()->call(ctx, {}, val);
+                            if (!result.is_object()) return result;
+                        } catch (...) {}
                     }
                 }
-            }
+                // Try valueOf
+                Value valueOf_method = obj->get_property("valueOf");
+                if (valueOf_method.is_function()) {
+                    try {
+                        Value result = valueOf_method.as_function()->call(ctx, {}, val);
+                        if (!result.is_object()) return result;
+                    } catch (...) {}
+                }
+                if (!prefer_string) {
+                    // Try toString as fallback
+                    Value toString_method = obj->get_property("toString");
+                    if (toString_method.is_function()) {
+                        try {
+                            Value result = toString_method.as_function()->call(ctx, {}, val);
+                            if (!result.is_object()) return result;
+                        } catch (...) {}
+                    }
+                }
+                return val;
+            };
 
-            if (right_value.is_object() && !right_value.is_string()) {
-                Object* obj = right_value.as_object();
-                if (obj && obj->has_property("valueOf")) {
-                    Value valueOf_method = obj->get_property("valueOf");
-                    if (valueOf_method.is_function()) {
-                        try {
-                            Function* valueOf_fn = valueOf_method.as_function();
-                            Value coerced = valueOf_fn->call(ctx, {}, right_value);
-                            if (!coerced.is_object()) {
-                                right_coerced = coerced;
-                            }
-                        } catch (...) {
-                        }
-                    }
-                }
-            }
+            left_coerced = toPrimitive(left_value);
+            right_coerced = toPrimitive(right_value);
 
             return left_coerced.add(right_coerced);
         }

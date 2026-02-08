@@ -499,12 +499,23 @@ void Context::initialize_built_ins() {
                 return Value();
             }
             
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.keys called on non-object")));
-                return Value();
+            // ES6: Accept primitives — wrap strings to String objects
+            if (args[0].is_string()) {
+                std::string str = args[0].to_string();
+                auto result = ObjectFactory::create_array();
+                for (uint32_t i = 0; i < str.length(); i++) {
+                    result->set_element(i, Value(std::to_string(i)));
+                }
+                result->set_property("length", Value(static_cast<double>(str.length())));
+                return Value(result.release());
             }
-            
-            Object* obj = args[0].as_object();
+            if (!args[0].is_object() && !args[0].is_function()) {
+                return Value(ObjectFactory::create_array().release());
+            }
+
+            Object* obj = args[0].is_function() ?
+                static_cast<Object*>(args[0].as_function()) :
+                args[0].as_object();
             auto keys = obj->get_enumerable_keys();
 
             auto result_array = ObjectFactory::create_array(keys.size());
@@ -1046,11 +1057,25 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            if (!args[0].is_object()) {
+            // ES6: Accept primitives — wrap strings to String objects
+            if (args[0].is_string()) {
+                std::string str = args[0].to_string();
+                auto result = ObjectFactory::create_array();
+                uint32_t idx = 0;
+                for (uint32_t i = 0; i < str.length(); i++) {
+                    result->set_element(idx++, Value(std::to_string(i)));
+                }
+                result->set_element(idx++, Value(std::string("length")));
+                result->set_property("length", Value(static_cast<double>(idx)));
+                return Value(result.release());
+            }
+            if (!args[0].is_object() && !args[0].is_function()) {
                 return Value(ObjectFactory::create_array().release());
             }
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_function() ?
+                static_cast<Object*>(args[0].as_function()) :
+                args[0].as_object();
             auto result = ObjectFactory::create_array();
 
             auto props = obj->get_own_property_keys();
