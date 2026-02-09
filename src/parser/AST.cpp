@@ -6905,7 +6905,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
                 std::string method_name;
                 if (method->is_computed()) {
-                    method_name = "[computed]";
+                    Value key_val = method->get_key()->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    method_name = key_val.to_string();
                 } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                     method_name = id->get_name();
                 } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
@@ -7025,7 +7027,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 if (method->is_static()) {
                     std::string method_name;
                     if (method->is_computed()) {
-                        method_name = "[computed]";
+                        Value key_val = method->get_key()->evaluate(ctx);
+                        if (ctx.has_exception()) return Value();
+                        method_name = key_val.to_string();
                     } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                         method_name = id->get_name();
                     } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
@@ -7847,14 +7851,17 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             } else {
                 array->set_element(array_index++, spread_value);
             }
+        } else if (element->get_type() == Type::UNDEFINED_LITERAL) {
+            // Holes in array literals — don't set element (sparse)
+            array_index++;
         } else {
             Value element_value = element->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             array->set_element(array_index++, element_value);
         }
     }
-    
+
     array->set_length(array_index);
     return Value(array.release());
 }

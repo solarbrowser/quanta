@@ -9,6 +9,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <memory>
@@ -66,9 +67,12 @@ private:
     std::vector<Value> elements_;
     
     std::unique_ptr<std::unordered_map<std::string, Value>> overflow_properties_;
-    
+
     std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> descriptors_;
-    
+
+    std::unique_ptr<std::unordered_set<std::string>> deleted_shape_properties_;
+    std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
+
     std::vector<std::string> property_insertion_order_;
 
 public:
