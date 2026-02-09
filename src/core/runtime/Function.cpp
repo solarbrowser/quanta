@@ -31,7 +31,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
 
@@ -50,7 +50,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
@@ -62,7 +62,13 @@ Function::Function(const std::string& name,
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
-    PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
+    // ES6: length = number of params before first rest or default
+    size_t formal_length = 0;
+    for (const auto& param : parameter_objects_) {
+        if (param->is_rest() || param->has_default()) break;
+        formal_length++;
+    }
+    PropertyDescriptor length_desc(Value(static_cast<double>(formal_length)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 }
 
@@ -132,7 +138,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (execution_count_ >= 2 && !is_hot_) {
         is_hot_ = true;
     }
-    
+
+    // Class constructors must be called with new
+    if (is_class_constructor_ && !ctx.is_in_constructor_call()) {
+        ctx.throw_exception(Value("TypeError: Class constructor " + name_ + " cannot be invoked without 'new'"));
+        return Value();
+    }
+
     if (is_native_) {
         if (!ctx.check_execution_depth()) {
             ctx.throw_exception(Value(std::string("call stack size exceeded")));
@@ -194,6 +206,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     Context* parent_context = &ctx;
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
+
+    // Propagate new.target into function scope
+    if (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()) {
+        function_context.set_new_target(ctx.get_new_target());
+    }
 
     // Check for strict mode BEFORE setting up 'this' binding
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
@@ -535,7 +552,6 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     if (constructor_prototype.is_object()) {
         Object* proto_obj = constructor_prototype.as_object();
         new_object->set_prototype(proto_obj);
-        new_object->set_property("__proto__", constructor_prototype);
     }
     
     Value super_constructor_prop = get_property("__super_constructor__");
@@ -547,16 +563,22 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     size_t initial_prop_count = initial_properties.size();
 
     ctx.set_in_constructor_call(true);
+    ctx.set_new_target(Value(static_cast<Object*>(this)));
     Value result = call(ctx, args, this_value);
     ctx.set_in_constructor_call(false);
+    ctx.set_new_target(Value());
     
     std::vector<std::string> final_properties = new_object->get_own_property_keys();
     bool constructor_did_work = (final_properties.size() > initial_prop_count);
     
     if (!constructor_did_work && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
         Function* super_constructor = super_constructor_prop.as_function();
+        ctx.set_in_constructor_call(true);
+        ctx.set_new_target(Value(static_cast<Object*>(this)));
         Value super_result = super_constructor->call(ctx, args, this_value);
-        
+        ctx.set_in_constructor_call(false);
+        ctx.set_new_target(Value());
+
         if (!super_result.is_undefined()) {
             result = super_result;
         }

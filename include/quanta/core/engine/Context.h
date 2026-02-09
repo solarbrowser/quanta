@@ -77,7 +77,8 @@ private:
     std::string next_statement_label_;  // Label to be applied to the next statement
 
     bool is_in_constructor_call_;
-    
+    Value new_target_;
+
     bool strict_mode_;
     
     Engine* engine_;
@@ -172,6 +173,9 @@ public:
 
     bool is_in_constructor_call() const { return is_in_constructor_call_; }
     void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
+
+    Value get_new_target() const { return new_target_; }
+    void set_new_target(const Value& val) { new_target_ = val; }
 
     void register_built_in_object(const std::string& name, Object* object);
     void register_built_in_function(const std::string& name, Function* function);
