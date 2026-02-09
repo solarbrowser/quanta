@@ -2353,34 +2353,34 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     auto id = parse_identifier();
     if (!id) return nullptr;
     
-    std::unique_ptr<Identifier> superclass = nullptr;
+    std::unique_ptr<ASTNode> superclass = nullptr;
     if (match(TokenType::EXTENDS)) {
         advance();
-        
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected superclass name after 'extends'");
+
+        superclass = parse_assignment_expression();
+        if (!superclass) {
+            add_error("Expected superclass expression after 'extends'");
             return nullptr;
         }
-        
-        superclass = std::unique_ptr<Identifier>(static_cast<Identifier*>(parse_identifier().release()));
-        if (!superclass) return nullptr;
     }
-    
+
     if (!match(TokenType::LEFT_BRACE)) {
         add_error("Expected '{' to start class body");
         return nullptr;
     }
-    
+
     advance();
-    
+
     std::vector<std::unique_ptr<ASTNode>> statements;
-    
+
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
             current_token().get_type() == TokenType::HASH ||
+            current_token().get_type() == TokenType::STRING ||
+            current_token().get_type() == TokenType::NUMBER ||
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
@@ -2434,17 +2434,15 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         if (!id) return nullptr;
     }
 
-    std::unique_ptr<Identifier> superclass = nullptr;
+    std::unique_ptr<ASTNode> superclass = nullptr;
     if (match(TokenType::EXTENDS)) {
         advance();
 
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected superclass name after 'extends'");
+        superclass = parse_assignment_expression();
+        if (!superclass) {
+            add_error("Expected superclass expression after 'extends'");
             return nullptr;
         }
-
-        superclass = std::unique_ptr<Identifier>(static_cast<Identifier*>(parse_identifier().release()));
-        if (!superclass) return nullptr;
     }
 
     if (!match(TokenType::LEFT_BRACE)) {
@@ -2462,6 +2460,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             current_token().get_type() == TokenType::MULTIPLY ||
             current_token().get_type() == TokenType::LEFT_BRACKET ||
             current_token().get_type() == TokenType::HASH ||
+            current_token().get_type() == TokenType::STRING ||
+            current_token().get_type() == TokenType::NUMBER ||
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
@@ -2578,6 +2578,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         Position end = current_token().get_end();
         advance();
         key = std::make_unique<Identifier>(name, start, end);
+    } else if (current_token().get_type() == TokenType::STRING) {
+        key = parse_string_literal();
+    } else if (current_token().get_type() == TokenType::NUMBER) {
+        key = parse_number_literal();
     } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
         computed = true;
         advance();

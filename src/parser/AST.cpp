@@ -2719,19 +2719,28 @@ Value CallExpression::evaluate(Context& ctx) {
                     
                     Object* this_obj = ctx.get_this_binding();
 
+                    bool was_in_ctor = ctx.is_in_constructor_call();
+                    Value old_new_target = ctx.get_new_target();
+                    ctx.set_in_constructor_call(true);
+                    if (old_new_target.is_undefined()) {
+                        ctx.set_new_target(Value(static_cast<Object*>(parent_func)));
+                    }
+
                     if (this_obj) {
                         Value this_value(this_obj);
                         parent_func->call(ctx, arg_values, this_value);
                         ctx.clear_return_value();
-                        return Value();
                     } else {
                         parent_func->call(ctx, arg_values);
                         ctx.clear_return_value();
                         if (ctx.has_exception()) {
                             ctx.clear_exception();
                         }
-                        return Value();
                     }
+
+                    ctx.set_in_constructor_call(was_in_ctor);
+                    ctx.set_new_target(old_new_target);
+                    return Value();
                 } catch (...) {
                     return Value();
                 }
@@ -2811,19 +2820,29 @@ Value CallExpression::evaluate(Context& ctx) {
             if (ctx.has_binding("__super__") && super_call_depth < MAX_SUPER_DEPTH) {
                 Value super_constructor = ctx.get_binding("__super__");
                 if (super_constructor.is_function() && super_constructor.as_function() == func) {
-                    
+
                     std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
                     if (ctx.has_exception()) return Value();
-                    
+
                     Value this_value = ctx.get_binding("this");
-                    
+
                     super_call_depth++;
+                    bool was_in_ctor = ctx.is_in_constructor_call();
+                    Value old_new_target = ctx.get_new_target();
+                    ctx.set_in_constructor_call(true);
+                    if (old_new_target.is_undefined()) {
+                        ctx.set_new_target(Value(static_cast<Object*>(func)));
+                    }
                     try {
                         Value result = func->call(ctx, arg_values, this_value);
                         super_call_depth--;
+                        ctx.set_in_constructor_call(was_in_ctor);
+                        ctx.set_new_target(old_new_target);
                         return result;
                     } catch (...) {
                         super_call_depth--;
+                        ctx.set_in_constructor_call(was_in_ctor);
+                        ctx.set_new_target(old_new_target);
                         throw;
                     }
                 }
@@ -5502,7 +5521,7 @@ std::unique_ptr<ASTNode> NewExpression::clone() const {
 
 Value MetaProperty::evaluate(Context& ctx) {
     if (meta_ == "new" && property_ == "target") {
-        return Value();
+        return ctx.get_new_target();
     }
 
     ctx.throw_exception(Value("ReferenceError: Unknown meta property: " + meta_ + "." + property_));
@@ -6822,8 +6841,8 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     
     
     if (!ctx.create_binding(function_name, function_value, true)) {
-        ctx.throw_exception(Value("Function '" + function_name + "' already declared"));
-        return Value();
+        // Function declarations can overwrite var/function bindings in the same scope
+        ctx.set_binding(function_name, function_value);
     }
     
     
@@ -6869,7 +6888,7 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
 Value ClassDeclaration::evaluate(Context& ctx) {
     std::string class_name = id_->get_name();
     
-    auto prototype = std::make_unique<Object>();
+    auto prototype = ObjectFactory::create_object();
     
     std::unique_ptr<ASTNode> constructor_body = nullptr;
     std::vector<std::string> constructor_params;
@@ -6889,10 +6908,14 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     method_name = "[computed]";
                 } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                     method_name = id->get_name();
+                } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
+                    method_name = str->get_value();
+                } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
+                    method_name = num->to_string();
                 } else {
                     method_name = "[unknown]";
                 }
-                
+
                 if (method->is_constructor()) {
                     constructor_body = method->get_value()->get_body()->clone();
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
@@ -6937,8 +6960,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         desc.set_configurable(true);
                         prototype->set_property_descriptor(method_name, desc);
                     } else {
-                        prototype->set_property(method_name, Value(instance_method.release()),
+                        PropertyDescriptor method_desc(Value(instance_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                        prototype->set_property_descriptor(method_name, method_desc);
                     }
                 }
             }
@@ -6982,10 +7006,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     
     Object* proto_ptr = prototype.get();
     if (constructor_fn.get() && proto_ptr) {
-        constructor_fn->set_prototype(proto_ptr);
+        // Don't overwrite internal [[Prototype]] (Function.prototype -> Object.prototype chain)
+        // Only set the .prototype property that instances will inherit from
         constructor_fn->set_property("prototype", Value(proto_ptr));
         proto_ptr->set_property("constructor", Value(constructor_fn.get()));
-        
+        constructor_fn->set_is_class_constructor(true);
+
         prototype.release();
     } else {
         ctx.throw_exception(Value(std::string("Class setup failed: null constructor or prototype")));
@@ -7002,6 +7028,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method_name = "[computed]";
                     } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                         method_name = id->get_name();
+                    } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
+                        method_name = str->get_value();
+                    } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
+                        method_name = num->to_string();
                     } else {
                         method_name = "[unknown]";
                     }
@@ -7046,24 +7076,29 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     }
     
     if (has_superclass()) {
-        std::string super_name = superclass_->get_name();
-        
-        if (ctx.has_binding(super_name)) {
-            Value super_constructor = ctx.get_binding(super_name);
-            
-            if (super_constructor.is_object_like() && super_constructor.as_object()) {
-                Object* super_obj = super_constructor.as_object();
-                if (super_obj->is_function()) {
-                    Function* super_fn = static_cast<Function*>(super_obj);
-                    
-                    if (super_fn && constructor_fn.get()) {
-                        constructor_fn->set_property("__proto__", Value(super_fn));
-                        constructor_fn->set_property("__super_constructor__", Value(super_fn));
-                        
-                        Object* super_prototype = super_fn->get_prototype();
-                        if (super_prototype && proto_ptr) {
-                            proto_ptr->set_prototype(super_prototype);
-                        }
+        Value super_constructor = superclass_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+
+        if (super_constructor.is_null()) {
+            // extends null: prototype's [[Prototype]] is null
+            if (proto_ptr) {
+                proto_ptr->set_prototype(nullptr);
+            }
+            // Constructor's [[Prototype]] is Function.prototype (default)
+        } else if (super_constructor.is_object_like() && super_constructor.as_object()) {
+            Object* super_obj = super_constructor.as_object();
+            if (super_obj->is_function()) {
+                Function* super_fn = static_cast<Function*>(super_obj);
+
+                if (super_fn && constructor_fn.get()) {
+                    // C's [[Prototype]] = B (so B.isPrototypeOf(C) === true)
+                    constructor_fn->set_prototype(super_fn);
+                    constructor_fn->set_property("__super_constructor__", Value(super_fn));
+
+                    // C.prototype's [[Prototype]] = B.prototype
+                    Value super_proto_val = super_fn->get_property("prototype");
+                    if (super_proto_val.is_object() && proto_ptr) {
+                        proto_ptr->set_prototype(super_proto_val.as_object());
                     }
                 }
             }
@@ -7084,21 +7119,19 @@ std::string ClassDeclaration::to_string() const {
     oss << "class " << id_->get_name();
     
     if (has_superclass()) {
-        oss << " extends " << superclass_->get_name();
+        oss << " extends " << superclass_->to_string();
     }
-    
+
     oss << " " << body_->to_string();
     return oss.str();
 }
 
 std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
-    std::unique_ptr<Identifier> cloned_superclass = nullptr;
+    std::unique_ptr<ASTNode> cloned_superclass = nullptr;
     if (has_superclass()) {
-        cloned_superclass = std::unique_ptr<Identifier>(
-            static_cast<Identifier*>(superclass_->clone().release())
-        );
+        cloned_superclass = superclass_->clone();
     }
-    
+
     if (has_superclass()) {
         return std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),

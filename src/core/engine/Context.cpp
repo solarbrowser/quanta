@@ -3589,6 +3589,11 @@ void Context::initialize_built_ins() {
 
             if (args.empty()) return Value(false);
 
+            if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::RegExp) {
+                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
+                return Value();
+            }
+
             if (args[0].is_symbol()) {
                 ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                 return Value();
@@ -3624,6 +3629,11 @@ void Context::initialize_built_ins() {
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
+
+            if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::RegExp) {
+                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
+                return Value();
+            }
 
             if (args[0].is_symbol()) {
                 ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));

@@ -911,12 +911,12 @@ public:
 class ClassDeclaration : public ASTNode {
 private:
     std::unique_ptr<Identifier> id_;
-    std::unique_ptr<Identifier> superclass_;
+    std::unique_ptr<ASTNode> superclass_;
     std::unique_ptr<BlockStatement> body_;
 
 public:
     ClassDeclaration(std::unique_ptr<Identifier> id,
-                    std::unique_ptr<Identifier> superclass,
+                    std::unique_ptr<ASTNode> superclass,
                     std::unique_ptr<BlockStatement> body,
                     const Position& start, const Position& end)
         : ASTNode(Type::CLASS_DECLARATION, start, end),
@@ -927,9 +927,9 @@ public:
                     const Position& start, const Position& end)
         : ASTNode(Type::CLASS_DECLARATION, start, end),
           id_(std::move(id)), superclass_(nullptr), body_(std::move(body)) {}
-    
+
     Identifier* get_id() const { return id_.get(); }
-    Identifier* get_superclass() const { return superclass_.get(); }
+    ASTNode* get_superclass() const { return superclass_.get(); }
     BlockStatement* get_body() const { return body_.get(); }
     bool has_superclass() const { return superclass_ != nullptr; }
     

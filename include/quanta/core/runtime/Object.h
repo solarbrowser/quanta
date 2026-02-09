@@ -368,6 +368,7 @@ private:
     bool is_native_;
     bool is_constructor_;  // Whether this function has [[Construct]] internal method
     bool is_arrow_;        // Arrow functions have lexical this binding
+    bool is_class_constructor_;  // Class constructors must be called with new
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
@@ -405,6 +406,8 @@ public:
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
     void set_is_arrow(bool value) { is_arrow_ = value; }
+    bool is_class_constructor() const { return is_class_constructor_; }
+    void set_is_class_constructor(bool value) { is_class_constructor_ = value; }
     
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }
