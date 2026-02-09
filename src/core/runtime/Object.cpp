@@ -89,20 +89,15 @@ bool Object::has_own_property(const std::string& key) const {
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        return index < elements_.size() && !elements_[index].is_undefined();
+        if (index >= elements_.size()) return false;
+        if (deleted_elements_ && deleted_elements_->count(index) > 0) return false;
+        return true;
     }
 
     if (header_.shape && header_.shape->has_property(key)) {
-        // Check if the property was deleted (value set to undefined by delete_property)
-        auto info = header_.shape->get_property_info(key);
-        if (info.offset < properties_.size()) {
-            // Property exists in shape but was deleted if value is undefined with no descriptor
-            Value val = properties_[info.offset];
-            if (val.is_undefined()) {
-                // Could be actually undefined or deleted - check if there's a descriptor
-                return descriptors_ && descriptors_->count(key) > 0;
-            }
-            return true;
+        // Check if the property was explicitly deleted
+        if (deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0) {
+            return false;
         }
         return true;
     }
@@ -336,6 +331,13 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             }
         } else if (new_length > old_length) {
             elements_.resize(new_length);
+            // Mark new elements as holes
+            if (!deleted_elements_) {
+                deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
+            }
+            for (uint32_t i = old_length; i < new_length; ++i) {
+                deleted_elements_->insert(i);
+            }
         }
 
         Value length_value(static_cast<double>(new_length));
@@ -371,6 +373,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             auto info = header_.shape->get_property_info(key);
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
+                if (deleted_shape_properties_) deleted_shape_properties_->erase(key);
                 return true;
             }
         }
@@ -434,13 +437,17 @@ bool Object::delete_property(const std::string& key) {
     if (header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
         if (info.offset < properties_.size()) {
-            // ES1: Mark property as deleted by clearing value and removing descriptor
-            // has_own_property will check: if value is undefined AND no descriptor, property is deleted
             properties_[info.offset] = Value();
 
             if (descriptors_) {
                 descriptors_->erase(key);
             }
+
+            // Track deleted shape properties
+            if (!deleted_shape_properties_) {
+                deleted_shape_properties_ = std::make_unique<std::unordered_set<std::string>>();
+            }
+            deleted_shape_properties_->insert(key);
 
             header_.property_count--;
             update_hash_code();
@@ -463,11 +470,21 @@ bool Object::set_element(uint32_t index, const Value& value) {
         if (__builtin_expect(index > 10000000, 0)) {
             return false;
         }
+        size_t old_size = elements_.size();
         size_t new_size = index + 1;
         if (new_size > elements_.capacity()) {
             elements_.reserve(new_size * 2);
         }
         elements_.resize(new_size, Value());
+        // Mark intermediate positions as holes
+        if (new_size > old_size + 1) {
+            if (!deleted_elements_) {
+                deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
+            }
+            for (size_t i = old_size; i < index; ++i) {
+                deleted_elements_->insert(static_cast<uint32_t>(i));
+            }
+        }
 
         if (__builtin_expect(header_.type == ObjectType::Array, 1)) {
             if (overflow_properties_) {
@@ -480,12 +497,17 @@ bool Object::set_element(uint32_t index, const Value& value) {
     }
 
     elements_[index] = value;
+    if (deleted_elements_) deleted_elements_->erase(index);
     return true;
 }
 
 bool Object::delete_element(uint32_t index) {
     if (index < elements_.size()) {
         elements_[index] = Value();
+        if (!deleted_elements_) {
+            deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
+        }
+        deleted_elements_->insert(index);
         return true;
     }
     return false;
