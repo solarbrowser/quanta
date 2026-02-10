@@ -3852,18 +3852,39 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     add_error("Shorthand properties can only be used with identifier keys");
                     return nullptr;
                 }
+            } else if (match(TokenType::ASSIGN) && dynamic_cast<Identifier*>(key.get())) {
+                // CoverInitializedName: {a = expr} - valid in destructuring assignment patterns
+                advance();
+                auto default_expr = parse_assignment_expression();
+                if (!default_expr) {
+                    add_error("Expected expression after '=' in shorthand default");
+                    return nullptr;
+                }
+                auto* id_key = static_cast<Identifier*>(key.get());
+                auto left_id = std::make_unique<Identifier>(id_key->get_name(), id_key->get_start(), id_key->get_end());
+                Position assign_start = id_key->get_start();
+                Position assign_end = default_expr->get_end();
+                auto assign_val = std::make_unique<AssignmentExpression>(
+                    std::move(left_id), AssignmentExpression::Operator::ASSIGN,
+                    std::move(default_expr), assign_start, assign_end
+                );
+                auto property = std::make_unique<ObjectLiteral::Property>(
+                    std::move(key), std::move(assign_val), computed, false
+                );
+                property->shorthand = true;
+                properties.push_back(std::move(property));
             } else {
                 if (!consume(TokenType::COLON)) {
                     add_error("Expected ':' after property key");
                     return nullptr;
                 }
-                
+
                 auto value = parse_assignment_expression();
                 if (!value) {
                     add_error("Expected property value");
                     return nullptr;
                 }
-                
+
                 auto property = std::make_unique<ObjectLiteral::Property>(
                     std::move(key), std::move(value), computed, false
                 );
@@ -4600,7 +4621,6 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         }
 
                         std::string nested_vars = extract_nested_variable_names(nested.get());
-                        printf("DEBUG: extracted nested_vars: '%s'\n", nested_vars.c_str());
 
                         std::string original_property_name = targets.back()->get_name();
 
@@ -4608,18 +4628,14 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         std::string proper_pattern = nested_vars;
                         if (auto nested_destructuring = dynamic_cast<DestructuringAssignment*>(nested.get())) {
                             const auto& mappings = nested_destructuring->get_property_mappings();
-                            printf("DEBUG: Found %zu property mappings in nested destructuring\n", mappings.size());
 
                             std::string property_name = "";
                             if (!mappings.empty()) {
                                 property_name = mappings[0].property_name;
-                                printf("DEBUG: First property mapping: '%s' -> '%s'\n",
-                                       mappings[0].property_name.c_str(), mappings[0].variable_name.c_str());
                             } else {
                                 const auto& targets = nested_destructuring->get_targets();
                                 if (!targets.empty()) {
                                     std::string first_target = targets[0]->get_name();
-                                    printf("DEBUG: No property mappings, using target: '%s'\n", first_target.c_str());
 
                                     if (first_target.find("__nested") == std::string::npos) {
                                         property_name = first_target;
@@ -4628,19 +4644,14 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                             }
 
                             if (!property_name.empty()) {
-                                printf("DEBUG: Using property name: '%s'\n", property_name.c_str());
                                 size_t nested_pos = nested_vars.find("__nested:");
                                 if (nested_pos != std::string::npos && nested_pos + 9 < nested_vars.length()) {
                                     proper_pattern = property_name + ":" + nested_vars;
-                                    printf("DEBUG: Built complete navigation pattern: '%s'\n", proper_pattern.c_str());
                                 } else {
-                                    printf("DEBUG: Comparing property_name='%s' with nested_vars='%s'\n", property_name.c_str(), nested_vars.c_str());
                                     if (property_name == nested_vars) {
                                         proper_pattern = "__nested:" + nested_vars;
-                                        printf("DEBUG: Built nested access pattern: '%s'\n", proper_pattern.c_str());
                                     } else {
                                         proper_pattern = property_name + ":" + nested_vars;
-                                        printf("DEBUG: Built nested renaming/navigation pattern: '%s'\n", proper_pattern.c_str());
                                     }
                                 }
                             }
@@ -5127,8 +5138,6 @@ std::string Parser::extract_nested_variable_names(ASTNode* node) {
 std::string Parser::generate_proper_nested_pattern(ASTNode* node, int depth) {
     if (!node) return "";
 
-    printf("DEBUG PARSER: generate_proper_nested_pattern called with depth %d, node type %d\n", depth, (int)node->get_type());
-
     if (node->get_type() == ASTNode::Type::IDENTIFIER) {
         auto* id = static_cast<Identifier*>(node);
         return id->get_name();
@@ -5168,12 +5177,9 @@ std::string Parser::generate_proper_nested_pattern(ASTNode* node, int depth) {
         auto* destructuring = static_cast<DestructuringAssignment*>(node);
         const auto& mappings = destructuring->get_property_mappings();
 
-        printf("DEBUG: Found %zu property mappings in nested destructuring\n", mappings.size());
-
         if (!mappings.empty()) {
             std::vector<std::string> nested_vars;
             for (const auto& mapping : mappings) {
-                printf("DEBUG: First property mapping: '%s' -> '%s'\n", mapping.property_name.c_str(), mapping.variable_name.c_str());
                 nested_vars.push_back(mapping.variable_name);
                 break;
             }
@@ -5185,8 +5191,6 @@ std::string Parser::generate_proper_nested_pattern(ASTNode* node, int depth) {
             }
             return result;
         } else {
-            printf("DEBUG: No property mappings, using target: '%s'\n",
-                   !destructuring->get_targets().empty() ? destructuring->get_targets()[0]->get_name().c_str() : "none");
             std::vector<std::string> nested_vars;
             for (const auto& target : destructuring->get_targets()) {
                 std::string target_pattern = generate_proper_nested_pattern(target.get(), depth);
