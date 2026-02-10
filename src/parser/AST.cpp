@@ -246,10 +246,14 @@ std::string Parameter::to_string() const {
 
 std::unique_ptr<ASTNode> Parameter::clone() const {
     std::unique_ptr<ASTNode> cloned_default = default_value_ ? default_value_->clone() : nullptr;
-    return std::make_unique<Parameter>(
+    auto cloned = std::make_unique<Parameter>(
         std::unique_ptr<Identifier>(static_cast<Identifier*>(name_->clone().release())),
         std::move(cloned_default), is_rest_, start_, end_
     );
+    if (destructuring_pattern_) {
+        cloned->set_destructuring_pattern(destructuring_pattern_->clone());
+    }
+    return cloned;
 }
 
 
@@ -1714,18 +1718,11 @@ std::unique_ptr<ASTNode> AssignmentExpression::clone() const {
 }
 
 
-Value DestructuringAssignment::evaluate(Context& ctx) {
-    if (!source_) {
-        ctx.throw_exception(Value(std::string("DestructuringAssignment: source is null")));
-        return Value();
-    }
-    
-    Value source_value = source_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
-    
+Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value) {
     if (type_ == Type::ARRAY) {
-        if (source_value.is_object()) {
-            Object* array_obj = source_value.as_object();
+        if (source_value.is_object_like()) {
+            Object* array_obj = source_value.is_object() ? source_value.as_object()
+                                                         : static_cast<Object*>(source_value.as_function());
             
             for (size_t i = 0; i < targets_.size(); i++) {
                 const std::string& var_name = targets_[i]->get_name();
@@ -1813,9 +1810,10 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
             return Value();
         }
     } else {
-        if (source_value.is_object()) {
-            Object* obj = source_value.as_object();
-            
+        if (source_value.is_object_like()) {
+            Object* obj = source_value.is_object() ? source_value.as_object()
+                                                    : static_cast<Object*>(source_value.as_function());
+
             if (!handle_complex_object_destructuring(obj, ctx)) {
                 return Value();
             }
@@ -1826,6 +1824,18 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
     }
     
     return source_value;
+}
+
+Value DestructuringAssignment::evaluate(Context& ctx) {
+    if (!source_) {
+        ctx.throw_exception(Value(std::string("DestructuringAssignment: source is null")));
+        return Value();
+    }
+
+    Value source_value = source_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
+
+    return evaluate_with_value(ctx, source_value);
 }
 
 bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, Context& ctx) {
@@ -2628,7 +2638,7 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
     }
 
     auto cloned = std::make_unique<DestructuringAssignment>(
-        std::move(cloned_targets), source_->clone(), type_, start_, end_
+        std::move(cloned_targets), source_ ? source_->clone() : nullptr, type_, start_, end_
     );
 
     for (const auto& mapping : property_mappings_) {
@@ -8462,7 +8472,10 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("__flags__", Value(flags_));
 
         obj->set_property("source", Value(pattern_));
-        obj->set_property("flags", Value(flags_));
+        // ES6: flags must be in alphabetical order
+        std::string sorted_flags = flags_;
+        std::sort(sorted_flags.begin(), sorted_flags.end());
+        obj->set_property("flags", Value(sorted_flags));
         obj->set_property("global", Value(flags_.find('g') != std::string::npos));
         obj->set_property("ignoreCase", Value(flags_.find('i') != std::string::npos));
         obj->set_property("multiline", Value(flags_.find('m') != std::string::npos));

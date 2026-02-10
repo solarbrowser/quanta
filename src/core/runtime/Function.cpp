@@ -275,18 +275,34 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 function_context.create_binding(param->get_name()->get_name(), Value(rest_array.release()), false);
             } else {
                 Value arg_value;
-                
+
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_value = args[i];
                 } else if (param->has_default()) {
                     arg_value = param->get_default_value()->evaluate(function_context);
-                    if (function_context.has_exception()) return Value();
+                    if (function_context.has_exception()) {
+                        ctx.throw_exception(function_context.get_exception());
+                        return Value();
+                    }
                 } else {
                     arg_value = Value();
                 }
-                
-                // ES1: Function parameters are mutable bindings
-                function_context.create_binding(param->get_name()->get_name(), arg_value, true);
+
+                if (param->has_destructuring()) {
+                    // ES6: Destructuring parameter - evaluate the pattern with the arg value
+                    auto* pattern = param->get_destructuring_pattern();
+                    auto* destructuring = dynamic_cast<DestructuringAssignment*>(pattern);
+                    if (destructuring) {
+                        destructuring->evaluate_with_value(function_context, arg_value);
+                        if (function_context.has_exception()) {
+                            ctx.throw_exception(function_context.get_exception());
+                            return Value();
+                        }
+                    }
+                } else {
+                    // ES1: Function parameters are mutable bindings
+                    function_context.create_binding(param->get_name()->get_name(), arg_value, true);
+                }
             }
         }
     } else {

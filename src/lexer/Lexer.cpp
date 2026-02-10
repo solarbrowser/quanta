@@ -604,6 +604,13 @@ Token Lexer::read_template_literal() {
             }
         } else if (current_char() == '\\') {
             value += parse_escape_sequence();
+        } else if (current_char() == '\r') {
+            // ES6: Normalize CR and CRLF to LF in template literals
+            advance();
+            if (!at_end() && current_char() == '\n') {
+                advance();
+            }
+            value += '\n';
         } else {
             value += advance();
         }

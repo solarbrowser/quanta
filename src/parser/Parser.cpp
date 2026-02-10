@@ -2157,84 +2157,49 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
 
         std::unique_ptr<Identifier> param_name = nullptr;
 
-        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
             has_non_simple_params = true;
-            advance();
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in function parameters");
+                return nullptr;
+            }
+            static int destr_param_counter = 0;
+            std::string synthetic_name = "__destr_" + std::to_string(destr_param_counter++);
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-            std::string destructuring_name = "__array_destructuring_";
-            int bracket_count = 1;
-            while (bracket_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                    bracket_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                    bracket_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                    if (destructuring_name == "__array_destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
-                } else if (current_token().get_type() == TokenType::ASSIGN) {
-                    advance();
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        int inner_bracket_count = 1;
-                        advance();
-                        while (inner_bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                inner_bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                inner_bracket_count--;
-                            }
-                            if (inner_bracket_count > 0) advance();
-                        }
-                        if (inner_bracket_count == 0) advance();
-                        continue;
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        int inner_brace_count = 1;
-                        advance();
-                        while (inner_brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                inner_brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                inner_brace_count--;
-                            }
-                            if (inner_brace_count > 0) advance();
-                        }
-                        if (inner_brace_count == 0) advance();
-                        continue;
-                    } else {
-                        while (!at_end() &&
-                               current_token().get_type() != TokenType::COMMA &&
-                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                            advance();
-                        }
-                        continue;
-                    }
-                }
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-            has_non_simple_params = true;
-            advance();
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
 
-            std::string destructuring_name = "__destructuring_";
-            int brace_count = 1;
-            while (brace_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                    brace_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                    brace_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                    if (destructuring_name == "__destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
+            if (is_rest) {
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    add_error("Rest parameter must be last formal parameter");
+                    return nullptr;
                 }
-                advance();
+                break;
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in parameter list");
+                return nullptr;
+            }
+            continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
@@ -2694,82 +2659,48 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         
         std::unique_ptr<Identifier> param_name = nullptr;
 
-        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-            advance();
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in arrow parameters");
+                return nullptr;
+            }
+            static int arrow_destr_counter = 0;
+            std::string synthetic_name = "__adestr_" + std::to_string(arrow_destr_counter++);
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-            std::string destructuring_name = "__array_destructuring_";
-            int bracket_count = 1;
-            while (bracket_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                    bracket_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                    bracket_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                    if (destructuring_name == "__array_destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
-                } else if (current_token().get_type() == TokenType::ASSIGN) {
-                    advance();
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        int inner_bracket_count = 1;
-                        advance();
-                        while (inner_bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                inner_bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                inner_bracket_count--;
-                            }
-                            if (inner_bracket_count > 0) advance();
-                        }
-                        if (inner_bracket_count == 0) advance();
-                        continue;
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        int inner_brace_count = 1;
-                        advance();
-                        while (inner_brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                inner_brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                inner_brace_count--;
-                            }
-                            if (inner_brace_count > 0) advance();
-                        }
-                        if (inner_brace_count == 0) advance();
-                        continue;
-                    } else {
-                        while (!at_end() &&
-                               current_token().get_type() != TokenType::COMMA &&
-                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                            advance();
-                        }
-                        continue;
-                    }
-                }
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-            advance();
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
 
-            std::string destructuring_name = "__destructuring_";
-            int brace_count = 1;
-            while (brace_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                    brace_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                    brace_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                    if (destructuring_name == "__destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
+            if (is_rest) {
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    add_error("Rest parameter must be last formal parameter");
+                    return nullptr;
                 }
-                advance();
+                break;
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in parameter list");
+                return nullptr;
+            }
+            continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
@@ -2885,84 +2816,49 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 
         std::unique_ptr<Identifier> param_name = nullptr;
 
-        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
             has_non_simple_params = true;
-            advance();
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in function parameters");
+                return nullptr;
+            }
+            static int destr_param_counter = 0;
+            std::string synthetic_name = "__destr_" + std::to_string(destr_param_counter++);
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-            std::string destructuring_name = "__array_destructuring_";
-            int bracket_count = 1;
-            while (bracket_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                    bracket_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                    bracket_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                    if (destructuring_name == "__array_destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
-                } else if (current_token().get_type() == TokenType::ASSIGN) {
-                    advance();
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        int inner_bracket_count = 1;
-                        advance();
-                        while (inner_bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                inner_bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                inner_bracket_count--;
-                            }
-                            if (inner_bracket_count > 0) advance();
-                        }
-                        if (inner_bracket_count == 0) advance();
-                        continue;
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        int inner_brace_count = 1;
-                        advance();
-                        while (inner_brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                inner_brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                inner_brace_count--;
-                            }
-                            if (inner_brace_count > 0) advance();
-                        }
-                        if (inner_brace_count == 0) advance();
-                        continue;
-                    } else {
-                        while (!at_end() &&
-                               current_token().get_type() != TokenType::COMMA &&
-                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                            advance();
-                        }
-                        continue;
-                    }
-                }
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-            has_non_simple_params = true;
-            advance();
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
 
-            std::string destructuring_name = "__destructuring_";
-            int brace_count = 1;
-            while (brace_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                    brace_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                    brace_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                    if (destructuring_name == "__destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
+            if (is_rest) {
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    add_error("Rest parameter must be last formal parameter");
+                    return nullptr;
                 }
-                advance();
+                break;
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in parameter list");
+                return nullptr;
+            }
+            continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             // ES5: eval and arguments cannot be used as parameter names in strict mode
             if (options_.strict_mode) {
@@ -3117,84 +3013,49 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
         std::unique_ptr<Identifier> param_name = nullptr;
 
-        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
             has_non_simple_params = true;
-            advance();
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in function parameters");
+                return nullptr;
+            }
+            static int destr_param_counter = 0;
+            std::string synthetic_name = "__destr_" + std::to_string(destr_param_counter++);
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-            std::string destructuring_name = "__array_destructuring_";
-            int bracket_count = 1;
-            while (bracket_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                    bracket_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                    bracket_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                    if (destructuring_name == "__array_destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
-                } else if (current_token().get_type() == TokenType::ASSIGN) {
-                    advance();
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        int inner_bracket_count = 1;
-                        advance();
-                        while (inner_bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                inner_bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                inner_bracket_count--;
-                            }
-                            if (inner_bracket_count > 0) advance();
-                        }
-                        if (inner_bracket_count == 0) advance();
-                        continue;
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        int inner_brace_count = 1;
-                        advance();
-                        while (inner_brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                inner_brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                inner_brace_count--;
-                            }
-                            if (inner_brace_count > 0) advance();
-                        }
-                        if (inner_brace_count == 0) advance();
-                        continue;
-                    } else {
-                        while (!at_end() &&
-                               current_token().get_type() != TokenType::COMMA &&
-                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                            advance();
-                        }
-                        continue;
-                    }
-                }
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-            has_non_simple_params = true;
-            advance();
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
 
-            std::string destructuring_name = "__destructuring_";
-            int brace_count = 1;
-            while (brace_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                    brace_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                    brace_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                    if (destructuring_name == "__destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
+            if (is_rest) {
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    add_error("Rest parameter must be last formal parameter");
+                    return nullptr;
                 }
-                advance();
+                break;
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in parameter list");
+                return nullptr;
+            }
+            continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
@@ -3305,84 +3166,49 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 
         std::unique_ptr<Identifier> param_name = nullptr;
 
-        if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
             has_non_simple_params = true;
-            advance();
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in function parameters");
+                return nullptr;
+            }
+            static int destr_param_counter = 0;
+            std::string synthetic_name = "__destr_" + std::to_string(destr_param_counter++);
+            Position param_pos = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-            std::string destructuring_name = "__array_destructuring_";
-            int bracket_count = 1;
-            while (bracket_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                    bracket_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                    bracket_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                    if (destructuring_name == "__array_destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
-                } else if (current_token().get_type() == TokenType::ASSIGN) {
-                    advance();
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        int inner_bracket_count = 1;
-                        advance();
-                        while (inner_bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                inner_bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                inner_bracket_count--;
-                            }
-                            if (inner_bracket_count > 0) advance();
-                        }
-                        if (inner_bracket_count == 0) advance();
-                        continue;
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        int inner_brace_count = 1;
-                        advance();
-                        while (inner_brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                inner_brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                inner_brace_count--;
-                            }
-                            if (inner_brace_count > 0) advance();
-                        }
-                        if (inner_brace_count == 0) advance();
-                        continue;
-                    } else {
-                        while (!at_end() &&
-                               current_token().get_type() != TokenType::COMMA &&
-                               current_token().get_type() != TokenType::RIGHT_BRACKET) {
-                            advance();
-                        }
-                        continue;
-                    }
-                }
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
                 advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    return nullptr;
+                }
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-        } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-            has_non_simple_params = true;
-            advance();
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
 
-            std::string destructuring_name = "__destructuring_";
-            int brace_count = 1;
-            while (brace_count > 0 && !at_end()) {
-                if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                    brace_count++;
-                } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                    brace_count--;
-                } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                    if (destructuring_name == "__destructuring_") {
-                        destructuring_name += current_token().get_value();
-                    }
+            if (is_rest) {
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    add_error("Rest parameter must be last formal parameter");
+                    return nullptr;
                 }
-                advance();
+                break;
             }
 
-            Position param_pos = get_current_position();
-            param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+            if (match(TokenType::COMMA)) {
+                advance();
+            } else if (!match(TokenType::RIGHT_PAREN)) {
+                add_error("Expected ',' or ')' in parameter list");
+                return nullptr;
+            }
+            continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
@@ -3463,51 +3289,36 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         advance();
         
         while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
-            if (current_token().get_type() == TokenType::IDENTIFIER) {
-            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+            if (current_token().get_type() == TokenType::LEFT_BRACE ||
+                current_token().get_type() == TokenType::LEFT_BRACKET) {
                 has_non_simple_params = true;
-                advance();
-                int brace_count = 1;
-                while (brace_count > 0 && !at_end()) {
-                    if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        brace_count++;
-                    } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                        brace_count--;
-                    }
-                    advance();
-                }
                 Position param_start = get_current_position();
-                auto param_name = std::make_unique<Identifier>("__destructured", param_start, param_start);
+                auto destructuring = parse_destructuring_pattern();
+                if (!destructuring) {
+                    add_error("Invalid destructuring pattern in arrow parameters");
+                    return nullptr;
+                }
+                static int arrow2_destr_counter = 0;
+                std::string synthetic_name = "__arrow_destr_" + std::to_string(arrow2_destr_counter++);
+                Position param_pos = get_current_position();
+                auto param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
+
+                std::unique_ptr<ASTNode> default_value = nullptr;
+                if (match(TokenType::ASSIGN)) {
+                    advance();
+                    default_value = parse_assignment_expression();
+                }
+
                 Position param_end = get_current_position();
-                auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
+                auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), false, param_start, param_end);
+                param->set_destructuring_pattern(std::move(destructuring));
                 params.push_back(std::move(param));
-                
+
                 if (match(TokenType::COMMA)) {
                     advance();
                 }
                 continue;
-            } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                has_non_simple_params = true;
-                advance();
-                int bracket_count = 1;
-                while (bracket_count > 0 && !at_end()) {
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        bracket_count++;
-                    } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                        bracket_count--;
-                    }
-                    advance();
-                }
-                Position param_start = get_current_position();
-                auto param_name = std::make_unique<Identifier>("__destructured", param_start, param_start);
-                Position param_end = get_current_position();
-                auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
-                params.push_back(std::move(param));
-                
-                if (match(TokenType::COMMA)) {
-                    advance();
-                }
-                continue;
+            } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             } else {
                 advance();
                 continue;
@@ -3899,46 +3710,37 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                     std::unique_ptr<Identifier> param_name = nullptr;
 
-                    if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                        advance();
+                    if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+                        current_token().get_type() == TokenType::LEFT_BRACE) {
+                        auto destructuring = parse_destructuring_pattern();
+                        if (!destructuring) {
+                            add_error("Invalid destructuring pattern in parameters");
+                            return nullptr;
+                        }
+                        static int async_destr_counter = 0;
+                        std::string synthetic_name = "__asyncdestr_" + std::to_string(async_destr_counter++);
+                        Position param_pos = get_current_position();
+                        param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
-                        std::string destructuring_name = "__array_destructuring_";
-                        int bracket_count = 1;
-                        while (bracket_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                                bracket_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACKET) {
-                                bracket_count--;
-                            } else if (current_token().get_type() == TokenType::IDENTIFIER && bracket_count == 1) {
-                                if (destructuring_name == "__array_destructuring_") {
-                                    destructuring_name += current_token().get_value();
-                                }
-                            }
+                        std::unique_ptr<ASTNode> default_value = nullptr;
+                        if (match(TokenType::ASSIGN)) {
                             advance();
+                            default_value = parse_assignment_expression();
+                            if (!default_value) {
+                                add_error("Expected expression after '=' in parameter default");
+                                return nullptr;
+                            }
                         }
 
-                        Position param_pos = get_current_position();
-                        param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
-                    } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                        advance();
+                        Position param_end = get_current_position();
+                        auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+                        param->set_destructuring_pattern(std::move(destructuring));
+                        params.push_back(std::move(param));
 
-                        std::string destructuring_name = "__destructuring_";
-                        int brace_count = 1;
-                        while (brace_count > 0 && !at_end()) {
-                            if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                                brace_count++;
-                            } else if (current_token().get_type() == TokenType::RIGHT_BRACE) {
-                                brace_count--;
-                            } else if (current_token().get_type() == TokenType::IDENTIFIER && brace_count == 1) {
-                                if (destructuring_name == "__destructuring_") {
-                                    destructuring_name += current_token().get_value();
-                                }
-                            }
+                        if (match(TokenType::COMMA)) {
                             advance();
                         }
-
-                        Position param_pos = get_current_position();
-                        param_name = std::make_unique<Identifier>(destructuring_name, param_pos, param_pos);
+                        continue;
                     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                         param_name = std::make_unique<Identifier>(
                             current_token().get_value(),
