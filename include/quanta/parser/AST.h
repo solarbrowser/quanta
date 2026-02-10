@@ -420,6 +420,10 @@ public:
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
+
+    // ES6: Destructuring assignment helpers
+    static void destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value);
+    static void assign_to_target(Context& ctx, ASTNode* target, const Value& value);
 };
 
 class DestructuringAssignment : public ASTNode {

@@ -7340,6 +7340,23 @@ void Context::initialize_built_ins() {
             }
         });
 
+    // ES6: RegExp.prototype.toString is generic - works on any object with source/flags
+    auto regexp_toString = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("RegExp.prototype.toString called on incompatible receiver");
+                return Value();
+            }
+            Value source_val = this_obj->get_property("source");
+            Value flags_val = this_obj->get_property("flags");
+            std::string source = source_val.is_undefined() ? "(?:)" : source_val.to_string();
+            std::string flags = flags_val.is_undefined() ? "" : flags_val.to_string();
+            return Value("/" + source + "/" + flags);
+        }, 0);
+    regexp_prototype->set_property("toString", Value(regexp_toString.release()), PropertyAttributes::BuiltinFunction);
+
     PropertyDescriptor regexp_constructor_desc(Value(regexp_constructor.get()),
         PropertyAttributes::BuiltinFunction);
     regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);

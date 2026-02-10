@@ -1694,8 +1694,244 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         return right_value;
     }
     
+    // ES6: Destructuring assignment with object or array pattern
+    if (operator_ == Operator::ASSIGN &&
+        (left_->get_type() == ASTNode::Type::OBJECT_LITERAL ||
+         left_->get_type() == ASTNode::Type::ARRAY_LITERAL)) {
+        right_value = right_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+
+        destructuring_assign(ctx, left_.get(), right_value);
+        if (ctx.has_exception()) return Value();
+        return right_value;
+    }
+
     ctx.throw_exception(Value(std::string("Invalid assignment target")));
     return Value();
+}
+
+// Helper: recursively perform destructuring assignment from an ObjectLiteral or ArrayLiteral pattern
+void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value) {
+    if (pattern->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+        if (source_value.is_null() || source_value.is_undefined()) {
+            ctx.throw_type_error("Cannot destructure " + std::string(source_value.is_null() ? "null" : "undefined"));
+            return;
+        }
+        Object* source_obj = nullptr;
+        if (source_value.is_object()) source_obj = source_value.as_object();
+        else if (source_value.is_function()) source_obj = static_cast<Object*>(source_value.as_function());
+        else if (source_value.is_string()) {
+            // ES6: Box string with proper prototype chain
+            auto wrapper = ObjectFactory::create_string(source_value.as_string()->str());
+            Value ctor = ctx.get_binding("String");
+            if (ctor.is_function()) {
+                Value proto_val = ctor.as_function()->get_property("prototype");
+                if (proto_val.is_object()) {
+                    wrapper->set_prototype(proto_val.as_object());
+                }
+            }
+            source_obj = wrapper.release();
+        } else if (source_value.is_number() || source_value.is_boolean()) {
+            // ES6: Box number/boolean with proper prototype chain
+            std::string ctor_name = source_value.is_number() ? "Number" : "Boolean";
+            Value ctor = ctx.get_binding(ctor_name);
+            if (ctor.is_function()) {
+                Value proto_val = ctor.as_function()->get_property("prototype");
+                if (proto_val.is_object()) {
+                    auto wrapper = ObjectFactory::create_object();
+                    wrapper->set_prototype(proto_val.as_object());
+                    source_obj = wrapper.release();
+                }
+            }
+            if (!source_obj) {
+                auto* wrapper = ObjectFactory::create_object().release();
+                source_obj = wrapper;
+            }
+        }
+        if (!source_obj) {
+            ctx.throw_type_error("Cannot destructure non-object value");
+            return;
+        }
+
+        auto* obj_lit = static_cast<ObjectLiteral*>(pattern);
+        std::vector<std::string> assigned_keys;
+
+        for (const auto& prop : obj_lit->get_properties()) {
+            // Handle rest element: {...rest}
+            if (prop->type == ObjectLiteral::PropertyType::Value &&
+                prop->value && prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                auto* spread = static_cast<SpreadElement*>(prop->value.get());
+                ASTNode* rest_target = spread->get_argument();
+                // Create object with remaining properties
+                auto rest_obj = ObjectFactory::create_object();
+                auto keys = source_obj->get_own_property_keys();
+                for (const auto& k : keys) {
+                    bool already_assigned = false;
+                    for (const auto& ak : assigned_keys) {
+                        if (ak == k) { already_assigned = true; break; }
+                    }
+                    if (!already_assigned) {
+                        rest_obj->set_property(k, source_obj->get_property(k));
+                    }
+                }
+                assign_to_target(ctx, rest_target, Value(rest_obj.release()));
+                if (ctx.has_exception()) return;
+                continue;
+            }
+
+            // Get property name from key
+            std::string prop_name;
+            if (prop->computed) {
+                Value key_val = prop->key->evaluate(ctx);
+                if (ctx.has_exception()) return;
+                prop_name = key_val.to_string();
+            } else if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+                prop_name = static_cast<Identifier*>(prop->key.get())->get_name();
+            } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
+                prop_name = static_cast<StringLiteral*>(prop->key.get())->get_value();
+            } else if (prop->key->get_type() == ASTNode::Type::NUMBER_LITERAL) {
+                prop_name = prop->key->to_string();
+            }
+            assigned_keys.push_back(prop_name);
+
+            Value prop_value = source_obj->get_property(prop_name);
+
+            // Determine assignment target
+            ASTNode* target = prop->shorthand ? prop->key.get() : prop->value.get();
+
+            // Check for defaults: shorthand with AssignmentExpression value means {a = default}
+            if (prop->shorthand && prop->value &&
+                prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                auto* assign = static_cast<AssignmentExpression*>(prop->value.get());
+                if (prop_value.is_undefined()) {
+                    prop_value = assign->right_->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+                target = assign->left_.get();
+            }
+
+            // Non-shorthand with AssignmentExpression value: {key: target = default}
+            if (!prop->shorthand && target &&
+                target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                auto* assign = static_cast<AssignmentExpression*>(target);
+                if (prop_value.is_undefined()) {
+                    prop_value = assign->right_->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+                target = assign->left_.get();
+            }
+
+            assign_to_target(ctx, target, prop_value);
+            if (ctx.has_exception()) return;
+        }
+    } else if (pattern->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        if (source_value.is_null() || source_value.is_undefined()) {
+            ctx.throw_type_error("Cannot destructure " + std::string(source_value.is_null() ? "null" : "undefined"));
+            return;
+        }
+        Object* source_arr = nullptr;
+        uint32_t source_len = 0;
+        bool is_string_source = false;
+        std::string str_source;
+
+        if (source_value.is_string()) {
+            is_string_source = true;
+            str_source = source_value.as_string()->str();
+            source_len = static_cast<uint32_t>(str_source.length());
+        } else if (source_value.is_object()) {
+            source_arr = source_value.as_object();
+            source_len = source_arr->get_length();
+        } else if (source_value.is_function()) {
+            source_arr = static_cast<Object*>(source_value.as_function());
+            source_len = source_arr->get_length();
+        }
+
+        auto* arr_lit = static_cast<ArrayLiteral*>(pattern);
+        const auto& elements = arr_lit->get_elements();
+
+        for (size_t i = 0; i < elements.size(); i++) {
+            const auto& elem = elements[i];
+            if (!elem) continue; // hole/elision
+
+            // Handle rest element: [...rest]
+            if (elem->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                auto* spread = static_cast<SpreadElement*>(elem.get());
+                ASTNode* rest_target = spread->get_argument();
+                auto rest_arr = ObjectFactory::create_array(0);
+                uint32_t rest_idx = 0;
+                for (uint32_t j = static_cast<uint32_t>(i); j < source_len; j++) {
+                    Value val;
+                    if (is_string_source) {
+                        val = Value(std::string(1, str_source[j]));
+                    } else {
+                        val = source_arr->get_element(j);
+                    }
+                    rest_arr->set_element(rest_idx++, val);
+                }
+                rest_arr->set_length(rest_idx);
+                assign_to_target(ctx, rest_target, Value(rest_arr.release()));
+                if (ctx.has_exception()) return;
+                break;
+            }
+
+            Value elem_value;
+            if (is_string_source) {
+                elem_value = (i < source_len) ? Value(std::string(1, str_source[i])) : Value();
+            } else if (source_arr) {
+                elem_value = (i < source_len) ? source_arr->get_element(static_cast<uint32_t>(i)) : Value();
+            }
+
+            ASTNode* target = elem.get();
+
+            // Check for default: element is AssignmentExpression like (a = default)
+            if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                auto* assign = static_cast<AssignmentExpression*>(target);
+                if (elem_value.is_undefined()) {
+                    elem_value = assign->right_->evaluate(ctx);
+                    if (ctx.has_exception()) return;
+                }
+                target = assign->left_.get();
+            }
+
+            assign_to_target(ctx, target, elem_value);
+            if (ctx.has_exception()) return;
+        }
+    }
+}
+
+// Helper: assign a value to a target node (Identifier, MemberExpression, or nested pattern)
+void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const Value& value) {
+    if (!target) return;
+
+    if (target->get_type() == ASTNode::Type::IDENTIFIER) {
+        std::string name = static_cast<Identifier*>(target)->get_name();
+        if (ctx.has_binding(name)) {
+            ctx.set_binding(name, value);
+        } else {
+            ctx.create_binding(name, value, true);
+        }
+    } else if (target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+        auto* member = static_cast<MemberExpression*>(target);
+        Value obj_val = member->get_object()->evaluate(ctx);
+        if (ctx.has_exception()) return;
+        if (obj_val.is_object_like()) {
+            Object* obj = obj_val.is_object() ? obj_val.as_object()
+                                              : static_cast<Object*>(obj_val.as_function());
+            std::string prop_name;
+            if (member->is_computed()) {
+                Value key_val = member->get_property()->evaluate(ctx);
+                if (ctx.has_exception()) return;
+                prop_name = key_val.to_string();
+            } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                prop_name = static_cast<Identifier*>(member->get_property())->get_name();
+            }
+            obj->set_property(prop_name, value);
+        }
+    } else if (target->get_type() == ASTNode::Type::OBJECT_LITERAL ||
+               target->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        // Nested destructuring
+        destructuring_assign(ctx, target, value);
+    }
 }
 
 std::string AssignmentExpression::to_string() const {
@@ -1720,44 +1956,69 @@ std::unique_ptr<ASTNode> AssignmentExpression::clone() const {
 
 Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value) {
     if (type_ == Type::ARRAY) {
-        if (source_value.is_object_like()) {
-            Object* array_obj = source_value.is_object() ? source_value.as_object()
-                                                         : static_cast<Object*>(source_value.as_function());
-            
+        // ES6: Strings are iterable and can be array-destructured
+        bool is_string_source = source_value.is_string();
+        std::string str_src;
+        Object* array_obj = nullptr;
+
+        if (is_string_source) {
+            str_src = source_value.as_string()->str();
+        } else if (source_value.is_object_like()) {
+            array_obj = source_value.is_object() ? source_value.as_object()
+                                                 : static_cast<Object*>(source_value.as_function());
+        } else {
+            ctx.throw_type_error("Cannot destructure non-object as array");
+            return Value();
+        }
+
+        uint32_t src_len = is_string_source ? static_cast<uint32_t>(str_src.length())
+                                            : array_obj->get_length();
+
+        if (true) {
             for (size_t i = 0; i < targets_.size(); i++) {
                 const std::string& var_name = targets_[i]->get_name();
-                
+
                 if (var_name.empty()) {
                     continue;
                 }
-                
+
                 if (var_name.length() >= 3 && var_name.substr(0, 3) == "...") {
                     std::string rest_name = var_name.substr(3);
-                    
+
                     auto rest_array = ObjectFactory::create_array(0);
                     uint32_t rest_index = 0;
-                    
-                    for (size_t j = i; j < array_obj->get_length(); j++) {
-                        Value rest_element = array_obj->get_element(static_cast<uint32_t>(j));
+
+                    for (size_t j = i; j < src_len; j++) {
+                        Value rest_element;
+                        if (is_string_source) {
+                            rest_element = Value(std::string(1, str_src[j]));
+                        } else {
+                            rest_element = array_obj->get_element(static_cast<uint32_t>(j));
+                        }
                         rest_array->set_element(rest_index++, rest_element);
                     }
-                    
+
                     rest_array->set_length(rest_index);
-                    
+
                     if (!ctx.has_binding(rest_name)) {
                         ctx.create_binding(rest_name, Value(rest_array.release()), true);
                     } else {
                         ctx.set_binding(rest_name, Value(rest_array.release()));
                     }
-                    
+
                     break;
                 } else if (var_name.length() >= 14 && var_name.substr(0, 14) == "__nested_vars:") {
-                    Value nested_array = array_obj->get_element(static_cast<uint32_t>(i));
+                    Value nested_array;
+                    if (is_string_source) {
+                        nested_array = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                    } else {
+                        nested_array = array_obj->get_element(static_cast<uint32_t>(i));
+                    }
                     if (nested_array.is_object()) {
                         Object* nested_obj = nested_array.as_object();
-                        
+
                         std::string vars_string = var_name.substr(14);
-                        
+
                         std::vector<std::string> nested_var_names;
                         std::string current_var = "";
                         for (char c : vars_string) {
@@ -1773,11 +2034,11 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         if (!current_var.empty()) {
                             nested_var_names.push_back(current_var);
                         }
-                        
+
                         for (size_t j = 0; j < nested_var_names.size() && j < nested_obj->get_length(); j++) {
                             Value nested_element = nested_obj->get_element(static_cast<uint32_t>(j));
                             const std::string& nested_var_name = nested_var_names[j];
-                            
+
                             if (!ctx.has_binding(nested_var_name)) {
                                 ctx.create_binding(nested_var_name, nested_element, true);
                             } else {
@@ -1786,8 +2047,13 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         }
                     }
                 } else {
-                    Value element = array_obj->get_element(static_cast<uint32_t>(i));
-                    
+                    Value element;
+                    if (is_string_source) {
+                        element = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                    } else {
+                        element = array_obj->get_element(static_cast<uint32_t>(i));
+                    }
+
                     if (element.is_undefined()) {
                         for (const auto& default_val : default_values_) {
                             if (default_val.index == i) {
@@ -1797,7 +2063,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             }
                         }
                     }
-                    
+
                     if (!ctx.has_binding(var_name)) {
                         ctx.create_binding(var_name, element, true);
                     } else {
@@ -1805,9 +2071,6 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     }
                 }
             }
-        } else {
-            ctx.throw_exception(Value(std::string("Cannot destructure non-object as array")));
-            return Value();
         }
     } else {
         if (source_value.is_object_like()) {
@@ -1817,8 +2080,46 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             if (!handle_complex_object_destructuring(obj, ctx)) {
                 return Value();
             }
+        } else if (source_value.is_number() || source_value.is_string() || source_value.is_boolean()) {
+            // ES6: Primitive boxing for object destructuring
+            std::string ctor_name = source_value.is_string() ? "String"
+                                  : source_value.is_number() ? "Number" : "Boolean";
+            Value ctor = ctx.get_binding(ctor_name);
+            if (ctor.is_function()) {
+                Value proto_val = ctor.as_function()->get_property("prototype");
+                if (proto_val.is_object()) {
+                    Object* proto = proto_val.as_object();
+                    // Look up each property mapping on the prototype
+                    for (const auto& mapping : property_mappings_) {
+                        Value prop_value = proto->get_property(mapping.property_name);
+                        if (!ctx.has_binding(mapping.variable_name)) {
+                            ctx.create_binding(mapping.variable_name, prop_value, true);
+                        } else {
+                            ctx.set_binding(mapping.variable_name, prop_value);
+                        }
+                    }
+                    // Also handle shorthand targets
+                    for (const auto& target : targets_) {
+                        const std::string& name = target->get_name();
+                        if (name.empty() || name.find("...") == 0 || name.find("__") == 0) continue;
+                        // Only if not already handled by property_mappings_
+                        bool in_mappings = false;
+                        for (const auto& m : property_mappings_) {
+                            if (m.variable_name == name) { in_mappings = true; break; }
+                        }
+                        if (!in_mappings) {
+                            Value prop_value = proto->get_property(name);
+                            if (!ctx.has_binding(name)) {
+                                ctx.create_binding(name, prop_value, true);
+                            } else {
+                                ctx.set_binding(name, prop_value);
+                            }
+                        }
+                    }
+                }
+            }
         } else {
-            ctx.throw_exception(Value(std::string("Cannot destructure non-object")));
+            ctx.throw_type_error("Cannot destructure non-object");
             return Value();
         }
     }
@@ -4037,13 +4338,34 @@ Value CallExpression::handle_bigint_method_call(BigInt* bigint, const std::strin
 
 Value CallExpression::handle_member_expression_call(Context& ctx) {
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
-    
+
+    // ES6: super.method() - call parent prototype method with current this
+    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+        static_cast<Identifier*>(member->get_object())->get_name() == "super") {
+        Value method_value = member->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        if (method_value.is_function()) {
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
+            Function* method = method_value.as_function();
+            // this should be the current instance, not the parent constructor
+            Object* this_obj = ctx.get_this_binding();
+            return method->call(ctx, arg_values, Value(static_cast<Object*>(this_obj)));
+        } else {
+            ctx.throw_exception(Value(std::string("super." +
+                (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER
+                    ? static_cast<Identifier*>(member->get_property())->get_name()
+                    : std::string("method")) + " is not a function")));
+            return Value();
+        }
+    }
+
     if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
         member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-        
+
         Identifier* obj = static_cast<Identifier*>(member->get_object());
         Identifier* prop = static_cast<Identifier*>(member->get_property());
-        
+
         if (obj->get_name() == "console") {
             std::string method_name = prop->get_name();
             
@@ -4374,6 +4696,27 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
 
 
 Value MemberExpression::evaluate(Context& ctx) {
+    // ES6: super.prop / super[expr] looks up on parent prototype, not the constructor itself
+    if (object_->get_type() == ASTNode::Type::IDENTIFIER &&
+        static_cast<Identifier*>(object_.get())->get_name() == "super") {
+        Value super_ctor = ctx.get_binding("__super__");
+        if (super_ctor.is_function()) {
+            Value proto_val = super_ctor.as_function()->get_property("prototype");
+            if (proto_val.is_object()) {
+                Object* proto = proto_val.as_object();
+                std::string prop_name;
+                if (computed_) {
+                    Value key_val = property_->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    prop_name = key_val.to_string();
+                } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+                    prop_name = static_cast<Identifier*>(property_.get())->get_name();
+                }
+                return proto->get_property(prop_name);
+            }
+        }
+    }
+
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
     
