@@ -7,6 +7,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include <iostream>
+#include <algorithm>
 #include "quanta/core/runtime/Error.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
@@ -989,12 +990,12 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            if (!args[0].is_object()) {
+            if (!args[0].is_object_like()) {
                 ctx.throw_type_error("Object.defineProperty called on non-object");
                 return Value();
             }
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
             std::string prop_name = args[1].to_string();
 
             if (args[2].is_object()) {
@@ -7263,7 +7264,10 @@ void Context::initialize_built_ins() {
 
                 regex_obj->set_property("_isRegExp", Value(true));
                 regex_obj->set_property("source", Value(regexp_impl->get_source()));
-                regex_obj->set_property("flags", Value(regexp_impl->get_flags()));
+                // ES6: flags must be in alphabetical order
+                std::string sorted_flags = regexp_impl->get_flags();
+                std::sort(sorted_flags.begin(), sorted_flags.end());
+                regex_obj->set_property("flags", Value(sorted_flags));
                 regex_obj->set_property("global", Value(regexp_impl->get_global()));
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
@@ -7322,7 +7326,7 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
                 regex_obj->set_property("source", Value(regexp_impl->get_source()));
-                regex_obj->set_property("flags", Value(regexp_impl->get_flags()));
+                regex_obj->set_property("flags", Value(sorted_flags));
                 regex_obj->set_property("global", Value(regexp_impl->get_global()));
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));

@@ -473,9 +473,10 @@ public:
     }
     
     Value evaluate(Context& ctx) override;
+    Value evaluate_with_value(Context& ctx, const Value& source_value);
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
-    
+
 private:
     bool handle_complex_object_destructuring(Object* obj, Context& ctx);
     void handle_nested_object_destructuring(Object* nested_obj, const std::vector<std::string>& var_names, Context& ctx);
@@ -861,19 +862,23 @@ class Parameter : public ASTNode {
 private:
     std::unique_ptr<Identifier> name_;
     std::unique_ptr<ASTNode> default_value_;
+    std::unique_ptr<ASTNode> destructuring_pattern_;
     bool is_rest_;
 
 public:
     Parameter(std::unique_ptr<Identifier> name, std::unique_ptr<ASTNode> default_value,
               bool is_rest, const Position& start, const Position& end)
-        : ASTNode(Type::PARAMETER, start, end), 
+        : ASTNode(Type::PARAMETER, start, end),
           name_(std::move(name)), default_value_(std::move(default_value)), is_rest_(is_rest) {}
-    
+
     Identifier* get_name() const { return name_.get(); }
     ASTNode* get_default_value() const { return default_value_.get(); }
     bool has_default() const { return default_value_ != nullptr; }
     bool is_rest() const { return is_rest_; }
-    
+    ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }
+    bool has_destructuring() const { return destructuring_pattern_ != nullptr; }
+    void set_destructuring_pattern(std::unique_ptr<ASTNode> pattern) { destructuring_pattern_ = std::move(pattern); }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
