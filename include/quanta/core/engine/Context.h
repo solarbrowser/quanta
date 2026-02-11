@@ -77,6 +77,7 @@ private:
     std::string next_statement_label_;  // Label to be applied to the next statement
 
     bool is_in_constructor_call_;
+    bool super_called_;
     Value new_target_;
 
     bool strict_mode_;
@@ -173,6 +174,8 @@ public:
 
     bool is_in_constructor_call() const { return is_in_constructor_call_; }
     void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
+    bool was_super_called() const { return super_called_; }
+    void set_super_called(bool value) { super_called_ = value; }
 
     Value get_new_target() const { return new_target_; }
     void set_new_target(const Value& val) { new_target_ = val; }

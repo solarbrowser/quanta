@@ -51,7 +51,7 @@ Context::Context(Engine* engine, Type type)
       lexical_environment_(nullptr), variable_environment_(nullptr), this_binding_(nullptr),
       execution_depth_(0), global_object_(nullptr), current_exception_(), has_exception_(false),
       return_value_(), has_return_value_(false), has_break_(false), has_continue_(false),
-      current_loop_label_(), next_statement_label_(), is_in_constructor_call_(false),
+      current_loop_label_(), next_statement_label_(), is_in_constructor_call_(false), super_called_(false),
       strict_mode_(false), engine_(engine), current_filename_("<unknown>"),
       gc_(engine ? engine->get_garbage_collector() : nullptr) {
 

@@ -3021,13 +3021,13 @@ Value CallExpression::evaluate(Context& ctx) {
             if (parent_constructor.is_function()) {
                 std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
                 if (ctx.has_exception()) return Value();
-                
+
                 try {
                     Function* parent_func = parent_constructor.as_function();
                     if (!parent_func) {
                         return Value();
                     }
-                    
+
                     Object* this_obj = ctx.get_this_binding();
 
                     bool was_in_ctor = ctx.is_in_constructor_call();
@@ -3037,20 +3037,34 @@ Value CallExpression::evaluate(Context& ctx) {
                         ctx.set_new_target(Value(static_cast<Object*>(parent_func)));
                     }
 
+                    Value result;
                     if (this_obj) {
                         Value this_value(this_obj);
-                        parent_func->call(ctx, arg_values, this_value);
-                        ctx.clear_return_value();
+                        result = parent_func->call(ctx, arg_values, this_value);
                     } else {
-                        parent_func->call(ctx, arg_values);
-                        ctx.clear_return_value();
-                        if (ctx.has_exception()) {
-                            ctx.clear_exception();
-                        }
+                        result = parent_func->call(ctx, arg_values);
                     }
+                    ctx.clear_return_value();
+                    if (ctx.has_exception()) return Value();
 
                     ctx.set_in_constructor_call(was_in_ctor);
                     ctx.set_new_target(old_new_target);
+                    ctx.set_super_called(true);
+
+                    // If parent constructor explicitly returned an object, use that as new this
+                    if ((result.is_object() || result.is_function()) && this_obj) {
+                        Object* new_this = result.as_object();
+                        if (new_this && new_this != this_obj) {
+                            ctx.set_this_binding(new_this);
+                            ctx.set_binding("this", result);
+                        }
+                        return result;
+                    }
+
+                    // Return the this value
+                    if (this_obj) {
+                        return Value(this_obj);
+                    }
                     return Value();
                 } catch (...) {
                     return Value();
@@ -6377,6 +6391,20 @@ Value ForStatement::evaluate(Context& ctx) {
     unsigned int safety_counter = 0;
     const unsigned int max_iterations = 1000000000U;
 
+    // Detect let/const per-iteration scoping
+    bool has_per_iteration_scope = false;
+    std::vector<std::string> iter_var_names;
+    if (init_ && init_->get_type() == Type::VARIABLE_DECLARATION) {
+        auto* var_decl = static_cast<VariableDeclaration*>(init_.get());
+        if (var_decl->get_kind() == VariableDeclarator::Kind::LET ||
+            var_decl->get_kind() == VariableDeclarator::Kind::CONST) {
+            has_per_iteration_scope = true;
+            for (const auto& decl : var_decl->get_declarations()) {
+                iter_var_names.push_back(decl->get_id()->get_name());
+            }
+        }
+    }
+
     while (true) {
         if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
             if (safety_counter > max_iterations) {
@@ -6385,7 +6413,7 @@ Value ForStatement::evaluate(Context& ctx) {
             }
         }
         ++safety_counter;
-        
+
         if (test_) {
             Value test_value = test_->evaluate(ctx);
             if (ctx.has_exception()) {
@@ -6396,14 +6424,39 @@ Value ForStatement::evaluate(Context& ctx) {
                 break;
             }
         }
-        
+
+        // Per-iteration scoping: push a new scope for each iteration body
+        if (has_per_iteration_scope) {
+            std::vector<Value> iter_values;
+            for (const auto& vname : iter_var_names) {
+                iter_values.push_back(ctx.get_binding(vname));
+            }
+            ctx.push_block_scope();
+            for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
+                ctx.create_binding(iter_var_names[vi], iter_values[vi], false);
+            }
+        }
+
         if (body_) {
             Value body_result = body_->evaluate(ctx);
+
+            // Copy back iteration variables before popping scope
+            if (has_per_iteration_scope) {
+                std::vector<Value> updated_values;
+                for (const auto& vname : iter_var_names) {
+                    updated_values.push_back(ctx.get_binding(vname));
+                }
+                ctx.pop_block_scope();
+                for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
+                    ctx.set_binding(iter_var_names[vi], updated_values[vi]);
+                }
+            }
+
             if (ctx.has_exception()) {
                 ctx.pop_block_scope();
                 return Value();
             }
-            
+
             if (ctx.has_break()) {
                 // If break has no label or empty label, consume it and exit loop
                 if (ctx.get_break_label().empty()) {
@@ -6431,8 +6484,10 @@ Value ForStatement::evaluate(Context& ctx) {
             if (ctx.has_return_value()) {
                 return ctx.get_return_value();
             }
+        } else if (has_per_iteration_scope) {
+            ctx.pop_block_scope();
         }
-        
+
         continue_loop:
         if (update_) {
             update_->evaluate(ctx);
@@ -6595,19 +6650,39 @@ Value ForInStatement::evaluate(Context& ctx) {
         uint32_t iteration_count = 0;
         const uint32_t MAX_ITERATIONS = 1000000000;
         
+        // Detect let/const for per-iteration scoping
+        bool forin_per_iter = false;
+        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(left_.get());
+            if (vd->get_kind() == VariableDeclarator::Kind::LET ||
+                vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                forin_per_iter = true;
+            }
+        }
+
         for (const auto& key : keys) {
             if (iteration_count >= MAX_ITERATIONS) break;
             iteration_count++;
-            
-            if (ctx.has_binding(var_name)) {
-                ctx.set_binding(var_name, Value(key));
+
+            if (forin_per_iter) {
+                ctx.push_block_scope();
+                ctx.create_binding(var_name, Value(key), false);
             } else {
-                ctx.create_binding(var_name, Value(key), true);
+                if (ctx.has_binding(var_name)) {
+                    ctx.set_binding(var_name, Value(key));
+                } else {
+                    ctx.create_binding(var_name, Value(key), true);
+                }
             }
-            
+
             Value result = body_->evaluate(ctx);
+
+            if (forin_per_iter) {
+                ctx.pop_block_scope();
+            }
+
             if (ctx.has_exception()) return Value();
-            
+
             if (ctx.has_break()) {
                 ctx.clear_break_continue();
                 break;
@@ -6616,7 +6691,7 @@ Value ForInStatement::evaluate(Context& ctx) {
                 ctx.clear_break_continue();
                 continue;
             }
-            
+
             if (ctx.has_return_value()) {
                 return ctx.get_return_value();
             }
@@ -6763,19 +6838,41 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         }
                                     }
                                 } else {
-                                    if (loop_ctx->has_binding(var_name)) {
+                                    bool forof_per_iter = (var_kind == VariableDeclarator::Kind::LET ||
+                                                          var_kind == VariableDeclarator::Kind::CONST);
+                                    if (forof_per_iter) {
+                                        loop_ctx->push_block_scope();
+                                        loop_ctx->create_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
+                                    } else if (loop_ctx->has_binding(var_name)) {
                                         loop_ctx->set_binding(var_name, value);
                                     } else {
                                         bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
                                         loop_ctx->create_binding(var_name, value, is_mutable);
                                     }
+
+                                    body_->evaluate(*loop_ctx);
+
+                                    if (forof_per_iter) {
+                                        loop_ctx->pop_block_scope();
+                                    }
+
+                                    if (loop_ctx->has_exception()) {
+                                        return Value();
+                                    }
+
+                                    if (loop_ctx->has_break()) break;
+                                    if (loop_ctx->has_continue()) continue;
+                                    if (loop_ctx->has_return_value()) {
+                                        return Value();
+                                    }
+                                    continue; // skip the code below for non-destructuring
                                 }
-                                
+
                                 body_->evaluate(*loop_ctx);
                                 if (loop_ctx->has_exception()) {
                                     return Value();
                                 }
-                                
+
                                 if (loop_ctx->has_break()) break;
                                 if (loop_ctx->has_continue()) continue;
                                 if (loop_ctx->has_return_value()) {
@@ -6860,23 +6957,32 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     destructuring->set_source(std::move(temp_literal));
                     destructuring->evaluate(*loop_ctx);
                 } else {
-                    if (loop_ctx->has_binding(var_name)) {
+                    bool forof_arr_per_iter = (var_kind == VariableDeclarator::Kind::LET ||
+                                               var_kind == VariableDeclarator::Kind::CONST);
+                    if (forof_arr_per_iter) {
+                        loop_ctx->push_block_scope();
+                        loop_ctx->create_binding(var_name, element, var_kind != VariableDeclarator::Kind::CONST);
+                    } else if (loop_ctx->has_binding(var_name)) {
                         loop_ctx->set_binding(var_name, element);
                     } else {
                         loop_ctx->create_binding(var_name, element, true);
                     }
-                }
-                
-                if (body_) {
-                    Value result = body_->evaluate(*loop_ctx);
-                    if (loop_ctx->has_exception()) {
-                        ctx.throw_exception(loop_ctx->get_exception());
-                        return Value();
-                    }
-                    
-                    if (loop_ctx->has_return_value()) {
-                        ctx.set_return_value(loop_ctx->get_return_value());
-                        return Value();
+
+                    if (body_) {
+                        Value result = body_->evaluate(*loop_ctx);
+                        if (forof_arr_per_iter) {
+                            loop_ctx->pop_block_scope();
+                        }
+                        if (loop_ctx->has_exception()) {
+                            ctx.throw_exception(loop_ctx->get_exception());
+                            return Value();
+                        }
+                        if (loop_ctx->has_return_value()) {
+                            ctx.set_return_value(loop_ctx->get_return_value());
+                            return Value();
+                        }
+                    } else if (forof_arr_per_iter) {
+                        loop_ctx->pop_block_scope();
                     }
                 }
             }
@@ -7298,6 +7404,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
+                    instance_method->set_is_strict(true);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         // Get/set accessor properties
@@ -7366,6 +7473,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         constructor_fn->set_property("prototype", Value(proto_ptr));
         proto_ptr->set_property("constructor", Value(constructor_fn.get()));
         constructor_fn->set_is_class_constructor(true);
+        constructor_fn->set_is_strict(true);
 
         prototype.release();
     } else {
@@ -7407,6 +7515,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method->get_value()->get_body()->clone(),
                         &ctx
                     );
+                    static_method->set_is_strict(true);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);
@@ -7452,6 +7561,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     constructor_fn->set_prototype(super_fn);
                     constructor_fn->set_property("__super_constructor__", Value(super_fn));
 
+                    // Set __super_constructor__ on instance methods for static super binding
+                    if (proto_ptr) {
+                        auto method_keys = proto_ptr->get_own_property_keys();
+                        for (const auto& mkey : method_keys) {
+                            if (mkey == "constructor") continue;
+                            Value mval = proto_ptr->get_property(mkey);
+                            if (mval.is_function()) {
+                                mval.as_function()->set_property("__super_constructor__", Value(super_fn));
+                            }
+                            PropertyDescriptor mdesc = proto_ptr->get_property_descriptor(mkey);
+                            if (mdesc.has_getter() && mdesc.get_getter()) {
+                                static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                            if (mdesc.has_setter() && mdesc.get_setter()) {
+                                static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                        }
+                    }
+
                     // C.prototype's [[Prototype]] = B.prototype
                     Value super_proto_val = super_fn->get_property("prototype");
                     if (super_proto_val.is_object() && proto_ptr) {
@@ -7462,12 +7590,45 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
     
+    // ES6: Class name is lexically scoped inside class methods
+    // Set __closure_{className} on all methods so they can reference the class by name
+    std::string closure_key = "__closure_" + class_name;
+    Value ctor_val(constructor_fn.get());
+    // Instance methods on prototype
+    if (proto_ptr) {
+        auto proto_keys = proto_ptr->get_own_property_keys();
+        for (const auto& key : proto_keys) {
+            if (key == "constructor") continue;
+            Value method_val = proto_ptr->get_property(key);
+            if (method_val.is_function()) {
+                method_val.as_function()->set_property(closure_key, ctor_val);
+            }
+            // Also check accessor descriptors
+            PropertyDescriptor desc = proto_ptr->get_property_descriptor(key);
+            if (desc.has_getter() && desc.get_getter()) {
+                static_cast<Function*>(desc.get_getter())->set_property(closure_key, ctor_val);
+            }
+            if (desc.has_setter() && desc.get_setter()) {
+                static_cast<Function*>(desc.get_setter())->set_property(closure_key, ctor_val);
+            }
+        }
+    }
+    // Static methods on constructor
+    auto static_keys = constructor_fn->get_own_property_keys();
+    for (const auto& key : static_keys) {
+        if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
+        Value method_val = constructor_fn->get_property(key);
+        if (method_val.is_function()) {
+            method_val.as_function()->set_property(closure_key, ctor_val);
+        }
+    }
+
     ctx.create_binding(class_name, Value(constructor_fn.get()));
-    
+
     Function* constructor_ptr = constructor_fn.get();
-    
+
     constructor_fn.release();
-    
+
     return Value(constructor_ptr);
 }
 
@@ -7702,6 +7863,12 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     if (ctx.has_binding("this")) {
         Value this_value = ctx.get_binding("this");
         arrow_function->set_property("__arrow_this__", this_value);
+    }
+
+    // Capture lexical new.target from enclosing scope
+    Value enclosing_new_target = ctx.get_new_target();
+    if (!enclosing_new_target.is_undefined()) {
+        arrow_function->set_property("__arrow_new_target__", enclosing_new_target);
     }
 
     // Capture closure variables from enclosing scope (including arguments for lexical arguments)
