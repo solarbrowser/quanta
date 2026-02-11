@@ -31,7 +31,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
 
@@ -50,7 +50,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
@@ -76,7 +76,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -97,7 +97,7 @@ Function::Function(const std::string& name,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -212,7 +212,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_new_target(ctx.get_new_target());
     }
 
+    // Arrow functions capture new.target from enclosing scope
+    if (is_arrow_ && this->has_property("__arrow_new_target__")) {
+        function_context.set_new_target(this->get_property("__arrow_new_target__"));
+    }
+
     // Check for strict mode BEFORE setting up 'this' binding
+    if (is_strict_) {
+        function_context.set_strict_mode(true);
+    }
     if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         BlockStatement* block = static_cast<BlockStatement*>(body_.get());
         block->check_use_strict_directive(function_context);
@@ -378,6 +386,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         Value result = body_->evaluate(function_context);
+
+        // Propagate super_called flag to parent context
+        if (function_context.was_super_called()) {
+            ctx.set_super_called(true);
+        }
 
         // Re-capture closure variables on function objects in this scope.
         // This handles the case where function declarations are hoisted before
@@ -575,19 +588,17 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         ctx.create_binding("__super__", super_constructor_prop);
     }
     
-    std::vector<std::string> initial_properties = new_object->get_own_property_keys();
-    size_t initial_prop_count = initial_properties.size();
-
     ctx.set_in_constructor_call(true);
+    ctx.set_super_called(false);
     ctx.set_new_target(Value(static_cast<Object*>(this)));
     Value result = call(ctx, args, this_value);
+    bool super_was_called = ctx.was_super_called();
     ctx.set_in_constructor_call(false);
     ctx.set_new_target(Value());
-    
-    std::vector<std::string> final_properties = new_object->get_own_property_keys();
-    bool constructor_did_work = (final_properties.size() > initial_prop_count);
-    
-    if (!constructor_did_work && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+
+    // Auto-call super if the constructor didn't explicitly call super()
+    // This handles classes with no explicit constructor (default constructor)
+    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
         Function* super_constructor = super_constructor_prop.as_function();
         ctx.set_in_constructor_call(true);
         ctx.set_new_target(Value(static_cast<Object*>(this)));
@@ -599,7 +610,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
             result = super_result;
         }
     }
-    
+
     // If constructor explicitly returned an object or function, use that
     if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
         return result;
