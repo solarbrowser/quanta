@@ -585,45 +585,54 @@ Token Lexer::read_string(char quote) {
 Token Lexer::read_template_literal() {
     Position start = current_position_;
     advance();
-    
-    std::string value;
+
+    std::string cooked;
+    std::string raw;
     bool has_expressions = false;
-    
+
     while (!at_end() && current_char() != '`') {
         if (current_char() == '$' && peek_char() == '{') {
             has_expressions = true;
-            value += advance();
-            value += advance();
-            
+            char c1 = advance(); // '$'
+            char c2 = advance(); // '{'
+            cooked += c1; raw += c1;
+            cooked += c2; raw += c2;
+
             int brace_count = 1;
             while (!at_end() && brace_count > 0) {
                 char ch = advance();
-                value += ch;
+                cooked += ch; raw += ch;
                 if (ch == '{') brace_count++;
                 else if (ch == '}') brace_count--;
             }
         } else if (current_char() == '\\') {
-            value += parse_escape_sequence();
+            // For raw: capture source characters before escape processing
+            size_t raw_start = position_;
+            cooked += parse_escape_sequence();
+            raw += source_.substr(raw_start, position_ - raw_start);
         } else if (current_char() == '\r') {
             // ES6: Normalize CR and CRLF to LF in template literals
             advance();
             if (!at_end() && current_char() == '\n') {
                 advance();
             }
-            value += '\n';
+            cooked += '\n';
+            raw += '\n';
         } else {
-            value += advance();
+            char ch = advance();
+            cooked += ch; raw += ch;
         }
     }
-    
+
     if (at_end()) {
         add_error("Unterminated template literal");
         return create_token(TokenType::INVALID, start);
     }
-    
+
     advance();
-    
-    return create_token(TokenType::TEMPLATE_LITERAL, value, start);
+
+    // Encode both cooked and raw in token value, separated by \0
+    return create_token(TokenType::TEMPLATE_LITERAL, cooked + '\0' + raw, start);
 }
 
 Token Lexer::read_single_line_comment() {
@@ -1282,6 +1291,52 @@ std::string Lexer::parse_unicode_escape() {
         if (c >= '0' && c <= '9') code_unit += c - '0';
         else if (c >= 'a' && c <= 'f') code_unit += c - 'a' + 10;
         else code_unit += c - 'A' + 10;
+    }
+
+    // Check for surrogate pair: high surrogate followed by \uXXXX low surrogate
+    if (code_unit >= 0xD800 && code_unit <= 0xDBFF) {
+        // High surrogate - look ahead for \uXXXX low surrogate
+        if (!at_end() && current_char() == '\\' && peek_char() == 'u') {
+            size_t saved_pos = position_;
+            Position saved_current = current_position_;
+            advance(); // skip '\'
+            advance(); // skip 'u'
+            if (remaining() >= 4 && current_char() != '{') {
+                char ld[4];
+                bool valid = true;
+                for (int i = 0; i < 4; i++) {
+                    ld[i] = current_char();
+                    if (!is_hex_digit(ld[i])) { valid = false; break; }
+                    advance();
+                }
+                if (valid) {
+                    uint16_t low_unit = 0;
+                    for (int i = 0; i < 4; i++) {
+                        low_unit *= 16;
+                        char lc = ld[i];
+                        if (lc >= '0' && lc <= '9') low_unit += lc - '0';
+                        else if (lc >= 'a' && lc <= 'f') low_unit += lc - 'a' + 10;
+                        else low_unit += lc - 'A' + 10;
+                    }
+                    if (low_unit >= 0xDC00 && low_unit <= 0xDFFF) {
+                        // Valid surrogate pair - combine to single codepoint
+                        uint32_t codepoint = 0x10000 + ((static_cast<uint32_t>(code_unit) - 0xD800) << 10) + (low_unit - 0xDC00);
+                        std::string result;
+                        result += static_cast<char>(0xF0 | (codepoint >> 18));
+                        result += static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F));
+                        result += static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F));
+                        result += static_cast<char>(0x80 | (codepoint & 0x3F));
+                        return result;
+                    }
+                }
+                // Not a valid low surrogate, restore position
+                position_ = saved_pos;
+                current_position_ = saved_current;
+            } else {
+                position_ = saved_pos;
+                current_position_ = saved_current;
+            }
+        }
     }
 
     // Convert UTF-16 code unit to UTF-8

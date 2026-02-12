@@ -214,15 +214,15 @@ std::string TemplateLiteral::to_string() const {
 
 std::unique_ptr<ASTNode> TemplateLiteral::clone() const {
     std::vector<Element> cloned_elements;
-    
+
     for (const auto& element : elements_) {
         if (element.type == Element::Type::TEXT) {
-            cloned_elements.emplace_back(element.text);
+            cloned_elements.emplace_back(element.text, element.raw_text);
         } else if (element.type == Element::Type::EXPRESSION) {
             cloned_elements.emplace_back(element.expression->clone());
         }
     }
-    
+
     return std::make_unique<TemplateLiteral>(std::move(cloned_elements), start_, end_);
 }
 
@@ -3083,9 +3083,74 @@ Value CallExpression::evaluate(Context& ctx) {
     }
     
     if (callee_value.is_function()) {
+        // Tagged template literal handling
+        if (is_tagged_template_ && arguments_.size() == 1 &&
+            arguments_[0]->get_type() == ASTNode::Type::TEMPLATE_LITERAL) {
+
+            TemplateLiteral* tmpl = static_cast<TemplateLiteral*>(arguments_[0].get());
+            const auto& elements = tmpl->get_elements();
+
+            // Per-call-site caching: use the TemplateLiteral AST node pointer as key
+            static std::unordered_map<const TemplateLiteral*, Object*> template_cache;
+            Object* strings_array = nullptr;
+
+            auto cache_it = template_cache.find(tmpl);
+            if (cache_it != template_cache.end()) {
+                strings_array = cache_it->second;
+            } else {
+                // Build the strings array from TEXT elements
+                std::vector<std::string> cooked_parts;
+                std::vector<std::string> raw_parts;
+                for (const auto& el : elements) {
+                    if (el.type == TemplateLiteral::Element::Type::TEXT) {
+                        cooked_parts.push_back(el.text);
+                        raw_parts.push_back(el.raw_text);
+                    }
+                }
+
+                auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
+                strings_array = strings_obj.release();
+                for (size_t i = 0; i < cooked_parts.size(); i++) {
+                    strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                }
+                strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
+
+                // Add .raw property (frozen array of raw strings)
+                auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
+                Object* raw_array = raw_obj.release();
+                for (size_t i = 0; i < raw_parts.size(); i++) {
+                    raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
+                }
+                raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
+                raw_array->freeze();
+
+                strings_array->set_property("raw", Value(raw_array));
+                strings_array->freeze();
+
+                template_cache[tmpl] = strings_array;
+            }
+
+            // Build argument list: [strings_array, expr1, expr2, ...]
+            std::vector<Value> arg_values;
+            arg_values.push_back(Value(strings_array));
+
+            // Evaluate expression elements
+            for (const auto& el : elements) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION) {
+                    Value expr_val = el.expression->evaluate(ctx);
+                    if (ctx.has_exception()) return Value();
+                    arg_values.push_back(expr_val);
+                }
+            }
+
+            Function* function = callee_value.as_function();
+            Value this_value = Value();
+            return function->call(ctx, arg_values, this_value);
+        }
+
         std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
         if (ctx.has_exception()) return Value();
-        
+
         Function* function = callee_value.as_function();
 
         // In ES5, 'this' should be undefined for non-method calls
@@ -3200,7 +3265,9 @@ std::unique_ptr<ASTNode> CallExpression::clone() const {
     for (const auto& arg : arguments_) {
         cloned_args.push_back(arg->clone());
     }
-    return std::make_unique<CallExpression>(callee_->clone(), std::move(cloned_args), start_, end_);
+    auto cloned = std::make_unique<CallExpression>(callee_->clone(), std::move(cloned_args), start_, end_);
+    cloned->set_tagged_template(is_tagged_template_);
+    return cloned;
 }
 
 Value CallExpression::handle_array_method_call(Object* array, const std::string& method_name, Context& ctx) {
@@ -6433,7 +6500,7 @@ Value ForStatement::evaluate(Context& ctx) {
             }
             ctx.push_block_scope();
             for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
-                ctx.create_binding(iter_var_names[vi], iter_values[vi], false);
+                ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
             }
         }
 
@@ -6666,7 +6733,7 @@ Value ForInStatement::evaluate(Context& ctx) {
 
             if (forin_per_iter) {
                 ctx.push_block_scope();
-                ctx.create_binding(var_name, Value(key), false);
+                ctx.create_lexical_binding(var_name, Value(key), true);
             } else {
                 if (ctx.has_binding(var_name)) {
                     ctx.set_binding(var_name, Value(key));
@@ -6842,7 +6909,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                                           var_kind == VariableDeclarator::Kind::CONST);
                                     if (forof_per_iter) {
                                         loop_ctx->push_block_scope();
-                                        loop_ctx->create_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
+                                        loop_ctx->create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
                                     } else if (loop_ctx->has_binding(var_name)) {
                                         loop_ctx->set_binding(var_name, value);
                                     } else {
@@ -6961,7 +7028,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                                var_kind == VariableDeclarator::Kind::CONST);
                     if (forof_arr_per_iter) {
                         loop_ctx->push_block_scope();
-                        loop_ctx->create_binding(var_name, element, var_kind != VariableDeclarator::Kind::CONST);
+                        loop_ctx->create_lexical_binding(var_name, element, var_kind != VariableDeclarator::Kind::CONST);
                     } else if (loop_ctx->has_binding(var_name)) {
                         loop_ctx->set_binding(var_name, element);
                     } else {
@@ -7269,19 +7336,24 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             }
         }
         
+        // Walk the entire lexical environment chain to capture block-scoped bindings
         auto lex_env = ctx.get_lexical_environment();
-        if (lex_env && lex_env != var_env) {
-            auto lex_binding_names = lex_env->get_binding_names();
+        Environment* walk = lex_env;
+        while (walk && walk != var_env) {
+            auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
                 if (name != "this" && name != "arguments") {
-                    Value value = ctx.get_binding(name);
-                    if (!value.is_undefined() && !value.is_function()) {
-                        function_obj->set_property("__closure_" + name, value);
+                    if (!function_obj->has_property("__closure_" + name)) {
+                        Value value = ctx.get_binding(name);
+                        if (!value.is_undefined() && !value.is_function()) {
+                            function_obj->set_property("__closure_" + name, value);
+                        }
                     }
                 }
             }
+            walk = walk->get_outer();
         }
-        
+
         std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
         for (const auto& var_name : potential_vars) {
             if (ctx.has_binding(var_name)) {
@@ -7299,7 +7371,14 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     Value function_value(func_ptr);
     
     
-    if (!ctx.create_binding(function_name, function_value, true)) {
+    // ES6: In strict mode, function declarations in blocks are block-scoped
+    bool use_lexical = ctx.is_strict_mode() &&
+        ctx.get_lexical_environment() != ctx.get_variable_environment();
+    if (use_lexical) {
+        if (!ctx.create_lexical_binding(function_name, function_value, true)) {
+            ctx.set_binding(function_name, function_value);
+        }
+    } else if (!ctx.create_binding(function_name, function_value, true)) {
         // Function declarations can overwrite var/function bindings in the same scope
         ctx.set_binding(function_name, function_value);
     }
@@ -7739,17 +7818,23 @@ Value FunctionExpression::evaluate(Context& ctx) {
             }
         }
 
+        // Walk the entire lexical environment chain to capture block-scoped bindings
         auto lex_env = ctx.get_lexical_environment();
-        if (lex_env && lex_env != var_env) {
-            auto lex_binding_names = lex_env->get_binding_names();
+        Environment* walk = lex_env;
+        while (walk && walk != var_env) {
+            auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
                 if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
-                    Value value = ctx.get_binding(name);
-                    if (!value.is_undefined() && !value.is_function()) {
-                        function->set_property("__closure_" + name, value);
+                    // Don't overwrite if already captured from a closer scope
+                    if (!function->has_property("__closure_" + name)) {
+                        Value value = ctx.get_binding(name);
+                        if (!value.is_undefined() && !value.is_function()) {
+                            function->set_property("__closure_" + name, value);
+                        }
                     }
                 }
             }
+            walk = walk->get_outer();
         }
 
         // Check if function is strict mode:
@@ -7890,19 +7975,24 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         }
     }
 
+    // Walk the entire lexical environment chain to capture block-scoped bindings
     auto lex_env = ctx.get_lexical_environment();
-    if (lex_env && lex_env != var_env) {
-        auto lex_binding_names = lex_env->get_binding_names();
+    Environment* walk = lex_env;
+    while (walk && walk != var_env) {
+        auto lex_binding_names = walk->get_binding_names();
         for (const auto& name : lex_binding_names) {
             if (name != "this" && param_names.find(name) == param_names.end()) {
-                Value value = ctx.get_binding(name);
-                if (!value.is_undefined()) {
-                    arrow_function->set_property("__closure_" + name, value);
+                if (!arrow_function->has_property("__closure_" + name)) {
+                    Value value = ctx.get_binding(name);
+                    if (!value.is_undefined()) {
+                        arrow_function->set_property("__closure_" + name, value);
+                    }
                 }
             }
         }
+        walk = walk->get_outer();
     }
-    
+
     return Value(arrow_function.release());
 }
 

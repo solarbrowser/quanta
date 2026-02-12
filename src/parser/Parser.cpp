@@ -782,20 +782,14 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             Position end = get_current_position();
             expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
         } else if (match(TokenType::TEMPLATE_LITERAL)) {
-            const Token& template_token = current_token();
-            Position template_start = template_token.get_start();
-            Position template_end = template_token.get_end();
-            std::string template_str = template_token.get_value();
-
-            advance();
-
+            // Tagged template literal: fn`...`
+            auto template_node = parse_template_literal();
             std::vector<std::unique_ptr<ASTNode>> arguments;
-
-            auto string_literal = std::make_unique<StringLiteral>(template_str, template_start, template_end);
-            arguments.push_back(std::move(string_literal));
-
-            Position end = template_end;
-            expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
+            arguments.push_back(std::move(template_node));
+            Position end = get_current_position();
+            auto call = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
+            call->set_tagged_template(true);
+            expr = std::move(call);
         }
     }
     
@@ -1006,71 +1000,107 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     return std::make_unique<Identifier>("super", start, end);
 }
 
+// Helper: extract text parts from a template string by splitting on ${...} markers
+static std::vector<std::string> extract_template_text_parts(const std::string& str) {
+    std::vector<std::string> parts;
+    size_t pos = 0;
+    while (pos <= str.length()) {
+        size_t expr_start = str.find("${", pos);
+        if (expr_start == std::string::npos) {
+            parts.push_back(str.substr(pos));
+            break;
+        }
+        parts.push_back(str.substr(pos, expr_start - pos));
+        int brace_count = 1;
+        size_t i = expr_start + 2;
+        while (i < str.length() && brace_count > 0) {
+            if (str[i] == '{') brace_count++;
+            else if (str[i] == '}') brace_count--;
+            i++;
+        }
+        pos = i;
+    }
+    return parts;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_template_literal() {
     const Token& token = current_token();
     Position start = token.get_start();
     Position end = token.get_end();
     std::string template_str = token.get_value();
-    
+
     if (!match(TokenType::TEMPLATE_LITERAL)) {
         add_error("Expected template literal");
         return nullptr;
     }
-    
+
     advance();
-    
-    std::vector<TemplateLiteral::Element> elements;
-    
-    size_t pos = 0;
-    while (pos < template_str.length()) {
-        size_t expr_start = template_str.find("${", pos);
-        
-        if (expr_start == std::string::npos) {
-            if (pos < template_str.length()) {
-                elements.emplace_back(template_str.substr(pos));
-            }
-            break;
-        }
-        
-        if (expr_start > pos) {
-            elements.emplace_back(template_str.substr(pos, expr_start - pos));
-        }
-        
-        size_t expr_end = std::string::npos;
-        int brace_count = 1;
-        for (size_t i = expr_start + 2; i < template_str.length(); ++i) {
-            if (template_str[i] == '{') {
-                brace_count++;
-            } else if (template_str[i] == '}') {
-                brace_count--;
-                if (brace_count == 0) {
-                    expr_end = i;
-                    break;
+
+    // Split cooked and raw parts (separated by \0 from lexer)
+    size_t null_sep = template_str.find('\0');
+    std::string cooked_str, raw_str;
+    if (null_sep != std::string::npos) {
+        cooked_str = template_str.substr(0, null_sep);
+        raw_str = template_str.substr(null_sep + 1);
+    } else {
+        cooked_str = template_str;
+        raw_str = template_str;
+    }
+
+    // Extract raw text parts
+    auto raw_text_parts = extract_template_text_parts(raw_str);
+
+    // Extract cooked text parts and expressions
+    auto cooked_text_parts = extract_template_text_parts(cooked_str);
+
+    // Parse expressions from cooked string
+    std::vector<std::unique_ptr<ASTNode>> expressions;
+    {
+        size_t pos = 0;
+        while (pos < cooked_str.length()) {
+            size_t expr_start = cooked_str.find("${", pos);
+            if (expr_start == std::string::npos) break;
+
+            size_t expr_end = std::string::npos;
+            int brace_count = 1;
+            for (size_t i = expr_start + 2; i < cooked_str.length(); ++i) {
+                if (cooked_str[i] == '{') brace_count++;
+                else if (cooked_str[i] == '}') {
+                    brace_count--;
+                    if (brace_count == 0) { expr_end = i; break; }
                 }
             }
-        }
 
-        if (expr_end == std::string::npos) {
-            add_error("Unterminated expression in template literal");
-            return nullptr;
+            if (expr_end == std::string::npos) {
+                add_error("Unterminated expression in template literal");
+                return nullptr;
+            }
+
+            std::string expr_str = cooked_str.substr(expr_start + 2, expr_end - expr_start - 2);
+            Lexer expr_lexer(expr_str);
+            TokenSequence expr_tokens = expr_lexer.tokenize();
+            Parser expr_parser(std::move(expr_tokens));
+            auto expression = expr_parser.parse_expression();
+            if (!expression) {
+                add_error("Invalid expression in template literal: " + expr_str);
+                return nullptr;
+            }
+            expressions.push_back(std::move(expression));
+            pos = expr_end + 1;
         }
-        
-        std::string expr_str = template_str.substr(expr_start + 2, expr_end - expr_start - 2);
-        
-        Lexer expr_lexer(expr_str);
-        TokenSequence expr_tokens = expr_lexer.tokenize();
-        Parser expr_parser(std::move(expr_tokens));
-        
-        auto expression = expr_parser.parse_expression();
-        if (!expression) {
-            add_error("Invalid expression in template literal: " + expr_str);
-            return nullptr;
-        }
-        
-        elements.emplace_back(std::move(expression));
-        pos = expr_end + 1;
     }
-    
+
+    // Build elements: interleave text parts and expressions
+    // Template: text[0] ${expr[0]} text[1] ${expr[1]} ... text[n]
+    std::vector<TemplateLiteral::Element> elements;
+    for (size_t i = 0; i < cooked_text_parts.size(); i++) {
+        std::string raw = (i < raw_text_parts.size()) ? raw_text_parts[i] : cooked_text_parts[i];
+        elements.emplace_back(cooked_text_parts[i], raw);
+        if (i < expressions.size()) {
+            elements.emplace_back(std::move(expressions[i]));
+        }
+    }
+
     return std::make_unique<TemplateLiteral>(std::move(elements), start, end);
 }
 
