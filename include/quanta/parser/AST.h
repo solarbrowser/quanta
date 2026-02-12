@@ -198,9 +198,11 @@ public:
         enum class Type { TEXT, EXPRESSION };
         Type type;
         std::string text;
+        std::string raw_text;
         std::unique_ptr<ASTNode> expression;
-        
-        Element(const std::string& t) : type(Type::TEXT), text(t) {}
+
+        Element(const std::string& t) : type(Type::TEXT), text(t), raw_text(t) {}
+        Element(const std::string& t, const std::string& raw) : type(Type::TEXT), text(t), raw_text(raw) {}
         Element(std::unique_ptr<ASTNode> expr) : type(Type::EXPRESSION), expression(std::move(expr)) {}
     };
 
@@ -496,16 +498,19 @@ class CallExpression : public ASTNode {
 private:
     std::unique_ptr<ASTNode> callee_;
     std::vector<std::unique_ptr<ASTNode>> arguments_;
+    bool is_tagged_template_ = false;
 
 public:
     CallExpression(std::unique_ptr<ASTNode> callee, std::vector<std::unique_ptr<ASTNode>> arguments,
                   const Position& start, const Position& end)
-        : ASTNode(Type::CALL_EXPRESSION, start, end), 
+        : ASTNode(Type::CALL_EXPRESSION, start, end),
           callee_(std::move(callee)), arguments_(std::move(arguments)) {}
-    
+
     ASTNode* get_callee() const { return callee_.get(); }
     const std::vector<std::unique_ptr<ASTNode>>& get_arguments() const { return arguments_; }
     size_t argument_count() const { return arguments_.size(); }
+    void set_tagged_template(bool v) { is_tagged_template_ = v; }
+    bool is_tagged_template() const { return is_tagged_template_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
