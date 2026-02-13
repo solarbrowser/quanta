@@ -4054,20 +4054,42 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     if (match(TokenType::LEFT_PAREN)) {
         advance(); // consume '('
 
-        if (!match(TokenType::IDENTIFIER)) {
-            add_error("Expected identifier in catch clause");
+        if (match(TokenType::LEFT_BRACKET) || match(TokenType::LEFT_BRACE)) {
+            // Destructuring in catch: catch([a, b]) or catch({x, y})
+            bool is_array = match(TokenType::LEFT_BRACKET);
+            advance(); // skip [ or {
+            std::string vars;
+            TokenType close_type = is_array ? TokenType::RIGHT_BRACKET : TokenType::RIGHT_BRACE;
+            while (!match(close_type) && !at_end()) {
+                if (match(TokenType::IDENTIFIER)) {
+                    if (!vars.empty()) vars += ",";
+                    vars += current_token().get_value();
+                    advance();
+                } else if (match(TokenType::COMMA)) {
+                    advance();
+                } else {
+                    advance();
+                }
+            }
+            if (!consume(close_type)) {
+                add_error("Expected closing bracket in catch destructuring");
+                return nullptr;
+            }
+            parameter_name = is_array ? ("__destr_array:" + vars) : ("__destr_obj:" + vars);
+        } else if (match(TokenType::IDENTIFIER)) {
+            parameter_name = current_token().get_value();
+
+            // ES5: eval and arguments cannot be used as catch parameter in strict mode
+            if (options_.strict_mode && (parameter_name == "eval" || parameter_name == "arguments")) {
+                add_error("'" + parameter_name + "' cannot be used as a catch parameter in strict mode");
+                return nullptr;
+            }
+
+            advance();
+        } else {
+            add_error("Expected identifier or destructuring pattern in catch clause");
             return nullptr;
         }
-
-        parameter_name = current_token().get_value();
-
-        // ES5: eval and arguments cannot be used as catch parameter in strict mode
-        if (options_.strict_mode && (parameter_name == "eval" || parameter_name == "arguments")) {
-            add_error("'" + parameter_name + "' cannot be used as a catch parameter in strict mode");
-            return nullptr;
-        }
-
-        advance();
 
         if (!consume(TokenType::RIGHT_PAREN)) {
             add_error("Expected ')' after catch parameter");
@@ -4566,6 +4588,56 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                     size_t target_index = targets.size() - 1;
                     default_exprs.emplace_back(target_index, std::move(default_expr));
                 }
+            } else if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                // Nested object destructuring inside array: [a, {x:b, c}]
+                auto nested = parse_destructuring_pattern(depth + 1);
+                if (!nested) {
+                    add_error("Invalid nested object destructuring in array");
+                    return nullptr;
+                }
+                // Encode as __nested_obj:prop1>var1,prop2>var2
+                std::string encoding = "__nested_obj:";
+                if (auto* nd = dynamic_cast<DestructuringAssignment*>(nested.get())) {
+                    const auto& nt = nd->get_targets();
+                    const auto& nm = nd->get_property_mappings();
+                    bool first = true;
+                    // Add shorthand properties (those without explicit mappings)
+                    for (const auto& t : nt) {
+                        const std::string& name = t->get_name();
+                        bool in_mappings = false;
+                        for (const auto& m : nm) {
+                            // Check if this target is the variable_name of a mapping
+                            if (m.variable_name == name) { in_mappings = true; break; }
+                        }
+                        if (!in_mappings &&
+                            name.find("__nested") == std::string::npos) {
+                            if (!first) encoding += ",";
+                            encoding += name + ">" + name;
+                            first = false;
+                        }
+                    }
+                    // Add explicitly mapped properties
+                    for (const auto& m : nm) {
+                        if (!first) encoding += ",";
+                        encoding += m.property_name + ">" + m.variable_name;
+                        first = false;
+                    }
+                }
+                auto nested_id = std::make_unique<Identifier>(
+                    encoding, nested->get_start(), nested->get_end()
+                );
+                targets.push_back(std::move(nested_id));
+
+                if (match(TokenType::ASSIGN)) {
+                    advance();
+                    auto default_expr = parse_assignment_expression();
+                    if (!default_expr) {
+                        add_error("Expected expression after '=' in nested object destructuring");
+                        return nullptr;
+                    }
+                    size_t target_index = targets.size() - 1;
+                    default_exprs.emplace_back(target_index, std::move(default_expr));
+                }
             } else if (current_token().get_type() == TokenType::COMMA) {
                 auto placeholder = std::make_unique<Identifier>(
                     "",
@@ -4749,18 +4821,62 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                     size_t target_index = targets.size() - 1;
                     obj_default_exprs.emplace_back(target_index, std::move(default_expr));
                 }
+            } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
+                // Computed property key: { [expr]: varName }
+                advance(); // skip '['
+                auto key_expr = parse_assignment_expression();
+                if (!key_expr) {
+                    add_error("Expected expression in computed destructuring key");
+                    return nullptr;
+                }
+                if (!consume(TokenType::RIGHT_BRACKET)) {
+                    add_error("Expected ']' after computed destructuring key");
+                    return nullptr;
+                }
+                if (!consume(TokenType::COLON)) {
+                    add_error("Expected ':' after computed destructuring key");
+                    return nullptr;
+                }
+                if (current_token().get_type() != TokenType::IDENTIFIER) {
+                    add_error("Expected identifier after ':' in computed destructuring");
+                    return nullptr;
+                }
+                std::string var_name = current_token().get_value();
+                Position vstart = current_token().get_start();
+                Position vend = current_token().get_end();
+                advance();
+
+                // Store: target is the variable, mapping uses __computed_N as property placeholder
+                auto var_id = std::make_unique<Identifier>(var_name, vstart, vend);
+                targets.push_back(std::move(var_id));
+
+                // Store the computed key expression as a special mapping
+                // We'll encode the expression source as the property name
+                std::string key_str = "__computed:" + key_expr->to_string();
+                property_mappings.emplace_back(key_str, var_name);
+
+                if (match(TokenType::ASSIGN)) {
+                    advance();
+                    auto default_expr = parse_assignment_expression();
+                    if (!default_expr) {
+                        add_error("Expected expression after '=' in computed destructuring default");
+                        return nullptr;
+                    }
+                    size_t target_index = targets.size() - 1;
+                    obj_default_exprs.emplace_back(target_index, std::move(default_expr));
+                }
             } else {
                 add_error("Expected identifier in object destructuring");
                 return nullptr;
             }
-            
+
             if (match(TokenType::COMMA)) {
                 advance();
             } else {
                 break;
             }
         }
-        
+
         if (!consume(TokenType::RIGHT_BRACE)) {
             add_error("Expected '}' to close object destructuring");
             return nullptr;

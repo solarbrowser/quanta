@@ -3057,7 +3057,11 @@ void Context::initialize_built_ins() {
             }
 
             uint32_t delete_count = 0;
-            if (args.size() < 2) {
+            if (args.empty()) {
+                // No arguments at all: return empty array, don't modify
+                return Value(ObjectFactory::create_array().release());
+            } else if (args.size() < 2) {
+                // Only start provided: delete to end
                 delete_count = length - start;
             } else {
                 double delete_arg = args[1].to_number();
@@ -4587,15 +4591,12 @@ void Context::initialize_built_ins() {
     string_constructor->set_property("concat", Value(string_concat_static.release()));
 
 
-    // Helper lambda for HTML escaping attribute values
+    // Helper lambda for HTML escaping attribute values (per ES6 spec: only escape ")
     auto html_escape_attr = [](const std::string& s) -> std::string {
         std::string result;
         for (char c : s) {
-            switch (c) {
-                case '"': result += "&quot;"; break;
-                case '&': result += "&amp;"; break;
-                default: result += c;
-            }
+            if (c == '"') result += "&quot;";
+            else result += c;
         }
         return result;
     };

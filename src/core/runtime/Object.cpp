@@ -514,37 +514,85 @@ bool Object::delete_element(uint32_t index) {
 }
 
 std::vector<std::string> Object::get_own_property_keys() const {
-    std::vector<std::string> keys;
+    // ES6 [[OwnPropertyKeys]]: integer indices ascending, then strings in creation order
+    std::vector<std::string> all_keys;
+    std::vector<std::pair<uint32_t, std::string>> index_keys;
+    std::vector<std::string> string_keys;
 
-    if (descriptors_) {
-        for (const auto& pair : *descriptors_) {
-            keys.push_back(pair.first);
+    // Collect from elements_ array first
+    for (uint32_t i = 0; i < elements_.size(); ++i) {
+        if (!elements_[i].is_undefined()) {
+            index_keys.push_back({i, std::to_string(i)});
         }
     }
 
+    // Collect from descriptors
+    if (descriptors_) {
+        for (const auto& pair : *descriptors_) {
+            uint32_t idx;
+            if (is_array_index(pair.first, &idx)) {
+                bool found = false;
+                for (const auto& ik : index_keys) {
+                    if (ik.first == idx) { found = true; break; }
+                }
+                if (!found) index_keys.push_back({idx, pair.first});
+            } else {
+                string_keys.push_back(pair.first);
+            }
+        }
+    }
+
+    // Collect from shape
     if (header_.shape) {
         auto shape_properties = header_.shape->get_property_keys();
         for (const auto& prop_name : shape_properties) {
             if (descriptors_ && descriptors_->find(prop_name) != descriptors_->end()) {
                 continue;
             }
-            keys.push_back(prop_name);
+            uint32_t idx;
+            if (is_array_index(prop_name, &idx)) {
+                bool found = false;
+                for (const auto& ik : index_keys) {
+                    if (ik.first == idx) { found = true; break; }
+                }
+                if (!found) index_keys.push_back({idx, prop_name});
+            } else {
+                string_keys.push_back(prop_name);
+            }
         }
     }
 
+    // Collect from overflow properties
     if (overflow_properties_) {
         for (const auto& pair : *overflow_properties_) {
             if (descriptors_ && descriptors_->find(pair.first) != descriptors_->end()) {
                 continue;
             }
-            keys.push_back(pair.first);
+            uint32_t idx;
+            if (is_array_index(pair.first, &idx)) {
+                bool found = false;
+                for (const auto& ik : index_keys) {
+                    if (ik.first == idx) { found = true; break; }
+                }
+                if (!found) index_keys.push_back({idx, pair.first});
+            } else {
+                string_keys.push_back(pair.first);
+            }
         }
     }
 
-    for (uint32_t i = 0; i < elements_.size(); ++i) {
-        if (!elements_[i].is_undefined()) {
-            keys.push_back(std::to_string(i));
-        }
+    // Sort integer indices ascending
+    std::sort(index_keys.begin(), index_keys.end(),
+        [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    // Build result: integer indices first, then string keys in insertion order
+    std::vector<std::string> keys;
+    keys.reserve(index_keys.size() + string_keys.size());
+    for (const auto& ik : index_keys) {
+        keys.push_back(ik.second);
+    }
+    for (const auto& sk : string_keys) {
+        keys.push_back(sk);
     }
 
     return keys;
@@ -1947,15 +1995,23 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
         } else if (method_name == "splice") {
             uint32_t length = array->get_length();
             uint32_t start = 0;
-            uint32_t deleteCount = length;
-            
-            if (args.size() > 0) {
-                double start_val = args[0].to_number();
-                start = start_val < 0 ? std::max(0.0, length + start_val) : std::min(start_val, static_cast<double>(length));
+            uint32_t deleteCount = 0;
+
+            if (args.size() == 0) {
+                // No arguments: do nothing, return empty array
+                auto deleted = ObjectFactory::create_array(0);
+                return Value(deleted.release());
             }
+
+            double start_val = args[0].to_number();
+            start = static_cast<uint32_t>(start_val < 0 ? std::max(0.0, length + start_val) : std::min(start_val, static_cast<double>(length)));
+
             if (args.size() > 1) {
                 double delete_val = args[1].to_number();
-                deleteCount = std::max(0.0, std::min(delete_val, static_cast<double>(length - start)));
+                deleteCount = static_cast<uint32_t>(std::max(0.0, std::min(delete_val, static_cast<double>(length - start))));
+            } else {
+                // If only start is provided, delete to end
+                deleteCount = length - start;
             }
             
             auto deleted = ObjectFactory::create_array(0);

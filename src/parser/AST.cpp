@@ -2046,6 +2046,43 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             }
                         }
                     }
+                } else if (var_name.length() >= 13 && var_name.substr(0, 13) == "__nested_obj:") {
+                    // Nested object destructuring in array: [a, {x:b, c}]
+                    Value element;
+                    if (is_string_source) {
+                        element = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                    } else {
+                        element = array_obj->get_element(static_cast<uint32_t>(i));
+                    }
+                    if (element.is_object() || element.is_function()) {
+                        Object* obj = element.is_function() ?
+                            static_cast<Object*>(element.as_function()) :
+                            element.as_object();
+                        // Parse mappings: prop1>var1,prop2>var2
+                        std::string mappings_str = var_name.substr(13);
+                        std::vector<std::pair<std::string,std::string>> mappings;
+                        std::string current = "";
+                        for (size_t ci = 0; ci <= mappings_str.length(); ci++) {
+                            char c = (ci < mappings_str.length()) ? mappings_str[ci] : ',';
+                            if (c == ',') {
+                                size_t arrow = current.find('>');
+                                if (arrow != std::string::npos) {
+                                    mappings.emplace_back(current.substr(0, arrow), current.substr(arrow + 1));
+                                }
+                                current = "";
+                            } else {
+                                current += c;
+                            }
+                        }
+                        for (const auto& m : mappings) {
+                            Value val = obj->get_property(m.first);
+                            if (!ctx.has_binding(m.second)) {
+                                ctx.create_binding(m.second, val, true);
+                            } else {
+                                ctx.set_binding(m.second, val);
+                            }
+                        }
+                    }
                 } else {
                     Value element;
                     if (is_string_source) {
@@ -2147,7 +2184,54 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         if (mapping.variable_name.find("__nested:") != std::string::npos ||
             mapping.variable_name.find(":__nested:") != std::string::npos) {
         }
-        Value prop_value = obj->get_property(mapping.property_name);
+        Value prop_value;
+        if (mapping.property_name.length() > 11 && mapping.property_name.substr(0, 11) == "__computed:") {
+            // Computed property key: evaluate the expression to get the key
+            std::string expr_str = mapping.property_name.substr(11);
+            Value key_val = ctx.get_binding(expr_str);
+            if (!key_val.is_undefined()) {
+                prop_value = obj->get_property(key_val.to_string());
+            }
+        } else {
+            prop_value = obj->get_property(mapping.property_name);
+        }
+
+        // Handle nested array-in-object: {x: [a, b]} encoded as __nested_array:a,b
+        if (mapping.variable_name.length() > 15 && mapping.variable_name.substr(0, 15) == "__nested_array:") {
+            std::string vars_str = mapping.variable_name.substr(15);
+            // Split vars by comma
+            std::vector<std::string> var_names;
+            std::string current;
+            for (size_t ci = 0; ci < vars_str.length(); ++ci) {
+                if (vars_str[ci] == ',') {
+                    if (!current.empty()) { var_names.push_back(current); current.clear(); }
+                } else {
+                    current += vars_str[ci];
+                }
+            }
+            if (!current.empty()) var_names.push_back(current);
+
+            if (prop_value.is_object()) {
+                Object* arr_obj = prop_value.as_object();
+                for (size_t ai = 0; ai < var_names.size(); ++ai) {
+                    Value elem = arr_obj->get_element(static_cast<uint32_t>(ai));
+                    if (!ctx.has_binding(var_names[ai])) {
+                        ctx.create_binding(var_names[ai], elem, true);
+                    } else {
+                        ctx.set_binding(var_names[ai], elem);
+                    }
+                }
+            } else {
+                for (const auto& vn : var_names) {
+                    if (!ctx.has_binding(vn)) {
+                        ctx.create_binding(vn, Value(), true);
+                    } else {
+                        ctx.set_binding(vn, Value());
+                    }
+                }
+            }
+            continue;
+        }
 
         if ((mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") ||
             mapping.variable_name.find(":__nested:") != std::string::npos ||
@@ -3631,22 +3715,30 @@ Value CallExpression::handle_array_method_call(Object* array, const std::string&
         
     } else if (method_name == "splice") {
         uint32_t length = array->get_length();
-        int32_t start = 0;
-        uint32_t delete_count = length;
-        
-        if (arguments_.size() > 0) {
-            Value start_val = arguments_[0]->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            start = static_cast<int32_t>(start_val.to_number());
-            if (start < 0) start = std::max(0, static_cast<int32_t>(length) + start);
-            if (start >= static_cast<int32_t>(length)) start = length;
+
+        if (arguments_.size() == 0) {
+            // No arguments: return empty array, don't modify
+            auto result_array = ObjectFactory::create_array(0);
+            return Value(result_array.release());
         }
-        
+
+        int32_t start = 0;
+        uint32_t delete_count = 0;
+
+        Value start_val = arguments_[0]->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        start = static_cast<int32_t>(start_val.to_number());
+        if (start < 0) start = std::max(0, static_cast<int32_t>(length) + start);
+        if (start >= static_cast<int32_t>(length)) start = length;
+
         if (arguments_.size() > 1) {
             Value delete_val = arguments_[1]->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             delete_count = std::max(0, static_cast<int32_t>(delete_val.to_number()));
             delete_count = std::min(delete_count, length - static_cast<uint32_t>(start));
+        } else {
+            // Only start provided: delete to end
+            delete_count = length - static_cast<uint32_t>(start);
         }
         
         auto result_array = ObjectFactory::create_array(0);
@@ -4857,10 +4949,14 @@ Value MemberExpression::evaluate(Context& ctx) {
 
             Shape* shape = obj->get_shape();
 
-            // Polymorphic inline cache 
-            for (uint8_t i = 0; i < ic_size_; i++) {
-                if (__builtin_expect(ic_cache_[i].shape_ptr == shape, 1)) {
-                    return obj->get_property_by_offset_unchecked(ic_cache_[i].offset);
+            // Polymorphic inline cache
+            // Skip IC for Function objects - they intercept name/length/prototype
+            // in Function::get_property, so shape offsets don't match
+            if (__builtin_expect(!obj->is_function(), 1)) {
+                for (uint8_t i = 0; i < ic_size_; i++) {
+                    if (__builtin_expect(ic_cache_[i].shape_ptr == shape, 1)) {
+                        return obj->get_property_by_offset_unchecked(ic_cache_[i].offset);
+                    }
                 }
             }
 
@@ -6690,7 +6786,8 @@ Value ForInStatement::evaluate(Context& ctx) {
         Object* obj = object.is_object() ? object.as_object() : object.as_function();
         
         std::string var_name;
-        
+        bool is_destructuring = false;
+
         if (left_->get_type() == Type::VARIABLE_DECLARATION) {
             VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
             if (var_decl->declaration_count() > 0) {
@@ -6700,9 +6797,11 @@ Value ForInStatement::evaluate(Context& ctx) {
         } else if (left_->get_type() == Type::IDENTIFIER) {
             Identifier* id = static_cast<Identifier*>(left_.get());
             var_name = id->get_name();
+        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+            is_destructuring = true;
         }
-        
-        if (var_name.empty()) {
+
+        if (var_name.empty() && !is_destructuring) {
             ctx.throw_exception(Value(std::string("For...in: Invalid loop variable")));
             return Value();
         }
@@ -6731,7 +6830,11 @@ Value ForInStatement::evaluate(Context& ctx) {
             if (iteration_count >= MAX_ITERATIONS) break;
             iteration_count++;
 
-            if (forin_per_iter) {
+            if (is_destructuring) {
+                // Destructure the key string into the pattern variables
+                auto* destr = static_cast<DestructuringAssignment*>(left_.get());
+                destr->evaluate_with_value(ctx, Value(key));
+            } else if (forin_per_iter) {
                 ctx.push_block_scope();
                 ctx.create_lexical_binding(var_name, Value(key), true);
             } else {
@@ -8533,9 +8636,49 @@ Value TryStatement::evaluate(Context& ctx) {
         
         if (!catch_node->get_parameter_name().empty()) {
             std::string param_name = catch_node->get_parameter_name();
-            
-            if (!ctx.create_binding(param_name, exception_value, true)) {
-                ctx.set_binding(param_name, exception_value);
+
+            if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {
+                // Array destructuring in catch: catch([a, b])
+                std::string vars_str = param_name.substr(14);
+                std::vector<std::string> var_names;
+                std::string cur;
+                for (char c : vars_str) {
+                    if (c == ',') { if (!cur.empty()) { var_names.push_back(cur); cur.clear(); } }
+                    else cur += c;
+                }
+                if (!cur.empty()) var_names.push_back(cur);
+
+                if (exception_value.is_object()) {
+                    Object* arr = exception_value.as_object();
+                    for (size_t vi = 0; vi < var_names.size(); vi++) {
+                        Value el = arr->get_element(static_cast<uint32_t>(vi));
+                        if (!ctx.create_binding(var_names[vi], el, true))
+                            ctx.set_binding(var_names[vi], el);
+                    }
+                }
+            } else if (param_name.length() > 12 && param_name.substr(0, 12) == "__destr_obj:") {
+                // Object destructuring in catch: catch({x, y})
+                std::string vars_str = param_name.substr(12);
+                std::vector<std::string> var_names;
+                std::string cur;
+                for (char c : vars_str) {
+                    if (c == ',') { if (!cur.empty()) { var_names.push_back(cur); cur.clear(); } }
+                    else cur += c;
+                }
+                if (!cur.empty()) var_names.push_back(cur);
+
+                if (exception_value.is_object()) {
+                    Object* obj = exception_value.as_object();
+                    for (const auto& vn : var_names) {
+                        Value val = obj->get_property(vn);
+                        if (!ctx.create_binding(vn, val, true))
+                            ctx.set_binding(vn, val);
+                    }
+                }
+            } else {
+                if (!ctx.create_binding(param_name, exception_value, true)) {
+                    ctx.set_binding(param_name, exception_value);
+                }
             }
         }
         
