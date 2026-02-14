@@ -407,7 +407,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     if (bname == "this" || bname == "arguments") continue;
                     Value val = function_context.get_binding(bname);
                     if (val.is_function()) {
-                        func_objects.push_back(val.as_function());
+                        Function* fn = val.as_function();
+                        // Skip the current function itself (named function expression
+                        // binding) to avoid capturing parameters as stale closures
+                        if (fn != this) {
+                            func_objects.push_back(fn);
+                        }
                     } else {
                         var_values.push_back({bname, val});
                     }

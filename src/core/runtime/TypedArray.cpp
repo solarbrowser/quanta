@@ -280,26 +280,22 @@ bool TypedArray<T>::set_element(size_t index, const Value& value) {
             return set_typed_element(index, T{});
         }
         return set_typed_element(index, static_cast<T>(num_val));
-    } else if constexpr (std::is_signed_v<T>) {
-        double num_val = value.to_number();
-        if (std::isnan(num_val)) {
-            return set_typed_element(index, T{});
-        }
-        int64_t int_val = static_cast<int64_t>(num_val);
-        int64_t min_val = std::numeric_limits<T>::min();
-        int64_t max_val = std::numeric_limits<T>::max();
-        if (int_val < min_val) int_val = min_val;
-        if (int_val > max_val) int_val = max_val;
-        return set_typed_element(index, static_cast<T>(int_val));
     } else {
+        // ES6: Integer typed arrays use modular arithmetic (wrapping), not clamping
         double num_val = value.to_number();
-        if (std::isnan(num_val)) {
-            return set_typed_element(index, T{});
+        if (std::isnan(num_val) || std::isinf(num_val) || num_val == 0.0) {
+            return set_typed_element(index, T{0});
         }
-        uint64_t uint_val = static_cast<uint64_t>(std::max(0.0, num_val));
-        uint64_t max_val = std::numeric_limits<T>::max();
-        if (uint_val > max_val) uint_val = max_val;
-        return set_typed_element(index, static_cast<T>(uint_val));
+        double truncated = std::trunc(num_val);
+        constexpr int bits = sizeof(T) * 8;
+        double mod = std::pow(2.0, bits);
+        double mod_val = std::fmod(truncated, mod);
+        if (mod_val < 0) mod_val += mod;
+        if constexpr (std::is_signed_v<T>) {
+            double half = mod / 2.0;
+            if (mod_val >= half) mod_val -= mod;
+        }
+        return set_typed_element(index, static_cast<T>(static_cast<int64_t>(mod_val)));
     }
 }
 
@@ -352,6 +348,12 @@ std::unique_ptr<TypedArrayBase> create_uint8_array_from_buffer(ArrayBuffer* buff
 
 std::unique_ptr<TypedArrayBase> create_uint8_clamped_array(size_t length) {
     return std::make_unique<Uint8ClampedArray>(length);
+}
+
+std::unique_ptr<TypedArrayBase> create_uint8_clamped_array_from_buffer(ArrayBuffer* buffer) {
+    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {
+    });
+    return std::make_unique<Uint8ClampedArray>(shared_buffer);
 }
 
 std::unique_ptr<TypedArrayBase> create_int16_array(size_t length) {
