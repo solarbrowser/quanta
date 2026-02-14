@@ -68,16 +68,26 @@ bool RegExp::test(const std::string& str) {
 Value RegExp::exec(const std::string& str) {
     try {
         std::smatch match;
+        bool advances_index = global_ || sticky_;
 
         std::string::const_iterator start = str.begin();
-        if (global_ && last_index_ > 0 && last_index_ < str.length()) {
+        if (advances_index && last_index_ > 0 && last_index_ < str.length()) {
             start = str.begin() + last_index_;
-        } else if (global_ && last_index_ >= str.length()) {
+        } else if (advances_index && last_index_ >= str.length()) {
             last_index_ = 0;
             return Value::null();
         }
 
-        if (std::regex_search(start, str.end(), match, regex_)) {
+        bool found = false;
+        if (sticky_) {
+            // Sticky: must match exactly at lastIndex (use regex_search with match_continuous)
+            found = std::regex_search(start, str.cend(), match, regex_,
+                                      std::regex_constants::match_continuous);
+        } else {
+            found = std::regex_search(start, str.cend(), match, regex_);
+        }
+
+        if (found) {
             size_t actual_position = (start - str.begin()) + match.position();
             std::string matched_str = match[0].str();
 
@@ -86,7 +96,7 @@ Value RegExp::exec(const std::string& str) {
                 matched_str = matched_str.substr(1);
             }
 
-            if (global_) {
+            if (advances_index) {
                 last_index_ = actual_position + matched_str.length();
             }
 
@@ -105,7 +115,7 @@ Value RegExp::exec(const std::string& str) {
             }
 
             return Value(result);
-        } else if (global_) {
+        } else if (advances_index) {
             last_index_ = 0;
         }
     } catch (const std::regex_error& e) {

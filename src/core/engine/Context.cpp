@@ -780,7 +780,16 @@ void Context::initialize_built_ins() {
                         PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
                         if (desc.is_enumerable()) {
                             Value value = source_obj->get_property(prop);
-                            target_obj->set_property(prop, value);
+                            // Use [[Set]] semantics: invoke setter if target has accessor
+                            PropertyDescriptor target_desc = target_obj->get_property_descriptor(prop);
+                            if (target_desc.is_accessor_descriptor() && target_desc.has_setter()) {
+                                Function* setter = dynamic_cast<Function*>(target_desc.get_setter());
+                                if (setter) {
+                                    setter->call(ctx, {value}, Value(target_obj));
+                                }
+                            } else {
+                                target_obj->set_property(prop, value);
+                            }
                         }
                     }
                 }
@@ -3401,6 +3410,12 @@ void Context::initialize_built_ins() {
                         return target_func->call(ctx, final_args, bound_this);
                     }
                 }, bound_arity);
+
+            // ES6 19.2.3.2 step 12: bound function's [[Prototype]] should be target's [[Prototype]]
+            Object* target_proto = target_func->get_prototype();
+            if (target_proto) {
+                bound_function->set_prototype(target_proto);
+            }
 
             return Value(bound_function.release());
         });
@@ -8337,7 +8352,7 @@ void Context::initialize_built_ins() {
     iterator_constructor->set_property("prototype", Value(iterator_prototype.release()));
     register_built_in_object("Iterator", iterator_constructor.release());
 
-    auto arraybuffer_constructor = ObjectFactory::create_native_function("ArrayBuffer",
+    auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             double length_double = 0.0;
 
@@ -9866,7 +9881,7 @@ void Context::pop_with_scope() {
 }
 
 void Context::register_typed_array_constructors() {
-    auto uint8array_constructor = ObjectFactory::create_native_function("Uint8Array",
+    auto uint8array_constructor = ObjectFactory::create_native_constructor("Uint8Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_uint8_array(0).release());
@@ -9917,7 +9932,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Uint8Array", uint8array_constructor.release());
 
-    auto uint8clampedarray_constructor = ObjectFactory::create_native_function("Uint8ClampedArray",
+    auto uint8clampedarray_constructor = ObjectFactory::create_native_constructor("Uint8ClampedArray",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 auto typed_array = TypedArrayFactory::create_uint8_clamped_array(0);
@@ -9949,6 +9964,11 @@ void Context::register_typed_array_constructors() {
                     return Value(typed_array.release());
                 }
 
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
+                    return Value(TypedArrayFactory::create_uint8_clamped_array_from_buffer(buffer).release());
+                }
+
                 if (obj->is_typed_array()) {
                     TypedArrayBase* source = static_cast<TypedArrayBase*>(obj);
                     size_t length = source->length();
@@ -9967,7 +9987,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Uint8ClampedArray", uint8clampedarray_constructor.release());
 
-    auto float32array_constructor = ObjectFactory::create_native_function("Float32Array",
+    auto float32array_constructor = ObjectFactory::create_native_constructor("Float32Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_float32_array(0).release());
@@ -10331,7 +10351,7 @@ void Context::register_typed_array_constructors() {
 
     register_built_in_object("TypedArray", typedarray_constructor.release());
 
-    auto int8array_constructor = ObjectFactory::create_native_function("Int8Array",
+    auto int8array_constructor = ObjectFactory::create_native_constructor("Int8Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_int8_array(0).release());
@@ -10362,7 +10382,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Int8Array", int8array_constructor.release());
 
-    auto uint16array_constructor = ObjectFactory::create_native_function("Uint16Array",
+    auto uint16array_constructor = ObjectFactory::create_native_constructor("Uint16Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_uint16_array(0).release());
@@ -10393,7 +10413,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Uint16Array", uint16array_constructor.release());
 
-    auto int16array_constructor = ObjectFactory::create_native_function("Int16Array",
+    auto int16array_constructor = ObjectFactory::create_native_constructor("Int16Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_int16_array(0).release());
@@ -10424,7 +10444,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Int16Array", int16array_constructor.release());
 
-    auto uint32array_constructor = ObjectFactory::create_native_function("Uint32Array",
+    auto uint32array_constructor = ObjectFactory::create_native_constructor("Uint32Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_uint32_array(0).release());
@@ -10455,7 +10475,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Uint32Array", uint32array_constructor.release());
 
-    auto int32array_constructor = ObjectFactory::create_native_function("Int32Array",
+    auto int32array_constructor = ObjectFactory::create_native_constructor("Int32Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_int32_array(0).release());
@@ -10486,7 +10506,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Int32Array", int32array_constructor.release());
 
-    auto float64array_constructor = ObjectFactory::create_native_function("Float64Array",
+    auto float64array_constructor = ObjectFactory::create_native_constructor("Float64Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 return Value(TypedArrayFactory::create_float64_array(0).release());
@@ -10532,7 +10552,7 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Float64Array", float64array_constructor.release());
 
-    auto dataview_constructor = ObjectFactory::create_native_function("DataView", 
+    auto dataview_constructor = ObjectFactory::create_native_constructor("DataView",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value result = DataView::constructor(ctx, args);
             

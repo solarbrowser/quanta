@@ -217,6 +217,7 @@ namespace TypedArrayFactory {
     std::unique_ptr<TypedArrayBase> create_uint8_array(size_t length);
     std::unique_ptr<TypedArrayBase> create_uint8_array_from_buffer(ArrayBuffer* buffer);
     std::unique_ptr<TypedArrayBase> create_uint8_clamped_array(size_t length);
+    std::unique_ptr<TypedArrayBase> create_uint8_clamped_array_from_buffer(ArrayBuffer* buffer);
     std::unique_ptr<TypedArrayBase> create_int16_array(size_t length);
     std::unique_ptr<TypedArrayBase> create_uint16_array(size_t length);
     std::unique_ptr<TypedArrayBase> create_int32_array(size_t length);

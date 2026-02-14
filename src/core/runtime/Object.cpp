@@ -514,78 +514,78 @@ bool Object::delete_element(uint32_t index) {
 }
 
 std::vector<std::string> Object::get_own_property_keys() const {
-    // ES6 [[OwnPropertyKeys]]: integer indices ascending, then strings in creation order
-    std::vector<std::string> all_keys;
-    std::vector<std::pair<uint32_t, std::string>> index_keys;
-    std::vector<std::string> string_keys;
+    // ES6 [[OwnPropertyKeys]]: integer indices ascending, then string keys in creation order
+    // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
+    std::vector<std::string> raw_keys;
 
-    // Collect from elements_ array first
-    for (uint32_t i = 0; i < elements_.size(); ++i) {
-        if (!elements_[i].is_undefined()) {
-            index_keys.push_back({i, std::to_string(i)});
-        }
-    }
-
-    // Collect from descriptors
-    if (descriptors_) {
-        for (const auto& pair : *descriptors_) {
-            uint32_t idx;
-            if (is_array_index(pair.first, &idx)) {
-                bool found = false;
-                for (const auto& ik : index_keys) {
-                    if (ik.first == idx) { found = true; break; }
-                }
-                if (!found) index_keys.push_back({idx, pair.first});
-            } else {
-                string_keys.push_back(pair.first);
-            }
-        }
-    }
-
-    // Collect from shape
+    // Shape properties first (these preserve insertion order)
     if (header_.shape) {
         auto shape_properties = header_.shape->get_property_keys();
         for (const auto& prop_name : shape_properties) {
-            if (descriptors_ && descriptors_->find(prop_name) != descriptors_->end()) {
-                continue;
-            }
-            uint32_t idx;
-            if (is_array_index(prop_name, &idx)) {
-                bool found = false;
-                for (const auto& ik : index_keys) {
-                    if (ik.first == idx) { found = true; break; }
-                }
-                if (!found) index_keys.push_back({idx, prop_name});
-            } else {
-                string_keys.push_back(prop_name);
-            }
+            raw_keys.push_back(prop_name);
         }
     }
 
-    // Collect from overflow properties
+    // Overflow properties next
     if (overflow_properties_) {
         for (const auto& pair : *overflow_properties_) {
-            if (descriptors_ && descriptors_->find(pair.first) != descriptors_->end()) {
-                continue;
+            // Skip if already in shape
+            bool in_shape = false;
+            if (header_.shape) {
+                auto info = header_.shape->get_property_info(pair.first);
+                if (info.offset != UINT32_MAX) in_shape = true;
             }
-            uint32_t idx;
-            if (is_array_index(pair.first, &idx)) {
-                bool found = false;
-                for (const auto& ik : index_keys) {
-                    if (ik.first == idx) { found = true; break; }
-                }
-                if (!found) index_keys.push_back({idx, pair.first});
-            } else {
-                string_keys.push_back(pair.first);
+            if (!in_shape) {
+                raw_keys.push_back(pair.first);
             }
         }
     }
 
-    // Sort integer indices ascending
+    // Descriptor-only properties (defineProperty'd keys not in shape/overflow)
+    if (descriptors_) {
+        for (const auto& pair : *descriptors_) {
+            bool already = false;
+            for (const auto& k : raw_keys) {
+                if (k == pair.first) { already = true; break; }
+            }
+            if (!already) {
+                raw_keys.push_back(pair.first);
+            }
+        }
+    }
+
+    // Elements (numeric array slots)
+    for (uint32_t i = 0; i < elements_.size(); ++i) {
+        if (!elements_[i].is_undefined()) {
+            std::string key = std::to_string(i);
+            bool already = false;
+            for (const auto& k : raw_keys) {
+                if (k == key) { already = true; break; }
+            }
+            if (!already) {
+                raw_keys.push_back(key);
+            }
+        }
+    }
+
+    // Step 2: Partition into integer indices vs string keys
+    std::vector<std::pair<uint32_t, std::string>> index_keys;
+    std::vector<std::string> string_keys;
+
+    for (const auto& key : raw_keys) {
+        uint32_t idx;
+        if (is_array_index(key, &idx)) {
+            index_keys.push_back({idx, key});
+        } else {
+            string_keys.push_back(key);
+        }
+    }
+
+    // Step 3: Sort integer indices ascending
     std::sort(index_keys.begin(), index_keys.end(),
         [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    // Build result: integer indices first, then string keys in insertion order
+    // Step 4: Build result - integer indices first, then string keys in insertion order
     std::vector<std::string> keys;
     keys.reserve(index_keys.size() + string_keys.size());
     for (const auto& ik : index_keys) {
@@ -1270,18 +1270,21 @@ bool Object::is_frozen() const {
 }
 
 bool Object::is_array_index(const std::string& key, uint32_t* index) const {
-    if (key.empty() || (key[0] == '0' && key.length() > 1)) {
-        return false;
+    if (key.empty() || key[0] < '0' || key[0] > '9') {
+        return false;  // Must start with a digit
     }
-    
+    if (key[0] == '0' && key.length() > 1) {
+        return false;  // No leading zeros (except "0" itself)
+    }
+
     char* end;
     unsigned long val = std::strtoul(key.c_str(), &end, 10);
-    
-    if (end == key.c_str() + key.length() && val <= 0xFFFFFFFFUL) {
+
+    if (end == key.c_str() + key.length() && val <= 0xFFFFFFFEUL) {
         if (index) *index = static_cast<uint32_t>(val);
         return true;
     }
-    
+
     return false;
 }
 

@@ -26,6 +26,48 @@ std::string JSON::stringify(const Value& value, const StringifyOptions& options)
     return stringifier.stringify(value);
 }
 
+// ES6 24.3.1.1 InternalizeJSONProperty - recursive walk for reviver
+static Value internalize_json_property(Context& ctx, Object* holder, const std::string& name, Function* reviver) {
+    Value val = holder->get_property(name);
+
+    if (val.is_object_like() && val.as_object()) {
+        Object* obj = val.as_object();
+        if (obj->is_array()) {
+            // Array: walk by integer index
+            Value len_val = obj->get_property("length");
+            uint32_t len = static_cast<uint32_t>(len_val.to_number());
+            for (uint32_t i = 0; i < len; i++) {
+                std::string idx = std::to_string(i);
+                Value new_element = internalize_json_property(ctx, obj, idx, reviver);
+                if (ctx.has_exception()) return Value();
+                if (new_element.is_undefined()) {
+                    obj->delete_property(idx);
+                } else {
+                    obj->set_property(idx, new_element);
+                }
+            }
+        } else {
+            // Object: walk keys in ES6 property order (via get_own_property_keys)
+            std::vector<std::string> keys = obj->get_own_property_keys();
+            for (const auto& key : keys) {
+                Value new_element = internalize_json_property(ctx, obj, key, reviver);
+                if (ctx.has_exception()) return Value();
+                if (new_element.is_undefined()) {
+                    obj->delete_property(key);
+                } else {
+                    obj->set_property(key, new_element);
+                }
+            }
+        }
+    }
+
+    // Call reviver(name, val)
+    std::vector<Value> reviver_args;
+    reviver_args.push_back(Value(name));
+    reviver_args.push_back(val);
+    return reviver->call(ctx, reviver_args, Value(holder));
+}
+
 Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
         ctx.throw_syntax_error("JSON.parse requires at least 1 argument");
@@ -41,27 +83,23 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
 
     ParseOptions options;
 
+    Function* reviver = nullptr;
     // Process reviver parameter (args[1])
     if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
         if (args[1].is_function()) {
-            options.reviver_function = args[1].as_function();
-            options.context = &ctx;
+            reviver = args[1].as_function();
         }
     }
 
     try {
         Value result = parse(json_string, options);
 
-        // Apply reviver to the root value
-        if (options.reviver_function && options.context) {
+        // Apply reviver via InternalizeJSONProperty walk
+        if (reviver) {
             auto wrapper = std::make_unique<Object>();
             wrapper->set_property("", result);
 
-            std::vector<Value> args;
-            args.push_back(Value(std::string("")));
-            args.push_back(result);
-
-            result = options.reviver_function->call(ctx, args, Value(wrapper.get()));
+            result = internalize_json_property(ctx, wrapper.get(), "", reviver);
             wrapper.release();
 
             if (ctx.has_exception()) {
@@ -229,26 +267,7 @@ Value JSON::Parser::parse_object() {
         advance();
         
         Value value = parse_value();
-
-        // Apply reviver if present
-        if (options_.reviver_function && options_.context) {
-            std::vector<Value> args;
-            args.push_back(Value(key));
-            args.push_back(value);
-
-            value = options_.reviver_function->call(*options_.context, args, Value(obj.get()));
-
-            if (options_.context->has_exception()) {
-                depth_--;
-                obj.release();
-                return Value();
-            }
-        }
-
-        // If reviver returned undefined, don't set the property
-        if (!value.is_undefined()) {
-            obj->set_property(key, value);
-        }
+        obj->set_property(key, value);
         
         skip_whitespace();
         char ch = current_char();
