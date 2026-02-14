@@ -113,7 +113,8 @@ Value Date::getTime(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
     if (!date_obj || !date_obj->has_property("_timestamp")) {
-        return Value(std::numeric_limits<double>::quiet_NaN());
+        ctx.throw_type_error("this is not a Date object");
+        return Value();
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
     return timestamp_val;
