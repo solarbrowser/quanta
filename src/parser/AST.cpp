@@ -777,12 +777,24 @@ Value BinaryExpression::evaluate(Context& ctx) {
         case Operator::GREATER_EQUAL:
             return Value(left_value.compare(right_value) >= 0);
             
-        case Operator::INSTANCEOF:
+        case Operator::INSTANCEOF: {
+            // ES6: Check Symbol.hasInstance
+            if (right_value.is_function() || right_value.is_object()) {
+                Object* rhs = right_value.is_function()
+                    ? static_cast<Object*>(right_value.as_function())
+                    : right_value.as_object();
+                Value hasInstance = rhs->get_property("Symbol(Symbol.hasInstance)");
+                if (!hasInstance.is_undefined() && hasInstance.is_function()) {
+                    Value result = hasInstance.as_function()->call(ctx, {left_value}, right_value);
+                    return Value(result.to_boolean());
+                }
+            }
             if (!right_value.is_function()) {
                 ctx.throw_type_error("Right-hand side of instanceof is not callable");
                 return Value(false);
             }
             return Value(left_value.instanceof_check(right_value));
+        }
 
         case Operator::IN: {
             std::string property_name = left_value.to_string();

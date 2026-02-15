@@ -2573,8 +2573,22 @@ void Context::initialize_built_ins() {
             }
 
             for (const auto& arg : args) {
-                if (arg.is_object() && arg.as_object()->is_array()) {
-                    Object* arg_array = arg.as_object();
+                bool spreadable = false;
+                if (arg.is_object() || arg.is_function()) {
+                    Object* arg_obj = arg.is_function()
+                        ? static_cast<Object*>(arg.as_function())
+                        : arg.as_object();
+                    Value spread_val = arg_obj->get_property("Symbol(Symbol.isConcatSpreadable)");
+                    if (!spread_val.is_undefined()) {
+                        spreadable = spread_val.to_boolean();
+                    } else {
+                        spreadable = arg_obj->is_array();
+                    }
+                }
+                if (spreadable) {
+                    Object* arg_array = arg.is_function()
+                        ? static_cast<Object*>(arg.as_function())
+                        : arg.as_object();
                     uint32_t arg_length = arg_array->get_length();
                     for (uint32_t i = 0; i < arg_length; i++) {
                         Value element = arg_array->get_element(i);
@@ -3724,6 +3738,17 @@ void Context::initialize_built_ins() {
 
             Value pattern = args[0];
 
+            // ES6: Check Symbol.match on the argument
+            if (pattern.is_object() || pattern.is_function()) {
+                Object* pat_obj = pattern.is_function()
+                    ? static_cast<Object*>(pattern.as_function())
+                    : pattern.as_object();
+                Value sym_match = pat_obj->get_property("Symbol(Symbol.match)");
+                if (sym_match.is_function()) {
+                    return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
+                }
+            }
+
             if (pattern.is_object()) {
                 Object* regex_obj = pattern.as_object();
 
@@ -3829,6 +3854,18 @@ void Context::initialize_built_ins() {
             if (args.empty()) return Value(-1.0);
 
             Value pattern = args[0];
+
+            // ES6: Check Symbol.search on the argument
+            if (pattern.is_object() || pattern.is_function()) {
+                Object* pat_obj = pattern.is_function()
+                    ? static_cast<Object*>(pattern.as_function())
+                    : pattern.as_object();
+                Value sym_search = pat_obj->get_property("Symbol(Symbol.search)");
+                if (sym_search.is_function()) {
+                    return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
+                }
+            }
+
             Object* regex_obj = nullptr;
 
             if (pattern.is_object()) {
@@ -3904,9 +3941,23 @@ void Context::initialize_built_ins() {
                 return Value(std::string(""));
             }
 
+            // ES6: Check Symbol.replace on the first argument
+            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
+                Object* pat_obj = args[0].is_function()
+                    ? static_cast<Object*>(args[0].as_function())
+                    : args[0].as_object();
+                Value sym_replace = pat_obj->get_property("Symbol(Symbol.replace)");
+                if (sym_replace.is_function()) {
+                    std::vector<Value> call_args = {Value(str)};
+                    if (args.size() >= 2) call_args.push_back(args[1]);
+                    return sym_replace.as_function()->call(ctx, call_args, args[0]);
+                }
+            }
+
             if (args.size() < 2) return Value(str);
 
             Value search_val = args[0];
+
             std::string replacement = args[1].to_string();
 
             auto process_replacement = [](const std::string& repl, Object* match_obj, const std::string& orig_str, int match_pos) -> std::string {
@@ -4287,6 +4338,19 @@ void Context::initialize_built_ins() {
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
+
+            // ES6: Check Symbol.split on the separator argument
+            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
+                Object* sep_obj = args[0].is_function()
+                    ? static_cast<Object*>(args[0].as_function())
+                    : args[0].as_object();
+                Value sym_split = sep_obj->get_property("Symbol(Symbol.split)");
+                if (sym_split.is_function()) {
+                    std::vector<Value> call_args = {Value(str)};
+                    if (args.size() >= 2) call_args.push_back(args[1]);
+                    return sym_split.as_function()->call(ctx, call_args, args[0]);
+                }
+            }
 
             auto result_array = ObjectFactory::create_array(0);
 
