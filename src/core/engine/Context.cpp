@@ -1385,11 +1385,12 @@ void Context::initialize_built_ins() {
                 builtinTag = "Number";
             } else if (this_val.is_boolean()) {
                 builtinTag = "Boolean";
-            } else if (this_val.is_object()) {
-                Object* this_obj = this_val.as_object();
+            } else if (this_val.is_object() || this_val.is_function()) {
+                Object* this_obj = this_val.is_function()
+                    ? static_cast<Object*>(this_val.as_function())
+                    : this_val.as_object();
 
                 Object::ObjectType obj_type = this_obj->get_type();
-
 
                 if (obj_type == Object::ObjectType::Arguments) {
                     builtinTag = "Arguments";
@@ -1401,16 +1402,30 @@ void Context::initialize_built_ins() {
                     builtinTag = "Number";
                 } else if (obj_type == Object::ObjectType::Boolean) {
                     builtinTag = "Boolean";
+                } else if (obj_type == Object::ObjectType::Date) {
+                    builtinTag = "Date";
+                } else if (obj_type == Object::ObjectType::RegExp) {
+                    builtinTag = "RegExp";
+                } else if (obj_type == Object::ObjectType::Error) {
+                    builtinTag = "Error";
                 } else if (obj_type == Object::ObjectType::Function || this_obj->is_function()) {
                     builtinTag = "Function";
                 } else {
                     builtinTag = "Object";
                 }
+
+                // ES6: Check Symbol.toStringTag (check both internal and user-set forms)
+                Value tag = this_obj->get_property("Symbol.toStringTag");
+                if (!tag.is_string()) {
+                    tag = this_obj->get_property("Symbol(Symbol.toStringTag)");
+                }
+                if (tag.is_string()) {
+                    builtinTag = tag.to_string();
+                }
             } else {
                 builtinTag = "Object";
             }
-            
-            
+
             return Value("[object " + builtinTag + "]");
         });
 
