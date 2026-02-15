@@ -3262,6 +3262,12 @@ void Context::initialize_built_ins() {
                 Parser parser(tokens);
                 auto expr = parser.parse_expression();
 
+                // Check for parser errors (e.g. invalid syntax in body)
+                if (parser.has_errors()) {
+                    ctx.throw_syntax_error("Invalid function body");
+                    return Value();
+                }
+
                 // The expression should be a function expression
                 if (expr && expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                     FunctionExpression* func_expr = static_cast<FunctionExpression*>(expr.get());
