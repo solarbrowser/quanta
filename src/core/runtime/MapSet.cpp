@@ -119,8 +119,14 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
         map->set_prototype(Map::prototype_object);
     }
     
+    Map* map_ptr = map.get();
+    Object* map_obj = map.release();
+
     if (!args.empty() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
+        // ES6: constructor must invoke the "set" method on the instance
+        Value set_method = map_obj->get_property("set");
+        Function* set_fn = set_method.is_function() ? set_method.as_function() : nullptr;
 
         if (iterable->is_array()) {
             uint32_t length = iterable->get_length();
@@ -131,7 +137,11 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                     if (pair->get_length() >= 2) {
                         Value key = pair->get_element(0);
                         Value value = pair->get_element(1);
-                        map->set(key, value);
+                        if (set_fn) {
+                            set_fn->call(ctx, {key, value}, Value(map_obj));
+                        } else {
+                            map_ptr->set(key, value);
+                        }
                     }
                 }
             }
@@ -149,7 +159,11 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                         if (pair->get_length() >= 2) {
                             Value key = pair->get_element(0);
                             Value value = pair->get_element(1);
-                            map->set(key, value);
+                            if (set_fn) {
+                                set_fn->call(ctx, {key, value}, Value(map_obj));
+                            } else {
+                                map_ptr->set(key, value);
+                            }
                         }
                     } else {
                         ctx.throw_exception(Value(std::string("Iterator value is not a [key, value] pair")));
@@ -159,8 +173,8 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
             }
         }
     }
-    
-    return Value(map.release());
+
+    return Value(map_obj);
 }
 
 Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
@@ -511,13 +525,24 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
         set->set_prototype(Set::prototype_object);
     }
     
+    Set* set_ptr = set.get();
+    Object* set_obj = set.release();
+
     if (!args.empty() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
+        // ES6: constructor must invoke the "add" method on the instance
+        Value add_method = set_obj->get_property("add");
+        Function* add_fn = add_method.is_function() ? add_method.as_function() : nullptr;
+
         if (iterable->is_array()) {
             uint32_t length = iterable->get_length();
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
-                set->add(element);
+                if (add_fn) {
+                    add_fn->call(ctx, {element}, Value(set_obj));
+                } else {
+                    set_ptr->add(element);
+                }
             }
         }
         else {
@@ -528,14 +553,17 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
                     if (result.done) {
                         break;
                     }
-                    
-                    set->add(result.value);
+                    if (add_fn) {
+                        add_fn->call(ctx, {result.value}, Value(set_obj));
+                    } else {
+                        set_ptr->add(result.value);
+                    }
                 }
             }
         }
     }
-    
-    return Value(set.release());
+
+    return Value(set_obj);
 }
 
 Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
@@ -844,14 +872,39 @@ Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args)
         ctx.throw_type_error("Constructor WeakMap requires 'new'");
         return Value();
     }
-    (void)args;
     auto weakmap = std::make_unique<WeakMap>();
-    
+
     if (WeakMap::prototype_object) {
         weakmap->set_prototype(WeakMap::prototype_object);
     }
-    
-    return Value(weakmap.release());
+
+    WeakMap* wm_ptr = weakmap.get();
+    Object* wm_obj = weakmap.release();
+
+    if (!args.empty() && args[0].is_object()) {
+        Object* iterable = args[0].as_object();
+        Value set_method = wm_obj->get_property("set");
+        Function* set_fn = set_method.is_function() ? set_method.as_function() : nullptr;
+
+        if (iterable->is_array()) {
+            uint32_t length = iterable->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                Value entry = iterable->get_element(i);
+                if (entry.is_object() && entry.as_object()->is_array()) {
+                    Object* pair = entry.as_object();
+                    if (pair->get_length() >= 2) {
+                        Value key = pair->get_element(0);
+                        Value value = pair->get_element(1);
+                        if (set_fn) {
+                            set_fn->call(ctx, {key, value}, Value(wm_obj));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return Value(wm_obj);
 }
 
 Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
@@ -966,14 +1019,32 @@ Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args)
         ctx.throw_type_error("Constructor WeakSet requires 'new'");
         return Value();
     }
-    (void)args;
     auto weakset = std::make_unique<WeakSet>();
-    
+
     if (WeakSet::prototype_object) {
         weakset->set_prototype(WeakSet::prototype_object);
     }
-    
-    return Value(weakset.release());
+
+    WeakSet* ws_ptr = weakset.get();
+    Object* ws_obj = weakset.release();
+
+    if (!args.empty() && args[0].is_object()) {
+        Object* iterable = args[0].as_object();
+        Value add_method = ws_obj->get_property("add");
+        Function* add_fn = add_method.is_function() ? add_method.as_function() : nullptr;
+
+        if (iterable->is_array()) {
+            uint32_t length = iterable->get_length();
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+                if (add_fn) {
+                    add_fn->call(ctx, {element}, Value(ws_obj));
+                }
+            }
+        }
+    }
+
+    return Value(ws_obj);
 }
 
 Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {

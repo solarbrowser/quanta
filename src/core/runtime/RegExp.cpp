@@ -18,7 +18,9 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
     parse_flags(flags);
 
     try {
-        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(pattern_) : pattern_;
+        // Apply Annex B transformations for non-unicode patterns
+        std::string annex_b_pattern = unicode_ ? pattern_ : transform_annex_b(pattern_);
+        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
         regex_ = std::regex(transformed_pattern, get_regex_flags());
     } catch (const std::regex_error& e) {
         regex_ = std::regex("(?!)");
@@ -124,6 +126,27 @@ Value RegExp::exec(const std::string& str) {
     return Value::null();
 }
 
+void RegExp::compile(const std::string& pattern, const std::string& flags) {
+    pattern_ = pattern;
+    flags_ = flags;
+    global_ = false;
+    ignore_case_ = false;
+    multiline_ = false;
+    unicode_ = false;
+    sticky_ = false;
+    last_index_ = 0;
+
+    parse_flags(flags_);
+
+    try {
+        std::string annex_b_pattern = unicode_ ? pattern_ : transform_annex_b(pattern_);
+        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
+        regex_ = std::regex(transformed_pattern, get_regex_flags());
+    } catch (const std::regex_error& e) {
+        regex_ = std::regex("(?!)");
+    }
+}
+
 std::string RegExp::to_string() const {
     return "/" + pattern_ + "/" + flags_;
 }
@@ -201,6 +224,183 @@ std::string RegExp::transform_pattern_for_multiline(const std::string& pattern) 
 
         if (!in_char_class && ch == '$') {
             result += "(?:$|(?=\\n))";
+            continue;
+        }
+
+        result += ch;
+    }
+
+    return result;
+}
+
+// ES6 Annex B: Transform legacy regex patterns to std::regex compatible form
+std::string RegExp::transform_annex_b(const std::string& pattern) const {
+    std::string result;
+    bool in_char_class = false;
+
+    auto is_shorthand_class = [](char c) -> bool {
+        return c == 'w' || c == 'W' || c == 'd' || c == 'D' || c == 's' || c == 'S';
+    };
+
+    auto is_valid_escape = [](char c) -> bool {
+        if (c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S') return true;
+        if (c == 'b' || c == 'B') return true;
+        if (c == 'n' || c == 'r' || c == 't' || c == 'f' || c == 'v') return true;
+        if (c == '0') return true;
+        if (c == 'x' || c == 'u' || c == 'c') return true;
+        if (c >= '1' && c <= '9') return true;
+        if (c == '.' || c == '*' || c == '+' || c == '?' || c == '(' || c == ')' ||
+            c == '[' || c == ']' || c == '{' || c == '}' || c == '\\' ||
+            c == '^' || c == '$' || c == '|' || c == '/' || c == '-') return true;
+        return false;
+    };
+
+    for (size_t i = 0; i < pattern.length(); ++i) {
+        char ch = pattern[i];
+
+        if (ch == '\\' && i + 1 < pattern.length()) {
+            char next = pattern[i + 1];
+
+            // Octal escapes: \nn (1-3 octal digits starting with 1-7)
+            if (next >= '1' && next <= '7') {
+                size_t start = i + 1;
+                size_t end = start;
+                int val = 0;
+                while (end < pattern.length() && end < start + 3 && pattern[end] >= '0' && pattern[end] <= '7') {
+                    int new_val = val * 8 + (pattern[end] - '0');
+                    if (new_val > 255) break;
+                    val = new_val;
+                    end++;
+                }
+                if (val > 0 && val <= 255) {
+                    char hex[8];
+                    snprintf(hex, sizeof(hex), "\\x%02x", val);
+                    result += hex;
+                    i = end - 1;
+                    continue;
+                }
+            }
+
+            // \0nn octal starting with 0
+            if (next == '0' && i + 2 < pattern.length() && pattern[i + 2] >= '0' && pattern[i + 2] <= '7') {
+                size_t start = i + 1;
+                size_t end = start;
+                int val = 0;
+                while (end < pattern.length() && end < start + 3 && pattern[end] >= '0' && pattern[end] <= '7') {
+                    int new_val = val * 8 + (pattern[end] - '0');
+                    if (new_val > 255) break;
+                    val = new_val;
+                    end++;
+                }
+                char hex[8];
+                snprintf(hex, sizeof(hex), "\\x%02x", val);
+                result += hex;
+                i = end - 1;
+                continue;
+            }
+
+            // Invalid hex escape: \xN (less than 2 hex digits)
+            if (next == 'x') {
+                bool valid = (i + 3 < pattern.length());
+                if (valid) {
+                    for (int j = 0; j < 2; j++) {
+                        if (i + 2 + j >= pattern.length()) { valid = false; break; }
+                        char c = pattern[i + 2 + j];
+                        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { valid = false; break; }
+                    }
+                }
+                if (!valid) {
+                    result += 'x';
+                    i++;
+                    continue;
+                }
+                result += ch;
+                continue;
+            }
+
+            // Invalid unicode escape: \uN (less than 4 hex digits)
+            if (next == 'u') {
+                if (i + 2 < pattern.length() && pattern[i + 2] != '{') {
+                    bool valid = true;
+                    for (int j = 0; j < 4; j++) {
+                        if (i + 2 + j >= pattern.length()) { valid = false; break; }
+                        char c = pattern[i + 2 + j];
+                        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { valid = false; break; }
+                    }
+                    if (!valid) {
+                        result += 'u';
+                        i++;
+                        continue;
+                    }
+                }
+                result += ch;
+                continue;
+            }
+
+            // Invalid control escape: \cN where N is not a letter
+            if (next == 'c') {
+                if (i + 2 < pattern.length()) {
+                    char ctrl = pattern[i + 2];
+                    if (!((ctrl >= 'a' && ctrl <= 'z') || (ctrl >= 'A' && ctrl <= 'Z'))) {
+                        result += "\\\\c";
+                        i++;
+                        continue;
+                    }
+                } else {
+                    result += "\\\\c";
+                    i++;
+                    continue;
+                }
+            }
+
+            // Shorthand class in char class: escape following hyphen to prevent invalid range
+            if (in_char_class && is_shorthand_class(next)) {
+                result += ch;
+                result += next;
+                i++;
+                if (i + 1 < pattern.length() && pattern[i + 1] == '-' &&
+                    i + 2 < pattern.length() && pattern[i + 2] != ']') {
+                    result += "\\x2d";
+                    i++;
+                }
+                continue;
+            }
+
+            // Unknown/invalid escape like \z, \a - treat as literal character
+            if (!is_valid_escape(next)) {
+                result += next;
+                i++;
+                continue;
+            }
+
+            // Normal escape - pass through
+            result += ch;
+            continue;
+        }
+
+        // Lone ] outside character class - treat as literal (check BEFORE updating state)
+        if (ch == ']' && !in_char_class) {
+            result += "\\]";
+            continue;
+        }
+
+        // Track character class state
+        if (ch == '[' && !in_char_class) {
+            in_char_class = true;
+        } else if (ch == ']' && in_char_class) {
+            in_char_class = false;
+        }
+
+        // Incomplete quantifier: { not followed by valid quantifier syntax
+        if (ch == '{' && !in_char_class) {
+            size_t j = i + 1;
+            bool has_digit = false;
+            while (j < pattern.length() && pattern[j] >= '0' && pattern[j] <= '9') { has_digit = true; j++; }
+            if (has_digit && j < pattern.length() && (pattern[j] == '}' || pattern[j] == ',')) {
+                result += ch;
+                continue;
+            }
+            result += "\\{";
             continue;
         }
 

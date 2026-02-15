@@ -7335,6 +7335,28 @@ void Context::initialize_built_ins() {
                     });
                 regex_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
+                auto compile_inst_fn = ObjectFactory::create_native_function("compile",
+                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                        std::string pattern = "";
+                        std::string flags = "";
+                        if (args.size() > 0) pattern = args[0].to_string();
+                        if (args.size() > 1) flags = args[1].to_string();
+
+                        regexp_impl->compile(pattern, flags);
+
+                        regex_obj_ptr->set_property("source", Value(regexp_impl->get_source()));
+                        std::string sf = regexp_impl->get_flags();
+                        std::sort(sf.begin(), sf.end());
+                        regex_obj_ptr->set_property("flags", Value(sf));
+                        regex_obj_ptr->set_property("global", Value(regexp_impl->get_global()));
+                        regex_obj_ptr->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
+                        regex_obj_ptr->set_property("multiline", Value(regexp_impl->get_multiline()));
+                        regex_obj_ptr->set_property("lastIndex", Value(0.0));
+
+                        return Value(regex_obj_ptr);
+                    }, 2);
+                regex_obj->set_property("compile", Value(compile_inst_fn.release()), PropertyAttributes::BuiltinFunction);
+
                 regex_obj->set_property("source", Value(regexp_impl->get_source()));
                 regex_obj->set_property("flags", Value(sorted_flags));
                 regex_obj->set_property("global", Value(regexp_impl->get_global()));
@@ -10879,13 +10901,36 @@ void Context::register_typed_array_constructors() {
     register_built_in_object("Float64Array", float64array_constructor.release());
 
     // Set up prototype chains: XArray.prototype.__proto__ = TypedArray.prototype
-    const char* typed_names[] = {"Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array"};
-    for (const char* name : typed_names) {
-        Object* ctor = get_built_in_object(name);
+    // Also: XArray.__proto__ = TypedArray (constructor chain)
+    Object* typedarray_ctor_ptr = get_built_in_object("TypedArray");
+    struct TypedInfo { const char* name; int bytes; };
+    TypedInfo typed_infos[] = {
+        {"Int8Array", 1}, {"Uint8Array", 1}, {"Uint8ClampedArray", 1},
+        {"Int16Array", 2}, {"Uint16Array", 2}, {"Int32Array", 4}, {"Uint32Array", 4},
+        {"Float32Array", 4}, {"Float64Array", 8}
+    };
+    for (const auto& info : typed_infos) {
+        Object* ctor = get_built_in_object(info.name);
         if (ctor) {
+            // Constructor chain: XArray.__proto__ = TypedArray
+            if (typedarray_ctor_ptr) {
+                ctor->set_prototype(typedarray_ctor_ptr);
+            }
             Value proto_val = ctor->get_property("prototype");
             if (proto_val.is_object_like() && proto_val.as_object()) {
-                proto_val.as_object()->set_prototype(typedarray_proto_ptr);
+                Object* proto = proto_val.as_object();
+                // Prototype chain: XArray.prototype.__proto__ = TypedArray.prototype
+                proto->set_prototype(typedarray_proto_ptr);
+                // Add BYTES_PER_ELEMENT as own property
+                PropertyDescriptor bpe_desc(Value(static_cast<double>(info.bytes)), PropertyAttributes::None);
+                bpe_desc.set_enumerable(false);
+                bpe_desc.set_writable(false);
+                bpe_desc.set_configurable(false);
+                proto->set_property_descriptor("BYTES_PER_ELEMENT", bpe_desc);
+                // Add constructor property pointing back to the constructor
+                PropertyDescriptor ctor_desc(Value(static_cast<Function*>(ctor)), PropertyAttributes::BuiltinFunction);
+                ctor_desc.set_enumerable(false);
+                proto->set_property_descriptor("constructor", ctor_desc);
             }
         }
     }
@@ -11039,6 +11084,18 @@ void Context::register_typed_array_constructors() {
                 if (ctor.is_function()) {
                     Function* func = ctor.as_function();
                     static_cast<Object*>(func)->set_prototype(function_proto_ptr);
+                }
+            }
+
+            // ES6: Typed array constructors' __proto__ should be %TypedArray%, not Function.prototype
+            Object* ta_ctor = get_built_in_object("TypedArray");
+            if (ta_ctor) {
+                const char* ta_names[] = {"Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array"};
+                for (const char* name : ta_names) {
+                    Value ctor = global_object_->get_property(name);
+                    if (ctor.is_function()) {
+                        static_cast<Object*>(ctor.as_function())->set_prototype(ta_ctor);
+                    }
                 }
             }
         }
