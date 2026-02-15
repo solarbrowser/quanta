@@ -331,6 +331,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
         // ES5: Arguments object [[Class]] is "Arguments"
         arguments_obj->set_type(Object::ObjectType::Arguments);
+        // Arguments should inherit from Object.prototype, not Array.prototype
+        Object* obj_proto = ObjectFactory::get_object_prototype();
+        if (obj_proto) {
+            arguments_obj->set_prototype(obj_proto);
+        }
 
         // In strict mode, arguments.callee and arguments.caller throw TypeError
         if (function_context.is_strict_mode()) {

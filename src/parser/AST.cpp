@@ -473,7 +473,11 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value key_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    key = key_value.to_string();
+                    if (key_value.is_symbol()) {
+                        key = key_value.as_symbol()->to_property_key();
+                    } else {
+                        key = key_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -706,6 +710,12 @@ Value BinaryExpression::evaluate(Context& ctx) {
             left_coerced = toPrimitive(left_value);
             right_coerced = toPrimitive(right_value);
 
+            // ES6: Symbols cannot be coerced in addition
+            if (left_coerced.is_symbol() || right_coerced.is_symbol()) {
+                ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                return Value();
+            }
+
             return left_coerced.add(right_coerced);
         }
         case Operator::SUBTRACT:
@@ -783,7 +793,7 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 Object* rhs = right_value.is_function()
                     ? static_cast<Object*>(right_value.as_function())
                     : right_value.as_object();
-                Value hasInstance = rhs->get_property("Symbol(Symbol.hasInstance)");
+                Value hasInstance = rhs->get_property("Symbol.hasInstance");
                 if (!hasInstance.is_undefined() && hasInstance.is_function()) {
                     Value result = hasInstance.as_function()->call(ctx, {left_value}, right_value);
                     return Value(result.to_boolean());
@@ -797,7 +807,12 @@ Value BinaryExpression::evaluate(Context& ctx) {
         }
 
         case Operator::IN: {
-            std::string property_name = left_value.to_string();
+            std::string property_name;
+            if (left_value.is_symbol()) {
+                property_name = left_value.as_symbol()->to_property_key();
+            } else {
+                property_name = left_value.to_string();
+            }
             if (!right_value.is_object() && !right_value.is_function()) {
                 ctx.throw_type_error("Cannot use 'in' operator to search for '" + property_name + "' in " + right_value.to_string());
                 return Value(false);
@@ -1017,7 +1032,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    property_name = prop_value.to_string();
+                    if (prop_value.is_symbol()) {
+                        property_name = prop_value.as_symbol()->to_property_key();
+                    } else {
+                        property_name = prop_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1086,7 +1105,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = prop_value.to_string();
+                    if (prop_value.is_symbol()) {
+                        prop_name = prop_value.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = prop_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1136,7 +1159,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = prop_value.to_string();
+                    if (prop_value.is_symbol()) {
+                        prop_name = prop_value.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = prop_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1186,7 +1213,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = prop_value.to_string();
+                    if (prop_value.is_symbol()) {
+                        prop_name = prop_value.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = prop_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1236,7 +1267,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = prop_value.to_string();
+                    if (prop_value.is_symbol()) {
+                        prop_name = prop_value.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = prop_value.to_string();
+                    }
                 } else {
                     if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                         Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1488,7 +1523,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 if (member->is_computed()) {
                     Value pv = member->get_property()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = pv.to_string();
+                    if (pv.is_symbol()) {
+                        prop_name = pv.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = pv.to_string();
+                    }
                 } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                     prop_name = static_cast<Identifier*>(member->get_property())->get_name();
                 }
@@ -1540,7 +1579,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (member->is_computed()) {
             Value prop_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            prop_name = prop_value.to_string();
+            if (prop_value.is_symbol()) {
+                prop_name = prop_value.as_symbol()->to_property_key();
+            } else {
+                prop_name = prop_value.to_string();
+            }
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(member->get_property());
@@ -1550,7 +1593,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return Value();
             }
         }
-        
+
         if (obj && !is_string_object) {
             // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
@@ -1796,7 +1839,11 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             if (prop->computed) {
                 Value key_val = prop->key->evaluate(ctx);
                 if (ctx.has_exception()) return;
-                prop_name = key_val.to_string();
+                if (key_val.is_symbol()) {
+                    prop_name = key_val.as_symbol()->to_property_key();
+                } else {
+                    prop_name = key_val.to_string();
+                }
             } else if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(prop->key.get())->get_name();
             } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
@@ -1933,7 +1980,11 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
             if (member->is_computed()) {
                 Value key_val = member->get_property()->evaluate(ctx);
                 if (ctx.has_exception()) return;
-                prop_name = key_val.to_string();
+                if (key_val.is_symbol()) {
+                    prop_name = key_val.as_symbol()->to_property_key();
+                } else {
+                    prop_name = key_val.to_string();
+                }
             } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(member->get_property())->get_name();
             }
@@ -4893,7 +4944,11 @@ Value MemberExpression::evaluate(Context& ctx) {
                 if (computed_) {
                     Value key_val = property_->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    prop_name = key_val.to_string();
+                    if (key_val.is_symbol()) {
+                        prop_name = key_val.as_symbol()->to_property_key();
+                    } else {
+                        prop_name = key_val.to_string();
+                    }
                 } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
                     prop_name = static_cast<Identifier*>(property_.get())->get_name();
                 }
@@ -5053,7 +5108,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         std::string prop_name;
         if (prop_value.is_symbol()) {
-            prop_name = prop_value.as_symbol()->get_description();
+            prop_name = prop_value.as_symbol()->to_property_key();
         } else {
             prop_name = prop_value.to_string();
         }
@@ -5114,7 +5169,11 @@ Value MemberExpression::evaluate(Context& ctx) {
     if (computed_) {
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        prop_name = prop_value.to_string();
+        if (prop_value.is_symbol()) {
+            prop_name = prop_value.as_symbol()->to_property_key();
+        } else {
+            prop_name = prop_value.to_string();
+        }
     } else {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
@@ -6840,6 +6899,8 @@ Value ForInStatement::evaluate(Context& ctx) {
 
         for (const auto& key : keys) {
             if (iteration_count >= MAX_ITERATIONS) break;
+            // Skip symbol-keyed properties (ES6: symbols are not enumerable via for-in)
+            if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
             iteration_count++;
 
             if (is_destructuring) {
@@ -6915,7 +6976,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         auto iterator = std::make_unique<StringIterator>(str_value);
                         return Value(iterator.release());
                     });
-                boxed_string->set_property(iterator_symbol->to_string(), Value(string_iterator_fn.release()));
+                boxed_string->set_property(iterator_symbol->to_property_key(), Value(string_iterator_fn.release()));
             }
             obj = boxed_string.get();
         } else {
@@ -6923,8 +6984,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
         }
         
         Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-        if (iterator_symbol && obj && obj->has_property(iterator_symbol->to_string())) {
-            Value iterator_method = obj->get_property(iterator_symbol->to_string());
+        if (iterator_symbol && obj && obj->has_property(iterator_symbol->to_property_key())) {
+            Value iterator_method = obj->get_property(iterator_symbol->to_property_key());
             if (iterator_method.is_function()) {
                 Function* iter_fn = iterator_method.as_function();
                 Value iterator_obj = iter_fn->call(ctx, {}, iterable);
@@ -8400,7 +8461,11 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         if (prop->computed) {
             Value key_value = prop->key->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            key = key_value.to_string();
+            if (key_value.is_symbol()) {
+                key = key_value.as_symbol()->to_property_key();
+            } else {
+                key = key_value.to_string();
+            }
         } else {
             if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(prop->key.get());
@@ -9434,9 +9499,14 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
     if (computed_) {
         Value property_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        
-        std::string prop_name = property_value.to_string();
-        
+
+        std::string prop_name;
+        if (property_value.is_symbol()) {
+            prop_name = property_value.as_symbol()->to_property_key();
+        } else {
+            prop_name = property_value.to_string();
+        }
+
         if (object_value.is_object()) {
             Object* obj = object_value.as_object();
             return obj->get_property(prop_name);
