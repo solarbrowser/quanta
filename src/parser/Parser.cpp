@@ -1683,6 +1683,10 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
         return nullptr;
     }
     
+    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
+        add_error("Lexical declaration cannot appear in a single-statement context");
+        return nullptr;
+    }
     auto consequent = parse_statement();
     if (!consequent) {
         add_error("Expected statement after if condition");
@@ -1691,6 +1695,10 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
     
     std::unique_ptr<ASTNode> alternate = nullptr;
     if (consume_if_match(TokenType::ELSE)) {
+        if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
+            add_error("Lexical declaration cannot appear in a single-statement context");
+            return nullptr;
+        }
         alternate = parse_statement();
         if (!alternate) {
             add_error("Expected statement after 'else'");
@@ -2025,12 +2033,16 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
         return nullptr;
     }
     
+    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
+        add_error("Lexical declaration cannot appear in a single-statement context");
+        return nullptr;
+    }
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for while loop body");
         return nullptr;
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<WhileStatement>(std::move(test), std::move(body), start, end);
 }
@@ -2042,7 +2054,11 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
         add_error("Expected 'do'");
         return nullptr;
     }
-    
+
+    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
+        add_error("Lexical declaration cannot appear in a single-statement context");
+        return nullptr;
+    }
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for do-while loop body");
@@ -2100,6 +2116,10 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
         return nullptr;
     }
 
+    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
+        add_error("Lexical declaration cannot appear in a single-statement context");
+        return nullptr;
+    }
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for with body");
