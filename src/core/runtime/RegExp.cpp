@@ -255,16 +255,47 @@ std::string RegExp::transform_annex_b(const std::string& pattern) const {
         return false;
     };
 
+    // Count capture groups to distinguish backreferences from octals
+    int num_groups = 0;
+    {
+        bool esc = false, in_cc = false;
+        for (size_t j = 0; j < pattern.length(); ++j) {
+            if (esc) { esc = false; continue; }
+            if (pattern[j] == '\\') { esc = true; continue; }
+            if (pattern[j] == '[') in_cc = true;
+            else if (pattern[j] == ']') in_cc = false;
+            else if (pattern[j] == '(' && !in_cc) {
+                if (j + 1 < pattern.length() && pattern[j + 1] == '?') continue; // non-capturing
+                num_groups++;
+            }
+        }
+    }
+
     for (size_t i = 0; i < pattern.length(); ++i) {
         char ch = pattern[i];
 
         if (ch == '\\' && i + 1 < pattern.length()) {
             char next = pattern[i + 1];
 
-            // Octal escapes: \nn (1-3 octal digits starting with 1-7)
-            if (next >= '1' && next <= '7') {
+            // Annex B: \N where N is 1-9 digits
+            // If N <= num_groups, it's a backreference (pass through)
+            // If N > num_groups, treat as octal escape
+            if (next >= '1' && next <= '9') {
+                // Parse the full decimal number
                 size_t start = i + 1;
                 size_t end = start;
+                while (end < pattern.length() && pattern[end] >= '0' && pattern[end] <= '9') end++;
+                int ref_num = 0;
+                for (size_t k = start; k < end; k++) ref_num = ref_num * 10 + (pattern[k] - '0');
+
+                if (ref_num <= num_groups) {
+                    // Valid backreference - pass through
+                    for (size_t k = i; k < end; k++) result += pattern[k];
+                    i = end - 1;
+                    continue;
+                }
+                // Invalid backreference - treat as octal
+                end = start;
                 int val = 0;
                 while (end < pattern.length() && end < start + 3 && pattern[end] >= '0' && pattern[end] <= '7') {
                     int new_val = val * 8 + (pattern[end] - '0');
@@ -279,6 +310,9 @@ std::string RegExp::transform_annex_b(const std::string& pattern) const {
                     i = end - 1;
                     continue;
                 }
+                // Fallback: pass through
+                result += ch;
+                continue;
             }
 
             // \0nn octal starting with 0

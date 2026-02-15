@@ -390,6 +390,9 @@ bool Value::loose_equals(const Value& other) const {
 }
 
 Value Value::add(const Value& other) const {
+    if (is_symbol() || other.is_symbol()) {
+        throw std::runtime_error("TypeError: Cannot convert a Symbol value to a string");
+    }
     if (is_number() && other.is_number()) {
         double result = as_number() + other.as_number();
         if (std::isinf(result)) {

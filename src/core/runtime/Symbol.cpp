@@ -89,10 +89,12 @@ std::string Symbol::to_string() const {
 }
 
 std::string Symbol::to_property_key() const {
+    // Well-known symbols use their description as the key (e.g., "Symbol.iterator")
     if (!description_.empty() && description_.find("Symbol.") == 0) {
         return description_;
     }
-    return to_string();
+    // User-created symbols use a unique key based on their ID
+    return "@@sym:" + std::to_string(id_);
 }
 
 bool Symbol::equals(const Symbol* other) const {

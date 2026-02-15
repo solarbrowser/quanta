@@ -519,13 +519,21 @@ void Context::initialize_built_ins() {
                 args[0].as_object();
             auto keys = obj->get_enumerable_keys();
 
-            auto result_array = ObjectFactory::create_array(keys.size());
+            // Filter out symbol-keyed properties
+            std::vector<std::string> filtered;
+            for (const auto& k : keys) {
+                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) {
+                    filtered.push_back(k);
+                }
+            }
+
+            auto result_array = ObjectFactory::create_array(filtered.size());
             if (!result_array) {
                 result_array = ObjectFactory::create_array(0);
             }
 
-            for (size_t i = 0; i < keys.size(); i++) {
-                result_array->set_element(i, Value(keys[i]));
+            for (size_t i = 0; i < filtered.size(); i++) {
+                result_array->set_element(i, Value(filtered[i]));
             }
 
             return Value(result_array.release());
@@ -1005,7 +1013,12 @@ void Context::initialize_built_ins() {
             }
 
             Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
-            std::string prop_name = args[1].to_string();
+            std::string prop_name;
+            if (args[1].is_symbol()) {
+                prop_name = args[1].as_symbol()->to_property_key();
+            } else {
+                prop_name = args[1].to_string();
+            }
 
             if (args[2].is_object()) {
                 Object* desc = args[2].as_object();
@@ -1091,6 +1104,8 @@ void Context::initialize_built_ins() {
             auto props = obj->get_own_property_keys();
             uint32_t result_index = 0;
             for (size_t i = 0; i < props.size(); i++) {
+                // Skip symbol-keyed properties
+                if (props[i].find("@@sym:") == 0 || props[i].find("Symbol.") == 0) continue;
                 result->set_element(result_index++, Value(props[i]));
             }
             result->set_property("length", Value(static_cast<double>(result_index)));
@@ -1358,14 +1373,12 @@ void Context::initialize_built_ins() {
 
             Value this_val;
 
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                this_val = Value(this_obj);
-            } else {
-                try {
-                    this_val = ctx.get_binding("this");
-                } catch (...) {
-                    this_val = Value();
+            try {
+                this_val = ctx.get_binding("this");
+            } catch (...) {
+                Object* this_obj = ctx.get_this_binding();
+                if (this_obj) {
+                    this_val = Value(this_obj);
                 }
             }
 
@@ -1414,11 +1427,8 @@ void Context::initialize_built_ins() {
                     builtinTag = "Object";
                 }
 
-                // ES6: Check Symbol.toStringTag (check both internal and user-set forms)
+                // ES6: Check Symbol.toStringTag
                 Value tag = this_obj->get_property("Symbol.toStringTag");
-                if (!tag.is_string()) {
-                    tag = this_obj->get_property("Symbol(Symbol.toStringTag)");
-                }
                 if (tag.is_string()) {
                     builtinTag = tag.to_string();
                 }
@@ -2578,7 +2588,7 @@ void Context::initialize_built_ins() {
                     Object* arg_obj = arg.is_function()
                         ? static_cast<Object*>(arg.as_function())
                         : arg.as_object();
-                    Value spread_val = arg_obj->get_property("Symbol(Symbol.isConcatSpreadable)");
+                    Value spread_val = arg_obj->get_property("Symbol.isConcatSpreadable");
                     if (!spread_val.is_undefined()) {
                         spreadable = spread_val.to_boolean();
                     } else {
@@ -3743,7 +3753,7 @@ void Context::initialize_built_ins() {
                 Object* pat_obj = pattern.is_function()
                     ? static_cast<Object*>(pattern.as_function())
                     : pattern.as_object();
-                Value sym_match = pat_obj->get_property("Symbol(Symbol.match)");
+                Value sym_match = pat_obj->get_property("Symbol.match");
                 if (sym_match.is_function()) {
                     return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
                 }
@@ -3860,7 +3870,7 @@ void Context::initialize_built_ins() {
                 Object* pat_obj = pattern.is_function()
                     ? static_cast<Object*>(pattern.as_function())
                     : pattern.as_object();
-                Value sym_search = pat_obj->get_property("Symbol(Symbol.search)");
+                Value sym_search = pat_obj->get_property("Symbol.search");
                 if (sym_search.is_function()) {
                     return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
                 }
@@ -3946,7 +3956,7 @@ void Context::initialize_built_ins() {
                 Object* pat_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_replace = pat_obj->get_property("Symbol(Symbol.replace)");
+                Value sym_replace = pat_obj->get_property("Symbol.replace");
                 if (sym_replace.is_function()) {
                     std::vector<Value> call_args = {Value(str)};
                     if (args.size() >= 2) call_args.push_back(args[1]);
@@ -4344,7 +4354,7 @@ void Context::initialize_built_ins() {
                 Object* sep_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_split = sep_obj->get_property("Symbol(Symbol.split)");
+                Value sym_split = sep_obj->get_property("Symbol.split");
                 if (sym_split.is_function()) {
                     std::vector<Value> call_args = {Value(str)};
                     if (args.size() >= 2) call_args.push_back(args[1]);
