@@ -9276,9 +9276,32 @@ Value RegexLiteral::evaluate(Context& ctx) {
                 return Value(regexp_impl->to_string());
             });
 
+        auto compile_fn = ObjectFactory::create_native_function("compile",
+            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)ctx;
+                std::string pattern = "";
+                std::string flags = "";
+                if (args.size() > 0) pattern = args[0].to_string();
+                if (args.size() > 1) flags = args[1].to_string();
+
+                regexp_impl->compile(pattern, flags);
+
+                obj_ptr->set_property("source", Value(regexp_impl->get_source()));
+                std::string sf = regexp_impl->get_flags();
+                std::sort(sf.begin(), sf.end());
+                obj_ptr->set_property("flags", Value(sf));
+                obj_ptr->set_property("global", Value(regexp_impl->get_global()));
+                obj_ptr->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
+                obj_ptr->set_property("multiline", Value(regexp_impl->get_multiline()));
+                obj_ptr->set_property("lastIndex", Value(0.0));
+
+                return Value(obj_ptr);
+            }, 2);
+
         obj->set_property("test", Value(test_fn.release()));
         obj->set_property("exec", Value(exec_fn.release()));
         obj->set_property("toString", Value(toString_fn.release()));
+        obj->set_property("compile", Value(compile_fn.release()));
 
         return Value(obj.release());
     } catch (const std::exception& e) {

@@ -33,6 +33,7 @@ public:
     
     bool test(const std::string& str);
     Value exec(const std::string& str);
+    void compile(const std::string& pattern, const std::string& flags = "");
     
     std::string get_source() const { return pattern_; }
     std::string get_flags() const { return flags_; }
@@ -50,6 +51,7 @@ private:
     void parse_flags(const std::string& flags);
     std::regex::flag_type get_regex_flags() const;
     std::string transform_pattern_for_multiline(const std::string& pattern) const;
+    std::string transform_annex_b(const std::string& pattern) const;
 };
 
 }
