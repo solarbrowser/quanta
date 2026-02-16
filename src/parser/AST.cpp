@@ -1897,11 +1897,36 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             is_string_source = true;
             str_source = source_value.as_string()->str();
             source_len = static_cast<uint32_t>(str_source.length());
-        } else if (source_value.is_object()) {
-            source_arr = source_value.as_object();
-            source_len = source_arr->get_length();
-        } else if (source_value.is_function()) {
-            source_arr = static_cast<Object*>(source_value.as_function());
+        } else if (source_value.is_object() || source_value.is_function()) {
+            source_arr = source_value.is_function()
+                ? static_cast<Object*>(source_value.as_function())
+                : source_value.as_object();
+            // ES6: Check for Symbol.iterator on non-array objects
+            if (source_arr && !source_arr->is_array()) {
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_method = source_arr->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, source_value);
+                        if (!ctx.has_exception() && iter_obj.is_object()) {
+                            Value next_fn = iter_obj.as_object()->get_property("next");
+                            if (next_fn.is_function()) {
+                                auto temp = ObjectFactory::create_array(0);
+                                uint32_t cnt = 0;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                    if (ctx.has_exception()) return;
+                                    if (!res.is_object()) break;
+                                    if (res.as_object()->get_property("done").to_boolean()) break;
+                                    temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                }
+                                temp->set_length(cnt);
+                                source_arr = temp.release();
+                            }
+                        }
+                    }
+                }
+            }
             source_len = source_arr->get_length();
         }
 
@@ -2032,6 +2057,38 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
         } else {
             ctx.throw_type_error("Cannot destructure non-object as array");
             return Value();
+        }
+
+        // ES6: Check for Symbol.iterator on non-array objects to use iterator protocol
+        if (!is_string_source && array_obj && !array_obj->is_array()) {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value iter_method = array_obj->get_property(iter_sym->to_property_key());
+                if (iter_method.is_function()) {
+                    // Use iterator protocol: collect all values into a temporary array
+                    Value iterator_obj = iter_method.as_function()->call(ctx, {}, source_value);
+                    if (ctx.has_exception()) return Value();
+                    if (iterator_obj.is_object()) {
+                        Object* iterator = iterator_obj.as_object();
+                        Value next_method = iterator->get_property("next");
+                        if (next_method.is_function()) {
+                            auto temp_arr = ObjectFactory::create_array(0);
+                            uint32_t count = 0;
+                            for (uint32_t iter_i = 0; iter_i < 10000; iter_i++) {
+                                Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
+                                if (ctx.has_exception()) return Value();
+                                if (!result.is_object()) break;
+                                Value done = result.as_object()->get_property("done");
+                                if (done.to_boolean()) break;
+                                Value val = result.as_object()->get_property("value");
+                                temp_arr->set_element(count++, val);
+                            }
+                            temp_arr->set_length(count);
+                            array_obj = temp_arr.release();
+                        }
+                    }
+                }
+            }
         }
 
         uint32_t src_len = is_string_source ? static_cast<uint32_t>(str_src.length())
@@ -3110,13 +3167,37 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
             Value spread_value = spread->get_argument()->evaluate(ctx);
             if (ctx.has_exception()) return arg_values;
             
-            if (spread_value.is_object()) {
-                Object* spread_obj = spread_value.as_object();
-                uint32_t spread_length = spread_obj->get_length();
-
-                for (uint32_t j = 0; j < spread_length; ++j) {
-                    Value item = spread_obj->get_element(j);
-                    arg_values.push_back(item);
+            if (spread_value.is_object() || spread_value.is_function()) {
+                Object* spread_obj = spread_value.is_function()
+                    ? static_cast<Object*>(spread_value.as_function())
+                    : spread_value.as_object();
+                // ES6: Try Symbol.iterator for generic iterables
+                bool used_iterator = false;
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym && !spread_obj->is_array()) {
+                    Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
+                        if (!ctx.has_exception() && iter_obj.is_object()) {
+                            Value next_fn = iter_obj.as_object()->get_property("next");
+                            if (next_fn.is_function()) {
+                                used_iterator = true;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                    if (ctx.has_exception()) return arg_values;
+                                    if (!res.is_object()) break;
+                                    if (res.as_object()->get_property("done").to_boolean()) break;
+                                    arg_values.push_back(res.as_object()->get_property("value"));
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!used_iterator) {
+                    uint32_t spread_length = spread_obj->get_length();
+                    for (uint32_t j = 0; j < spread_length; ++j) {
+                        arg_values.push_back(spread_obj->get_element(j));
+                    }
                 }
             } else if (spread_value.is_string()) {
                 // ES6: Spread on strings iterates over characters
@@ -6850,6 +6931,17 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 
 
 Value ForInStatement::evaluate(Context& ctx) {
+    // ES6: Hoist var declaration so variable exists even if loop body never executes
+    if (left_->get_type() == Type::VARIABLE_DECLARATION) {
+        auto* vd = static_cast<VariableDeclaration*>(left_.get());
+        if (vd->get_kind() == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
+            std::string vname = vd->get_declarations()[0]->get_id()->get_name();
+            if (!ctx.has_binding(vname)) {
+                ctx.create_binding(vname, Value(), true);
+            }
+        }
+    }
+
     Value object = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 
@@ -6878,7 +6970,7 @@ Value ForInStatement::evaluate(Context& ctx) {
         }
         
         auto keys = obj->get_enumerable_keys();
-        
+
         if (keys.size() > 50) {
             ctx.throw_exception(Value(std::string("For...in: Object has too many properties (>50)")));
             return Value();
@@ -8616,13 +8708,38 @@ Value ArrayLiteral::evaluate(Context& ctx) {
             Value spread_value = element->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             
-            if (spread_value.is_object()) {
-                Object* spread_obj = spread_value.as_object();
-                uint32_t spread_length = spread_obj->get_length();
-
-                for (uint32_t j = 0; j < spread_length; ++j) {
-                    Value item = spread_obj->get_element(j);
-                    array->set_element(array_index++, item);
+            if (spread_value.is_object() || spread_value.is_function()) {
+                Object* spread_obj = spread_value.is_function()
+                    ? static_cast<Object*>(spread_value.as_function())
+                    : spread_value.as_object();
+                // ES6: Try Symbol.iterator first for generic iterables
+                bool used_iterator = false;
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym && !spread_obj->is_array()) {
+                    Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
+                        if (!ctx.has_exception() && iter_obj.is_object()) {
+                            Value next_fn = iter_obj.as_object()->get_property("next");
+                            if (next_fn.is_function()) {
+                                used_iterator = true;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!res.is_object()) break;
+                                    if (res.as_object()->get_property("done").to_boolean()) break;
+                                    array->set_element(array_index++, res.as_object()->get_property("value"));
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!used_iterator) {
+                    uint32_t spread_length = spread_obj->get_length();
+                    for (uint32_t j = 0; j < spread_length; ++j) {
+                        Value item = spread_obj->get_element(j);
+                        array->set_element(array_index++, item);
+                    }
                 }
             } else if (spread_value.is_string()) {
                 // ES6: Spread on strings iterates over characters
@@ -9285,6 +9402,15 @@ Value RegexLiteral::evaluate(Context& ctx) {
     (void)ctx;
     try {
         auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
+
+        // Set prototype to RegExp.prototype
+        Value regexp_ctor = ctx.get_binding("RegExp");
+        if (regexp_ctor.is_function()) {
+            Value proto = regexp_ctor.as_function()->get_property("prototype");
+            if (proto.is_object()) {
+                obj->set_prototype(proto.as_object());
+            }
+        }
 
         obj->set_property("_isRegExp", Value(true));
 

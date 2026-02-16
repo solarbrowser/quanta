@@ -14,6 +14,7 @@ namespace Quanta {
 uint64_t Symbol::next_id_ = 1;
 std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::well_known_symbols_;
 std::unordered_map<std::string, std::unique_ptr<Symbol>> Symbol::global_registry_;
+std::unordered_map<std::string, Symbol*> Symbol::user_symbol_registry_;
 
 const std::string Symbol::ITERATOR = "Symbol.iterator";
 const std::string Symbol::ASYNC_ITERATOR = "Symbol.asyncIterator";
@@ -31,7 +32,13 @@ const std::string Symbol::UNSCOPABLES = "Symbol.unscopables";
 Symbol::Symbol(const std::string& description) : description_(description), id_(next_id_++) {}
 
 std::unique_ptr<Symbol> Symbol::create(const std::string& description) {
-    return std::unique_ptr<Symbol>(new Symbol(description));
+    auto sym = std::unique_ptr<Symbol>(new Symbol(description));
+    // Register user symbols for getOwnPropertySymbols lookup
+    std::string key = sym->to_property_key();
+    if (key.find("@@sym:") == 0) {
+        user_symbol_registry_[key] = sym.get();
+    }
+    return sym;
 }
 
 Symbol* Symbol::for_key(const std::string& key) {
@@ -99,6 +106,14 @@ std::string Symbol::to_property_key() const {
 
 bool Symbol::equals(const Symbol* other) const {
     return other && id_ == other->id_;
+}
+
+Symbol* Symbol::find_by_property_key(const std::string& key) {
+    auto it = user_symbol_registry_.find(key);
+    if (it != user_symbol_registry_.end()) {
+        return it->second;
+    }
+    return nullptr;
 }
 
 Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {

@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/AST.h"
 #include <iostream>
@@ -376,11 +377,21 @@ Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
     
     auto keys = target->get_own_property_keys();
     auto result_array = ObjectFactory::create_array(keys.size());
-    
+
     for (size_t i = 0; i < keys.size(); ++i) {
-        result_array->set_element(static_cast<uint32_t>(i), Value(keys[i]));
+        if (keys[i].find("@@sym:") == 0) {
+            // Convert symbol property key back to Symbol value
+            Symbol* sym = Symbol::find_by_property_key(keys[i]);
+            if (sym) {
+                result_array->set_element(static_cast<uint32_t>(i), Value(sym));
+            } else {
+                result_array->set_element(static_cast<uint32_t>(i), Value(keys[i]));
+            }
+        } else {
+            result_array->set_element(static_cast<uint32_t>(i), Value(keys[i]));
+        }
     }
-    
+
     return Value(result_array.release());
 }
 

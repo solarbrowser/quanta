@@ -394,7 +394,7 @@ void Map::setup_map_prototype(Context& ctx) {
 
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        map_prototype->set_property(iterator_symbol->to_string(), Value(entries_fn.release()),
+        map_prototype->set_property(iterator_symbol->to_property_key(), Value(entries_fn.release()),
             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     } else {
         entries_fn.release();
@@ -758,7 +758,7 @@ void Set::setup_set_prototype(Context& ctx) {
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
         auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
-        set_prototype->set_property(iterator_symbol->to_string(), Value(set_iterator_fn.release()));
+        set_prototype->set_property(iterator_symbol->to_property_key(), Value(set_iterator_fn.release()));
     }
 
     PropertyDescriptor set_tag_desc(Value(std::string("Set")), PropertyAttributes::Configurable);

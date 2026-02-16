@@ -122,8 +122,8 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    if (args[0].is_undefined()) {
-        return Value();
+    if (args[0].is_undefined() || args[0].is_symbol()) {
+        return Value();  // undefined
     }
 
     if (args[0].is_object() && !args[0].as_object()) {
@@ -596,6 +596,9 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
         return "null";
     } else if (value.is_undefined()) {
         return "null";
+    } else if (value.is_symbol()) {
+        // ES6: symbols serialize as undefined (which becomes "null" in arrays, omitted in objects)
+        return "null";
     } else if (value.is_boolean()) {
         return stringify_boolean(value.to_boolean());
     } else if (value.is_number()) {
@@ -661,6 +664,8 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
 
     for (const std::string& key : keys_to_process) {
         if (key.substr(0, 2) == "__") continue;
+        // ES6: Skip symbol-keyed properties
+        if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
 
         Value prop_value = obj->get_property(key);
 
@@ -679,7 +684,7 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
             prop_value = result_val;
         }
 
-        if (prop_value.is_function() || prop_value.is_undefined()) continue;
+        if (prop_value.is_function() || prop_value.is_undefined() || prop_value.is_symbol()) continue;
 
         if (!first) {
             result += ",";

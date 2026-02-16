@@ -29,9 +29,12 @@ private:
     static std::unordered_map<std::string, std::unique_ptr<Symbol>> well_known_symbols_;
     
     static std::unordered_map<std::string, std::unique_ptr<Symbol>> global_registry_;
-    
+
+    // Registry of all user-created symbols by property key for getOwnPropertySymbols/Reflect.ownKeys
+    static std::unordered_map<std::string, Symbol*> user_symbol_registry_;
+
     Symbol(const std::string& description);
-    
+
 public:
     ~Symbol() = default;
     
@@ -51,6 +54,9 @@ public:
     std::string to_property_key() const;
 
     bool equals(const Symbol* other) const;
+
+    // Find a user-created symbol by its property key (e.g., "@@sym:5")
+    static Symbol* find_by_property_key(const std::string& key);
     
     static Value symbol_constructor(Context& ctx, const std::vector<Value>& args);
     static Value symbol_for(Context& ctx, const std::vector<Value>& args);

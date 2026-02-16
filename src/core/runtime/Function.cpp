@@ -337,6 +337,37 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_prototype(obj_proto);
         }
 
+        // ES6: arguments[Symbol.iterator] - own property, array-like iterator
+        {
+            Object* args_ptr = arguments_obj.get();
+            auto iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+                [args_ptr](Context& ctx, const std::vector<Value>& fn_args) -> Value {
+                    (void)fn_args;
+                    uint32_t length = 0;
+                    Value len_val = args_ptr->get_property("length");
+                    if (!len_val.is_undefined()) length = static_cast<uint32_t>(len_val.to_number());
+                    auto index = std::make_shared<uint32_t>(0);
+                    auto iterator = ObjectFactory::create_object();
+                    auto next_fn = ObjectFactory::create_native_function("next",
+                        [args_ptr, length, index](Context& ctx2, const std::vector<Value>& a) -> Value {
+                            (void)a;
+                            auto result = ObjectFactory::create_object();
+                            if (*index >= length) {
+                                result->set_property("done", Value(true));
+                                result->set_property("value", Value());
+                            } else {
+                                result->set_property("done", Value(false));
+                                result->set_property("value", args_ptr->get_element(*index));
+                                (*index)++;
+                            }
+                            return Value(result.release());
+                        }, 0);
+                    iterator->set_property("next", Value(next_fn.release()));
+                    return Value(iterator.release());
+                }, 0);
+            arguments_obj->set_property("Symbol.iterator", Value(iter_fn.release()), PropertyAttributes::BuiltinFunction);
+        }
+
         // In strict mode, arguments.callee and arguments.caller throw TypeError
         if (function_context.is_strict_mode()) {
             auto thrower = ObjectFactory::create_native_function("ThrowTypeError",

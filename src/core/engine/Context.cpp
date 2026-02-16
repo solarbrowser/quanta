@@ -905,24 +905,6 @@ void Context::initialize_built_ins() {
         }, 2);
     object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    auto hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.hasOwnProperty requires 2 arguments")));
-                return Value(false);
-            }
-
-            if (!args[0].is_object()) {
-                return Value(false);
-            }
-
-            Object* obj = args[0].as_object();
-            std::string prop_name = args[1].to_string();
-
-            return Value(obj->has_own_property(prop_name));
-        }, 1);
-    object_constructor->set_property("hasOwnProperty", Value(hasOwnProperty_fn.release()), PropertyAttributes::BuiltinFunction);
-
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
@@ -1113,6 +1095,38 @@ void Context::initialize_built_ins() {
             return Value(result.release());
         }, 1);
     object_constructor->set_property("getOwnPropertyNames", Value(getOwnPropertyNames_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    // ES6: Object.getOwnPropertySymbols
+    auto getOwnPropertySymbols_fn = ObjectFactory::create_native_function("getOwnPropertySymbols",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) {
+                ctx.throw_type_error("Object.getOwnPropertySymbols requires 1 argument");
+                return Value();
+            }
+            if (!args[0].is_object() && !args[0].is_function()) {
+                return Value(ObjectFactory::create_array().release());
+            }
+            Object* obj = args[0].is_function()
+                ? static_cast<Object*>(args[0].as_function())
+                : args[0].as_object();
+            auto result = ObjectFactory::create_array();
+            auto props = obj->get_own_property_keys();
+            uint32_t idx = 0;
+            for (const auto& key : props) {
+                if (key.find("@@sym:") == 0) {
+                    // Find the symbol by its property key
+                    Value prop_val = obj->get_property(key);
+                    // We need to return the Symbol object, look it up from registry
+                    Symbol* sym = Symbol::find_by_property_key(key);
+                    if (sym) {
+                        result->set_element(idx++, Value(sym));
+                    }
+                }
+            }
+            result->set_property("length", Value(static_cast<double>(idx)));
+            return Value(result.release());
+        }, 1);
+    object_constructor->set_property("getOwnPropertySymbols", Value(getOwnPropertySymbols_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto defineProperties_fn = ObjectFactory::create_native_function("defineProperties",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1391,17 +1405,31 @@ void Context::initialize_built_ins() {
             }
 
             std::string builtinTag;
+            Object* tag_obj = nullptr;  // object to check Symbol.toStringTag on
+
+            auto get_proto_from_global = [&ctx](const std::string& name) -> Object* {
+                Value ctor = ctx.get_binding(name);
+                if (ctor.is_function()) {
+                    Value proto = ctor.as_function()->get_property("prototype");
+                    if (proto.is_object()) return proto.as_object();
+                }
+                return nullptr;
+            };
 
             if (this_val.is_string()) {
                 builtinTag = "String";
+                tag_obj = get_proto_from_global("String");
             } else if (this_val.is_number()) {
                 builtinTag = "Number";
+                tag_obj = get_proto_from_global("Number");
             } else if (this_val.is_boolean()) {
                 builtinTag = "Boolean";
+                tag_obj = get_proto_from_global("Boolean");
             } else if (this_val.is_object() || this_val.is_function()) {
                 Object* this_obj = this_val.is_function()
                     ? static_cast<Object*>(this_val.as_function())
                     : this_val.as_object();
+                tag_obj = this_obj;
 
                 Object::ObjectType obj_type = this_obj->get_type();
 
@@ -1426,14 +1454,16 @@ void Context::initialize_built_ins() {
                 } else {
                     builtinTag = "Object";
                 }
+            } else {
+                builtinTag = "Object";
+            }
 
-                // ES6: Check Symbol.toStringTag
-                Value tag = this_obj->get_property("Symbol.toStringTag");
+            // ES6: Check Symbol.toStringTag (overrides builtinTag)
+            if (tag_obj) {
+                Value tag = tag_obj->get_property("Symbol.toStringTag");
                 if (tag.is_string()) {
                     builtinTag = tag.to_string();
                 }
-            } else {
-                builtinTag = "Object";
             }
 
             return Value("[object " + builtinTag + "]");
@@ -1460,7 +1490,12 @@ void Context::initialize_built_ins() {
                 return Value(false);
             }
 
-            std::string prop_name = args[0].to_string();
+            std::string prop_name;
+            if (args[0].is_symbol()) {
+                prop_name = args[0].as_symbol()->to_property_key();
+            } else {
+                prop_name = args[0].to_string();
+            }
             return Value(this_obj->has_own_property(prop_name));
         }, 1);
 
@@ -1685,6 +1720,46 @@ void Context::initialize_built_ins() {
                 constructor = static_cast<Function*>(this_binding);
             }
 
+            // ES6: Check for Symbol.iterator first (iterable protocol)
+            if (arrayLike.is_object() || arrayLike.is_function()) {
+                Object* src_obj = arrayLike.is_function()
+                    ? static_cast<Object*>(arrayLike.as_function())
+                    : arrayLike.as_object();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_method = src_obj->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iterator_obj = iter_method.as_function()->call(ctx, {}, arrayLike);
+                        if (ctx.has_exception()) return Value();
+                        if (iterator_obj.is_object()) {
+                            Object* iterator = iterator_obj.as_object();
+                            Value next_method = iterator->get_property("next");
+                            if (next_method.is_function()) {
+                                auto result_arr = ObjectFactory::create_array(0);
+                                uint32_t idx = 0;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_method.as_function()->call(ctx, {}, iterator_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!res.is_object()) break;
+                                    Value done = res.as_object()->get_property("done");
+                                    if (done.to_boolean()) break;
+                                    Value val = res.as_object()->get_property("value");
+                                    if (mapfn) {
+                                        std::vector<Value> margs = { val, Value(static_cast<double>(idx)) };
+                                        val = mapfn->call(ctx, margs, thisArg);
+                                        if (ctx.has_exception()) return Value();
+                                    }
+                                    result_arr->set_element(idx++, val);
+                                }
+                                result_arr->set_property("length", Value(static_cast<double>(idx)));
+                                return Value(result_arr.release());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: array-like (has .length)
             uint32_t length = 0;
             if (arrayLike.is_string()) {
                 length = static_cast<uint32_t>(arrayLike.to_string().length());
@@ -3189,8 +3264,36 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     array_proto_ptr->set_property_descriptor("constructor", array_constructor_desc);
 
-    PropertyDescriptor array_tag_desc(Value(std::string("Array")), PropertyAttributes::Configurable);
-    array_proto_ptr->set_property_descriptor("Symbol.toStringTag", array_tag_desc);
+    // ES6: Array.prototype[Symbol.iterator] = Array.prototype.values
+    auto array_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            auto iterator = ObjectFactory::create_object();
+            uint32_t length = 0;
+            Value len_val = this_obj->get_property("length");
+            if (!len_val.is_undefined()) length = static_cast<uint32_t>(len_val.to_number());
+            auto index = std::make_shared<uint32_t>(0);
+            Object* arr_ptr = this_obj;
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [arr_ptr, length, index](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    auto result = ObjectFactory::create_object();
+                    if (*index >= length) {
+                        result->set_property("done", Value(true));
+                        result->set_property("value", Value());
+                    } else {
+                        result->set_property("done", Value(false));
+                        result->set_property("value", arr_ptr->get_element(*index));
+                        (*index)++;
+                    }
+                    return Value(result.release());
+                }, 0);
+            iterator->set_property("next", Value(next_fn.release()));
+            return Value(iterator.release());
+        }, 0);
+    array_proto_ptr->set_property("Symbol.iterator", Value(array_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Symbol* unscopables_symbol = Symbol::get_well_known(Symbol::UNSCOPABLES);
     if (unscopables_symbol) {
@@ -3604,19 +3707,54 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("padEnd", padEnd_desc);
 
+    // Helper: convert value to string, calling toString() on objects
+    auto obj_to_string = [](Context& ctx, const Value& val) -> std::string {
+        if (val.is_object() || val.is_function()) {
+            Object* obj = val.is_function()
+                ? static_cast<Object*>(val.as_function())
+                : val.as_object();
+            Value toString_method = obj->get_property("toString");
+            if (toString_method.is_function()) {
+                Value result = toString_method.as_function()->call(ctx, {}, val);
+                if (!ctx.has_exception() && result.is_string()) {
+                    return result.to_string();
+                }
+            }
+        }
+        return val.to_string();
+    };
+
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
+
+            // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
+            if (args[0].is_object() || args[0].is_function()) {
+                Object* arg_obj = args[0].is_function()
+                    ? static_cast<Object*>(args[0].as_function())
+                    : args[0].as_object();
+                Value sym_match = arg_obj->get_property("Symbol.match");
+                if (sym_match.is_undefined()) {
+                    // No Symbol.match property - check if it's a RegExp
+                    if (arg_obj->get_type() == Object::ObjectType::RegExp) {
+                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                        return Value();
+                    }
+                } else if (sym_match.to_boolean()) {
+                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                    return Value();
+                }
+            }
 
             if (args[0].is_symbol()) {
                 ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                 return Value();
             }
 
-            std::string search_string = args[0].to_string();
+            std::string search_string = obj_to_string(ctx, args[0]);
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
@@ -3642,15 +3780,27 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("includes", string_includes_desc);
 
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
 
-            if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::RegExp) {
-                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
-                return Value();
+            // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
+            if (args[0].is_object() || args[0].is_function()) {
+                Object* arg_obj = args[0].is_function()
+                    ? static_cast<Object*>(args[0].as_function())
+                    : args[0].as_object();
+                Value sym_match = arg_obj->get_property("Symbol.match");
+                if (sym_match.is_undefined()) {
+                    if (arg_obj->get_type() == Object::ObjectType::RegExp) {
+                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
+                        return Value();
+                    }
+                } else if (sym_match.to_boolean()) {
+                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
+                    return Value();
+                }
             }
 
             if (args[0].is_symbol()) {
@@ -3658,7 +3808,7 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            std::string search_string = args[0].to_string();
+            std::string search_string = obj_to_string(ctx, args[0]);
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
@@ -3683,15 +3833,27 @@ void Context::initialize_built_ins() {
     string_prototype->set_property_descriptor("startsWith", startsWith_desc);
 
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
 
-            if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::RegExp) {
-                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
-                return Value();
+            // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
+            if (args[0].is_object() || args[0].is_function()) {
+                Object* arg_obj = args[0].is_function()
+                    ? static_cast<Object*>(args[0].as_function())
+                    : args[0].as_object();
+                Value sym_match = arg_obj->get_property("Symbol.match");
+                if (sym_match.is_undefined()) {
+                    if (arg_obj->get_type() == Object::ObjectType::RegExp) {
+                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
+                        return Value();
+                    }
+                } else if (sym_match.to_boolean()) {
+                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
+                    return Value();
+                }
             }
 
             if (args[0].is_symbol()) {
@@ -3699,7 +3861,7 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            std::string search_string = args[0].to_string();
+            std::string search_string = obj_to_string(ctx, args[0]);
             size_t length = args.size() > 1 ?
                 static_cast<size_t>(std::max(0.0, args[1].to_number())) : str.length();
 
@@ -3748,14 +3910,17 @@ void Context::initialize_built_ins() {
 
             Value pattern = args[0];
 
-            // ES6: Check Symbol.match on the argument
+            // ES6: Check Symbol.match on the argument (skip for native RegExp - use built-in logic)
             if (pattern.is_object() || pattern.is_function()) {
                 Object* pat_obj = pattern.is_function()
                     ? static_cast<Object*>(pattern.as_function())
                     : pattern.as_object();
-                Value sym_match = pat_obj->get_property("Symbol.match");
-                if (sym_match.is_function()) {
-                    return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
+                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
+                if (!is_native_regexp) {
+                    Value sym_match = pat_obj->get_property("Symbol.match");
+                    if (sym_match.is_function()) {
+                        return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
+                    }
                 }
             }
 
@@ -3865,14 +4030,17 @@ void Context::initialize_built_ins() {
 
             Value pattern = args[0];
 
-            // ES6: Check Symbol.search on the argument
+            // ES6: Check Symbol.search on the argument (skip for native RegExp)
             if (pattern.is_object() || pattern.is_function()) {
                 Object* pat_obj = pattern.is_function()
                     ? static_cast<Object*>(pattern.as_function())
                     : pattern.as_object();
-                Value sym_search = pat_obj->get_property("Symbol.search");
-                if (sym_search.is_function()) {
-                    return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
+                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
+                if (!is_native_regexp) {
+                    Value sym_search = pat_obj->get_property("Symbol.search");
+                    if (sym_search.is_function()) {
+                        return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
+                    }
                 }
             }
 
@@ -3951,16 +4119,19 @@ void Context::initialize_built_ins() {
                 return Value(std::string(""));
             }
 
-            // ES6: Check Symbol.replace on the first argument
+            // ES6: Check Symbol.replace on the first argument (skip for native RegExp)
             if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
                 Object* pat_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_replace = pat_obj->get_property("Symbol.replace");
-                if (sym_replace.is_function()) {
-                    std::vector<Value> call_args = {Value(str)};
-                    if (args.size() >= 2) call_args.push_back(args[1]);
-                    return sym_replace.as_function()->call(ctx, call_args, args[0]);
+                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
+                if (!is_native_regexp) {
+                    Value sym_replace = pat_obj->get_property("Symbol.replace");
+                    if (sym_replace.is_function()) {
+                        std::vector<Value> call_args = {Value(str)};
+                        if (args.size() >= 2) call_args.push_back(args[1]);
+                        return sym_replace.as_function()->call(ctx, call_args, args[0]);
+                    }
                 }
             }
 
@@ -4349,16 +4520,19 @@ void Context::initialize_built_ins() {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
-            // ES6: Check Symbol.split on the separator argument
+            // ES6: Check Symbol.split on the separator argument (skip for native RegExp)
             if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
                 Object* sep_obj = args[0].is_function()
                     ? static_cast<Object*>(args[0].as_function())
                     : args[0].as_object();
-                Value sym_split = sep_obj->get_property("Symbol.split");
-                if (sym_split.is_function()) {
-                    std::vector<Value> call_args = {Value(str)};
-                    if (args.size() >= 2) call_args.push_back(args[1]);
-                    return sym_split.as_function()->call(ctx, call_args, args[0]);
+                bool is_native_regexp = sep_obj->get_type() == Object::ObjectType::RegExp;
+                if (!is_native_regexp) {
+                    Value sym_split = sep_obj->get_property("Symbol.split");
+                    if (sym_split.is_function()) {
+                        std::vector<Value> call_args = {Value(str)};
+                        if (args.size() >= 2) call_args.push_back(args[1]);
+                        return sym_split.as_function()->call(ctx, call_args, args[0]);
+                    }
                 }
             }
 
@@ -5028,6 +5202,34 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
 
+    // ES6: String.prototype[Symbol.iterator]
+    auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Value this_val = ctx.get_binding("this");
+            std::string str = this_val.to_string();
+            auto iterator = ObjectFactory::create_object();
+            auto index = std::make_shared<size_t>(0);
+            auto str_copy = std::make_shared<std::string>(str);
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [str_copy, index](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    auto result = ObjectFactory::create_object();
+                    if (*index >= str_copy->length()) {
+                        result->set_property("done", Value(true));
+                        result->set_property("value", Value());
+                    } else {
+                        result->set_property("done", Value(false));
+                        result->set_property("value", Value(std::string(1, (*str_copy)[*index])));
+                        (*index)++;
+                    }
+                    return Value(result.release());
+                }, 0);
+            iterator->set_property("next", Value(next_fn.release()));
+            return Value(iterator.release());
+        }, 0);
+    string_prototype->set_property("Symbol.iterator", Value(string_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
+
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()), PropertyAttributes::None);
     proto_ptr->set_property("constructor", Value(string_constructor.get()));
@@ -5120,11 +5322,39 @@ void Context::initialize_built_ins() {
                     Value this_value = ctx.get_binding("this");
                     std::string str = this_value.to_string();
                     if (args.empty()) return Value(false);
+                    // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
+                    if (args[0].is_object() || args[0].is_function()) {
+                        Object* arg_obj = args[0].is_function()
+                            ? static_cast<Object*>(args[0].as_function())
+                            : args[0].as_object();
+                        Value sym_match = arg_obj->get_property("Symbol.match");
+                        if (sym_match.is_undefined()) {
+                            if (arg_obj->get_type() == Object::ObjectType::RegExp) {
+                                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                                return Value();
+                            }
+                        } else if (sym_match.to_boolean()) {
+                            ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                            return Value();
+                        }
+                    }
                     if (args[0].is_symbol()) {
                         ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
                         return Value();
                     }
-                    std::string search_string = args[0].to_string();
+                    // Convert argument to string (call toString() for objects)
+                    std::string search_string;
+                    if (args[0].is_object() || args[0].is_function()) {
+                        Object* obj = args[0].is_function()
+                            ? static_cast<Object*>(args[0].as_function())
+                            : args[0].as_object();
+                        Value ts = obj->get_property("toString");
+                        if (ts.is_function()) {
+                            Value r = ts.as_function()->call(ctx, {}, args[0]);
+                            if (!ctx.has_exception() && r.is_string()) search_string = r.to_string();
+                            else search_string = args[0].to_string();
+                        } else search_string = args[0].to_string();
+                    } else search_string = args[0].to_string();
                     size_t position = 0;
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
@@ -7487,6 +7717,102 @@ void Context::initialize_built_ins() {
     PropertyDescriptor regexp_constructor_desc(Value(regexp_constructor.get()),
         PropertyAttributes::BuiltinFunction);
     regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);
+
+    // ES6: RegExp.prototype[Symbol.match/replace/search/split]
+    auto regexp_sym_match = ObjectFactory::create_native_function("[Symbol.match]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            std::string str = args.empty() ? "" : args[0].to_string();
+            Value exec_fn = this_obj->get_property("exec");
+            if (exec_fn.is_function()) {
+                return exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+            }
+            return Value::null();
+        }, 1);
+    regexp_prototype->set_property("Symbol.match", Value(regexp_sym_match.release()), PropertyAttributes::BuiltinFunction);
+
+    auto regexp_sym_replace = ObjectFactory::create_native_function("[Symbol.replace]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            std::string str = args.size() > 0 ? args[0].to_string() : "";
+            Value replace_val = args.size() > 1 ? args[1] : Value();
+            // Delegate to String.prototype.replace logic via exec
+            Value exec_fn = this_obj->get_property("exec");
+            if (exec_fn.is_function()) {
+                Value match = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                if (match.is_null() || match.is_undefined()) return Value(str);
+                if (match.is_object()) {
+                    Value matched = match.as_object()->get_property("0");
+                    Value index_val = match.as_object()->get_property("index");
+                    int index = static_cast<int>(index_val.to_number());
+                    std::string matched_str = matched.to_string();
+                    std::string replacement = replace_val.is_function() ? "" : replace_val.to_string();
+                    if (replace_val.is_function()) {
+                        Value r = replace_val.as_function()->call(ctx, {matched, Value(static_cast<double>(index)), Value(str)}, Value());
+                        replacement = r.to_string();
+                    }
+                    return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
+                }
+            }
+            return Value(str);
+        }, 2);
+    regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
+
+    auto regexp_sym_search = ObjectFactory::create_native_function("[Symbol.search]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value(-1.0);
+            std::string str = args.empty() ? "" : args[0].to_string();
+            Value exec_fn = this_obj->get_property("exec");
+            if (exec_fn.is_function()) {
+                Value result = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                if (result.is_null() || result.is_undefined()) return Value(-1.0);
+                if (result.is_object()) {
+                    return result.as_object()->get_property("index");
+                }
+            }
+            return Value(-1.0);
+        }, 1);
+    regexp_prototype->set_property("Symbol.search", Value(regexp_sym_search.release()), PropertyAttributes::BuiltinFunction);
+
+    auto regexp_sym_split = ObjectFactory::create_native_function("[Symbol.split]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            std::string str = args.size() > 0 ? args[0].to_string() : "";
+            // Simple split: use the regex to split the string
+            auto result = ObjectFactory::create_array();
+            Value exec_fn = this_obj->get_property("exec");
+            if (!exec_fn.is_function()) return Value(result.release());
+            size_t last = 0;
+            uint32_t idx = 0;
+            std::string remaining = str;
+            while (!remaining.empty()) {
+                Value match = exec_fn.as_function()->call(ctx, {Value(remaining)}, Value(this_obj));
+                if (match.is_null() || match.is_undefined()) break;
+                if (!match.is_object()) break;
+                Value index_val = match.as_object()->get_property("index");
+                Value matched_val = match.as_object()->get_property("0");
+                int index = static_cast<int>(index_val.to_number());
+                std::string matched_str = matched_val.to_string();
+                if (matched_str.empty() && index == 0) {
+                    result->set_element(idx++, Value(std::string(1, remaining[0])));
+                    remaining = remaining.substr(1);
+                } else {
+                    result->set_element(idx++, Value(remaining.substr(0, index)));
+                    remaining = remaining.substr(index + matched_str.length());
+                }
+            }
+            if (!remaining.empty() || idx > 0) {
+                result->set_element(idx++, Value(remaining));
+            }
+            result->set_property("length", Value(static_cast<double>(idx)));
+            return Value(result.release());
+        }, 2);
+    regexp_prototype->set_property("Symbol.split", Value(regexp_sym_split.release()), PropertyAttributes::BuiltinFunction);
+
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
 
     auto regexp_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
@@ -10735,6 +11061,35 @@ void Context::register_typed_array_constructors() {
             iter->set_property("next", Value(next.release())); return Value(iter.release());
         }, 0);
     typedarray_proto_ptr->set_property_descriptor("values", PropertyDescriptor(Value(ta_values_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    // ES6: TypedArray.prototype[Symbol.iterator] = values
+    auto ta_sym_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            auto iter = ObjectFactory::create_object();
+            auto idx = std::make_shared<uint32_t>(0);
+            uint32_t len = ta->byte_length() / ta->bytes_per_element();
+            auto next = ObjectFactory::create_native_function("next",
+                [this_obj, idx, len](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    auto res = ObjectFactory::create_object();
+                    if (*idx >= len) {
+                        res->set_property("done", Value(true));
+                        res->set_property("value", Value());
+                    } else {
+                        res->set_property("done", Value(false));
+                        res->set_property("value", this_obj->get_element(*idx));
+                        (*idx)++;
+                    }
+                    return Value(res.release());
+                }, 0);
+            iter->set_property("next", Value(next.release()));
+            return Value(iter.release());
+        }, 0);
+    typedarray_proto_ptr->set_property("Symbol.iterator", Value(ta_sym_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto ta_subarray_fn = ObjectFactory::create_native_function("subarray",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
