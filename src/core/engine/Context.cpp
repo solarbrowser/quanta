@@ -1735,6 +1735,12 @@ void Context::initialize_built_ins() {
                             Object* iterator = iterator_obj.as_object();
                             Value next_method = iterator->get_property("next");
                             if (next_method.is_function()) {
+                                auto close_iter = [&iterator_obj, &ctx]() {
+                                    if (iterator_obj.is_object()) {
+                                        Value rm = iterator_obj.as_object()->get_property("return");
+                                        if (rm.is_function()) rm.as_function()->call(ctx, {}, iterator_obj);
+                                    }
+                                };
                                 auto result_arr = ObjectFactory::create_array(0);
                                 uint32_t idx = 0;
                                 for (uint32_t ii = 0; ii < 100000; ii++) {
@@ -1747,7 +1753,7 @@ void Context::initialize_built_ins() {
                                     if (mapfn) {
                                         std::vector<Value> margs = { val, Value(static_cast<double>(idx)) };
                                         val = mapfn->call(ctx, margs, thisArg);
-                                        if (ctx.has_exception()) return Value();
+                                        if (ctx.has_exception()) { close_iter(); return Value(); }
                                     }
                                     result_arr->set_element(idx++, val);
                                 }
@@ -5202,7 +5208,7 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
 
-    // ES6: String.prototype[Symbol.iterator]
+    // ES6: String.prototype[Symbol.iterator] - iterates by Unicode codepoints
     auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
@@ -5219,9 +5225,17 @@ void Context::initialize_built_ins() {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                     } else {
+                        // UTF-8 codepoint-aware: read full multi-byte character
+                        unsigned char ch = static_cast<unsigned char>((*str_copy)[*index]);
+                        size_t char_len = 1;
+                        if (ch >= 0xF0) char_len = 4;
+                        else if (ch >= 0xE0) char_len = 3;
+                        else if (ch >= 0xC0) char_len = 2;
+                        if (*index + char_len > str_copy->length()) char_len = 1;
+                        std::string codepoint = str_copy->substr(*index, char_len);
                         result->set_property("done", Value(false));
-                        result->set_property("value", Value(std::string(1, (*str_copy)[*index])));
-                        (*index)++;
+                        result->set_property("value", Value(codepoint));
+                        *index += char_len;
                     }
                     return Value(result.release());
                 }, 0);
@@ -8105,9 +8119,38 @@ void Context::initialize_built_ins() {
             }
 
             Object* iterable = args[0].as_object();
+            // ES6: Support Symbol.iterator for non-array iterables
+            Object* collected_arr = nullptr;
+            std::unique_ptr<Object> collected_arr_owner;
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value(std::string("Promise.all expects an array")));
-                return Value();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_method = iterable->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, args[0]);
+                        if (!ctx.has_exception() && iter_obj.is_object()) {
+                            Value next_fn = iter_obj.as_object()->get_property("next");
+                            if (next_fn.is_function()) {
+                                collected_arr_owner = ObjectFactory::create_array(0);
+                                uint32_t cnt = 0;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!res.is_object()) break;
+                                    if (res.as_object()->get_property("done").to_boolean()) break;
+                                    collected_arr_owner->set_element(cnt++, res.as_object()->get_property("value"));
+                                }
+                                collected_arr_owner->set_length(cnt);
+                                collected_arr = collected_arr_owner.get();
+                                iterable = collected_arr;
+                            }
+                        }
+                    }
+                }
+                if (!collected_arr) {
+                    ctx.throw_exception(Value(std::string("Promise.all expects an iterable")));
+                    return Value();
+                }
             }
 
             uint32_t length = iterable->get_length();
@@ -8160,9 +8203,38 @@ void Context::initialize_built_ins() {
             }
 
             Object* iterable = args[0].as_object();
+            // ES6: Support Symbol.iterator for non-array iterables
+            Object* race_collected = nullptr;
+            std::unique_ptr<Object> race_collected_owner;
             if (!iterable->is_array()) {
-                ctx.throw_exception(Value(std::string("Promise.race expects an array")));
-                return Value();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_method = iterable->get_property(iter_sym->to_property_key());
+                    if (iter_method.is_function()) {
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, args[0]);
+                        if (!ctx.has_exception() && iter_obj.is_object()) {
+                            Value next_fn = iter_obj.as_object()->get_property("next");
+                            if (next_fn.is_function()) {
+                                race_collected_owner = ObjectFactory::create_array(0);
+                                uint32_t cnt = 0;
+                                for (uint32_t ii = 0; ii < 100000; ii++) {
+                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!res.is_object()) break;
+                                    if (res.as_object()->get_property("done").to_boolean()) break;
+                                    race_collected_owner->set_element(cnt++, res.as_object()->get_property("value"));
+                                }
+                                race_collected_owner->set_length(cnt);
+                                race_collected = race_collected_owner.get();
+                                iterable = race_collected;
+                            }
+                        }
+                    }
+                }
+                if (!race_collected) {
+                    ctx.throw_exception(Value(std::string("Promise.race expects an iterable")));
+                    return Value();
+                }
             }
 
             uint32_t length = iterable->get_length();
