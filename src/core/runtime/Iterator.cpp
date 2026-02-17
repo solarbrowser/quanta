@@ -208,9 +208,17 @@ Iterator::IteratorResult StringIterator::next_impl() {
     if (position_ >= string_.length()) {
         return IteratorResult(Value(), true);
     }
-    
-    std::string character(1, string_[position_++]);
-    return IteratorResult(Value(character), false);
+
+    // UTF-8 codepoint-aware: read full multi-byte character
+    unsigned char ch = static_cast<unsigned char>(string_[position_]);
+    size_t char_len = 1;
+    if (ch >= 0xF0) char_len = 4;
+    else if (ch >= 0xE0) char_len = 3;
+    else if (ch >= 0xC0) char_len = 2;
+    if (position_ + char_len > string_.length()) char_len = 1;
+    std::string codepoint = string_.substr(position_, char_len);
+    position_ += char_len;
+    return IteratorResult(Value(codepoint), false);
 }
 
 Value StringIterator::string_iterator_next_method(Context& ctx, const std::vector<Value>& args) {

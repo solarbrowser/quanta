@@ -665,47 +665,52 @@ Value BinaryExpression::evaluate(Context& ctx) {
         }
     }
     
+    // ES6 ToPrimitive: Check Symbol.toPrimitive, Date objects prefer toString, others prefer valueOf
+    auto toPrimitive = [&ctx](const Value& val, const std::string& hint = "default") -> Value {
+        if (!val.is_object_like() || val.is_string()) return val;
+        Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+        if (!obj) return val;
+        // ES6: Check Symbol.toPrimitive
+        Value toPrim = obj->get_property("Symbol.toPrimitive");
+        if (toPrim.is_function()) {
+            Value result = toPrim.as_function()->call(ctx, {Value(hint)}, val);
+            if (!result.is_object_like()) return result;
+            return val;
+        }
+        bool prefer_string = obj->has_property("_isDate");
+
+        if (prefer_string) {
+            Value toString_method = obj->get_property("toString");
+            if (toString_method.is_function()) {
+                try {
+                    Value result = toString_method.as_function()->call(ctx, {}, val);
+                    if (!result.is_object()) return result;
+                } catch (...) {}
+            }
+        }
+        Value valueOf_method = obj->get_property("valueOf");
+        if (valueOf_method.is_function()) {
+            try {
+                Value result = valueOf_method.as_function()->call(ctx, {}, val);
+                if (!result.is_object()) return result;
+            } catch (...) {}
+        }
+        if (!prefer_string) {
+            Value toString_method = obj->get_property("toString");
+            if (toString_method.is_function()) {
+                try {
+                    Value result = toString_method.as_function()->call(ctx, {}, val);
+                    if (!result.is_object()) return result;
+                } catch (...) {}
+            }
+        }
+        return val;
+    };
+
     switch (operator_) {
         case Operator::ADD: {
             Value left_coerced = left_value;
             Value right_coerced = right_value;
-
-            // ES6 ToPrimitive: Date objects prefer toString, others prefer valueOf
-            auto toPrimitive = [&ctx](const Value& val) -> Value {
-                if (!val.is_object() || val.is_string()) return val;
-                Object* obj = val.as_object();
-                if (!obj) return val;
-                bool prefer_string = obj->has_property("_isDate");
-                if (prefer_string) {
-                    // Try toString first
-                    Value toString_method = obj->get_property("toString");
-                    if (toString_method.is_function()) {
-                        try {
-                            Value result = toString_method.as_function()->call(ctx, {}, val);
-                            if (!result.is_object()) return result;
-                        } catch (...) {}
-                    }
-                }
-                // Try valueOf
-                Value valueOf_method = obj->get_property("valueOf");
-                if (valueOf_method.is_function()) {
-                    try {
-                        Value result = valueOf_method.as_function()->call(ctx, {}, val);
-                        if (!result.is_object()) return result;
-                    } catch (...) {}
-                }
-                if (!prefer_string) {
-                    // Try toString as fallback
-                    Value toString_method = obj->get_property("toString");
-                    if (toString_method.is_function()) {
-                        try {
-                            Value result = toString_method.as_function()->call(ctx, {}, val);
-                            if (!result.is_object()) return result;
-                        } catch (...) {}
-                    }
-                }
-                return val;
-            };
 
             left_coerced = toPrimitive(left_value);
             right_coerced = toPrimitive(right_value);
@@ -770,22 +775,40 @@ Value BinaryExpression::evaluate(Context& ctx) {
         case Operator::EXPONENT:
             return left_value.power(right_value);
             
-        case Operator::EQUAL:
-            return Value(left_value.loose_equals(right_value));
-        case Operator::NOT_EQUAL:
-            return Value(!left_value.loose_equals(right_value));
+        case Operator::EQUAL: {
+            Value lp = toPrimitive(left_value, "default");
+            Value rp = toPrimitive(right_value, "default");
+            return Value(lp.loose_equals(rp));
+        }
+        case Operator::NOT_EQUAL: {
+            Value lp = toPrimitive(left_value, "default");
+            Value rp = toPrimitive(right_value, "default");
+            return Value(!lp.loose_equals(rp));
+        }
         case Operator::STRICT_EQUAL:
             return Value(left_value.strict_equals(right_value));
         case Operator::STRICT_NOT_EQUAL:
             return Value(!left_value.strict_equals(right_value));
-        case Operator::LESS_THAN:
-            return Value(left_value.compare(right_value) < 0);
-        case Operator::GREATER_THAN:
-            return Value(left_value.compare(right_value) > 0);
-        case Operator::LESS_EQUAL:
-            return Value(left_value.compare(right_value) <= 0);
-        case Operator::GREATER_EQUAL:
-            return Value(left_value.compare(right_value) >= 0);
+        case Operator::LESS_THAN: {
+            Value lp = toPrimitive(left_value, "number");
+            Value rp = toPrimitive(right_value, "number");
+            return Value(lp.compare(rp) < 0);
+        }
+        case Operator::GREATER_THAN: {
+            Value lp = toPrimitive(left_value, "number");
+            Value rp = toPrimitive(right_value, "number");
+            return Value(lp.compare(rp) > 0);
+        }
+        case Operator::LESS_EQUAL: {
+            Value lp = toPrimitive(left_value, "number");
+            Value rp = toPrimitive(right_value, "number");
+            return Value(lp.compare(rp) <= 0);
+        }
+        case Operator::GREATER_EQUAL: {
+            Value lp = toPrimitive(left_value, "number");
+            Value rp = toPrimitive(right_value, "number");
+            return Value(lp.compare(rp) >= 0);
+        }
             
         case Operator::INSTANCEOF: {
             // ES6: Check Symbol.hasInstance
@@ -807,11 +830,12 @@ Value BinaryExpression::evaluate(Context& ctx) {
         }
 
         case Operator::IN: {
+            Value left_prim = toPrimitive(left_value, "string");
             std::string property_name;
-            if (left_value.is_symbol()) {
-                property_name = left_value.as_symbol()->to_property_key();
+            if (left_prim.is_symbol()) {
+                property_name = left_prim.as_symbol()->to_property_key();
             } else {
-                property_name = left_value.to_string();
+                property_name = left_prim.to_string();
             }
             if (!right_value.is_object() && !right_value.is_function()) {
                 ctx.throw_type_error("Cannot use 'in' operator to search for '" + property_name + "' in " + right_value.to_string());
@@ -1893,10 +1917,25 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
         bool is_string_source = false;
         std::string str_source;
 
+        // For codepoint-aware string destructuring
+        std::vector<std::string> str_codepoints;
+
         if (source_value.is_string()) {
             is_string_source = true;
             str_source = source_value.as_string()->str();
-            source_len = static_cast<uint32_t>(str_source.length());
+            // Split into UTF-8 codepoints
+            size_t pos = 0;
+            while (pos < str_source.length()) {
+                unsigned char ch = static_cast<unsigned char>(str_source[pos]);
+                size_t cl = 1;
+                if (ch >= 0xF0) cl = 4;
+                else if (ch >= 0xE0) cl = 3;
+                else if (ch >= 0xC0) cl = 2;
+                if (pos + cl > str_source.length()) cl = 1;
+                str_codepoints.push_back(str_source.substr(pos, cl));
+                pos += cl;
+            }
+            source_len = static_cast<uint32_t>(str_codepoints.size());
         } else if (source_value.is_object() || source_value.is_function()) {
             source_arr = source_value.is_function()
                 ? static_cast<Object*>(source_value.as_function())
@@ -1911,14 +1950,43 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                         if (!ctx.has_exception() && iter_obj.is_object()) {
                             Value next_fn = iter_obj.as_object()->get_property("next");
                             if (next_fn.is_function()) {
+                                // Determine how many elements we need from pattern
+                                auto* arr_lit_check = static_cast<ArrayLiteral*>(pattern);
+                                const auto& elems_check = arr_lit_check->get_elements();
+                                bool has_rest = false;
+                                size_t needed = elems_check.size();
+                                for (size_t ei = 0; ei < elems_check.size(); ei++) {
+                                    if (elems_check[ei] && elems_check[ei]->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                                        has_rest = true;
+                                        break;
+                                    }
+                                }
                                 auto temp = ObjectFactory::create_array(0);
                                 uint32_t cnt = 0;
-                                for (uint32_t ii = 0; ii < 100000; ii++) {
-                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                    if (ctx.has_exception()) return;
-                                    if (!res.is_object()) break;
-                                    if (res.as_object()->get_property("done").to_boolean()) break;
-                                    temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                bool iter_done = false;
+                                if (has_rest) {
+                                    for (uint32_t ii = 0; ii < 100000; ii++) {
+                                        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                        if (ctx.has_exception()) return;
+                                        if (!res.is_object()) { iter_done = true; break; }
+                                        if (res.as_object()->get_property("done").to_boolean()) { iter_done = true; break; }
+                                        temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                    }
+                                } else {
+                                    for (uint32_t ii = 0; ii < needed; ii++) {
+                                        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                        if (ctx.has_exception()) return;
+                                        if (!res.is_object()) { iter_done = true; break; }
+                                        if (res.as_object()->get_property("done").to_boolean()) { iter_done = true; break; }
+                                        temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                    }
+                                }
+                                // ES6: Iterator closing
+                                if (!iter_done) {
+                                    Value return_method = iter_obj.as_object()->get_property("return");
+                                    if (return_method.is_function()) {
+                                        return_method.as_function()->call(ctx, {}, iter_obj);
+                                    }
                                 }
                                 temp->set_length(cnt);
                                 source_arr = temp.release();
@@ -1946,7 +2014,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 for (uint32_t j = static_cast<uint32_t>(i); j < source_len; j++) {
                     Value val;
                     if (is_string_source) {
-                        val = Value(std::string(1, str_source[j]));
+                        val = (j < str_codepoints.size()) ? Value(str_codepoints[j]) : Value();
                     } else {
                         val = source_arr->get_element(j);
                     }
@@ -1960,7 +2028,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
 
             Value elem_value;
             if (is_string_source) {
-                elem_value = (i < source_len) ? Value(std::string(1, str_source[i])) : Value();
+                elem_value = (i < str_codepoints.size()) ? Value(str_codepoints[i]) : Value();
             } else if (source_arr) {
                 elem_value = (i < source_len) ? source_arr->get_element(static_cast<uint32_t>(i)) : Value();
             }
@@ -2049,8 +2117,23 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
         std::string str_src;
         Object* array_obj = nullptr;
 
+        // For codepoint-aware string destructuring
+        std::vector<std::string> str_cps;
+
         if (is_string_source) {
             str_src = source_value.as_string()->str();
+            // Split into UTF-8 codepoints
+            size_t pos = 0;
+            while (pos < str_src.length()) {
+                unsigned char ch = static_cast<unsigned char>(str_src[pos]);
+                size_t cl = 1;
+                if (ch >= 0xF0) cl = 4;
+                else if (ch >= 0xE0) cl = 3;
+                else if (ch >= 0xC0) cl = 2;
+                if (pos + cl > str_src.length()) cl = 1;
+                str_cps.push_back(str_src.substr(pos, cl));
+                pos += cl;
+            }
         } else if (source_value.is_object_like()) {
             array_obj = source_value.is_object() ? source_value.as_object()
                                                  : static_cast<Object*>(source_value.as_function());
@@ -2065,23 +2148,50 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             if (iter_sym) {
                 Value iter_method = array_obj->get_property(iter_sym->to_property_key());
                 if (iter_method.is_function()) {
-                    // Use iterator protocol: collect all values into a temporary array
                     Value iterator_obj = iter_method.as_function()->call(ctx, {}, source_value);
                     if (ctx.has_exception()) return Value();
                     if (iterator_obj.is_object()) {
                         Object* iterator = iterator_obj.as_object();
                         Value next_method = iterator->get_property("next");
                         if (next_method.is_function()) {
+                            // Determine how many elements we need
+                            bool has_rest = false;
+                            size_t needed = targets_.size();
+                            for (size_t ti = 0; ti < targets_.size(); ti++) {
+                                const std::string& tn = targets_[ti]->get_name();
+                                if (tn.length() >= 3 && tn.substr(0, 3) == "...") {
+                                    has_rest = true;
+                                    break;
+                                }
+                            }
                             auto temp_arr = ObjectFactory::create_array(0);
                             uint32_t count = 0;
-                            for (uint32_t iter_i = 0; iter_i < 10000; iter_i++) {
-                                Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                if (ctx.has_exception()) return Value();
-                                if (!result.is_object()) break;
-                                Value done = result.as_object()->get_property("done");
-                                if (done.to_boolean()) break;
-                                Value val = result.as_object()->get_property("value");
-                                temp_arr->set_element(count++, val);
+                            bool iterator_done = false;
+                            if (has_rest) {
+                                // Rest: collect all elements
+                                for (uint32_t iter_i = 0; iter_i < 100000; iter_i++) {
+                                    Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!result.is_object()) { iterator_done = true; break; }
+                                    if (result.as_object()->get_property("done").to_boolean()) { iterator_done = true; break; }
+                                    temp_arr->set_element(count++, result.as_object()->get_property("value"));
+                                }
+                            } else {
+                                // No rest: collect only needed elements
+                                for (uint32_t iter_i = 0; iter_i < needed; iter_i++) {
+                                    Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
+                                    if (ctx.has_exception()) return Value();
+                                    if (!result.is_object()) { iterator_done = true; break; }
+                                    if (result.as_object()->get_property("done").to_boolean()) { iterator_done = true; break; }
+                                    temp_arr->set_element(count++, result.as_object()->get_property("value"));
+                                }
+                            }
+                            // ES6: Iterator closing - call return() if not exhausted
+                            if (!iterator_done) {
+                                Value return_method = iterator->get_property("return");
+                                if (return_method.is_function()) {
+                                    return_method.as_function()->call(ctx, {}, iterator_obj);
+                                }
                             }
                             temp_arr->set_length(count);
                             array_obj = temp_arr.release();
@@ -2091,7 +2201,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             }
         }
 
-        uint32_t src_len = is_string_source ? static_cast<uint32_t>(str_src.length())
+        uint32_t src_len = is_string_source ? static_cast<uint32_t>(str_cps.size())
                                             : array_obj->get_length();
 
         if (true) {
@@ -2111,7 +2221,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     for (size_t j = i; j < src_len; j++) {
                         Value rest_element;
                         if (is_string_source) {
-                            rest_element = Value(std::string(1, str_src[j]));
+                            rest_element = (j < str_cps.size()) ? Value(str_cps[j]) : Value();
                         } else {
                             rest_element = array_obj->get_element(static_cast<uint32_t>(j));
                         }
@@ -2130,7 +2240,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                 } else if (var_name.length() >= 14 && var_name.substr(0, 14) == "__nested_vars:") {
                     Value nested_array;
                     if (is_string_source) {
-                        nested_array = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                        nested_array = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
                     } else {
                         nested_array = array_obj->get_element(static_cast<uint32_t>(i));
                     }
@@ -2170,7 +2280,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     // Nested object destructuring in array: [a, {x:b, c}]
                     Value element;
                     if (is_string_source) {
-                        element = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                        element = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
                     } else {
                         element = array_obj->get_element(static_cast<uint32_t>(i));
                     }
@@ -2206,7 +2316,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                 } else {
                     Value element;
                     if (is_string_source) {
-                        element = (i < src_len) ? Value(std::string(1, str_src[i])) : Value();
+                        element = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
                     } else {
                         element = array_obj->get_element(static_cast<uint32_t>(i));
                     }
@@ -4769,7 +4879,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.to_string();
+            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -4931,7 +5041,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.to_string();
+            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -4983,7 +5093,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.to_string();
+            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -5043,6 +5153,22 @@ Value MemberExpression::evaluate(Context& ctx) {
     
     if (object_value.is_null() || object_value.is_undefined()) {
         ctx.throw_type_error("Cannot read property of null or undefined");
+        return Value();
+    }
+
+    // ES6: Property access on symbols - look up Symbol.prototype
+    if (object_value.is_symbol() && !computed_) {
+        if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+            std::string prop_name = static_cast<Identifier*>(property_.get())->get_name();
+            Value ctor = ctx.get_binding("Symbol");
+            if (ctor.is_function()) {
+                Value proto = ctor.as_function()->get_property("prototype");
+                if (proto.is_object()) {
+                    Value val = proto.as_object()->get_property(prop_name);
+                    if (!val.is_undefined()) return val;
+                }
+            }
+        }
         return Value();
     }
 
@@ -7112,13 +7238,23 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             return Value();
                         }
                         
+                        // ES6: Helper to close iterator (call return() if present)
+                        auto close_iterator = [&iterator_obj, &ctx]() {
+                            if (iterator_obj.is_object()) {
+                                Value return_method = iterator_obj.as_object()->get_property("return");
+                                if (return_method.is_function()) {
+                                    return_method.as_function()->call(ctx, {}, iterator_obj);
+                                }
+                            }
+                        };
+
                         Context* loop_ctx = &ctx;
                         uint32_t iteration_count = 0;
                         const uint32_t MAX_ITERATIONS = 1000000000;
-                        
+
                         while (iteration_count < MAX_ITERATIONS) {
                             iteration_count++;
-                            
+
                             Value result;
                             if (iterator_obj.is_object()) {
                                 Object* iter_obj = iterator_obj.as_object();
@@ -7134,19 +7270,19 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 ctx.throw_exception(Value(std::string("Iterator is not an object")));
                                 return Value();
                             }
-                            
-                            if (ctx.has_exception()) return Value();
-                            
+
+                            if (ctx.has_exception()) { close_iterator(); return Value(); }
+
                             if (result.is_object()) {
                                 Object* result_obj = result.as_object();
                                 Value done = result_obj->get_property("done");
-                                
+
                                 if (done.is_boolean() && done.to_boolean()) {
                                     break;
                                 }
-                                
+
                                 Value value = result_obj->get_property("value");
-                                
+
                                 if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
 
@@ -7192,12 +7328,14 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     }
 
                                     if (loop_ctx->has_exception()) {
+                                        close_iterator();
                                         return Value();
                                     }
 
-                                    if (loop_ctx->has_break()) break;
+                                    if (loop_ctx->has_break()) { close_iterator(); loop_ctx->clear_break_continue(); break; }
                                     if (loop_ctx->has_continue()) continue;
                                     if (loop_ctx->has_return_value()) {
+                                        close_iterator();
                                         return Value();
                                     }
                                     continue; // skip the code below for non-destructuring
@@ -7205,22 +7343,24 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                                 body_->evaluate(*loop_ctx);
                                 if (loop_ctx->has_exception()) {
+                                    close_iterator();
                                     return Value();
                                 }
 
-                                if (loop_ctx->has_break()) break;
+                                if (loop_ctx->has_break()) { close_iterator(); break; }
                                 if (loop_ctx->has_continue()) continue;
                                 if (loop_ctx->has_return_value()) {
+                                    close_iterator();
                                     return Value();
                                 }
                             }
                         }
-                        
+
                         if (iteration_count >= MAX_ITERATIONS) {
                             ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
                             return Value();
                         }
-                        
+
                         return Value();
                     }
                 }
@@ -8600,12 +8740,21 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         if (value.is_function()) {
             Function* fn = value.as_function();
             if (fn->get_name().empty()) {
+                std::string func_name = key;
+                // ES6: Symbol-keyed methods get name "[description]" or ""
+                if (prop->computed) {
+                    Value key_check = prop->key->evaluate(ctx);
+                    if (key_check.is_symbol()) {
+                        std::string desc = key_check.as_symbol()->get_description();
+                        func_name = desc.empty() ? "" : "[" + desc + "]";
+                    }
+                }
                 if (prop->type == ObjectLiteral::PropertyType::Getter) {
-                    fn->set_name("get " + key);
+                    fn->set_name("get " + func_name);
                 } else if (prop->type == ObjectLiteral::PropertyType::Setter) {
-                    fn->set_name("set " + key);
+                    fn->set_name("set " + func_name);
                 } else {
-                    fn->set_name(key);
+                    fn->set_name(func_name);
                 }
             }
         }
