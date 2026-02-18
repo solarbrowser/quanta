@@ -256,6 +256,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);
             Value closure_value = this->get_property(key);
+            if (var_name != "arguments" && var_name != "this") {
+                if (parent_context->has_binding(var_name)) {
+                    Value parent_val = parent_context->get_binding(var_name);
+                    if (!parent_val.is_undefined() && !parent_val.is_function()) {
+                        closure_value = parent_val;
+                    }
+                }
+            }
             function_context.create_binding(var_name, closure_value, true);
         }
     }
@@ -482,8 +490,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
 
-        // Write back modified closure variables to this function object
-        // and propagate to the parent context for live variable access
+        // Write back modified closure variables to this function object,
+        // propagate to parent context, and update sibling closures
+        std::vector<std::pair<std::string, Value>> modified_closures;
         auto prop_keys2 = this->get_own_property_keys();
         for (const auto& key : prop_keys2) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
@@ -491,12 +500,33 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
                 if (function_context.has_binding(var_name)) {
                     Value current_value = function_context.get_binding(var_name);
+                    Value old_value = this->get_property(key);
                     this->set_property(key, current_value);
 
-                    // Propagate modified closure variables back to the parent scope
-                    // so that closures defined and called in the same scope see updates
                     if (parent_context->has_binding(var_name)) {
                         parent_context->set_binding(var_name, current_value);
+                    }
+
+                    if (!current_value.strict_equals(old_value)) {
+                        modified_closures.push_back({var_name, current_value});
+                    }
+                }
+            }
+        }
+
+        if (!modified_closures.empty()) {
+            auto* var_env = parent_context->get_variable_environment();
+            if (var_env) {
+                auto sibling_names = var_env->get_binding_names();
+                for (const auto& sname : sibling_names) {
+                    Value sval = parent_context->get_binding(sname);
+                    if (sval.is_function() && sval.as_function() != this) {
+                        Function* sibling = sval.as_function();
+                        for (auto& [vname, vval] : modified_closures) {
+                            if (sibling->has_property("__closure_" + vname)) {
+                                sibling->set_property("__closure_" + vname, vval);
+                            }
+                        }
                     }
                 }
             }
