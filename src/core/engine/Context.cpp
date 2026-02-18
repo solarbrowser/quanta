@@ -446,7 +446,7 @@ void Context::initialize_built_ins() {
 
 
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
-        [](Context& /* ctx */, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
                 return Value(ObjectFactory::create_object().release());
             }
@@ -466,14 +466,42 @@ void Context::initialize_built_ins() {
                 return Value(string_obj.release());
             } else if (value.is_number()) {
                 auto number_obj = ObjectFactory::create_object();
-                number_obj->set_property("valueOf", value);
+                number_obj->set_property("[[PrimitiveValue]]", Value(value.as_number()));
+                Value num_ctor = ctx.get_binding("Number");
+                if (num_ctor.is_function()) {
+                    Value num_proto = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
+                    if (num_proto.is_object()) {
+                        number_obj->set_prototype(num_proto.as_object());
+                    }
+                }
                 return Value(number_obj.release());
             } else if (value.is_boolean()) {
                 auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
                 return Value(boolean_obj.release());
             } else if (value.is_symbol()) {
+                // ES6: Create a Symbol wrapper object
+                Symbol* sym = value.as_symbol();
                 auto symbol_obj = ObjectFactory::create_object();
-                symbol_obj->set_property("valueOf", value);
+                // Set Symbol.prototype for instanceof
+                Value sym_ctor = ctx.get_binding("Symbol");
+                if (sym_ctor.is_function()) {
+                    Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
+                    if (sym_proto.is_object()) {
+                        symbol_obj->set_prototype(sym_proto.as_object());
+                    }
+                }
+                // Store primitive symbol for valueOf
+                Value captured_sym = value;
+                auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
+                    [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                        return captured_sym;
+                    }, 0);
+                symbol_obj->set_property("valueOf", Value(valueOf_fn.release()));
+                auto toString_fn = ObjectFactory::create_native_function("toString",
+                    [sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                        return Value(sym->to_string());
+                    }, 0);
+                symbol_obj->set_property("toString", Value(toString_fn.release()));
                 return Value(symbol_obj.release());
             } else if (value.is_bigint()) {
                 auto bigint_obj = ObjectFactory::create_object();
@@ -7120,6 +7148,47 @@ void Context::initialize_built_ins() {
     auto toGMTString_fn = ObjectFactory::create_native_function("toGMTString", Date::toGMTString);
     date_prototype->set_property("toGMTString", Value(toGMTString_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    // ES6: Date.prototype[Symbol.toPrimitive]
+    Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    if (toPrim_sym) {
+        auto date_toPrimitive_fn = ObjectFactory::create_native_function("[Symbol.toPrimitive]",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* obj = ctx.get_this_binding();
+                if (!obj) {
+                    ctx.throw_type_error("Date.prototype[Symbol.toPrimitive] called on non-object");
+                    return Value();
+                }
+                std::string hint = args.empty() ? "default" : args[0].to_string();
+                if (hint == "number") {
+                    Value valueOf_fn = obj->get_property("valueOf");
+                    if (valueOf_fn.is_function()) {
+                        Value result = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
+                        if (!result.is_object()) return result;
+                    }
+                    Value toString_fn = obj->get_property("toString");
+                    if (toString_fn.is_function()) {
+                        Value result = toString_fn.as_function()->call(ctx, {}, Value(obj));
+                        if (!result.is_object()) return result;
+                    }
+                    return Value();
+                } else {
+                    Value toString_fn = obj->get_property("toString");
+                    if (toString_fn.is_function()) {
+                        Value result = toString_fn.as_function()->call(ctx, {}, Value(obj));
+                        if (!result.is_object()) return result;
+                    }
+                    Value valueOf_fn = obj->get_property("valueOf");
+                    if (valueOf_fn.is_function()) {
+                        Value result = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
+                        if (!result.is_object()) return result;
+                    }
+                    return Value();
+                }
+            }, 1);
+        date_prototype->set_property(toPrim_sym->to_property_key(), Value(date_toPrimitive_fn.release()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    }
+
     PropertyDescriptor date_proto_ctor_desc(Value(date_constructor_fn.get()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     date_prototype->set_property_descriptor("constructor", date_proto_ctor_desc);
@@ -7852,54 +7921,8 @@ void Context::initialize_built_ins() {
 
     register_built_in_object("RegExp", regexp_constructor.release());
     
-    std::function<void(Promise*)> add_promise_methods = [&](Promise* promise) {
-        auto then_method = ObjectFactory::create_native_function("then",
-            [promise, &add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
-                Function* on_fulfilled = nullptr;
-                Function* on_rejected = nullptr;
-                
-                if (args.size() > 0 && args[0].is_function()) {
-                    on_fulfilled = args[0].as_function();
-                }
-                if (args.size() > 1 && args[1].is_function()) {
-                    on_rejected = args[1].as_function();
-                }
-                
-                Promise* new_promise = promise->then(on_fulfilled, on_rejected);
-                add_promise_methods(new_promise);
-                return Value(new_promise);
-            });
-        promise->set_property("then", Value(then_method.release()));
-        
-        auto catch_method = ObjectFactory::create_native_function("catch",
-            [promise, &add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
-                Function* on_rejected = nullptr;
-                if (args.size() > 0 && args[0].is_function()) {
-                    on_rejected = args[0].as_function();
-                }
-                
-                Promise* new_promise = promise->catch_method(on_rejected);
-                add_promise_methods(new_promise);
-                return Value(new_promise);
-            });
-        promise->set_property("catch", Value(catch_method.release()));
-        
-        auto finally_method = ObjectFactory::create_native_function("finally",
-            [promise, &add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
-                Function* on_finally = nullptr;
-                if (args.size() > 0 && args[0].is_function()) {
-                    on_finally = args[0].as_function();
-                }
-                
-                Promise* new_promise = promise->finally_method(on_finally);
-                add_promise_methods(new_promise);
-                return Value(new_promise);
-            });
-        promise->set_property("finally", Value(finally_method.release()));
-    };
-    
     auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (!ctx.is_in_constructor_call()) {
                 ctx.throw_type_error("Promise constructor cannot be invoked without 'new'");
                 return Value();
@@ -7910,7 +7933,12 @@ void Context::initialize_built_ins() {
             }
             
             auto promise = std::make_unique<Promise>(&ctx);
-            
+            Value promise_ctor = ctx.get_binding("Promise");
+            if (promise_ctor.is_function()) {
+                Value proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
+                if (proto.is_object()) promise->set_prototype(proto.as_object());
+            }
+
             Function* executor = args[0].as_function();
             
             auto resolve_fn = ObjectFactory::create_native_function("resolve",
@@ -7939,11 +7967,7 @@ void Context::initialize_built_ins() {
             } catch (...) {
                 promise->reject(Value(std::string("Promise executor threw")));
             }
-            
-            add_promise_methods(promise.get());
-            
-            promise->set_property("_isPromise", Value(true));
-            
+
             return Value(promise.release());
         });
     
@@ -7955,45 +7979,47 @@ void Context::initialize_built_ins() {
             }
             
             Function* fn = args[0].as_function();
-            auto promise = std::make_unique<Promise>(&ctx);
-            
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* promise = static_cast<Promise*>(promise_obj.get());
+
             try {
                 Value result = fn->call(ctx, {});
                 promise->fulfill(result);
             } catch (...) {
                 promise->reject(Value(std::string("Function threw in Promise.try")));
             }
-            
-            return Value(promise.release());
+
+            return Value(promise_obj.release());
         });
     promise_constructor->set_property("try", Value(promise_try.release()));
     
     auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            auto promise = std::make_unique<Promise>(&ctx);
-            
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* promise_ptr = static_cast<Promise*>(promise_obj.get());
+
             auto resolve_fn = ObjectFactory::create_native_function("resolve",
-                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                [promise_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
                     Value value = args.empty() ? Value() : args[0];
                     promise_ptr->fulfill(value);
                     return Value();
                 });
-            
+
             auto reject_fn = ObjectFactory::create_native_function("reject",
-                [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
+                [promise_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
                     Value reason = args.empty() ? Value() : args[0];
                     promise_ptr->reject(reason);
                     return Value();
                 });
-            
+
             auto result_obj = ObjectFactory::create_object();
-            result_obj->set_property("promise", Value(promise.release()));
+            result_obj->set_property("promise", Value(promise_obj.release()));
             result_obj->set_property("resolve", Value(resolve_fn.release()), PropertyAttributes::BuiltinFunction);
             result_obj->set_property("reject", Value(reject_fn.release()), PropertyAttributes::BuiltinFunction);
-            
+
             return Value(result_obj.release());
         });
     promise_constructor->set_property("withResolvers", Value(promise_withResolvers.release()));
@@ -8083,36 +8109,25 @@ void Context::initialize_built_ins() {
     promise_constructor->set_property("prototype", Value(promise_prototype.release()));
     
     auto promise_resolve_static = ObjectFactory::create_native_function("resolve",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value value = args.empty() ? Value() : args[0];
-            auto promise = std::make_unique<Promise>(&ctx);
-            promise->fulfill(value);
-
-            add_promise_methods(promise.get());
-
-            promise->set_property("_isPromise", Value(true));
-            promise->set_property("_promiseValue", value);
-
+            auto promise = ObjectFactory::create_promise(&ctx);
+            static_cast<Promise*>(promise.get())->fulfill(value);
             return Value(promise.release());
         });
     promise_constructor->set_property("resolve", Value(promise_resolve_static.release()));
     
     auto promise_reject_static = ObjectFactory::create_native_function("reject",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value reason = args.empty() ? Value() : args[0];
-            auto promise = std::make_unique<Promise>(&ctx);
-            promise->reject(reason);
-            
-            add_promise_methods(promise.get());
-            
-            promise->set_property("_isPromise", Value(true));
-            
+            auto promise = ObjectFactory::create_promise(&ctx);
+            static_cast<Promise*>(promise.get())->reject(reason);
             return Value(promise.release());
         });
     promise_constructor->set_property("reject", Value(promise_reject_static.release()));
 
     auto promise_all_static = ObjectFactory::create_native_function("all",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
                 ctx.throw_exception(Value(std::string("Promise.all expects an iterable")));
                 return Value();
@@ -8157,26 +8172,21 @@ void Context::initialize_built_ins() {
             std::vector<Value> results(length);
             uint32_t resolved_count = 0;
 
-            auto result_promise = std::make_unique<Promise>(&ctx);
-            add_promise_methods(result_promise.get());
-            result_promise->set_property("_isPromise", Value(true));
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
 
             if (length == 0) {
                 auto empty_array = ObjectFactory::create_array(0);
                 result_promise->fulfill(Value(empty_array.release()));
-                return Value(result_promise.release());
+                return Value(result_promise_obj.release());
             }
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
                 if (element.is_object()) {
-                    Object* obj = element.as_object();
-                    if (obj && obj->has_property("_isPromise")) {
-                        if (obj->has_property("_promiseValue")) {
-                            results[i] = obj->get_property("_promiseValue");
-                        } else {
-                            results[i] = element;
-                        }
+                    Promise* p = dynamic_cast<Promise*>(element.as_object());
+                    if (p && p->is_fulfilled()) {
+                        results[i] = p->get_value();
                     } else {
                         results[i] = element;
                     }
@@ -8191,12 +8201,12 @@ void Context::initialize_built_ins() {
             }
 
             result_promise->fulfill(Value(result_array.release()));
-            return Value(result_promise.release());
+            return Value(result_promise_obj.release());
         });
     promise_constructor->set_property("all", Value(promise_all_static.release()));
 
     auto promise_race_static = ObjectFactory::create_native_function("race",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
                 ctx.throw_exception(Value(std::string("Promise.race expects an iterable")));
                 return Value();
@@ -8238,19 +8248,18 @@ void Context::initialize_built_ins() {
             }
 
             uint32_t length = iterable->get_length();
-            auto result_promise = std::make_unique<Promise>(&ctx);
-            add_promise_methods(result_promise.get());
-            result_promise->set_property("_isPromise", Value(true));
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
 
             if (length == 0) {
-                return Value(result_promise.release());
+                return Value(result_promise_obj.release());
             }
 
             Value first_element = iterable->get_element(0);
             if (first_element.is_object()) {
-                Object* obj = first_element.as_object();
-                if (obj && obj->has_property("_isPromise") && obj->has_property("_promiseValue")) {
-                    result_promise->fulfill(obj->get_property("_promiseValue"));
+                Promise* p = dynamic_cast<Promise*>(first_element.as_object());
+                if (p && p->is_fulfilled()) {
+                    result_promise->fulfill(p->get_value());
                 } else {
                     result_promise->fulfill(first_element);
                 }
@@ -8258,12 +8267,12 @@ void Context::initialize_built_ins() {
                 result_promise->fulfill(first_element);
             }
 
-            return Value(result_promise.release());
+            return Value(result_promise_obj.release());
         });
     promise_constructor->set_property("race", Value(promise_race_static.release()));
 
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
                 ctx.throw_exception(Value(std::string("Promise.allSettled expects an iterable")));
                 return Value();
@@ -8276,9 +8285,8 @@ void Context::initialize_built_ins() {
             }
 
             uint32_t length = iterable->get_length();
-            auto result_promise = std::make_unique<Promise>(&ctx);
-            add_promise_methods(result_promise.get());
-            result_promise->set_property("_isPromise", Value(true));
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
 
             auto results_array = ObjectFactory::create_array(length);
             for (uint32_t i = 0; i < length; i++) {
@@ -8292,12 +8300,12 @@ void Context::initialize_built_ins() {
             }
 
             result_promise->fulfill(Value(results_array.release()));
-            return Value(result_promise.release());
+            return Value(result_promise_obj.release());
         }, 1);
     promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()));
 
     auto promise_any_static = ObjectFactory::create_native_function("any",
-        [add_promise_methods](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
                 ctx.throw_exception(Value(std::string("Promise.any expects an iterable")));
                 return Value();
@@ -8310,9 +8318,8 @@ void Context::initialize_built_ins() {
             }
 
             uint32_t length = iterable->get_length();
-            auto result_promise = std::make_unique<Promise>(&ctx);
-            add_promise_methods(result_promise.get());
-            result_promise->set_property("_isPromise", Value(true));
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
 
             if (length == 0) {
                 ctx.throw_exception(Value(std::string("AggregateError: All promises were rejected")));
@@ -8321,9 +8328,9 @@ void Context::initialize_built_ins() {
 
             Value first_element = iterable->get_element(0);
             if (first_element.is_object()) {
-                Object* obj = first_element.as_object();
-                if (obj && obj->has_property("_isPromise") && obj->has_property("_promiseValue")) {
-                    result_promise->fulfill(obj->get_property("_promiseValue"));
+                Promise* p = dynamic_cast<Promise*>(first_element.as_object());
+                if (p && p->is_fulfilled()) {
+                    result_promise->fulfill(p->get_value());
                 } else {
                     result_promise->fulfill(first_element);
                 }
@@ -8331,7 +8338,7 @@ void Context::initialize_built_ins() {
                 result_promise->fulfill(first_element);
             }
 
-            return Value(result_promise.release());
+            return Value(result_promise_obj.release());
         }, 1);
     promise_constructor->set_property("any", Value(promise_any_static.release()));
 
@@ -10322,7 +10329,17 @@ std::string Environment::debug_string() const {
 
 bool Environment::has_own_binding(const std::string& name) const {
     if (type_ == Type::Object && binding_object_) {
-        return binding_object_->has_own_property(name);
+        if (!binding_object_->has_own_property(name)) return false;
+        // ES6: Check Symbol.unscopables
+        Symbol* unscopables_sym = Symbol::get_well_known(Symbol::UNSCOPABLES);
+        if (unscopables_sym) {
+            Value unscopables = binding_object_->get_property(unscopables_sym->to_property_key());
+            if (unscopables.is_object()) {
+                Value blocked = unscopables.as_object()->get_property(name);
+                if (blocked.to_boolean()) return false;
+            }
+        }
+        return true;
     } else {
         return bindings_.find(name) != bindings_.end();
     }

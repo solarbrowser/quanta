@@ -2273,9 +2273,13 @@ std::unique_ptr<Object> create_error(const std::string& message) {
 
 std::unique_ptr<Object> create_promise(Context* ctx) {
     auto promise_obj = std::make_unique<Promise>(ctx);
-
-    Promise::setup_promise_methods(promise_obj.get());
-
+    if (ctx) {
+        Value promise_ctor = ctx->get_binding("Promise");
+        if (promise_ctor.is_function()) {
+            Value proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
+            if (proto.is_object()) promise_obj->set_prototype(proto.as_object());
+        }
+    }
     return std::unique_ptr<Object>(promise_obj.release());
 }
 

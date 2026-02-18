@@ -9,6 +9,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/AST.h"
 #include <iostream>
+#include <algorithm>
 
 namespace Quanta {
 
@@ -376,19 +377,42 @@ Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
     }
     
     auto keys = target->get_own_property_keys();
-    auto result_array = ObjectFactory::create_array(keys.size());
 
-    for (size_t i = 0; i < keys.size(); ++i) {
-        if (keys[i].find("@@sym:") == 0) {
-            // Convert symbol property key back to Symbol value
-            Symbol* sym = Symbol::find_by_property_key(keys[i]);
-            if (sym) {
-                result_array->set_element(static_cast<uint32_t>(i), Value(sym));
-            } else {
-                result_array->set_element(static_cast<uint32_t>(i), Value(keys[i]));
-            }
+    // ES6 [[OwnPropertyKeys]] order: integer indices (ascending), then string keys (insertion), then symbols (insertion)
+    std::vector<std::string> index_keys, string_keys, symbol_keys;
+    for (const auto& key : keys) {
+        if (key.find("@@sym:") == 0) {
+            symbol_keys.push_back(key);
         } else {
-            result_array->set_element(static_cast<uint32_t>(i), Value(keys[i]));
+            bool is_index = !key.empty();
+            for (char c : key) {
+                if (c < '0' || c > '9') { is_index = false; break; }
+            }
+            if (is_index && key.length() <= 10) {
+                index_keys.push_back(key);
+            } else {
+                string_keys.push_back(key);
+            }
+        }
+    }
+    std::sort(index_keys.begin(), index_keys.end(), [](const std::string& a, const std::string& b) {
+        return std::stoul(a) < std::stoul(b);
+    });
+
+    auto result_array = ObjectFactory::create_array(keys.size());
+    uint32_t idx = 0;
+    for (const auto& key : index_keys) {
+        result_array->set_element(idx++, Value(key));
+    }
+    for (const auto& key : string_keys) {
+        result_array->set_element(idx++, Value(key));
+    }
+    for (const auto& key : symbol_keys) {
+        Symbol* sym = Symbol::find_by_property_key(key);
+        if (sym) {
+            result_array->set_element(idx++, Value(sym));
+        } else {
+            result_array->set_element(idx++, Value(key));
         }
     }
 
