@@ -14,6 +14,32 @@
 
 namespace Quanta {
 
+static void close_iterator(Object* iter_obj, Context& ctx) {
+    Value ret_fn = iter_obj->get_property("return");
+    if (ret_fn.is_function()) ret_fn.as_function()->call(ctx, {}, Value(iter_obj));
+}
+
+static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object* iterable,
+    const std::function<bool(const Value&, Object*)>& process) {
+    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+    if (!iter_sym) return false;
+    Value iter_method = iterable->get_property(iter_sym->to_property_key());
+    if (!iter_method.is_function()) return false;
+    Value iter_obj = iter_method.as_function()->call(ctx, {}, iterable_val);
+    if (ctx.has_exception() || !iter_obj.is_object()) return false;
+    Value next_fn = iter_obj.as_object()->get_property("next");
+    if (!next_fn.is_function()) return false;
+    while (true) {
+        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+        if (ctx.has_exception()) break;
+        if (!res.is_object()) break;
+        if (res.as_object()->get_property("done").to_boolean()) break;
+        Value val = res.as_object()->get_property("value");
+        if (!process(val, iter_obj.as_object())) break;
+    }
+    return true;
+}
+
 Object* Map::prototype_object = nullptr;
 Object* Set::prototype_object = nullptr;
 Object* WeakMap::prototype_object = nullptr;
@@ -146,28 +172,44 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                 }
             }
         } else {
-            auto iterator = IterableUtils::get_iterator(args[0], ctx);
-            if (iterator) {
-                while (true) {
-                    auto result = iterator->next();
-                    if (result.done) {
-                        break;
+            bool handled = iterate_with_closing(ctx, args[0], iterable,
+                [&](const Value& entry, Object* iter) -> bool {
+                    if (!entry.is_object() || !entry.as_object()->is_array()) {
+                        close_iterator(iter, ctx);
+                        ctx.throw_type_error("Iterator value is not a [key, value] pair");
+                        return false;
                     }
-
-                    if (result.value.is_object() && result.value.as_object()->is_array()) {
-                        Object* pair = result.value.as_object();
-                        if (pair->get_length() >= 2) {
-                            Value key = pair->get_element(0);
-                            Value value = pair->get_element(1);
-                            if (set_fn) {
-                                set_fn->call(ctx, {key, value}, Value(map_obj));
-                            } else {
-                                map_ptr->set(key, value);
+                    Object* pair = entry.as_object();
+                    if (pair->get_length() >= 2) {
+                        Value key = pair->get_element(0);
+                        Value value = pair->get_element(1);
+                        if (set_fn) {
+                            set_fn->call(ctx, {key, value}, Value(map_obj));
+                            if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                        } else {
+                            map_ptr->set(key, value);
+                        }
+                    }
+                    return true;
+                });
+            if (!handled) {
+                auto iterator = IterableUtils::get_iterator(args[0], ctx);
+                if (iterator) {
+                    while (true) {
+                        auto result = iterator->next();
+                        if (result.done) break;
+                        if (result.value.is_object() && result.value.as_object()->is_array()) {
+                            Object* pair = result.value.as_object();
+                            if (pair->get_length() >= 2) {
+                                Value key = pair->get_element(0);
+                                Value value = pair->get_element(1);
+                                if (set_fn) {
+                                    set_fn->call(ctx, {key, value}, Value(map_obj));
+                                } else {
+                                    map_ptr->set(key, value);
+                                }
                             }
                         }
-                    } else {
-                        ctx.throw_exception(Value(std::string("Iterator value is not a [key, value] pair")));
-                        break;
                     }
                 }
             }
@@ -546,17 +588,27 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
             }
         }
         else {
-            auto iterator = IterableUtils::get_iterator(args[0], ctx);
-            if (iterator) {
-                while (true) {
-                    auto result = iterator->next();
-                    if (result.done) {
-                        break;
-                    }
+            bool handled = iterate_with_closing(ctx, args[0], iterable,
+                [&](const Value& val, Object* iter) -> bool {
                     if (add_fn) {
-                        add_fn->call(ctx, {result.value}, Value(set_obj));
+                        add_fn->call(ctx, {val}, Value(set_obj));
+                        if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
                     } else {
-                        set_ptr->add(result.value);
+                        set_ptr->add(val);
+                    }
+                    return true;
+                });
+            if (!handled) {
+                auto iterator = IterableUtils::get_iterator(args[0], ctx);
+                if (iterator) {
+                    while (true) {
+                        auto result = iterator->next();
+                        if (result.done) break;
+                        if (add_fn) {
+                            add_fn->call(ctx, {result.value}, Value(set_obj));
+                        } else {
+                            set_ptr->add(result.value);
+                        }
                     }
                 }
             }
@@ -901,6 +953,25 @@ Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args)
                     }
                 }
             }
+        } else {
+            iterate_with_closing(ctx, args[0], iterable,
+                [&](const Value& entry, Object* iter) -> bool {
+                    if (!entry.is_object() || !entry.as_object()->is_array()) {
+                        close_iterator(iter, ctx);
+                        ctx.throw_type_error("Iterator value is not a [key, value] pair");
+                        return false;
+                    }
+                    Object* pair = entry.as_object();
+                    if (pair->get_length() >= 2) {
+                        Value key = pair->get_element(0);
+                        Value value = pair->get_element(1);
+                        if (set_fn) {
+                            set_fn->call(ctx, {key, value}, Value(wm_obj));
+                            if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                        }
+                    }
+                    return true;
+                });
         }
     }
 
@@ -1041,6 +1112,15 @@ Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args)
                     add_fn->call(ctx, {element}, Value(ws_obj));
                 }
             }
+        } else {
+            iterate_with_closing(ctx, args[0], iterable,
+                [&](const Value& val, Object* iter) -> bool {
+                    if (add_fn) {
+                        add_fn->call(ctx, {val}, Value(ws_obj));
+                        if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
+                    }
+                    return true;
+                });
         }
     }
 

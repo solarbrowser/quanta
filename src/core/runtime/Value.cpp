@@ -356,6 +356,7 @@ bool Value::loose_equals(const Value& other) const {
         (is_boolean() && other.is_boolean()) ||
         (is_number() && other.is_number()) ||
         (is_string() && other.is_string()) ||
+        (is_symbol() && other.is_symbol()) ||
         (is_object() && other.is_object()) ||
         (is_function() && other.is_function())) {
         return strict_equals(other);
@@ -385,7 +386,7 @@ bool Value::loose_equals(const Value& other) const {
     if ((is_string() || is_number()) && other.is_object()) {
         return loose_equals(Value(other.to_string()));
     }
-    
+
     return false;
 }
 
