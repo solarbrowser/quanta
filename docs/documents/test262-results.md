@@ -3,6 +3,7 @@
 The tests below here considered as "early run", so they can be misleading. Why? Because we don't have proper Test262 runner, so they can be false negative or false positive.
 
 ## Navigation
+- [February 17, 2026](#february-17-2026)
 - [February 7, 2026](#february-7-2026)
 - [February 1, 2026](#february-1-2026)
 - [January 21, 2026](#january-21-2026)
@@ -19,6 +20,19 @@ The tests below here considered as "early run", so they can be misleading. Why? 
 ---
 
 ## Test History
+
+### February 17, 2026
+**Engine Version:** v0.3.0.3402726
+
+| Metric | Count | % of Total |
+|--------|-------:|-----------:|
+| **Total Tests** | 52,892 | 100.0% |
+| **Tests Run** | 52,892 | 100.0% |
+| **Passed** | 15,962 | 30.45% | 
+| **Failed** | 35,418 | 69.39% | 
+| **Skipped** | 468 | ~00.08% |
+| **Crashed** | 164 | ~00.03% |
+| **Timeout**| 880 | 00.16% |
 
 ### February 7, 2026
 **Engine Version:** v0.3.0.2726
