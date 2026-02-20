@@ -94,6 +94,8 @@ private:
 
     // Microtask queue for Promise/async (only used on global context)
     std::vector<std::function<void()>> microtask_queue_;
+    bool is_draining_microtasks_ = false;
+    int sync_then_depth_ = 0;
 
 public:
     explicit Context(Engine* engine, Type type = Type::Global);
@@ -109,6 +111,9 @@ public:
     void queue_microtask(std::function<void()> task);
     void drain_microtasks();
     bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
+    bool should_queue_then_async() const { return is_draining_microtasks_ || sync_then_depth_ > 0; }
+    void increment_sync_then_depth() { sync_then_depth_++; }
+    void decrement_sync_then_depth() { if (sync_then_depth_ > 0) sync_then_depth_--; }
     
     const std::string& get_current_filename() const { return current_filename_; }
     void set_current_filename(const std::string& filename) { current_filename_ = filename; }
