@@ -16,6 +16,7 @@ namespace Quanta {
 
 class Context;
 class Function;
+class Engine;
 
 /**
  * Promise states according to JavaScript Promise specification
@@ -30,20 +31,28 @@ enum class PromiseState {
  * JavaScript Promise implementation
  */
 class Promise : public Object {
+public:
+    // ThenRecord tracks the handler pair AND the child promise for proper chaining
+    struct ThenRecord {
+        Function* on_fulfilled;
+        Function* on_rejected;
+        Promise* child;
+    };
+
 private:
     PromiseState state_;
     Value value_;
-    std::vector<Function*> fulfillment_handlers_;
-    std::vector<Function*> rejection_handlers_;
+    std::vector<ThenRecord> then_records_;
     Context* context_;
+    Engine* engine_;
 
 public:
-    Promise(Context* ctx = nullptr) : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx) {}
-    
+    explicit Promise(Context* ctx = nullptr);
+
     virtual ~Promise() {
-        fulfillment_handlers_.clear();
-        rejection_handlers_.clear();
+        then_records_.clear();
         context_ = nullptr;
+        engine_ = nullptr;
     }
     
     void fulfill(const Value& value);

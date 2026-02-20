@@ -358,6 +358,24 @@ void Context::throw_uri_error(const std::string& message) {
     throw_exception(Value(error.release()));
 }
 
+void Context::queue_microtask(std::function<void()> task) {
+    microtask_queue_.push_back(std::move(task));
+}
+
+void Context::drain_microtasks() {
+    // Spin until all microtasks are drained (with 10-second real-time limit
+    // to allow setTimeout-based tests to work via flushQueue spin loops)
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!microtask_queue_.empty()) {
+        auto tasks = std::move(microtask_queue_);
+        microtask_queue_.clear();
+        for (auto& task : tasks) {
+            if (task) task();
+        }
+        if (std::chrono::steady_clock::now() > deadline) break;
+    }
+}
+
 void Context::register_built_in_object(const std::string& name, Object* object) {
     built_in_objects_[name] = object;
 
@@ -8169,8 +8187,6 @@ void Context::initialize_built_ins() {
             }
 
             uint32_t length = iterable->get_length();
-            std::vector<Value> results(length);
-            uint32_t resolved_count = 0;
 
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
@@ -8181,26 +8197,66 @@ void Context::initialize_built_ins() {
                 return Value(result_promise_obj.release());
             }
 
+            // Async Promise.all: register .then() on each element promise
+            // Use shared counters stored on result_promise as hidden properties
+            // to survive GC (since result_promise is referenced by the caller)
+            auto results_arr_owner = ObjectFactory::create_array(length);
+            Object* results_arr = results_arr_owner.release();
+            result_promise->set_property("__all_results__", Value(results_arr));
+            result_promise->set_property("__all_remaining__", Value((double)length));
+
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
-                if (element.is_object()) {
-                    Promise* p = dynamic_cast<Promise*>(element.as_object());
-                    if (p && p->is_fulfilled()) {
-                        results[i] = p->get_value();
-                    } else {
-                        results[i] = element;
-                    }
+
+                // Wrap non-promise values in a pre-fulfilled promise
+                Promise* p = nullptr;
+                std::unique_ptr<Object> wrapped_obj;
+                if (element.is_object() && element.as_object()->get_type() == ObjectType::Promise) {
+                    p = static_cast<Promise*>(element.as_object());
                 } else {
-                    results[i] = element;
+                    wrapped_obj = ObjectFactory::create_promise(&ctx);
+                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
+                    p = static_cast<Promise*>(wrapped_obj.release());
                 }
+
+                uint32_t idx = i;
+                Promise* rp = result_promise;
+
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [idx, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value val = args.empty() ? Value() : args[0];
+                        Value arr_v = rp->get_property("__all_results__");
+                        if (arr_v.is_object()) arr_v.as_object()->set_element(idx, val);
+                        Value rem_v = rp->get_property("__all_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__all_remaining__", Value(remaining));
+                        if (remaining <= 0.0) {
+                            Value arr2 = rp->get_property("__all_results__");
+                            rp->fulfill(arr2);
+                        }
+                        return Value();
+                    });
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value reason = args.empty() ? Value() : args[0];
+                        rp->reject(reason);
+                        return Value();
+                    });
+
+                // Keep handlers alive by storing on result_promise
+                std::string k_ful = "__all_ful_" + std::to_string(i) + "__";
+                std::string k_rej = "__all_rej_" + std::to_string(i) + "__";
+                Function* ful_fn = on_ful.get();
+                Function* rej_fn = on_rej.get();
+                result_promise->set_property(k_ful, Value(on_ful.release()));
+                result_promise->set_property(k_rej, Value(on_rej.release()));
+
+                p->then(ful_fn, rej_fn);
             }
 
-            auto result_array = ObjectFactory::create_array(length);
-            for (uint32_t i = 0; i < length; i++) {
-                result_array->set_element(i, results[i]);
-            }
-
-            result_promise->fulfill(Value(result_array.release()));
             return Value(result_promise_obj.release());
         });
     promise_constructor->set_property("all", Value(promise_all_static.release()));
@@ -8255,16 +8311,47 @@ void Context::initialize_built_ins() {
                 return Value(result_promise_obj.release());
             }
 
-            Value first_element = iterable->get_element(0);
-            if (first_element.is_object()) {
-                Promise* p = dynamic_cast<Promise*>(first_element.as_object());
-                if (p && p->is_fulfilled()) {
-                    result_promise->fulfill(p->get_value());
+            // Async Promise.race: first settled promise wins
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+
+                Promise* p = nullptr;
+                std::unique_ptr<Object> wrapped_obj;
+                if (element.is_object() && element.as_object()->get_type() == ObjectType::Promise) {
+                    p = static_cast<Promise*>(element.as_object());
                 } else {
-                    result_promise->fulfill(first_element);
+                    wrapped_obj = ObjectFactory::create_promise(&ctx);
+                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
+                    p = static_cast<Promise*>(wrapped_obj.release());
                 }
-            } else {
-                result_promise->fulfill(first_element);
+
+                Promise* rp = result_promise;
+
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value val = args.empty() ? Value() : args[0];
+                        rp->fulfill(val);
+                        return Value();
+                    });
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value reason = args.empty() ? Value() : args[0];
+                        rp->reject(reason);
+                        return Value();
+                    });
+
+                // Keep handlers alive by storing on result_promise
+                std::string k_ful = "__race_ful_" + std::to_string(i) + "__";
+                std::string k_rej = "__race_rej_" + std::to_string(i) + "__";
+                Function* ful_fn = on_ful.get();
+                Function* rej_fn = on_rej.get();
+                result_promise->set_property(k_ful, Value(on_ful.release()));
+                result_promise->set_property(k_rej, Value(on_rej.release()));
+
+                p->then(ful_fn, rej_fn);
             }
 
             return Value(result_promise_obj.release());
