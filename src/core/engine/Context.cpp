@@ -8211,8 +8211,9 @@ void Context::initialize_built_ins() {
                 // Wrap non-promise values in a pre-fulfilled promise
                 Promise* p = nullptr;
                 std::unique_ptr<Object> wrapped_obj;
-                if (element.is_object() && element.as_object()->get_type() == ObjectType::Promise) {
-                    p = static_cast<Promise*>(element.as_object());
+                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
+                if (p_cast) {
+                    p = p_cast;
                 } else {
                     wrapped_obj = ObjectFactory::create_promise(&ctx);
                     static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
@@ -8317,8 +8318,9 @@ void Context::initialize_built_ins() {
 
                 Promise* p = nullptr;
                 std::unique_ptr<Object> wrapped_obj;
-                if (element.is_object() && element.as_object()->get_type() == ObjectType::Promise) {
-                    p = static_cast<Promise*>(element.as_object());
+                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
+                if (p_cast) {
+                    p = p_cast;
                 } else {
                     wrapped_obj = ObjectFactory::create_promise(&ctx);
                     static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
