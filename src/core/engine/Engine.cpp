@@ -146,6 +146,11 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
         if (program_ast && program_ast->get_statements().size() > 0) {
             Value result = program_ast->evaluate(*global_context_);
 
+            // Drain microtask queue (Promise .then() callbacks, etc.)
+            if (global_context_->has_pending_microtasks()) {
+                global_context_->drain_microtasks();
+            }
+
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();

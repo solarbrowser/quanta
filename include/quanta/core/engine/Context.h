@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <string>
 #include <memory>
+#include <functional>
 
 namespace Quanta {
 
@@ -91,6 +92,9 @@ private:
 
     static uint32_t next_context_id_;
 
+    // Microtask queue for Promise/async (only used on global context)
+    std::vector<std::function<void()>> microtask_queue_;
+
 public:
     explicit Context(Engine* engine, Type type = Type::Global);
     explicit Context(Engine* engine, Context* parent, Type type);
@@ -100,6 +104,11 @@ public:
     State get_state() const { return state_; }
     uint32_t get_id() const { return context_id_; }
     Engine* get_engine() const { return engine_; }
+
+    // Microtask queue (Promise async support)
+    void queue_microtask(std::function<void()> task);
+    void drain_microtasks();
+    bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
     
     const std::string& get_current_filename() const { return current_filename_; }
     void set_current_filename(const std::string& filename) { current_filename_ = filename; }
