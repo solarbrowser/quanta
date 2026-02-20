@@ -55,40 +55,72 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         // Store for later when promise resolves
         then_records_.push_back({on_fulfilled, on_rejected, child});
     } else if (state_ == PromiseState::FULFILLED) {
-        if (on_fulfilled && exec_ctx) {
-            Value val = value_;
-            Function* cb = on_fulfilled;
-            Promise* ch = child;
-            exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
-                std::vector<Value> args = {val};
-                Value result = cb->call(*exec_ctx, args);
-                if (exec_ctx->has_exception()) {
-                    Value exc = exec_ctx->get_exception();
-                    exec_ctx->clear_exception();
-                    if (ch) ch->reject(exc);
+        if (on_fulfilled) {
+            bool should_async = exec_ctx ? exec_ctx->should_queue_then_async() : false;
+            if (context_ && !should_async) {
+                // Sync path: call with creation context so Function::call's parent_context
+                // includes the defining scope, enabling live closure variable access
+                if (exec_ctx) exec_ctx->increment_sync_then_depth();
+                std::vector<Value> args = {value_};
+                Value result = on_fulfilled->call(*context_, args);
+                if (exec_ctx) exec_ctx->decrement_sync_then_depth();
+                if (context_->has_exception()) {
+                    Value exc = context_->get_exception();
+                    context_->clear_exception();
+                    if (child) child->reject(exc);
                 } else {
-                    if (ch) ch->fulfill(result);
+                    if (child) child->fulfill(result);
                 }
-            });
+            } else if (exec_ctx) {
+                Value val = value_;
+                Function* cb = on_fulfilled;
+                Promise* ch = child;
+                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
+                    std::vector<Value> args = {val};
+                    Value result = cb->call(*exec_ctx, args);
+                    if (exec_ctx->has_exception()) {
+                        Value exc = exec_ctx->get_exception();
+                        exec_ctx->clear_exception();
+                        if (ch) ch->reject(exc);
+                    } else {
+                        if (ch) ch->fulfill(result);
+                    }
+                });
+            }
         } else {
             child->fulfill(value_);
         }
     } else { // REJECTED
-        if (on_rejected && exec_ctx) {
-            Value val = value_;
-            Function* cb = on_rejected;
-            Promise* ch = child;
-            exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
-                std::vector<Value> args = {val};
-                Value result = cb->call(*exec_ctx, args);
-                if (exec_ctx->has_exception()) {
-                    Value exc = exec_ctx->get_exception();
-                    exec_ctx->clear_exception();
-                    if (ch) ch->reject(exc);
+        if (on_rejected) {
+            bool should_async = exec_ctx ? exec_ctx->should_queue_then_async() : false;
+            if (context_ && !should_async) {
+                if (exec_ctx) exec_ctx->increment_sync_then_depth();
+                std::vector<Value> args = {value_};
+                Value result = on_rejected->call(*context_, args);
+                if (exec_ctx) exec_ctx->decrement_sync_then_depth();
+                if (context_->has_exception()) {
+                    Value exc = context_->get_exception();
+                    context_->clear_exception();
+                    if (child) child->reject(exc);
                 } else {
-                    if (ch) ch->fulfill(result);
+                    if (child) child->fulfill(result);
                 }
-            });
+            } else if (exec_ctx) {
+                Value val = value_;
+                Function* cb = on_rejected;
+                Promise* ch = child;
+                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
+                    std::vector<Value> args = {val};
+                    Value result = cb->call(*exec_ctx, args);
+                    if (exec_ctx->has_exception()) {
+                        Value exc = exec_ctx->get_exception();
+                        exec_ctx->clear_exception();
+                        if (ch) ch->reject(exc);
+                    } else {
+                        if (ch) ch->fulfill(result);
+                    }
+                });
+            }
         } else {
             child->reject(value_);
         }

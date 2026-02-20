@@ -365,6 +365,7 @@ void Context::queue_microtask(std::function<void()> task) {
 void Context::drain_microtasks() {
     // Spin until all microtasks are drained (with 10-second real-time limit
     // to allow setTimeout-based tests to work via flushQueue spin loops)
+    is_draining_microtasks_ = true;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!microtask_queue_.empty()) {
         auto tasks = std::move(microtask_queue_);
@@ -374,6 +375,7 @@ void Context::drain_microtasks() {
         }
         if (std::chrono::steady_clock::now() > deadline) break;
     }
+    is_draining_microtasks_ = false;
 }
 
 void Context::register_built_in_object(const std::string& name, Object* object) {
