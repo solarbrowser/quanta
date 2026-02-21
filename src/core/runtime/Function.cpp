@@ -207,6 +207,19 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     auto function_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), parent_context, this);
     Context& function_context = *function_context_ptr;
 
+    // RAII guard: transfer function context to Engine's survivor pool on return
+    // instead of destroying it. Keeps the context alive for Promise async callbacks
+    // that need context_ to point to the defining scope for closure variable lookups.
+    Engine* fn_engine = ctx.get_engine();
+    struct ContextSurvivorGuard {
+        std::unique_ptr<Context>& ptr;
+        Engine* eng;
+        ContextSurvivorGuard(std::unique_ptr<Context>& p, Engine* e) : ptr(p), eng(e) {}
+        ~ContextSurvivorGuard() {
+            if (eng && ptr) eng->add_survivor_context(ptr.release());
+        }
+    } survivor_guard(function_context_ptr, fn_engine);
+
     // Propagate new.target into function scope
     if (ctx.is_in_constructor_call() && !ctx.get_new_target().is_undefined()) {
         function_context.set_new_target(ctx.get_new_target());

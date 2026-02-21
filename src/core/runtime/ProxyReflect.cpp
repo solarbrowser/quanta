@@ -549,7 +549,30 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
         }
     }
 
-    return target->construct(ctx, construct_args);
+    // If newTarget == target, use normal construct
+    if (newTarget == target) {
+        return target->construct(ctx, construct_args);
+    }
+
+    // Reflect.construct(target, args, newTarget): call target with new.target = newTarget
+    // Create new object using newTarget's prototype
+    auto new_object = ObjectFactory::create_object();
+    Value nt_proto = newTarget->get_property("prototype");
+    if (nt_proto.is_object()) new_object->set_prototype(nt_proto.as_object());
+
+    bool was_in_constructor = ctx.is_in_constructor_call();
+    Value old_new_target = ctx.get_new_target();
+
+    ctx.set_in_constructor_call(true);
+    ctx.set_new_target(Value(static_cast<Object*>(newTarget)));
+    Value result = target->call(ctx, construct_args, Value(new_object.get()));
+    ctx.set_in_constructor_call(was_in_constructor);
+    ctx.set_new_target(old_new_target);
+
+    if (!ctx.has_exception() && (result.is_object() || result.is_function())) {
+        return result;
+    }
+    return Value(new_object.release());
 }
 
 Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vector<Value>& args) {

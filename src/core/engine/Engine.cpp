@@ -150,6 +150,8 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
             if (global_context_->has_pending_microtasks()) {
                 global_context_->drain_microtasks();
             }
+            // Release survivor contexts after async callbacks are done
+            clear_survivor_contexts();
 
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
@@ -289,6 +291,15 @@ void Engine::register_object(const std::string& name, Object* object) {
 
 Context* Engine::get_current_context() const {
     return global_context_.get();
+}
+
+void Engine::add_survivor_context(Context* ctx) {
+    if (ctx) survivor_contexts_.push_back(ctx);
+}
+
+void Engine::clear_survivor_contexts() {
+    for (auto* ctx : survivor_contexts_) delete ctx;
+    survivor_contexts_.clear();
 }
 
 void Engine::collect_garbage() {
@@ -432,15 +443,22 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         
         if (global_context_) {
             global_context_->set_current_filename(filename);
-            
+
             Value result = program->evaluate(*global_context_);
-            
+
+            // Drain microtask queue (Promise .then() callbacks, async ops, etc.)
+            if (global_context_->has_pending_microtasks()) {
+                global_context_->drain_microtasks();
+            }
+            // Release survivor contexts after async callbacks are done
+            clear_survivor_contexts();
+
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
                 return Result(exception.to_string());
             }
-            
+
             return Result(result);
         } else {
             return Result("Context not initialized");

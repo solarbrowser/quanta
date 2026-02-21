@@ -177,47 +177,38 @@ Promise* Promise::race(const std::vector<Promise*>& promises) {
 }
 
 void Promise::execute_handlers() {
-    Context* exec_ctx = get_exec_ctx(engine_, context_);
-
+    // Use context_ (the promise's creation context, kept alive in Engine's survivor pool)
+    // so that Function::call's parent_context includes the defining scope, enabling
+    // live closure variable access (shared mutable state across async boundaries).
     auto records = std::move(then_records_);
     then_records_.clear();
 
     for (auto& rec : records) {
         if (state_ == PromiseState::FULFILLED) {
-            if (rec.on_fulfilled && exec_ctx) {
-                Value val = value_;
-                Function* cb = rec.on_fulfilled;
-                Promise* ch = rec.child;
-                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
-                    std::vector<Value> args = {val};
-                    Value result = cb->call(*exec_ctx, args);
-                    if (exec_ctx->has_exception()) {
-                        Value exc = exec_ctx->get_exception();
-                        exec_ctx->clear_exception();
-                        if (ch) ch->reject(exc);
-                    } else {
-                        if (ch) ch->fulfill(result);
-                    }
-                });
+            if (rec.on_fulfilled && context_) {
+                std::vector<Value> args = {value_};
+                Value result = rec.on_fulfilled->call(*context_, args);
+                if (context_->has_exception()) {
+                    Value exc = context_->get_exception();
+                    context_->clear_exception();
+                    if (rec.child) rec.child->reject(exc);
+                } else {
+                    if (rec.child) rec.child->fulfill(result);
+                }
             } else {
                 if (rec.child) rec.child->fulfill(value_);
             }
         } else { // REJECTED
-            if (rec.on_rejected && exec_ctx) {
-                Value val = value_;
-                Function* cb = rec.on_rejected;
-                Promise* ch = rec.child;
-                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
-                    std::vector<Value> args = {val};
-                    Value result = cb->call(*exec_ctx, args);
-                    if (exec_ctx->has_exception()) {
-                        Value exc = exec_ctx->get_exception();
-                        exec_ctx->clear_exception();
-                        if (ch) ch->reject(exc);
-                    } else {
-                        if (ch) ch->fulfill(result);
-                    }
-                });
+            if (rec.on_rejected && context_) {
+                std::vector<Value> args = {value_};
+                Value result = rec.on_rejected->call(*context_, args);
+                if (context_->has_exception()) {
+                    Value exc = context_->get_exception();
+                    context_->clear_exception();
+                    if (rec.child) rec.child->reject(exc);
+                } else {
+                    if (rec.child) rec.child->fulfill(result);
+                }
             } else {
                 if (rec.child) rec.child->reject(value_);
             }

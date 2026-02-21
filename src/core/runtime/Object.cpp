@@ -532,8 +532,7 @@ std::vector<std::string> Object::get_own_property_keys() const {
             // Skip if already in shape
             bool in_shape = false;
             if (header_.shape) {
-                auto info = header_.shape->get_property_info(pair.first);
-                if (info.offset != UINT32_MAX) in_shape = true;
+                in_shape = header_.shape->has_property(pair.first);
             }
             if (!in_shape) {
                 raw_keys.push_back(pair.first);

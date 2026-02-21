@@ -62,6 +62,10 @@ private:
 
     bool initialized_;
     uint64_t execution_count_;
+
+    // Survivor pool: function contexts kept alive until after microtask drain,
+    // so Promise callbacks can use context_ (creation context) for closure lookups
+    std::vector<Context*> survivor_contexts_;
     
     std::unordered_map<std::string, Value> default_exports_registry_;
     
@@ -96,6 +100,10 @@ public:
     
     Context* get_global_context() const { return global_context_.get(); }
     Context* get_current_context() const;
+
+    // Survivor pool for function contexts (Promise async support)
+    void add_survivor_context(Context* ctx);
+    void clear_survivor_contexts();
     
     void collect_garbage();
     size_t get_heap_usage() const;
