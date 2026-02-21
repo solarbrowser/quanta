@@ -7953,9 +7953,20 @@ void Context::initialize_built_ins() {
             }
             
             auto promise = std::make_unique<Promise>(&ctx);
-            Value promise_ctor = ctx.get_binding("Promise");
-            if (promise_ctor.is_function()) {
-                Value proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
+            // ES6: use new.target.prototype for subclassing support
+            {
+                Object* nt_obj = nullptr;
+                Value new_target = ctx.get_new_target();
+                if (new_target.is_function()) nt_obj = static_cast<Object*>(new_target.as_function());
+                else if (new_target.is_object()) nt_obj = new_target.as_object();
+
+                Value proto;
+                if (nt_obj) proto = nt_obj->get_property("prototype");
+                if (!proto.is_object()) {
+                    Value promise_ctor = ctx.get_binding("Promise");
+                    if (promise_ctor.is_function())
+                        proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
+                }
                 if (proto.is_object()) promise->set_prototype(proto.as_object());
             }
 
@@ -8071,6 +8082,44 @@ void Context::initialize_built_ins() {
             }
             
             Promise* new_promise = promise->then(on_fulfilled, on_rejected);
+            // ES6: apply Symbol.species for subclassing (PerformPromiseThen prototype propagation)
+            if (new_promise) {
+                Value ctor_val = this_obj->get_property("constructor");
+                Object* ctor = nullptr;
+                if (ctor_val.is_function()) ctor = static_cast<Object*>(ctor_val.as_function());
+                else if (ctor_val.is_object()) ctor = ctor_val.as_object();
+
+                if (ctor) {
+                    Object* species_ctor = nullptr;
+                    // Walk ctor's prototype chain to find Symbol.species
+                    Object* cur = ctor;
+                    while (cur && !species_ctor) {
+                        PropertyDescriptor sdesc = cur->get_property_descriptor("Symbol.species");
+                        if (sdesc.is_data_descriptor()) {
+                            Value sv = sdesc.get_value();
+                            if (sv.is_function()) species_ctor = static_cast<Object*>(sv.as_function());
+                            else if (sv.is_object()) species_ctor = sv.as_object();
+                            break;
+                        } else if (sdesc.is_accessor_descriptor() && sdesc.has_getter()) {
+                            Function* gfn = dynamic_cast<Function*>(sdesc.get_getter());
+                            if (gfn) {
+                                std::vector<Value> no_args;
+                                Value sv = gfn->call(ctx, no_args, ctor_val);
+                                if (!ctx.has_exception() && (sv.is_function() || sv.is_object())) {
+                                    species_ctor = sv.is_function() ?
+                                        static_cast<Object*>(sv.as_function()) : sv.as_object();
+                                }
+                                ctx.clear_exception();
+                            }
+                            break;
+                        }
+                        cur = cur->get_prototype();
+                    }
+                    if (!species_ctor) species_ctor = ctor;
+                    Value proto = species_ctor->get_property("prototype");
+                    if (proto.is_object()) new_promise->set_prototype(proto.as_object());
+                }
+            }
             return Value(new_promise);
         });
     promise_prototype->set_property("then", Value(promise_then.release()));
@@ -8125,6 +8174,10 @@ void Context::initialize_built_ins() {
 
     PropertyDescriptor promise_tag_desc(Value(std::string("Promise")), PropertyAttributes::Configurable);
     promise_prototype->set_property_descriptor("Symbol.toStringTag", promise_tag_desc);
+
+    // ES6: Promise.prototype.constructor = Promise
+    promise_prototype->set_property("constructor", Value(promise_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     promise_constructor->set_property("prototype", Value(promise_prototype.release()));
     
@@ -8432,6 +8485,23 @@ void Context::initialize_built_ins() {
             return Value(result_promise_obj.release());
         }, 1);
     promise_constructor->set_property("any", Value(promise_any_static.release()));
+
+    // ES6: Promise[Symbol.species] = Promise (accessor)
+    auto promise_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_binding = ctx.get_this_binding();
+            if (this_binding) return Value(this_binding);
+            return Value();
+        }, 0);
+    {
+        PropertyDescriptor promise_species_desc;
+        promise_species_desc.set_getter(promise_species_getter.get());
+        promise_species_desc.set_enumerable(false);
+        promise_species_desc.set_configurable(true);
+        promise_constructor->set_property_descriptor("Symbol.species", promise_species_desc);
+        promise_species_getter.release();
+    }
 
     register_built_in_object("Promise", promise_constructor.release());
 

@@ -7737,13 +7737,13 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             for (const auto& name : var_binding_names) {
                 if (name != "this" && name != "arguments") {
                     Value value = ctx.get_binding(name);
-                    if (!value.is_undefined() && !value.is_function()) {
+                    if (!value.is_undefined()) {
                         function_obj->set_property("__closure_" + name, value);
                     }
                 }
             }
         }
-        
+
         // Walk the entire lexical environment chain to capture block-scoped bindings
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
@@ -7753,7 +7753,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
                 if (name != "this" && name != "arguments") {
                     if (!function_obj->has_property("__closure_" + name)) {
                         Value value = ctx.get_binding(name);
-                        if (!value.is_undefined() && !value.is_function()) {
+                        if (!value.is_undefined()) {
                             function_obj->set_property("__closure_" + name, value);
                         }
                     }
@@ -8219,7 +8219,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
             for (const auto& name : var_binding_names) {
                 if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
                     Value value = ctx.get_binding(name);
-                    if (!value.is_undefined() && !value.is_function()) {
+                    if (!value.is_undefined()) {
                         function->set_property("__closure_" + name, value);
                     }
                 }
@@ -8236,7 +8236,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
                     // Don't overwrite if already captured from a closer scope
                     if (!function->has_property("__closure_" + name)) {
                         Value value = ctx.get_binding(name);
-                        if (!value.is_undefined() && !value.is_function()) {
+                        if (!value.is_undefined()) {
                             function->set_property("__closure_" + name, value);
                         }
                     }
