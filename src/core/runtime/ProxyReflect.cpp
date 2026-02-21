@@ -241,12 +241,12 @@ Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    if (!args[0].is_object() || !args[1].is_object()) {
+    if ((!args[0].is_object() && !args[0].is_function()) || !args[1].is_object()) {
         ctx.throw_exception(Value(std::string("TypeError: Proxy constructor requires object arguments")));
         return Value();
     }
-    
-    Object* target = args[0].as_object();
+
+    Object* target = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
     Object* handler = args[1].as_object();
     
     auto proxy = std::make_unique<Proxy>(target, handler);
@@ -259,12 +259,12 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    if (!args[0].is_object() || !args[1].is_object()) {
+    if ((!args[0].is_object() && !args[0].is_function()) || !args[1].is_object()) {
         ctx.throw_exception(Value(std::string("TypeError: Proxy.revocable requires object arguments")));
         return Value();
     }
-    
-    Object* target = args[0].as_object();
+
+    Object* target = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
     Object* handler = args[1].as_object();
     
     auto proxy = std::make_unique<Proxy>(target, handler);
@@ -286,7 +286,7 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
 }
 
 void Proxy::setup_proxy(Context& ctx) {
-    auto proxy_constructor_fn = ObjectFactory::create_native_function("Proxy", proxy_constructor);
+    auto proxy_constructor_fn = ObjectFactory::create_native_constructor("Proxy", proxy_constructor);
     
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
