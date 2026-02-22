@@ -997,21 +997,25 @@ private:
     std::unique_ptr<Identifier> id_;
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
+    bool is_generator_;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
                       std::vector<std::unique_ptr<Parameter>> params,
                       std::unique_ptr<BlockStatement> body,
-                      const Position& start, const Position& end)
-        : ASTNode(Type::FUNCTION_EXPRESSION, start, end), 
-          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
-    
+                      const Position& start, const Position& end,
+                      bool is_generator = false)
+        : ASTNode(Type::FUNCTION_EXPRESSION, start, end),
+          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)),
+          is_generator_(is_generator) {}
+
     Identifier* get_id() const { return id_.get(); }
     const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
     bool is_named() const { return id_ != nullptr; }
-    
+    bool is_generator() const { return is_generator_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

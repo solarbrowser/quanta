@@ -12,6 +12,7 @@
 #include <sstream>
 #include <iostream>
 #include <chrono>
+#include <unordered_set>
 
 #ifdef _MSC_VER
 #include <xmmintrin.h>
@@ -463,8 +464,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 std::vector<std::pair<std::string, Value>> var_values;
                 std::vector<Function*> func_objects;
 
+                // Build set of parameter names to exclude from sibling closure propagation
+                std::unordered_set<std::string> param_name_set(parameters_.begin(), parameters_.end());
+                if (parameter_objects_.empty() == false) {
+                    for (const auto& p : parameter_objects_) {
+                        param_name_set.insert(p->get_name()->get_name());
+                    }
+                }
+
                 for (const auto& bname : binding_names) {
                     if (bname == "this" || bname == "arguments") continue;
+                    // Parameters are local to this function - don't propagate to siblings
+                    if (param_name_set.count(bname)) continue;
                     Value val = function_context.get_binding(bname);
                     if (val.is_function()) {
                         Function* fn = val.as_function();
