@@ -21,6 +21,7 @@ Proxy::Proxy(Object* target, Object* handler)
 
 Value Proxy::get_trap(const Value& key) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
 
@@ -34,6 +35,7 @@ Value Proxy::get_trap(const Value& key) {
 
 bool Proxy::set_trap(const Value& key, const Value& value) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
 
@@ -47,6 +49,7 @@ bool Proxy::set_trap(const Value& key, const Value& value) {
 
 bool Proxy::has_trap(const Value& key) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -59,6 +62,7 @@ bool Proxy::has_trap(const Value& key) {
 
 bool Proxy::delete_trap(const Value& key) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -71,6 +75,7 @@ bool Proxy::delete_trap(const Value& key) {
 
 std::vector<std::string> Proxy::own_keys_trap() {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -83,6 +88,7 @@ std::vector<std::string> Proxy::own_keys_trap() {
 
 Value Proxy::get_prototype_of_trap() {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -96,6 +102,7 @@ Value Proxy::get_prototype_of_trap() {
 
 bool Proxy::set_prototype_of_trap(Object* proto) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -109,6 +116,7 @@ bool Proxy::set_prototype_of_trap(Object* proto) {
 
 bool Proxy::is_extensible_trap() {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -121,6 +129,7 @@ bool Proxy::is_extensible_trap() {
 
 bool Proxy::prevent_extensions_trap() {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -134,6 +143,7 @@ bool Proxy::prevent_extensions_trap() {
 
 PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -146,6 +156,7 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
 
 bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& desc) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -158,6 +169,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
 
 Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
 
@@ -176,6 +188,7 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
 
 Value Proxy::construct_trap(const std::vector<Value>& args) {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
 
@@ -430,6 +443,7 @@ void Proxy::throw_if_revoked(Context& ctx) const {
 
 Value Proxy::get_property(const std::string& key) const {
     if (is_revoked()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("Proxy has been revoked");
     }
     
@@ -438,6 +452,10 @@ Value Proxy::get_property(const std::string& key) const {
 
 
 Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
+    if (!ctx.is_in_constructor_call()) {
+        ctx.throw_type_error("Constructor Proxy requires 'new'");
+        return Value();
+    }
     if (args.size() < 2) {
         ctx.throw_exception(Value(std::string("TypeError: Proxy constructor requires target and handler arguments")));
         return Value();
@@ -489,10 +507,12 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
 
 void Proxy::setup_proxy(Context& ctx) {
     auto proxy_constructor_fn = ObjectFactory::create_native_constructor("Proxy", proxy_constructor);
-    
+    // Per spec, Proxy constructor does not have a 'prototype' property
+    proxy_constructor_fn->delete_property("prototype");
+
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
-    
+
     ctx.register_built_in_object("Proxy", proxy_constructor_fn.release());
 }
 

@@ -7132,6 +7132,10 @@ Value ForInStatement::evaluate(Context& ctx) {
         }
         
         auto keys = obj->get_enumerable_keys();
+        // Filter out internal __ prefixed properties before checking limit
+        keys.erase(std::remove_if(keys.begin(), keys.end(), [](const std::string& k) {
+            return k.size() >= 2 && k[0] == '_' && k[1] == '_';
+        }), keys.end());
 
         if (keys.size() > 50) {
             ctx.throw_exception(Value(std::string("For...in: Object has too many properties (>50)")));
@@ -7912,21 +7916,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                 } else if (method->is_static()) {
                 } else {
+                    bool method_is_gen = false;
                     std::vector<std::unique_ptr<Parameter>> method_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
+                        method_is_gen = func_expr->is_generator();
                         const auto& params = func_expr->get_params();
                         method_params.reserve(params.size());
                         for (const auto& param : params) {
                             method_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
                         }
                     }
-                    auto instance_method = ObjectFactory::create_js_function(
-                        method_name,
-                        std::move(method_params),
-                        method->get_value()->get_body()->clone(),
-                        &ctx
-                    );
+                    std::unique_ptr<Function> instance_method;
+                    if (method_is_gen) {
+                        std::vector<std::string> gen_params;
+                        for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
+                        instance_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else {
+                        instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
+                    }
                     instance_method->set_is_strict(true);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
@@ -8023,21 +8031,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     } else {
                         method_name = "[unknown]";
                     }
+                    bool static_is_gen = false;
                     std::vector<std::unique_ptr<Parameter>> static_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
+                        static_is_gen = func_expr->is_generator();
                         const auto& params = func_expr->get_params();
                         static_params.reserve(params.size());
                         for (const auto& param : params) {
                             static_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
                         }
                     }
-                    auto static_method = ObjectFactory::create_js_function(
-                        method_name,
-                        std::move(static_params),
-                        method->get_value()->get_body()->clone(),
-                        &ctx
-                    );
+                    std::unique_ptr<Function> static_method;
+                    if (static_is_gen) {
+                        std::vector<std::string> gen_params;
+                        for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
+                        static_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else {
+                        static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
+                    }
                     static_method->set_is_strict(true);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
@@ -8234,18 +8246,25 @@ std::unique_ptr<ASTNode> MethodDefinition::clone() const {
 
 Value FunctionExpression::evaluate(Context& ctx) {
     std::string name = is_named() ? id_->get_name() : "";
-    
+
     std::vector<std::unique_ptr<Parameter>> param_clones;
     for (const auto& param : params_) {
         param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
     }
-    
+
     std::set<std::string> param_names;
     for (const auto& param : param_clones) {
         param_names.insert(param->get_name()->get_name());
     }
-    
-    auto function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
+
+    std::unique_ptr<Function> function;
+    if (is_generator_) {
+        std::vector<std::string> gen_param_names;
+        for (const auto& p : params_) gen_param_names.push_back(p->get_name()->get_name());
+        function = std::make_unique<GeneratorFunction>(name, gen_param_names, body_->clone(), &ctx);
+    } else {
+        function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
+    }
     
     if (function) {
         
@@ -8365,7 +8384,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
         std::move(cloned_id),
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
-        start_, end_
+        start_, end_, is_generator_
     );
 }
 
@@ -9004,7 +9023,15 @@ Value TryStatement::evaluate(Context& ctx) {
         }
     } catch (const std::exception& e) {
         caught_exception = true;
-        exception_value = Value(std::string("Error: ") + e.what());
+        if (ctx.has_exception()) {
+            // JS exception was set before C++ exception was thrown (e.g., revoked Proxy)
+            exception_value = ctx.get_exception();
+            ctx.clear_exception();
+        } else {
+            ctx.throw_exception(Value(std::string(e.what())));
+            exception_value = ctx.get_exception();
+            ctx.clear_exception();
+        }
     } catch (...) {
         caught_exception = true;
         exception_value = Value(std::string("Error: Unknown error"));

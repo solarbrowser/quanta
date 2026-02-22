@@ -2814,9 +2814,9 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         nullptr,
         std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, get_current_position()
+        start, get_current_position(), is_generator
     );
-    
+
     Position end = get_current_position();
     return std::make_unique<MethodDefinition>(
         std::move(key),
@@ -3007,7 +3007,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     return std::make_unique<FunctionExpression>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, end
+        start, end, is_generator
     );
 }
 
@@ -3858,7 +3858,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     std::move(params),
                     std::move(block_body),
                     key->get_start(),
-                    get_current_position()
+                    get_current_position(),
+                    true // is_generator
                 );
             } else {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));

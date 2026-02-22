@@ -836,22 +836,37 @@ void Context::initialize_built_ins() {
                 
                 if (source.is_object()) {
                     Object* source_obj = source.as_object();
-                    std::vector<std::string> property_keys = source_obj->get_own_property_keys();
-                    
+                    bool source_is_proxy = (source_obj->get_type() == Object::ObjectType::Proxy);
+                    std::vector<std::string> property_keys;
+                    if (source_is_proxy) {
+                        property_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
+                    } else {
+                        property_keys = source_obj->get_own_property_keys();
+                    }
+
                     for (const std::string& prop : property_keys) {
-                        PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
-                        if (desc.is_enumerable()) {
-                            Value value = source_obj->get_property(prop);
-                            // Use [[Set]] semantics: invoke setter if target has accessor
-                            PropertyDescriptor target_desc = target_obj->get_property_descriptor(prop);
-                            if (target_desc.is_accessor_descriptor() && target_desc.has_setter()) {
-                                Function* setter = dynamic_cast<Function*>(target_desc.get_setter());
-                                if (setter) {
-                                    setter->call(ctx, {value}, Value(target_obj));
-                                }
-                            } else {
-                                target_obj->set_property(prop, value);
+                        Value value;
+                        bool is_enumerable = true;
+                        if (source_is_proxy) {
+                            // Use proxy's get trap for property access
+                            value = static_cast<Proxy*>(source_obj)->get_trap(Value(prop));
+                        } else {
+                            PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
+                            if (!desc.is_enumerable() && desc.has_value()) {
+                                is_enumerable = false;
                             }
+                            value = source_obj->get_property(prop);
+                        }
+                        if (!is_enumerable) continue;
+                        // Use [[Set]] semantics: invoke setter if target has accessor
+                        PropertyDescriptor target_desc = target_obj->get_property_descriptor(prop);
+                        if (target_desc.is_accessor_descriptor() && target_desc.has_setter()) {
+                            Function* setter = dynamic_cast<Function*>(target_desc.get_setter());
+                            if (setter) {
+                                setter->call(ctx, {value}, Value(target_obj));
+                            }
+                        } else {
+                            target_obj->set_property(prop, value);
                         }
                     }
                 }
@@ -906,6 +921,11 @@ void Context::initialize_built_ins() {
                 return Value::null();
             }
 
+            // For Proxy, call getPrototypeOf trap
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                return static_cast<Proxy*>(obj)->get_prototype_of_trap();
+            }
+
             Object* proto = obj->get_prototype();
             if (proto) {
                 Function* func_proto = dynamic_cast<Function*>(proto);
@@ -944,6 +964,15 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            // For Proxy, call setPrototypeOf trap
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                Object* new_proto = proto_val.is_null() ? nullptr :
+                    proto_val.is_object() ? proto_val.as_object() :
+                    proto_val.is_function() ? static_cast<Object*>(proto_val.as_function()) : nullptr;
+                static_cast<Proxy*>(obj)->set_prototype_of_trap(new_proto);
+                return obj_val;
+            }
+
             if (proto_val.is_null()) {
                 obj->set_prototype(nullptr);
             } else if (proto_val.is_object()) {
@@ -979,7 +1008,12 @@ void Context::initialize_built_ins() {
                 prop_name = args[1].to_string();
             }
 
-            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            PropertyDescriptor desc;
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                desc = static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(Value(prop_name));
+            } else {
+                desc = obj->get_property_descriptor(prop_name);
+            }
 
             if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) {
                 if (!obj->has_own_property(prop_name)) {
@@ -1098,7 +1132,12 @@ void Context::initialize_built_ins() {
                     prop_desc.set_configurable(false);
                 }
 
-                bool success = obj->set_property_descriptor(prop_name, prop_desc);
+                bool success;
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    success = static_cast<Proxy*>(obj)->define_property_trap(Value(prop_name), prop_desc);
+                } else {
+                    success = obj->set_property_descriptor(prop_name, prop_desc);
+                }
                 if (!success) {
                     ctx.throw_type_error("Cannot define property");
                     return Value();
@@ -1336,11 +1375,16 @@ void Context::initialize_built_ins() {
 
     auto preventExtensions_fn = ObjectFactory::create_native_function("preventExtensions",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value();
             if (!args[0].is_object()) return args[0];
 
             Object* obj = args[0].as_object();
-            obj->prevent_extensions();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                static_cast<Proxy*>(obj)->prevent_extensions_trap();
+            } else {
+                obj->prevent_extensions();
+            }
 
             return args[0];
         }, 1);
@@ -1366,9 +1410,12 @@ void Context::initialize_built_ins() {
 
     auto isExtensible_fn = ObjectFactory::create_native_function("isExtensible",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty() || !args[0].is_object()) return Value(false);
-
             Object* obj = args[0].as_object();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                return Value(static_cast<Proxy*>(obj)->is_extensible_trap());
+            }
             return Value(obj->is_extensible());
         }, 1);
     object_constructor->set_property("isExtensible", Value(isExtensible_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1756,8 +1803,20 @@ void Context::initialize_built_ins() {
     
     auto isArray_fn = ObjectFactory::create_native_function("isArray",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value(false);
-            return Value(args[0].is_object() && args[0].as_object()->is_array());
+            const Value& arg = args[0];
+            if (!arg.is_object()) return Value(false);
+            Object* obj = arg.as_object();
+            // Unwrap Proxy chain per ES6 spec
+            while (obj && obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                if (proxy->is_revoked()) return Value(false);
+                Object* target = proxy->get_proxy_target();
+                if (!target) return Value(false);
+                obj = target;
+            }
+            return Value(obj && obj->is_array());
         }, 1);
     // Note: Using set_property with explicit attrs since built-in function properties need Writable | Configurable
     // Default for Function::set_property is None, so we must explicitly pass attrs

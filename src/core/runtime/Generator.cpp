@@ -20,15 +20,27 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
       body_(std::move(body)), state_(State::SuspendedStart), pc_(0),
       current_yield_count_(0), target_yield_index_(0) {
-    
+
     auto next_method = ObjectFactory::create_native_function("next", generator_next);
     this->set_property("next", Value(next_method.release()));
-    
+
     auto return_method = ObjectFactory::create_native_function("return", generator_return);
     this->set_property("return", Value(return_method.release()));
-    
+
     auto throw_method = ObjectFactory::create_native_function("throw", generator_throw);
     this->set_property("throw", Value(throw_method.release()));
+
+    // Generators are iterables: Symbol.iterator returns this
+    Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iterator_symbol) {
+        auto self_iter_fn = ObjectFactory::create_native_function("@@iterator",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                Object* self = ctx.get_this_binding();
+                return self ? Value(self) : Value();
+            });
+        this->set_property(iterator_symbol->to_property_key(), Value(self_iter_fn.release()));
+    }
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
@@ -198,7 +210,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
                 (void)args;
                 return ctx.get_binding("this");
             });
-        gen_prototype->set_property(iterator_symbol->to_string(), Value(iterator_fn.release()));
+        gen_prototype->set_property(iterator_symbol->to_property_key(), Value(iterator_fn.release()));
     }
     
     ctx.create_binding("GeneratorPrototype", Value(gen_prototype.release()));

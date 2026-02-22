@@ -7,6 +7,7 @@
 #include "quanta/core/runtime/JSON.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -611,22 +612,32 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_object()) {
         const Object* obj = value.as_object();
         if (obj) {
-            if (obj->has_property("toJSON") && context_) {
-                Value toJSON_val = obj->get_property("toJSON");
+            // For Proxy: check if target is array, use proxy's traps for serialization
+            bool is_proxy = (obj->get_type() == Object::ObjectType::Proxy);
+            const Object* effective_obj = obj;
+            if (is_proxy) {
+                const Proxy* proxy = static_cast<const Proxy*>(obj);
+                if (!proxy->is_revoked()) {
+                    effective_obj = proxy->get_proxy_target();
+                }
+            }
+
+            if (effective_obj && effective_obj->has_property("toJSON") && context_) {
+                Value toJSON_val = effective_obj->get_property("toJSON");
                 if (toJSON_val.is_function()) {
                     Function* toJSON_fn = toJSON_val.as_function();
                     std::vector<Value> args;
-                    Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(obj)));
+                    Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(effective_obj)));
                     if (!context_->has_exception()) {
                         return stringify_value(result);
                     }
                 }
             }
 
-            if (obj->is_array()) {
-                return stringify_array(obj);
+            if (effective_obj && effective_obj->is_array()) {
+                return stringify_array(effective_obj);
             } else {
-                return stringify_object(obj);
+                return stringify_object(obj); // Pass proxy to get ownKeys trap
             }
         }
         return "null";
@@ -648,7 +659,27 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
     std::string result = "{";
     bool first = true;
 
-    std::vector<std::string> keys = obj->get_enumerable_keys();
+    std::vector<std::string> keys;
+    if (obj->get_type() == Object::ObjectType::Proxy) {
+        Proxy* proxy = static_cast<Proxy*>(const_cast<Object*>(obj));
+        if (!proxy->is_revoked()) {
+            keys = proxy->own_keys_trap();
+            // Filter to only enumerable keys
+            std::vector<std::string> enumerable_keys;
+            Object* target = proxy->get_proxy_target();
+            for (const auto& k : keys) {
+                if (target && target->has_own_property(k)) {
+                    PropertyDescriptor desc = target->get_property_descriptor(k);
+                    if (!desc.has_value() || desc.is_enumerable()) {
+                        enumerable_keys.push_back(k);
+                    }
+                }
+            }
+            keys = enumerable_keys;
+        }
+    } else {
+        keys = obj->get_enumerable_keys();
+    }
 
     // If replacer array is provided, filter keys to only those in the array
     std::vector<std::string> keys_to_process;
@@ -667,7 +698,12 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
         // ES6: Skip symbol-keyed properties
         if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
 
-        Value prop_value = obj->get_property(key);
+        Value prop_value;
+        if (obj->get_type() == Object::ObjectType::Proxy) {
+            prop_value = static_cast<Proxy*>(const_cast<Object*>(obj))->get_trap(Value(key));
+        } else {
+            prop_value = obj->get_property(key);
+        }
 
         // If replacer function exists, call it
         if (options_.replacer_function && context_) {
