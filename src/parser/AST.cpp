@@ -28,6 +28,7 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Generator.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include "quanta/core/runtime/Math.h"
 #include <cstdlib>
@@ -3497,12 +3498,19 @@ Value CallExpression::evaluate(Context& ctx) {
 
         return function->call(ctx, arg_values, this_value);
     }
-    
-    
+
+    if (callee_value.is_object() &&
+        callee_value.as_object()->get_type() == Object::ObjectType::Proxy) {
+        Proxy* proxy = static_cast<Proxy*>(callee_value.as_object());
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        return proxy->apply_trap(arg_values, Value());
+    }
+
     if (callee_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* func_id = static_cast<Identifier*>(callee_.get());
         std::string func_name = func_id->get_name();
-        
+
         if (false && func_name == "super") {
             Value super_constructor = ctx.get_binding("__super__");
             
@@ -3528,12 +3536,18 @@ Value CallExpression::evaluate(Context& ctx) {
             if (ctx.has_exception()) return Value();
             Function* func = function_value.as_function();
             return func->call(ctx, arg_values);
+        } else if (function_value.is_object() &&
+                   function_value.as_object()->get_type() == Object::ObjectType::Proxy) {
+            Proxy* proxy = static_cast<Proxy*>(function_value.as_object());
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
+            return proxy->apply_trap(arg_values, Value());
         } else {
             ctx.throw_type_error(func_name + " is not a function");
             return Value();
         }
     }
-    
+
     if (callee_->get_type() == ASTNode::Type::CALL_EXPRESSION) {
         Value callee_result = callee_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
@@ -5111,12 +5125,18 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
 
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
+        } else if (method_value.is_object() &&
+                   method_value.as_object()->get_type() == Object::ObjectType::Proxy) {
+            Proxy* proxy = static_cast<Proxy*>(method_value.as_object());
+            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+            if (ctx.has_exception()) return Value();
+            return proxy->apply_trap(arg_values, object_value);
         } else {
             ctx.throw_exception(Value(std::string("Property is not a function")));
             return Value();
         }
     }
-    
+
     ctx.throw_exception(Value(std::string("Unsupported method call")));
     return Value();
 }
@@ -6294,15 +6314,23 @@ std::unique_ptr<ASTNode> MemberExpression::clone() const {
 Value NewExpression::evaluate(Context& ctx) {
     Value constructor_value = constructor_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
+
+    if (constructor_value.is_object() &&
+        constructor_value.as_object()->get_type() == Object::ObjectType::Proxy) {
+        Proxy* proxy = static_cast<Proxy*>(constructor_value.as_object());
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        return proxy->construct_trap(arg_values);
+    }
+
     if (!constructor_value.is_function()) {
         ctx.throw_type_error(constructor_value.to_string() + " is not a constructor");
         return Value();
     }
-    
+
     std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
     if (ctx.has_exception()) return Value();
-    
+
     Function* constructor_fn = constructor_value.as_function();
     return constructor_fn->construct(ctx, arg_values);
 }
