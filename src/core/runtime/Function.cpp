@@ -442,7 +442,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             scan_for_var_declarations(body_.get(), function_context);
         }
 
+        Context* prev_context = Object::current_context_;
+        Object::current_context_ = &function_context;
         Value result = body_->evaluate(function_context);
+        Object::current_context_ = prev_context;
 
         // Propagate super_called flag to parent context
         if (function_context.was_super_called()) {
