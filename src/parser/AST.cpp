@@ -845,6 +845,9 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Object* obj = right_value.is_function()
                 ? static_cast<Object*>(right_value.as_function())
                 : right_value.as_object();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                return Value(static_cast<Proxy*>(obj)->has_trap(Value(property_name)));
+            }
             return Value(obj->has_property(property_name));
         }
         
@@ -1072,7 +1075,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     }
                 }
                 
-                bool deleted = obj->delete_property(property_name);
+                bool deleted;
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    deleted = static_cast<Proxy*>(obj)->delete_trap(Value(property_name));
+                } else {
+                    deleted = obj->delete_property(property_name);
+                }
                 // ES5: Deleting non-configurable property throws TypeError in strict mode
                 if (!deleted && ctx.is_strict_mode()) {
                     ctx.throw_type_error("Cannot delete property '" + property_name + "'");
