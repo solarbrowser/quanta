@@ -23,11 +23,12 @@ Value Proxy::get_trap(const Value& key) {
     if (is_revoked()) {
         throw std::runtime_error("Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.get) {
-        return parsed_handler_.get(key);
+        // receiver = the proxy itself
+        return parsed_handler_.get(key, Value(static_cast<Object*>(this)));
     }
-    
+
     return target_->get_property(key.to_string());
 }
 
@@ -35,11 +36,12 @@ bool Proxy::set_trap(const Value& key, const Value& value) {
     if (is_revoked()) {
         throw std::runtime_error("Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.set) {
-        return parsed_handler_.set(key, value);
+        // receiver = the proxy itself
+        return parsed_handler_.set(key, value, Value(static_cast<Object*>(this)));
     }
-    
+
     return target_->set_property(key.to_string(), value);
 }
 
@@ -85,9 +87,9 @@ Value Proxy::get_prototype_of_trap() {
     }
     
     if (parsed_handler_.getPrototypeOf) {
-        return parsed_handler_.getPrototypeOf(Value());
+        return parsed_handler_.getPrototypeOf();
     }
-    
+
     Object* proto = target_->get_prototype();
     return proto ? Value(proto) : Value::null();
 }
@@ -158,17 +160,17 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
     if (is_revoked()) {
         throw std::runtime_error("Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.apply) {
-        return parsed_handler_.apply(args);
+        return parsed_handler_.apply(args, this_value);
     }
-    
+
     if (target_->is_function()) {
         Function* func = static_cast<Function*>(target_);
-        Context dummy_ctx(nullptr);
-        return func->call(dummy_ctx, args, this_value);
+        Context* ctx = Object::current_context_;
+        if (ctx) return func->call(*ctx, args, this_value);
     }
-    
+
     return Value();
 }
 
@@ -176,41 +178,241 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     if (is_revoked()) {
         throw std::runtime_error("Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.construct) {
         return parsed_handler_.construct(args);
     }
-    
+
     if (target_->is_function()) {
         Function* func = static_cast<Function*>(target_);
-        Context dummy_ctx(nullptr);
-        return func->construct(dummy_ctx, args);
+        Context* ctx = Object::current_context_;
+        if (ctx) return func->construct(*ctx, args);
     }
-    
+
     return Value();
 }
 
-void Proxy::parse_handler() {
-    if (!handler_) {
-        return;
+bool Proxy::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
+    return set_trap(Value(key), value);
+}
+
+Object* Proxy::get_prototype() const {
+    if (is_revoked()) throw std::runtime_error("Proxy has been revoked");
+    if (parsed_handler_.getPrototypeOf) {
+        Value result = parsed_handler_.getPrototypeOf();
+        if (result.is_null()) return nullptr;
+        if (result.is_object()) return result.as_object();
+        if (result.is_function()) return result.as_function();
     }
-    
+    return target_ ? target_->get_prototype() : nullptr;
+}
+
+void Proxy::parse_handler() {
+    if (!handler_) return;
+
+    // --- get trap: handler(target, key, receiver) ---
     Value get_method = handler_->get_property("get");
     if (get_method.is_function()) {
-        Function* get_fn = get_method.as_function();
-        parsed_handler_.get = [get_fn, this](const Value& key) -> Value {
-            try {
-                Context dummy_ctx(nullptr);
-                std::vector<Value> args = {Value(target_), key};
-                return get_fn->call(dummy_ctx, args);
-            } catch (...) {
-                return target_->get_property(key.to_string());
-            }
+        Function* fn = get_method.as_function();
+        parsed_handler_.get = [fn, this](const Value& key, const Value& receiver) -> Value {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->get_property(key.to_string());
+            std::vector<Value> args = {Value(target_), key, receiver};
+            return fn->call(*ctx, args);
         };
     }
-    
-    
-    
+
+    // --- set trap: handler(target, key, value, receiver) ---
+    Value set_method = handler_->get_property("set");
+    if (set_method.is_function()) {
+        Function* fn = set_method.as_function();
+        parsed_handler_.set = [fn, this](const Value& key, const Value& value, const Value& receiver) -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->set_property(key.to_string(), value);
+            std::vector<Value> args = {Value(target_), key, value, receiver};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- has trap: handler(target, key) ---
+    Value has_method = handler_->get_property("has");
+    if (has_method.is_function()) {
+        Function* fn = has_method.as_function();
+        parsed_handler_.has = [fn, this](const Value& key) -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->has_property(key.to_string());
+            std::vector<Value> args = {Value(target_), key};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- deleteProperty trap: handler(target, key) ---
+    Value delete_method = handler_->get_property("deleteProperty");
+    if (delete_method.is_function()) {
+        Function* fn = delete_method.as_function();
+        parsed_handler_.deleteProperty = [fn, this](const Value& key) -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->delete_property(key.to_string());
+            std::vector<Value> args = {Value(target_), key};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- ownKeys trap: handler(target) ---
+    Value ownKeys_method = handler_->get_property("ownKeys");
+    if (ownKeys_method.is_function()) {
+        Function* fn = ownKeys_method.as_function();
+        parsed_handler_.ownKeys = [fn, this]() -> std::vector<std::string> {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->get_own_property_keys();
+            std::vector<Value> args = {Value(target_)};
+            Value result = fn->call(*ctx, args);
+            std::vector<std::string> keys;
+            if (result.is_object()) {
+                Object* arr = result.as_object();
+                uint32_t len = arr->get_length();
+                for (uint32_t i = 0; i < len; ++i) {
+                    keys.push_back(arr->get_element(i).to_string());
+                }
+            }
+            return keys;
+        };
+    }
+
+    // --- getPrototypeOf trap: handler(target) ---
+    Value getProto_method = handler_->get_property("getPrototypeOf");
+    if (getProto_method.is_function()) {
+        Function* fn = getProto_method.as_function();
+        parsed_handler_.getPrototypeOf = [fn, this]() -> Value {
+            Context* ctx = Object::current_context_;
+            if (!ctx) {
+                Object* p = target_->get_prototype();
+                return p ? Value(p) : Value::null();
+            }
+            std::vector<Value> args = {Value(target_)};
+            return fn->call(*ctx, args);
+        };
+    }
+
+    // --- setPrototypeOf trap: handler(target, proto) ---
+    Value setProto_method = handler_->get_property("setPrototypeOf");
+    if (setProto_method.is_function()) {
+        Function* fn = setProto_method.as_function();
+        parsed_handler_.setPrototypeOf = [fn, this](Object* proto) -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) { target_->set_prototype(proto); return true; }
+            Value proto_val = proto ? Value(proto) : Value::null();
+            std::vector<Value> args = {Value(target_), proto_val};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- isExtensible trap: handler(target) ---
+    Value isExt_method = handler_->get_property("isExtensible");
+    if (isExt_method.is_function()) {
+        Function* fn = isExt_method.as_function();
+        parsed_handler_.isExtensible = [fn, this]() -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->is_extensible();
+            std::vector<Value> args = {Value(target_)};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- preventExtensions trap: handler(target) ---
+    Value prevExt_method = handler_->get_property("preventExtensions");
+    if (prevExt_method.is_function()) {
+        Function* fn = prevExt_method.as_function();
+        parsed_handler_.preventExtensions = [fn, this]() -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) { target_->prevent_extensions(); return true; }
+            std::vector<Value> args = {Value(target_)};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- getOwnPropertyDescriptor trap: handler(target, key) ---
+    Value gopd_method = handler_->get_property("getOwnPropertyDescriptor");
+    if (gopd_method.is_function()) {
+        Function* fn = gopd_method.as_function();
+        parsed_handler_.getOwnPropertyDescriptor = [fn, this](const Value& key) -> PropertyDescriptor {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->get_property_descriptor(key.to_string());
+            std::vector<Value> args = {Value(target_), key};
+            Value result = fn->call(*ctx, args);
+            if (result.is_undefined() || result.is_null()) return PropertyDescriptor();
+            if (!result.is_object()) return PropertyDescriptor();
+            Object* desc_obj = result.as_object();
+            PropertyDescriptor desc;
+            if (desc_obj->has_own_property("value")) desc.set_value(desc_obj->get_property("value"));
+            if (desc_obj->has_own_property("writable")) desc.set_writable(desc_obj->get_property("writable").to_boolean());
+            if (desc_obj->has_own_property("enumerable")) desc.set_enumerable(desc_obj->get_property("enumerable").to_boolean());
+            if (desc_obj->has_own_property("configurable")) desc.set_configurable(desc_obj->get_property("configurable").to_boolean());
+            if (desc_obj->has_own_property("get")) {
+                Value getter = desc_obj->get_property("get");
+                if (getter.is_function()) desc.set_getter(getter.as_function());
+            }
+            if (desc_obj->has_own_property("set")) {
+                Value setter = desc_obj->get_property("set");
+                if (setter.is_function()) desc.set_setter(setter.as_function());
+            }
+            return desc;
+        };
+    }
+
+    // --- defineProperty trap: handler(target, key, descriptor) ---
+    Value defProp_method = handler_->get_property("defineProperty");
+    if (defProp_method.is_function()) {
+        Function* fn = defProp_method.as_function();
+        parsed_handler_.defineProperty = [fn, this](const Value& key, const PropertyDescriptor& desc) -> bool {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return target_->set_property_descriptor(key.to_string(), desc);
+            auto desc_obj = ObjectFactory::create_object();
+            if (desc.has_value()) desc_obj->set_property("value", desc.get_value());
+            desc_obj->set_property("writable", Value(desc.is_writable()));
+            desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
+            desc_obj->set_property("configurable", Value(desc.is_configurable()));
+            std::vector<Value> args = {Value(target_), key, Value(desc_obj.release())};
+            Value result = fn->call(*ctx, args);
+            return result.to_boolean();
+        };
+    }
+
+    // --- apply trap: handler(target, thisArg, argumentsList) ---
+    Value apply_method = handler_->get_property("apply");
+    if (apply_method.is_function()) {
+        Function* fn = apply_method.as_function();
+        parsed_handler_.apply = [fn, this](const std::vector<Value>& call_args, const Value& this_val) -> Value {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return Value();
+            auto args_array = ObjectFactory::create_array(static_cast<int>(call_args.size()));
+            for (size_t i = 0; i < call_args.size(); ++i)
+                args_array->set_element(static_cast<uint32_t>(i), call_args[i]);
+            std::vector<Value> args = {Value(target_), this_val, Value(args_array.release())};
+            return fn->call(*ctx, args);
+        };
+    }
+
+    // --- construct trap: handler(target, argumentsList, newTarget) ---
+    Value construct_method = handler_->get_property("construct");
+    if (construct_method.is_function()) {
+        Function* fn = construct_method.as_function();
+        parsed_handler_.construct = [fn, this](const std::vector<Value>& call_args) -> Value {
+            Context* ctx = Object::current_context_;
+            if (!ctx) return Value();
+            auto args_array = ObjectFactory::create_array(static_cast<int>(call_args.size()));
+            for (size_t i = 0; i < call_args.size(); ++i)
+                args_array->set_element(static_cast<uint32_t>(i), call_args[i]);
+            std::vector<Value> args = {Value(target_), Value(args_array.release()), Value(target_)};
+            return fn->call(*ctx, args);
+        };
+    }
 }
 
 void Proxy::revoke() {

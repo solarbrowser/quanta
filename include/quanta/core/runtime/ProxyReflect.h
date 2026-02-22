@@ -22,19 +22,19 @@ class Context;
 class Proxy : public Object {
 public:
     struct Handler {
-        std::function<Value(const Value&)> get;
-        std::function<bool(const Value&, const Value&)> set;
-        std::function<bool(const Value&)> has;
-        std::function<bool(const Value&)> deleteProperty;
-        std::function<std::vector<std::string>()> ownKeys;
-        std::function<Value(const Value&)> getPrototypeOf;
-        std::function<bool(Object*)> setPrototypeOf;
-        std::function<bool()> isExtensible;
-        std::function<bool()> preventExtensions;
-        std::function<PropertyDescriptor(const Value&)> getOwnPropertyDescriptor;
-        std::function<bool(const Value&, const PropertyDescriptor&)> defineProperty;
-        std::function<Value(const std::vector<Value>&)> apply;
-        std::function<Value(const std::vector<Value>&)> construct;
+        std::function<Value(const Value&, const Value&)> get;                   // (target, key, receiver), 3rd arg via closure
+        std::function<bool(const Value&, const Value&, const Value&)> set;      // (target, key, value, receiver)
+        std::function<bool(const Value&)> has;                                  // (target, key)
+        std::function<bool(const Value&)> deleteProperty;                       // (target, key)
+        std::function<std::vector<std::string>()> ownKeys;                      // (target)
+        std::function<Value()> getPrototypeOf;                                  // (target)
+        std::function<bool(Object*)> setPrototypeOf;                            // (target, proto)
+        std::function<bool()> isExtensible;                                     // (target)
+        std::function<bool()> preventExtensions;                                // (target)
+        std::function<PropertyDescriptor(const Value&)> getOwnPropertyDescriptor; // (target, key)
+        std::function<bool(const Value&, const PropertyDescriptor&)> defineProperty; // (target, key, desc)
+        std::function<Value(const std::vector<Value>&, const Value&)> apply;    // (target, thisArg, argsList)
+        std::function<Value(const std::vector<Value>&)> construct;              // (target, argsList, newTarget)
     };
     
 private:
@@ -69,6 +69,8 @@ public:
     bool is_revoked() const { return target_ == nullptr; }
     
     Value get_property(const std::string& key) const override;
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    Object* get_prototype() const override;
     
 private:
     void parse_handler();

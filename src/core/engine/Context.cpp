@@ -565,11 +565,17 @@ void Context::initialize_built_ins() {
             Object* obj = args[0].is_function() ?
                 static_cast<Object*>(args[0].as_function()) :
                 args[0].as_object();
-            auto keys = obj->get_enumerable_keys();
+
+            std::vector<std::string> raw_keys;
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                raw_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+            } else {
+                raw_keys = obj->get_enumerable_keys();
+            }
 
             // Filter out symbol-keyed properties
             std::vector<std::string> filtered;
-            for (const auto& k : keys) {
+            for (const auto& k : raw_keys) {
                 if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) {
                     filtered.push_back(k);
                 }
@@ -1131,7 +1137,12 @@ void Context::initialize_built_ins() {
                 args[0].as_object();
             auto result = ObjectFactory::create_array();
 
-            auto props = obj->get_own_property_keys();
+            std::vector<std::string> props;
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                props = static_cast<Proxy*>(obj)->own_keys_trap();
+            } else {
+                props = obj->get_own_property_keys();
+            }
             uint32_t result_index = 0;
             for (size_t i = 0; i < props.size(); i++) {
                 // Skip symbol-keyed properties
