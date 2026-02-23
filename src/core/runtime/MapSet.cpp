@@ -488,6 +488,24 @@ void Map::setup_map_prototype(Context& ctx) {
         }, 2);
     map_constructor_fn->set_property("groupBy", Value(map_groupBy_fn.release()));
 
+    // Symbol.species getter: Map[Symbol.species] === Map
+    {
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* self = ctx.get_this_binding();
+                    return self ? Value(self) : Value();
+                });
+            PropertyDescriptor species_desc;
+            species_desc.set_getter(species_getter.release());
+            species_desc.set_enumerable(false);
+            species_desc.set_configurable(true);
+            map_constructor_fn->set_property_descriptor(species_sym->to_property_key(), species_desc);
+        }
+    }
+
     map_constructor_fn->set_property("prototype", Value(map_prototype.release()));
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
@@ -817,6 +835,24 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property_descriptor("Symbol.toStringTag", set_tag_desc);
 
     Set::prototype_object = set_prototype.get();
+
+    // Symbol.species getter: Set[Symbol.species] === Set
+    {
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* self = ctx.get_this_binding();
+                    return self ? Value(self) : Value();
+                });
+            PropertyDescriptor species_desc;
+            species_desc.set_getter(species_getter.release());
+            species_desc.set_enumerable(false);
+            species_desc.set_configurable(true);
+            set_constructor_fn->set_property_descriptor(species_sym->to_property_key(), species_desc);
+        }
+    }
 
     set_constructor_fn->set_property("prototype", Value(set_prototype.release()));
     ctx.create_binding("Set", Value(set_constructor_fn.release()));

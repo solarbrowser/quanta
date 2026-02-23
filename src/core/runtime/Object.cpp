@@ -230,8 +230,25 @@ Value Object::get_property(const std::string& key) const {
         return result;
     }
     
+    const Object* original_receiver = this;
     Object* current = header_.prototype;
     while (current) {
+        // For inherited "get [Symbol.xxx]" accessors, return the original receiver
+        if (current->descriptors_) {
+            auto desc_it = current->descriptors_->find(key);
+            if (desc_it != current->descriptors_->end()) {
+                const PropertyDescriptor& desc = desc_it->second;
+                if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                    Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+                    if (getter_fn && getter_fn->get_name().find("get [Symbol.") == 0) {
+                        if (original_receiver->is_function()) {
+                            return Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)));
+                        }
+                        return Value(const_cast<Object*>(original_receiver));
+                    }
+                }
+            }
+        }
         result = current->get_own_property(key);
         if (!result.is_undefined()) {
             return result;

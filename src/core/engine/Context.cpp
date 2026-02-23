@@ -41,6 +41,30 @@
 
 namespace Quanta {
 
+// Helper: ES6 ArraySpeciesCreate — creates result using constructor's @@species
+static Value array_species_create(Context& ctx, Object* original_array, uint32_t length) {
+    Value ctor_val = original_array->get_property("constructor");
+    if (!ctor_val.is_undefined() && !ctor_val.is_null() &&
+        (ctor_val.is_function() || ctor_val.is_object())) {
+        Object* ctor = ctor_val.is_function()
+            ? static_cast<Object*>(ctor_val.as_function())
+            : ctor_val.as_object();
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            Value species_val = ctor->get_property(species_sym->to_property_key());
+            if (species_val.is_null() || species_val.is_undefined()) {
+                // null/undefined species → fallback to plain Array
+            } else if (species_val.is_function()) {
+                Function* species_fn = species_val.as_function();
+                Value result = species_fn->construct(ctx, {Value(static_cast<double>(length))});
+                if (ctx.has_exception()) return Value();
+                return result;
+            }
+        }
+    }
+    return Value(ObjectFactory::create_array(length).release());
+}
+
 static std::vector<std::unique_ptr<Function>> g_owned_native_functions;
 
 uint32_t Context::next_context_id_ = 1;
@@ -1777,28 +1801,38 @@ void Context::initialize_built_ins() {
     
     auto array_constructor = ObjectFactory::create_native_constructor("Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::unique_ptr<Object> array;
             if (args.empty()) {
-                return Value(ObjectFactory::create_array().release());
+                array = ObjectFactory::create_array();
             } else if (args.size() == 1 && args[0].is_number()) {
                 double length_val = args[0].to_number();
-
                 if (length_val < 0 || length_val >= 4294967296.0 || length_val != std::floor(length_val)) {
                     ctx.throw_range_error("Invalid array length");
                     return Value();
                 }
-
-                uint32_t length = static_cast<uint32_t>(length_val);
-                auto array = ObjectFactory::create_array();
-                array->set_property("length", Value(static_cast<double>(length)));
-                return Value(array.release());
+                array = ObjectFactory::create_array();
+                array->set_property("length", Value(length_val));
             } else {
-                auto array = ObjectFactory::create_array();
+                array = ObjectFactory::create_array();
                 for (size_t i = 0; i < args.size(); i++) {
                     array->set_element(static_cast<uint32_t>(i), args[i]);
                 }
                 array->set_property("length", Value(static_cast<double>(args.size())));
-                return Value(array.release());
             }
+            // ES6: subclassing — use new.target.prototype if different from Array.prototype
+            Value new_target = ctx.get_new_target();
+            if (new_target.is_function()) {
+                Value nt_proto = new_target.as_function()->get_property("prototype");
+                if (nt_proto.is_object()) {
+                    array->set_prototype(nt_proto.as_object());
+                }
+            } else if (new_target.is_object()) {
+                Value nt_proto = new_target.as_object()->get_property("prototype");
+                if (nt_proto.is_object()) {
+                    array->set_prototype(nt_proto.as_object());
+                }
+            }
+            return Value(array.release());
         }, 1);
     
     auto isArray_fn = ObjectFactory::create_native_function("isArray",
@@ -2772,36 +2806,50 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            auto result = ObjectFactory::create_array(0);
+            // ES6: use @@species constructor for result
+            Value result_val = array_species_create(ctx, this_array, 0);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) return Value(ObjectFactory::create_array(0).release());
             uint32_t result_index = 0;
 
-            uint32_t this_length = this_array->get_length();
-            for (uint32_t i = 0; i < this_length; i++) {
-                Value element = this_array->get_element(i);
-                result->set_element(result_index++, element);
+            // Helper: spreadable check
+            auto is_spreadable = [](Object* obj) -> bool {
+                Value sv = obj->get_property("Symbol.isConcatSpreadable");
+                if (!sv.is_undefined()) return sv.to_boolean();
+                return obj->is_array();
+            };
+
+            // Spread this_array
+            if (is_spreadable(this_array)) {
+                uint32_t this_length = this_array->get_length();
+                for (uint32_t i = 0; i < this_length; i++) {
+                    if (this_array->has_property(std::to_string(i))) {
+                        result->set_element(result_index, this_array->get_element(i));
+                    }
+                    result_index++;
+                }
+            } else {
+                result->set_element(result_index++, Value(this_array));
             }
 
             for (const auto& arg : args) {
-                bool spreadable = false;
                 if (arg.is_object() || arg.is_function()) {
                     Object* arg_obj = arg.is_function()
                         ? static_cast<Object*>(arg.as_function())
                         : arg.as_object();
-                    Value spread_val = arg_obj->get_property("Symbol.isConcatSpreadable");
-                    if (!spread_val.is_undefined()) {
-                        spreadable = spread_val.to_boolean();
+                    if (is_spreadable(arg_obj)) {
+                        uint32_t arg_length = arg_obj->get_length();
+                        for (uint32_t i = 0; i < arg_length; i++) {
+                            if (arg_obj->has_property(std::to_string(i))) {
+                                result->set_element(result_index, arg_obj->get_element(i));
+                            }
+                            result_index++;
+                        }
                     } else {
-                        spreadable = arg_obj->is_array();
-                    }
-                }
-                if (spreadable) {
-                    Object* arg_array = arg.is_function()
-                        ? static_cast<Object*>(arg.as_function())
-                        : arg.as_object();
-                    uint32_t arg_length = arg_array->get_length();
-                    for (uint32_t i = 0; i < arg_length; i++) {
-                        Value element = arg_array->get_element(i);
-                        result->set_element(result_index++, element);
+                        result->set_element(result_index++, arg);
                     }
                 } else {
                     result->set_element(result_index++, arg);
@@ -2809,7 +2857,7 @@ void Context::initialize_built_ins() {
             }
 
             result->set_length(result_index);
-            return Value(result.release());
+            return result_val;
         });
     PropertyDescriptor concat_desc(Value(array_concat_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -2859,23 +2907,27 @@ void Context::initialize_built_ins() {
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
 
-            auto result = ObjectFactory::create_array();
+            // ES6: use @@species constructor for result
+            Value result_val = array_species_create(ctx, this_obj, 0);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { auto a = ObjectFactory::create_array(); return Value(a.release()); }
             uint32_t result_index = 0;
 
             for (uint32_t i = 0; i < length; i++) {
-                // Skip missing elements in sparse arrays
-                if (!this_obj->has_property(std::to_string(i))) {
-                    continue;
-                }
+                if (!this_obj->has_property(std::to_string(i))) continue;
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value test_result = callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
                 if (test_result.to_boolean()) {
                     result->set_element(result_index++, element);
                 }
             }
             result->set_length(result_index);
-            return Value(result.release());
+            return result_val;
         }, 1);
     PropertyDescriptor filter_desc(Value(filter_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -2964,21 +3016,27 @@ void Context::initialize_built_ins() {
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-
-            auto result = ObjectFactory::create_array();
             uint32_t length = this_obj->get_length();
 
+            // ES6: use @@species constructor for result
+            Value result_val = array_species_create(ctx, this_obj, length);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { auto a = ObjectFactory::create_array(length); return Value(a.release()); }
+
             for (uint32_t i = 0; i < length; i++) {
-                // Skip missing elements in sparse arrays
                 if (this_obj->has_property(std::to_string(i))) {
                     Value element = this_obj->get_element(i);
                     std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                     Value mapped = callback->call(ctx, callback_args, thisArg);
+                    if (ctx.has_exception()) return Value();
                     result->set_element(i, mapped);
                 }
             }
             result->set_length(length);
-            return Value(result.release());
+            return result_val;
         }, 1);
     PropertyDescriptor map_desc(Value(map_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3201,15 +3259,22 @@ void Context::initialize_built_ins() {
             if (end > static_cast<int32_t>(length)) end = length;
             if (start > end) start = end;
 
-            auto result = ObjectFactory::create_array();
+            uint32_t count = (end > start) ? static_cast<uint32_t>(end - start) : 0;
+            // ES6: use @@species constructor for result
+            Value result_val = array_species_create(ctx, this_obj, count);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { auto a = ObjectFactory::create_array(count); return Value(a.release()); }
+
             uint32_t result_index = 0;
             for (int32_t i = start; i < end; i++) {
                 Value elem = this_obj->get_element(static_cast<uint32_t>(i));
                 result->set_element(result_index++, elem);
             }
             result->set_length(result_index);
-
-            return Value(result.release());
+            return result_val;
         }, 2);
     PropertyDescriptor slice_desc(Value(slice_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3324,7 +3389,13 @@ void Context::initialize_built_ins() {
                 items_to_insert.push_back(args[i]);
             }
 
-            auto result = ObjectFactory::create_array();
+            // ES6: use @@species constructor for removed-elements result
+            Value result_val = array_species_create(ctx, this_obj, delete_count);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { auto a = ObjectFactory::create_array(delete_count); return Value(a.release()); }
             for (uint32_t i = 0; i < delete_count; i++) {
                 result->set_element(i, this_obj->get_element(start + i));
             }
@@ -3352,7 +3423,7 @@ void Context::initialize_built_ins() {
 
             this_obj->set_length(new_length);
 
-            return Value(result.release());
+            return result_val;
         }, 2);
     PropertyDescriptor splice_desc(Value(splice_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -3415,6 +3486,9 @@ void Context::initialize_built_ins() {
                     return Value(result.release());
                 }, 0);
             iterator->set_property("next", Value(next_fn.release()));
+            if (Iterator::s_array_iterator_prototype_) {
+                iterator->set_prototype(Iterator::s_array_iterator_prototype_);
+            }
             return Value(iterator.release());
         }, 0);
     array_proto_ptr->set_property("Symbol.iterator", Value(array_iterator_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -7988,26 +8062,22 @@ void Context::initialize_built_ins() {
 
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
 
-    auto regexp_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(ctx.get_this_binding());
-        }, 0);
-
-    PropertyDescriptor regexp_species_desc;
-    regexp_species_desc.set_getter(regexp_species_getter.get());
-    regexp_species_desc.set_enumerable(false);
-    regexp_species_desc.set_configurable(true);
-
-    Value regexp_species_symbol = global_object_->get_property("Symbol");
-    if (regexp_species_symbol.is_object()) {
-        Object* symbol_constructor = regexp_species_symbol.as_object();
-        Value species_key = symbol_constructor->get_property("species");
-        if (species_key.is_symbol()) {
-            regexp_constructor->set_property_descriptor(species_key.as_symbol()->to_property_key(), regexp_species_desc);
+    {
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            auto regexp_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Object* self = ctx.get_this_binding();
+                    return self ? Value(self) : Value();
+                });
+            PropertyDescriptor regexp_species_desc;
+            regexp_species_desc.set_getter(regexp_species_getter.release());
+            regexp_species_desc.set_enumerable(false);
+            regexp_species_desc.set_configurable(true);
+            regexp_constructor->set_property_descriptor(species_sym->to_property_key(), regexp_species_desc);
         }
     }
-
-    regexp_species_getter.release();
 
     register_built_in_object("RegExp", regexp_constructor.release());
     

@@ -48,10 +48,17 @@ public:
     static Value iterator_next(Context& ctx, const std::vector<Value>& args);
     static Value iterator_return(Context& ctx, const std::vector<Value>& args);
     static Value iterator_throw(Context& ctx, const std::vector<Value>& args);
-    
+
     static void setup_iterator_prototype(Context& ctx);
-    
+
     static Value create_iterator_result(const Value& value, bool done);
+
+    // Well-known prototype objects (set during setup_iterator_prototype)
+    static Object* s_iterator_prototype_;
+    static Object* s_array_iterator_prototype_;
+    static Object* s_string_iterator_prototype_;
+    static Object* s_map_iterator_prototype_;
+    static Object* s_set_iterator_prototype_;
 };
 
 /**

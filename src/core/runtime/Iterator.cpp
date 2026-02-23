@@ -117,29 +117,52 @@ Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
     return Value();
 }
 
+// Static prototype object definitions
+Object* Iterator::s_iterator_prototype_ = nullptr;
+Object* Iterator::s_array_iterator_prototype_ = nullptr;
+Object* Iterator::s_string_iterator_prototype_ = nullptr;
+Object* Iterator::s_map_iterator_prototype_ = nullptr;
+Object* Iterator::s_set_iterator_prototype_ = nullptr;
+
 void Iterator::setup_iterator_prototype(Context& ctx) {
-    auto iterator_prototype = ObjectFactory::create_object();
-    
-    auto next_fn = ObjectFactory::create_native_function("next", iterator_next);
-    iterator_prototype->set_property("next", Value(next_fn.release()));
-    
-    auto return_fn = ObjectFactory::create_native_function("return", iterator_return);
-    iterator_prototype->set_property("return", Value(return_fn.release()));
-    
-    auto throw_fn = ObjectFactory::create_native_function("throw", iterator_throw);
-    iterator_prototype->set_property("throw", Value(throw_fn.release()));
-    
-    Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-    if (iterator_symbol) {
-        auto self_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
+    // %IteratorPrototype% - only has [Symbol.iterator] returning this
+    auto iter_proto = ObjectFactory::create_object();
+    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iter_sym) {
+        auto self_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
-                return ctx.get_binding("this");
+                Object* self = ctx.get_this_binding();
+                return self ? Value(self) : Value();
             });
-        iterator_prototype->set_property(iterator_symbol->to_string(), Value(self_iterator_fn.release()));
+        iter_proto->set_property(iter_sym->to_property_key(), Value(self_fn.release()));
     }
-    
-    ctx.create_binding("IteratorPrototype", Value(iterator_prototype.release()));
+    s_iterator_prototype_ = iter_proto.get();
+    ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
+
+    // %ArrayIteratorPrototype% - inherits from %IteratorPrototype%, no own [Symbol.iterator]
+    auto arr_iter_proto = ObjectFactory::create_object();
+    arr_iter_proto->set_prototype(s_iterator_prototype_);
+    s_array_iterator_prototype_ = arr_iter_proto.get();
+    ctx.create_binding("@@ArrayIteratorPrototype", Value(arr_iter_proto.release()));
+
+    // %StringIteratorPrototype%
+    auto str_iter_proto = ObjectFactory::create_object();
+    str_iter_proto->set_prototype(s_iterator_prototype_);
+    s_string_iterator_prototype_ = str_iter_proto.get();
+    ctx.create_binding("@@StringIteratorPrototype", Value(str_iter_proto.release()));
+
+    // %MapIteratorPrototype%
+    auto map_iter_proto = ObjectFactory::create_object();
+    map_iter_proto->set_prototype(s_iterator_prototype_);
+    s_map_iterator_prototype_ = map_iter_proto.get();
+    ctx.create_binding("@@MapIteratorPrototype", Value(map_iter_proto.release()));
+
+    // %SetIteratorPrototype%
+    auto set_iter_proto = ObjectFactory::create_object();
+    set_iter_proto->set_prototype(s_iterator_prototype_);
+    s_set_iterator_prototype_ = set_iter_proto.get();
+    ctx.create_binding("@@SetIteratorPrototype", Value(set_iter_proto.release()));
 }
 
 Value Iterator::create_iterator_result(const Value& value, bool done) {
@@ -150,8 +173,11 @@ Value Iterator::create_iterator_result(const Value& value, bool done) {
 }
 
 
-ArrayIterator::ArrayIterator(Object* array, Kind kind) 
+ArrayIterator::ArrayIterator(Object* array, Kind kind)
     : Iterator([this]() { return this->next_impl(); }), array_(array), kind_(kind), index_(0) {
+    if (s_array_iterator_prototype_) {
+        set_prototype(s_array_iterator_prototype_);
+    }
 }
 
 std::unique_ptr<ArrayIterator> ArrayIterator::create_keys_iterator(Object* array) {
@@ -194,10 +220,13 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
 }
 
 
-StringIterator::StringIterator(const std::string& str) 
+StringIterator::StringIterator(const std::string& str)
     : Iterator(), string_(str), position_(0) {
     auto next_method = ObjectFactory::create_native_function("next", StringIterator::string_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
+    if (s_string_iterator_prototype_) {
+        set_prototype(s_string_iterator_prototype_);
+    }
 }
 
 Iterator::IteratorResult StringIterator::next() {
@@ -241,10 +270,13 @@ Value StringIterator::string_iterator_next_method(Context& ctx, const std::vecto
 }
 
 
-MapIterator::MapIterator(Map* map, Kind kind) 
+MapIterator::MapIterator(Map* map, Kind kind)
     : Iterator(), map_(map), kind_(kind), index_(0) {
     auto next_method = ObjectFactory::create_native_function("next", MapIterator::map_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
+    if (s_map_iterator_prototype_) {
+        set_prototype(s_map_iterator_prototype_);
+    }
 }
 
 Iterator::IteratorResult MapIterator::next() {
@@ -302,10 +334,13 @@ Iterator::IteratorResult MapIterator::next_impl() {
 }
 
 
-SetIterator::SetIterator(Set* set, Kind kind) 
+SetIterator::SetIterator(Set* set, Kind kind)
     : Iterator(), set_(set), kind_(kind), index_(0) {
     auto next_method = ObjectFactory::create_native_function("next", SetIterator::set_iterator_next_method);
     this->set_property("next", Value(next_method.release()));
+    if (s_set_iterator_prototype_) {
+        set_prototype(s_set_iterator_prototype_);
+    }
 }
 
 Iterator::IteratorResult SetIterator::next() {
