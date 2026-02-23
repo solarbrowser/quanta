@@ -90,6 +90,9 @@ public:
     static Generator* get_current_generator();
     static size_t increment_yield_counter();
     static void reset_yield_counter();
+
+    // Shared generator prototype (%GeneratorPrototype%)
+    static Object* s_generator_prototype_;
     
 private:
     GeneratorResult execute_until_yield(const Value& sent_value);
