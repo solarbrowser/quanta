@@ -8540,25 +8540,149 @@ std::unique_ptr<ASTNode> AwaitExpression::clone() const {
 
 
 Value YieldExpression::evaluate(Context& ctx) {
+    Generator* current_gen = Generator::get_current_generator();
+
+    if (is_delegate_) {
+        // yield* delegation
+        Value iterable = argument_ ? argument_->evaluate(ctx) : Value();
+        if (ctx.has_exception()) return Value();
+
+        if (!current_gen) return Value();
+
+        size_t delegate_start = Generator::increment_yield_counter();
+
+        // Determine which element index within the delegate we need to yield
+        size_t needed_idx = current_gen->target_yield_index_ >= delegate_start
+            ? current_gen->target_yield_index_ - delegate_start
+            : 0;
+
+        // Collect elements from the delegate by iterating it fresh each re-execution.
+        std::vector<Value> elements;
+        bool delegate_exhausted = false;
+
+        // Helper: collect up to (needed_idx + 1) elements from an iterator object
+        auto collect_from_iterator = [&](Value iter_val) {
+            Object* iter_obj = nullptr;
+            if (iter_val.is_object()) iter_obj = iter_val.as_object();
+            else if (iter_val.is_function()) iter_obj = iter_val.as_function();
+            if (!iter_obj) { delegate_exhausted = true; return; }
+
+            Value next_fn = iter_obj->get_property("next");
+            if (!next_fn.is_function()) { delegate_exhausted = true; return; }
+
+            // Pause outer generator while iterating delegate
+            Generator* saved_gen = Generator::get_current_generator();
+            Generator::set_current_generator(nullptr);
+
+            for (size_t i = 0; i <= needed_idx; i++) {
+                std::vector<Value> no_args;
+                Value next_result = next_fn.as_function()->call(ctx, no_args, iter_val);
+                if (ctx.has_exception()) { delegate_exhausted = true; break; }
+
+                Value done_val;
+                Value val;
+                if (next_result.is_object()) {
+                    done_val = next_result.as_object()->get_property("done");
+                    val = next_result.as_object()->get_property("value");
+                }
+
+                if (done_val.to_boolean()) {
+                    delegate_exhausted = true;
+                    break;
+                }
+                elements.push_back(val);
+            }
+
+            Generator::set_current_generator(saved_gen);
+        };
+
+        if (iterable.is_string()) {
+            // String: iterate by character (each code unit)
+            std::string str = iterable.to_string();
+            for (size_t i = 0; i <= needed_idx && i < str.size(); i++) {
+                elements.push_back(Value(std::string(1, str[i])));
+            }
+            if (elements.size() < needed_idx + 1) delegate_exhausted = true;
+        } else if (iterable.is_object() || iterable.is_function()) {
+            Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+
+            // Try [Symbol.iterator]() to get an iterator
+            Value sym_iter_fn = obj->get_property("Symbol.iterator");
+
+            if (sym_iter_fn.is_function()) {
+                Generator* saved_gen = Generator::get_current_generator();
+                Generator::set_current_generator(nullptr);
+                std::vector<Value> no_args;
+                Value iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+                Generator::set_current_generator(saved_gen);
+                if (!ctx.has_exception()) {
+                    collect_from_iterator(iter_val);
+                }
+            } else {
+                // Try treating the object itself as an iterator
+                Value next_fn = obj->get_property("next");
+                if (next_fn.is_function()) {
+                    collect_from_iterator(iterable);
+                } else {
+                    delegate_exhausted = true;
+                }
+            }
+        } else {
+            delegate_exhausted = true;
+        }
+
+        // Advance yield counter for all collected delegate elements (minus the initial one)
+        size_t delegate_count = elements.size();
+        for (size_t i = 1; i < delegate_count; i++) {
+            Generator::increment_yield_counter();
+        }
+
+        if (current_gen->target_yield_index_ >= delegate_start + delegate_count) {
+            // Target is beyond this delegate's elements - delegate exhausted, continue after yield*
+            return Value();
+        }
+
+        // Yield the appropriate element from the delegate
+        size_t element_idx = current_gen->target_yield_index_ - delegate_start;
+        throw YieldException(elements[element_idx]);
+    }
+
+    // Regular (non-delegate) yield
     Value yield_value = Value();
-    
     if (argument_) {
         yield_value = argument_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
     }
-    
-    Generator* current_gen = Generator::get_current_generator();
+
     if (!current_gen) {
         return yield_value;
     }
-    
+
     size_t yield_index = Generator::increment_yield_counter();
-    
-    if (yield_index == current_gen->target_yield_index_) {
-        throw YieldException(yield_value);
+
+    if (yield_index < current_gen->target_yield_index_) {
+        // Replay: return the value that was sent to this yield point
+        if (yield_index < current_gen->sent_values_.size()) {
+            return current_gen->sent_values_[yield_index];
+        }
+        return current_gen->last_value_;
     }
-    
-    return current_gen->last_value_;
+
+    if (current_gen->throwing_) {
+        // Inject exception at this yield point instead of suspending
+        // Use raw=true to avoid wrapping the value in an Error object
+        current_gen->throwing_ = false;
+        ctx.throw_exception(current_gen->throw_value_, true);
+        return Value();
+    }
+
+    // yield_index > target_yield_index_: new yield hit after throw was caught inside the body
+    // Update target to this new yield and suspend normally
+    if (yield_index > current_gen->target_yield_index_) {
+        current_gen->target_yield_index_ = yield_index;
+    }
+
+    throw YieldException(yield_value);
 }
 
 std::string YieldExpression::to_string() const {
@@ -9015,12 +9139,16 @@ Value TryStatement::evaluate(Context& ctx) {
     
     try {
         result = try_block_->evaluate(ctx);
-        
+
         if (ctx.has_exception()) {
             caught_exception = true;
             exception_value = ctx.get_exception();
             ctx.clear_exception();
         }
+    } catch (const YieldException&) {
+        // YieldException is internal control flow - must never be caught by user try/catch
+        try_recursion_depth--;
+        throw;
     } catch (const std::exception& e) {
         caught_exception = true;
         if (ctx.has_exception()) {
