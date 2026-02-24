@@ -140,11 +140,20 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     auto map = std::make_unique<Map>();
-    
-    if (Map::prototype_object) {
+
+    // ES6 subclassing: use new.target.prototype if provided
+    Value new_target = ctx.get_new_target();
+    if (new_target.is_function()) {
+        Value nt_proto = new_target.as_function()->get_property("prototype");
+        if (nt_proto.is_object()) {
+            map->set_prototype(nt_proto.as_object());
+        } else if (Map::prototype_object) {
+            map->set_prototype(Map::prototype_object);
+        }
+    } else if (Map::prototype_object) {
         map->set_prototype(Map::prototype_object);
     }
-    
+
     Map* map_ptr = map.get();
     Object* map_obj = map.release();
 
@@ -580,11 +589,20 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     auto set = std::make_unique<Set>();
-    
-    if (Set::prototype_object) {
+
+    // ES6 subclassing: use new.target.prototype if provided
+    Value new_target_s = ctx.get_new_target();
+    if (new_target_s.is_function()) {
+        Value nt_proto = new_target_s.as_function()->get_property("prototype");
+        if (nt_proto.is_object()) {
+            set->set_prototype(nt_proto.as_object());
+        } else if (Set::prototype_object) {
+            set->set_prototype(Set::prototype_object);
+        }
+    } else if (Set::prototype_object) {
         set->set_prototype(Set::prototype_object);
     }
-    
+
     Set* set_ptr = set.get();
     Object* set_obj = set.release();
 
