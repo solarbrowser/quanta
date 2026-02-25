@@ -103,7 +103,7 @@ Additionally, Quanta does **not yet have a fully mature Test262 runner**, so som
 
 ## Known Limitations
 
-- Most ES6+ features are not implemented
+- Most ES2016+ features are not implemented
 - Performance is currently slow
 - No JIT or advanced optimization pipeline
 
