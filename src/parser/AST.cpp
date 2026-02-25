@@ -824,6 +824,16 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 }
             }
             if (!right_value.is_function()) {
+                // Also allow Proxy wrapping a function (the get trap already ran above)
+                if (right_value.is_object() && right_value.as_object()->get_type() == Object::ObjectType::Proxy) {
+                    Proxy* proxy_rhs = static_cast<Proxy*>(right_value.as_object());
+                    Object* proxy_target = proxy_rhs->get_proxy_target();
+                    if (proxy_target && proxy_target->is_function()) {
+                        // Use the proxy's prototype (via get trap) for the check
+                        Value proto_val = right_value.as_object()->get_property("prototype");
+                        return Value(left_value.instanceof_check(Value(static_cast<Function*>(proxy_target))));
+                    }
+                }
                 ctx.throw_type_error("Right-hand side of instanceof is not callable");
                 return Value(false);
             }

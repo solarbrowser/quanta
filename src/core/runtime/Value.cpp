@@ -245,6 +245,13 @@ double Value::to_number() const {
                 }
             }
         }
+        // Number/Boolean wrapper objects store their primitive in [[PrimitiveValue]]
+        if (obj && obj->has_property("[[PrimitiveValue]]")) {
+            Value pv = obj->get_property("[[PrimitiveValue]]");
+            if (!pv.is_object()) {
+                return pv.to_number();
+            }
+        }
         return std::numeric_limits<double>::quiet_NaN();
     }
     return std::numeric_limits<double>::quiet_NaN();
