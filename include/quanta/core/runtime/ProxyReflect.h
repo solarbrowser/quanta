@@ -47,7 +47,9 @@ public:
     virtual ~Proxy() = default;
     
     Value get_trap(const Value& key);
+    Value get_trap(const Value& key, const Value& receiver);
     bool set_trap(const Value& key, const Value& value);
+    bool set_trap(const Value& key, const Value& value, const Value& receiver);
     bool has_trap(const Value& key);
     bool delete_trap(const Value& key);
     std::vector<std::string> own_keys_trap();

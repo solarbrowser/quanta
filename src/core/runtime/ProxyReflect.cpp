@@ -20,28 +20,84 @@ Proxy::Proxy(Object* target, Object* handler)
 }
 
 Value Proxy::get_trap(const Value& key) {
+    return get_trap(key, Value(static_cast<Object*>(this)));
+}
+
+Value Proxy::get_trap(const Value& key, const Value& receiver) {
     if (is_revoked()) {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
     if (parsed_handler_.get) {
-        // receiver = the proxy itself
-        return parsed_handler_.get(key, Value(static_cast<Object*>(this)));
+        Value result = parsed_handler_.get(key, receiver);
+        // Invariant: non-writable, non-configurable data property => result must equal target value
+        std::string key_str = key.to_string();
+        PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+        if (target_desc.is_data_descriptor() && !target_desc.is_writable() && !target_desc.is_configurable()) {
+            Value tval = target_desc.get_value();
+            bool same = (result.is_undefined() && tval.is_undefined()) ||
+                        (result.is_null() && tval.is_null()) ||
+                        (result.is_number() && tval.is_number() && result.as_number() == tval.as_number()) ||
+                        (result.is_string() && tval.is_string() && result.to_string() == tval.to_string()) ||
+                        (result.is_boolean() && tval.is_boolean() && result.to_boolean() == tval.to_boolean()) ||
+                        (result.is_object() && tval.is_object() && result.as_object() == tval.as_object()) ||
+                        (result.is_function() && tval.is_function() && result.as_function() == tval.as_function());
+            if (!same) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'get' proxy invariant violated: non-writable non-configurable property");
+                throw std::runtime_error("TypeError: 'get' proxy invariant violated: non-writable non-configurable property");
+            }
+        }
+        // Invariant: non-configurable accessor without getter => result must be undefined
+        if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.has_getter()) {
+            if (!result.is_undefined()) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'get' proxy invariant violated: non-configurable accessor without getter");
+                throw std::runtime_error("TypeError: 'get' proxy invariant violated: non-configurable accessor without getter");
+            }
+        }
+        return result;
     }
 
     return target_->get_property(key.to_string());
 }
 
 bool Proxy::set_trap(const Value& key, const Value& value) {
+    return set_trap(key, value, Value(static_cast<Object*>(this)));
+}
+
+bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'set' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
     if (parsed_handler_.set) {
-        // receiver = the proxy itself
-        return parsed_handler_.set(key, value, Value(static_cast<Object*>(this)));
+        bool result = parsed_handler_.set(key, value, receiver);
+        if (result) {
+            // Invariant: non-writable, non-configurable data property => new value must equal existing
+            std::string key_str = key.to_string();
+            PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+            if (target_desc.is_data_descriptor() && !target_desc.is_writable() && !target_desc.is_configurable()) {
+                Value tval = target_desc.get_value();
+                bool same = (value.is_undefined() && tval.is_undefined()) ||
+                            (value.is_null() && tval.is_null()) ||
+                            (value.is_number() && tval.is_number() && value.as_number() == tval.as_number()) ||
+                            (value.is_string() && tval.is_string() && value.to_string() == tval.to_string()) ||
+                            (value.is_boolean() && tval.is_boolean() && value.to_boolean() == tval.to_boolean()) ||
+                            (value.is_object() && tval.is_object() && value.as_object() == tval.as_object()) ||
+                            (value.is_function() && tval.is_function() && value.as_function() == tval.as_function());
+                if (!same) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'set' proxy invariant violated: non-writable non-configurable property");
+                    throw std::runtime_error("TypeError: 'set' proxy invariant violated: non-writable non-configurable property");
+                }
+            }
+            // Invariant: non-configurable accessor without setter => cannot set
+            if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.has_setter()) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'set' proxy invariant violated: non-configurable accessor without setter");
+                throw std::runtime_error("TypeError: 'set' proxy invariant violated: non-configurable accessor without setter");
+            }
+        }
+        return result;
     }
 
     return target_->set_property(key.to_string(), value);
@@ -49,51 +105,126 @@ bool Proxy::set_trap(const Value& key, const Value& value) {
 
 bool Proxy::has_trap(const Value& key) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'has' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.has) {
-        return parsed_handler_.has(key);
+        bool result = parsed_handler_.has(key);
+        if (!result) {
+            std::string key_str = key.to_string();
+            if (target_->has_own_property(key_str)) {
+                PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+                // Invariant: cannot hide non-configurable own property
+                if (!target_desc.is_configurable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'has' proxy invariant violated: non-configurable own property cannot be reported non-existent");
+                    throw std::runtime_error("TypeError: 'has' proxy invariant violated: non-configurable own property cannot be reported non-existent");
+                }
+                // Invariant: cannot hide own property of non-extensible target
+                if (!target_->is_extensible()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'has' proxy invariant violated: own property of non-extensible target cannot be reported non-existent");
+                    throw std::runtime_error("TypeError: 'has' proxy invariant violated: own property of non-extensible target cannot be reported non-existent");
+                }
+            }
+        }
+        return result;
     }
-    
+
     return target_->has_property(key.to_string());
 }
 
 bool Proxy::delete_trap(const Value& key) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'deleteProperty' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.deleteProperty) {
-        return parsed_handler_.deleteProperty(key);
+        bool result = parsed_handler_.deleteProperty(key);
+        if (result) {
+            std::string key_str = key.to_string();
+            // Invariant: cannot report success for non-configurable property
+            PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+            if (target_desc.is_data_descriptor() || target_desc.is_accessor_descriptor()) {
+                if (!target_desc.is_configurable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'deleteProperty' proxy invariant violated: non-configurable property cannot be deleted");
+                    throw std::runtime_error("TypeError: 'deleteProperty' proxy invariant violated: non-configurable property cannot be deleted");
+                }
+            }
+        }
+        return result;
     }
-    
+
     return target_->delete_property(key.to_string());
 }
 
 std::vector<std::string> Proxy::own_keys_trap() {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'ownKeys' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.ownKeys) {
-        return parsed_handler_.ownKeys();
+        std::vector<std::string> result = parsed_handler_.ownKeys();
+        // Invariant: must include all non-configurable own properties
+        std::vector<std::string> target_keys = target_->get_own_property_keys();
+        for (const auto& tkey : target_keys) {
+            // Skip symbol-keyed properties (stored as "@@sym:..." strings internally)
+            if (tkey.find("@@sym:") == 0) continue;
+            PropertyDescriptor td = target_->get_property_descriptor(tkey);
+            if (!td.is_configurable()) {
+                bool found = std::find(result.begin(), result.end(), tkey) != result.end();
+                if (!found) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy invariant violated: must report all non-configurable own properties");
+                    throw std::runtime_error("TypeError: 'ownKeys' proxy invariant violated: must report all non-configurable own properties");
+                }
+            }
+        }
+        // Invariant: if target non-extensible, result must match exactly the target's own keys
+        if (!target_->is_extensible()) {
+            for (const auto& rkey : result) {
+                if (rkey.find("@@sym:") == 0) continue;
+                bool found = std::find(target_keys.begin(), target_keys.end(), rkey) != target_keys.end();
+                if (!found) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy invariant violated: non-extensible target, key not in target");
+                    throw std::runtime_error("TypeError: 'ownKeys' proxy invariant violated: non-extensible target, key not in target");
+                }
+            }
+            for (const auto& tkey : target_keys) {
+                if (tkey.find("@@sym:") == 0) continue;
+                bool found = std::find(result.begin(), result.end(), tkey) != result.end();
+                if (!found) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy invariant violated: non-extensible target, missing target key");
+                    throw std::runtime_error("TypeError: 'ownKeys' proxy invariant violated: non-extensible target, missing target key");
+                }
+            }
+        }
+        return result;
     }
-    
+
     return target_->get_own_property_keys();
 }
 
 Value Proxy::get_prototype_of_trap() {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'getPrototypeOf' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.getPrototypeOf) {
-        return parsed_handler_.getPrototypeOf();
+        Value result = parsed_handler_.getPrototypeOf();
+        // Invariant: if target is non-extensible, returned prototype must match target's prototype
+        if (!target_->is_extensible()) {
+            Object* target_proto = target_->get_prototype();
+            Object* result_proto = result.is_null() ? nullptr :
+                result.is_object() ? result.as_object() :
+                result.is_function() ? static_cast<Object*>(result.as_function()) : nullptr;
+            if (result_proto != target_proto) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'getPrototypeOf' proxy invariant violated: must return target's prototype for non-extensible target");
+                throw std::runtime_error("TypeError: 'getPrototypeOf' proxy invariant violated: must return target's prototype for non-extensible target");
+            }
+        }
+        return result;
     }
 
     Object* proto = target_->get_prototype();
@@ -102,105 +233,213 @@ Value Proxy::get_prototype_of_trap() {
 
 bool Proxy::set_prototype_of_trap(Object* proto) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'setPrototypeOf' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.setPrototypeOf) {
-        return parsed_handler_.setPrototypeOf(proto);
+        bool result = parsed_handler_.setPrototypeOf(proto);
+        // Invariant: if target is non-extensible, new proto must match target's current proto
+        if (!target_->is_extensible()) {
+            Object* target_proto = target_->get_prototype();
+            if (proto != target_proto) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'setPrototypeOf' proxy invariant violated: cannot change prototype of non-extensible target");
+                throw std::runtime_error("TypeError: 'setPrototypeOf' proxy invariant violated: cannot change prototype of non-extensible target");
+            }
+        }
+        return result;
     }
-    
+
     target_->set_prototype(proto);
     return true;
 }
 
 bool Proxy::is_extensible_trap() {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'isExtensible' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.isExtensible) {
-        return parsed_handler_.isExtensible();
+        bool result = parsed_handler_.isExtensible();
+        // Invariant: must return same value as Object.isExtensible(target)
+        bool target_result = target_->is_extensible();
+        if (result != target_result) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
+            throw std::runtime_error("TypeError: 'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
+        }
+        return result;
     }
-    
+
     return target_->is_extensible();
 }
 
 bool Proxy::prevent_extensions_trap() {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'preventExtensions' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.preventExtensions) {
-        return parsed_handler_.preventExtensions();
+        bool result = parsed_handler_.preventExtensions();
+        // Invariant: if result is true, target must be non-extensible
+        if (result && target_->is_extensible()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
+            throw std::runtime_error("TypeError: 'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
+        }
+        return result;
     }
-    
+
     target_->prevent_extensions();
     return true;
 }
 
 PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'getOwnPropertyDescriptor' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.getOwnPropertyDescriptor) {
-        return parsed_handler_.getOwnPropertyDescriptor(key);
+        PropertyDescriptor result = parsed_handler_.getOwnPropertyDescriptor(key);
+        std::string key_str = key.to_string();
+        bool result_exists = result.is_data_descriptor() || result.is_accessor_descriptor();
+        PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+        bool target_has_own = target_->has_own_property(key_str);
+        bool target_configurable = target_has_own && target_desc.is_configurable();
+
+        if (!result_exists) {
+            // Trap returned undefined: property reported non-existent
+            // Invariant: non-configurable own property cannot be reported non-existent
+            if (target_has_own && !target_configurable) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-configurable property cannot be non-existent");
+                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-configurable property cannot be non-existent");
+            }
+            // Invariant: if target is non-extensible and property exists, cannot report non-existent
+            if (!target_->is_extensible() && target_has_own) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-extensible target, cannot hide existing property");
+                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-extensible target, cannot hide existing property");
+            }
+        } else {
+            // Trap returned a descriptor
+            // Invariant: cannot report existent if non-extensible target doesn't have it
+            if (!target_->is_extensible() && !target_has_own) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-existent property on non-extensible target");
+                throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-existent property on non-extensible target");
+            }
+            // Invariant: cannot report non-configurable if target property doesn't exist or is configurable
+            if (!result.is_configurable()) {
+                if (!target_has_own) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for non-existent property");
+                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for non-existent property");
+                }
+                if (target_configurable) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
+                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
+                }
+            }
+        }
+        return result;
     }
-    
+
     return target_->get_property_descriptor(key.to_string());
 }
 
 bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& desc) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'defineProperty' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     if (parsed_handler_.defineProperty) {
-        return parsed_handler_.defineProperty(key, desc);
+        bool result = parsed_handler_.defineProperty(key, desc);
+        if (!result) return false;
+
+        // Invariant checks after trap returns true
+        std::string key_str = key.to_string();
+        bool target_extensible = target_->is_extensible();
+        bool target_has_own = target_->has_own_property(key_str);
+        bool setting_config_false = desc.has_configurable() && !desc.is_configurable();
+
+        if (!target_has_own) {
+            // Cannot add property to non-extensible target
+            if (!target_extensible) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'defineProperty' proxy invariant violated: cannot add property to non-extensible target");
+                throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot add property to non-extensible target");
+            }
+            // Cannot define non-configurable property that doesn't exist on target
+            if (setting_config_false) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'defineProperty' proxy invariant violated: cannot define non-configurable property absent from target");
+                throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot define non-configurable property absent from target");
+            }
+        } else {
+            // If setting configurable=false but target property is configurable → TypeError
+            if (setting_config_false) {
+                PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+                if (target_desc.is_configurable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
+                    throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
+                }
+            }
+        }
+        return true;
     }
-    
+
     return target_->set_property_descriptor(key.to_string(), desc);
 }
 
 Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'apply' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
+    }
+
+    // Invariant: proxy is only callable if target is callable
+    if (!target_->is_function()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not callable");
+        throw std::runtime_error("TypeError: proxy target is not callable");
     }
 
     if (parsed_handler_.apply) {
         return parsed_handler_.apply(args, this_value);
     }
 
-    if (target_->is_function()) {
-        Function* func = static_cast<Function*>(target_);
-        Context* ctx = Object::current_context_;
-        if (ctx) return func->call(*ctx, args, this_value);
-    }
+    Function* func = static_cast<Function*>(target_);
+    Context* ctx = Object::current_context_;
+    if (ctx) return func->call(*ctx, args, this_value);
 
     return Value();
 }
 
 Value Proxy::construct_trap(const std::vector<Value>& args) {
     if (is_revoked()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'construct' on a proxy that has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
+    }
+
+    // Invariant: proxy is only constructable if target is constructable
+    if (!target_->is_function()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not a constructor");
+        throw std::runtime_error("TypeError: proxy target is not a constructor");
+    }
+    Function* target_fn = static_cast<Function*>(target_);
+    if (!target_fn->is_constructor()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not a constructor");
+        throw std::runtime_error("TypeError: proxy target is not a constructor");
     }
 
     if (parsed_handler_.construct) {
-        return parsed_handler_.construct(args);
+        Value result = parsed_handler_.construct(args);
+        // Invariant: construct trap must return an object
+        if (!result.is_object() && !result.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("proxy construct trap must return an object");
+            throw std::runtime_error("TypeError: proxy construct trap must return an object");
+        }
+        return result;
     }
 
-    if (target_->is_function()) {
-        Function* func = static_cast<Function*>(target_);
-        Context* ctx = Object::current_context_;
-        if (ctx) return func->construct(*ctx, args);
-    }
+    Context* ctx = Object::current_context_;
+    if (ctx) return target_fn->construct(*ctx, args);
 
     return Value();
 }
@@ -210,7 +449,7 @@ bool Proxy::set_property(const std::string& key, const Value& value, PropertyAtt
 }
 
 Object* Proxy::get_prototype() const {
-    if (is_revoked()) throw std::runtime_error("Proxy has been revoked");
+    if (is_revoked()) throw std::runtime_error("TypeError: Proxy has been revoked");
     if (parsed_handler_.getPrototypeOf) {
         Value result = parsed_handler_.getPrototypeOf();
         if (result.is_null()) return nullptr;
@@ -288,7 +527,12 @@ void Proxy::parse_handler() {
                 Object* arr = result.as_object();
                 uint32_t len = arr->get_length();
                 for (uint32_t i = 0; i < len; ++i) {
-                    keys.push_back(arr->get_element(i).to_string());
+                    Value elem = arr->get_element(i);
+                    if (!elem.is_string() && !elem.is_symbol()) {
+                        if (ctx) ctx->throw_type_error("'ownKeys' trap must return a list of strings and symbols");
+                        throw std::runtime_error("TypeError: 'ownKeys' trap must return a list of strings and symbols");
+                    }
+                    keys.push_back(elem.to_string());
                 }
             }
             return keys;
@@ -444,9 +688,9 @@ void Proxy::throw_if_revoked(Context& ctx) const {
 Value Proxy::get_property(const std::string& key) const {
     if (is_revoked()) {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
-        throw std::runtime_error("Proxy has been revoked");
+        throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-    
+
     return const_cast<Proxy*>(this)->get_trap(Value(key));
 }
 
@@ -508,7 +752,13 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
 void Proxy::setup_proxy(Context& ctx) {
     auto proxy_constructor_fn = ObjectFactory::create_native_constructor("Proxy", proxy_constructor);
     // Per spec, Proxy constructor does not have a 'prototype' property
-    proxy_constructor_fn->delete_property("prototype");
+    // Make the prototype property configurable first so we can delete it
+    {
+        PropertyDescriptor deletable_desc;
+        deletable_desc.set_configurable(true);
+        proxy_constructor_fn->set_property_descriptor("prototype", deletable_desc);
+        proxy_constructor_fn->delete_property("prototype");
+    }
 
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));

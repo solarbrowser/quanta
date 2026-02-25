@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/parser/AST.h"
 #include <algorithm>
 #include <sstream>
@@ -68,9 +69,13 @@ bool Object::has_property(const std::string& key) const {
     if (has_own_property(key)) {
         return true;
     }
-    
+
     Object* current = header_.prototype;
     while (current) {
+        if (current->get_type() == ObjectType::Proxy) {
+            // Invoke Proxy has trap for prototype chain traversal
+            return static_cast<Proxy*>(current)->has_trap(Value(key));
+        }
         if (current->has_own_property(key)) {
             return true;
         }
@@ -233,6 +238,13 @@ Value Object::get_property(const std::string& key) const {
     const Object* original_receiver = this;
     Object* current = header_.prototype;
     while (current) {
+        // When prototype is a Proxy, invoke its get trap with the original receiver
+        if (current->get_type() == ObjectType::Proxy) {
+            Value receiver_val = original_receiver->is_function()
+                ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
+                : Value(const_cast<Object*>(original_receiver));
+            return static_cast<Proxy*>(current)->get_trap(Value(key), receiver_val);
+        }
         // For inherited "get [Symbol.xxx]" accessors, return the original receiver
         if (current->descriptors_) {
             auto desc_it = current->descriptors_->find(key);
@@ -380,6 +392,21 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
     }
 
     bool prop_exists = has_own_property(key);
+    // If property does not exist on this object, check if a Proxy ancestor has a set trap
+    if (!prop_exists) {
+        Object* current = header_.prototype;
+        while (current) {
+            if (current->get_type() == ObjectType::Proxy) {
+                Value receiver_val = this->is_function()
+                    ? Value(const_cast<Function*>(static_cast<const Function*>(this)))
+                    : Value(const_cast<Object*>(this));
+                static_cast<Proxy*>(current)->set_trap(Value(key), value, receiver_val);
+                return true;
+            }
+            if (current->has_own_property(key)) break;
+            current = current->get_prototype();
+        }
+    }
     if (prop_exists) {
         PropertyDescriptor desc = get_property_descriptor(key);
         if (desc.is_data_descriptor() && !desc.is_writable()) {
@@ -467,6 +494,18 @@ bool Object::delete_property(const std::string& key) {
             deleted_shape_properties_->insert(key);
 
             header_.property_count--;
+            update_hash_code();
+            return true;
+        }
+    }
+
+    // Fallback: property may only exist in descriptors (e.g. Function "prototype" intercepted
+    // by Function::set_property without storing in shape/overflow)
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) {
+            descriptors_->erase(it);
+            if (header_.property_count > 0) header_.property_count--;
             update_hash_code();
             return true;
         }
@@ -1380,6 +1419,14 @@ void Object::update_hash_code() {
 }
 
 std::string Object::to_string() const {
+    // String/Number wrapper objects store their primitive in [[PrimitiveValue]]
+    if (has_property("[[PrimitiveValue]]")) {
+        Value pv = get_property("[[PrimitiveValue]]");
+        if (pv.is_string()) {
+            return pv.to_string();
+        }
+    }
+
     if (header_.type == ObjectType::Array) {
         std::ostringstream oss;
         for (uint32_t i = 0; i < elements_.size(); ++i) {

@@ -2382,14 +2382,47 @@ void Context::initialize_built_ins() {
 
     auto fill_fn = ObjectFactory::create_native_function("fill",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            auto result = ObjectFactory::create_array();
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+
             Value fill_value = args.empty() ? Value() : args[0];
 
-            result->set_element(0, fill_value);
-            result->set_element(1, fill_value);
-            result->set_element(2, fill_value);
-            result->set_property("length", Value(3.0));
-            return Value(result.release());
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+
+                double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
+                int32_t start = start_arg < 0
+                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
+                    : std::min(static_cast<uint32_t>(start_arg), length);
+
+                double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
+                int32_t end = end_arg < 0
+                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
+                    : std::min(static_cast<uint32_t>(end_arg), length);
+
+                for (int32_t i = start; i < end; i++) {
+                    this_obj->set_property(std::to_string(i), fill_value);
+                }
+                return Value(this_obj);
+            }
+
+            uint32_t length = this_obj->get_length();
+
+            double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
+            int32_t start = start_arg < 0
+                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
+                : std::min(static_cast<uint32_t>(start_arg), length);
+
+            double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
+            int32_t end = end_arg < 0
+                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
+                : std::min(static_cast<uint32_t>(end_arg), length);
+
+            for (int32_t i = start; i < end; i++) {
+                this_obj->set_element(static_cast<uint32_t>(i), fill_value);
+            }
+            return Value(this_obj);
         }, 1);
 
     PropertyDescriptor fill_length_desc(Value(1.0), PropertyAttributes::Configurable);
@@ -2483,6 +2516,18 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                // Use property access so Proxy get/set traps fire
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+                for (const auto& arg : args) {
+                    this_obj->set_property(std::to_string(length), arg);
+                    length++;
+                }
+                this_obj->set_property("length", Value(static_cast<double>(length)));
+                return Value(static_cast<double>(length));
+            }
+
             for (const auto& arg : args) {
                 this_obj->push(arg);
             }
@@ -2499,6 +2544,46 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
+
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+
+                double target_arg = args.empty() ? 0.0 : args[0].to_number();
+                int32_t target = target_arg < 0
+                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(target_arg))
+                    : std::min(static_cast<uint32_t>(target_arg), length);
+
+                double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
+                int32_t start = start_arg < 0
+                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
+                    : std::min(static_cast<uint32_t>(start_arg), length);
+
+                double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
+                int32_t end = end_arg < 0
+                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
+                    : std::min(static_cast<uint32_t>(end_arg), length);
+
+                int32_t count = std::min(end - start, static_cast<int32_t>(length) - target);
+
+                if (count <= 0) {
+                    return Value(this_obj);
+                }
+
+                if (start < target && target < start + count) {
+                    for (int32_t i = count - 1; i >= 0; i--) {
+                        Value val = this_obj->get_property(std::to_string(start + i));
+                        this_obj->set_property(std::to_string(target + i), val);
+                    }
+                } else {
+                    for (int32_t i = 0; i < count; i++) {
+                        Value val = this_obj->get_property(std::to_string(start + i));
+                        this_obj->set_property(std::to_string(target + i), val);
+                    }
+                }
+
+                return Value(this_obj);
+            }
 
             uint32_t length = this_obj->get_length();
 
@@ -2822,12 +2907,29 @@ void Context::initialize_built_ins() {
                 return obj->is_array();
             };
 
+            // Helper: get length via property access (Proxy-safe)
+            auto get_length_prop = [](Object* obj) -> uint32_t {
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    Value lv = obj->get_property("length");
+                    return lv.is_number() ? static_cast<uint32_t>(lv.as_number()) : 0;
+                }
+                return obj->get_length();
+            };
+
+            // Helper: get element via property access (Proxy-safe)
+            auto get_elem_prop = [](Object* obj, uint32_t idx) -> Value {
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    return obj->get_property(std::to_string(idx));
+                }
+                return obj->get_element(idx);
+            };
+
             // Spread this_array
             if (is_spreadable(this_array)) {
-                uint32_t this_length = this_array->get_length();
+                uint32_t this_length = get_length_prop(this_array);
                 for (uint32_t i = 0; i < this_length; i++) {
                     if (this_array->has_property(std::to_string(i))) {
-                        result->set_element(result_index, this_array->get_element(i));
+                        result->set_element(result_index, get_elem_prop(this_array, i));
                     }
                     result_index++;
                 }
@@ -2841,10 +2943,10 @@ void Context::initialize_built_ins() {
                         ? static_cast<Object*>(arg.as_function())
                         : arg.as_object();
                     if (is_spreadable(arg_obj)) {
-                        uint32_t arg_length = arg_obj->get_length();
+                        uint32_t arg_length = get_length_prop(arg_obj);
                         for (uint32_t i = 0; i < arg_length; i++) {
                             if (arg_obj->has_property(std::to_string(i))) {
-                                result->set_element(result_index, arg_obj->get_element(i));
+                                result->set_element(result_index, get_elem_prop(arg_obj, i));
                             }
                             result_index++;
                         }
@@ -3184,6 +3286,21 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+                if (length == 0) {
+                    this_obj->set_property("length", Value(0.0));
+                    return Value();
+                }
+                uint32_t new_length = length - 1;
+                std::string idx = std::to_string(new_length);
+                Value element = this_obj->get_property(idx);
+                this_obj->delete_property(idx);
+                this_obj->set_property("length", Value(static_cast<double>(new_length)));
+                return element;
+            }
+
             uint32_t length = this_obj->get_length();
             if (length == 0) return Value();
 
@@ -3199,6 +3316,21 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(this_obj);
+
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+                for (uint32_t i = 0; i < length / 2; i++) {
+                    uint32_t j = length - 1 - i;
+                    std::string key_i = std::to_string(i);
+                    std::string key_j = std::to_string(j);
+                    Value a = this_obj->get_property(key_i);
+                    Value b = this_obj->get_property(key_j);
+                    this_obj->set_property(key_i, b);
+                    this_obj->set_property(key_j, a);
+                }
+                return Value(this_obj);
+            }
 
             uint32_t length = this_obj->get_length();
             for (uint32_t i = 0; i < length / 2; i++) {
@@ -3216,6 +3348,23 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
+
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+                if (length == 0) {
+                    this_obj->set_property("length", Value(0.0));
+                    return Value();
+                }
+                Value first = this_obj->get_property("0");
+                for (uint32_t i = 1; i < length; i++) {
+                    Value elem = this_obj->get_property(std::to_string(i));
+                    this_obj->set_property(std::to_string(i - 1), elem);
+                }
+                this_obj->delete_property(std::to_string(length - 1));
+                this_obj->set_property("length", Value(static_cast<double>(length - 1)));
+                return first;
+            }
 
             uint32_t length = this_obj->get_length();
             if (length == 0) return Value();
@@ -3356,6 +3505,79 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+
+                int32_t start = 0;
+                if (!args.empty()) {
+                    double start_arg = args[0].to_number();
+                    if (start_arg < 0) {
+                        start = std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg));
+                    } else {
+                        start = std::min(static_cast<uint32_t>(start_arg), length);
+                    }
+                }
+
+                uint32_t delete_count = 0;
+                if (args.empty()) {
+                    return Value(ObjectFactory::create_array().release());
+                } else if (args.size() < 2) {
+                    delete_count = length - start;
+                } else {
+                    double delete_arg = args[1].to_number();
+                    if (delete_arg < 0) {
+                        delete_count = 0;
+                    } else {
+                        delete_count = std::min(static_cast<uint32_t>(delete_arg), length - static_cast<uint32_t>(start));
+                    }
+                }
+
+                std::vector<Value> items_to_insert;
+                for (size_t i = 2; i < args.size(); i++) {
+                    items_to_insert.push_back(args[i]);
+                }
+
+                // Build result array of deleted elements
+                Value result_val = array_species_create(ctx, this_obj, delete_count);
+                if (ctx.has_exception()) return Value();
+                Object* result = result_val.is_object() ? result_val.as_object()
+                               : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                               : nullptr;
+                if (!result) { auto a = ObjectFactory::create_array(delete_count); return Value(a.release()); }
+                for (uint32_t i = 0; i < delete_count; i++) {
+                    result->set_element(i, this_obj->get_property(std::to_string(start + i)));
+                }
+                result->set_length(delete_count);
+
+                uint32_t item_count = static_cast<uint32_t>(items_to_insert.size());
+                uint32_t new_length = length - delete_count + item_count;
+
+                if (item_count > delete_count) {
+                    uint32_t shift = item_count - delete_count;
+                    for (int32_t i = static_cast<int32_t>(length) - 1; i >= static_cast<int32_t>(start + delete_count); i--) {
+                        Value elem = this_obj->get_property(std::to_string(i));
+                        this_obj->set_property(std::to_string(i + shift), elem);
+                    }
+                } else if (delete_count > item_count) {
+                    uint32_t shift = delete_count - item_count;
+                    for (uint32_t i = static_cast<uint32_t>(start) + delete_count; i < length; i++) {
+                        Value elem = this_obj->get_property(std::to_string(i));
+                        this_obj->set_property(std::to_string(i - shift), elem);
+                    }
+                    for (uint32_t i = new_length; i < length; i++) {
+                        this_obj->delete_property(std::to_string(i));
+                    }
+                }
+
+                for (uint32_t i = 0; i < item_count; i++) {
+                    this_obj->set_property(std::to_string(start + i), items_to_insert[i]);
+                }
+
+                this_obj->set_property("length", Value(static_cast<double>(new_length)));
+                return result_val;
+            }
+
             uint32_t length = this_obj->get_length();
 
             int32_t start = 0;
@@ -3433,6 +3655,22 @@ void Context::initialize_built_ins() {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(0.0);
+
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                Value len_val = this_obj->get_property("length");
+                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
+                uint32_t argCount = static_cast<uint32_t>(args.size());
+                for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
+                    Value elem = this_obj->get_property(std::to_string(i));
+                    this_obj->set_property(std::to_string(i + argCount), elem);
+                }
+                for (uint32_t i = 0; i < argCount; i++) {
+                    this_obj->set_property(std::to_string(i), args[i]);
+                }
+                uint32_t new_length = length + argCount;
+                this_obj->set_property("length", Value(static_cast<double>(new_length)));
+                return Value(static_cast<double>(new_length));
+            }
 
             uint32_t length = this_obj->get_length();
             uint32_t argCount = args.size();
@@ -3679,12 +3917,20 @@ void Context::initialize_built_ins() {
     auto apply_fn = ObjectFactory::create_native_function("apply",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
-            if (!function_obj || !function_obj->is_function()) {
+            Function* func = nullptr;
+            if (function_obj && function_obj->is_function()) {
+                func = static_cast<Function*>(function_obj);
+            } else if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
+                Object* proxy_target = proxy_obj->get_proxy_target();
+                if (proxy_target && proxy_target->is_function()) {
+                    func = static_cast<Function*>(proxy_target);
+                }
+            }
+            if (!func) {
                 ctx.throw_type_error("Function.prototype.apply called on non-function");
                 return Value();
             }
-            
-            Function* func = static_cast<Function*>(function_obj);
             Value this_arg = args.size() > 0 ? args[0] : Value();
             
             std::vector<Value> call_args;
@@ -3719,12 +3965,22 @@ void Context::initialize_built_ins() {
     auto bind_fn = ObjectFactory::create_native_function("bind",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
-            if (!function_obj || !function_obj->is_function()) {
+            // Accept plain functions or Proxy objects wrapping a function
+            Function* target_func = nullptr;
+            if (function_obj && function_obj->is_function()) {
+                target_func = static_cast<Function*>(function_obj);
+            } else if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
+                Object* proxy_target = proxy_obj->get_proxy_target();
+                if (proxy_target && proxy_target->is_function()) {
+                    target_func = static_cast<Function*>(proxy_target);
+                }
+            }
+            if (!target_func) {
                 ctx.throw_type_error("Function.prototype.bind called on non-function");
                 return Value();
             }
 
-            Function* target_func = static_cast<Function*>(function_obj);
             Value bound_this = args.size() > 0 ? args[0] : Value();
 
             std::vector<Value> bound_args;
@@ -3732,15 +3988,15 @@ void Context::initialize_built_ins() {
                 bound_args.push_back(args[i]);
             }
 
-            // Calculate bound function arity: target length minus bound args count (minimum 0)
-            Value target_length_val = target_func->get_property("length");
+            // Read properties through function_obj so Proxy get traps fire for "length"/"name"
+            Value target_length_val = function_obj->get_property("length");
             double target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
             double bound_length = target_length - static_cast<double>(bound_args.size());
             if (bound_length < 0) bound_length = 0;
             uint32_t bound_arity = static_cast<uint32_t>(bound_length);
 
-            // ES6: bound function name is "bound " + target name
-            std::string bound_name = "bound " + target_func->get_name();
+            Value name_val = function_obj->get_property("name");
+            std::string bound_name = "bound " + (name_val.is_string() ? name_val.to_string() : target_func->get_name());
             auto bound_function = ObjectFactory::create_native_constructor(bound_name,
                 [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
@@ -3827,6 +4083,11 @@ void Context::initialize_built_ins() {
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
                     static_cast<PropertyAttributes>(PropertyAttributes::None));
                 this_obj->set_property_descriptor("length", length_desc);
+
+                // Set indexed character properties: c[0] === "g"
+                for (size_t i = 0; i < str_value.size(); i++) {
+                    this_obj->set_property(std::to_string(i), Value(std::string(1, str_value[i])));
+                }
 
                 auto toString_fn = ObjectFactory::create_native_function("toString",
                     [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6434,7 +6695,6 @@ void Context::initialize_built_ins() {
 
     auto error_constructor = ObjectFactory::create_native_constructor("Error",
         [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
             std::string message = "";
             if (!args.empty()) {
                 if (args[0].is_undefined()) {
@@ -6459,7 +6719,19 @@ void Context::initialize_built_ins() {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true));
-            error_obj->set_prototype(error_prototype_ptr);
+
+            // Support subclassing: when called via super() from a derived class,
+            // ctx.get_this_binding() is the subclass instance with its prototype.
+            // Use that prototype so c instanceof C works alongside c instanceof Error.
+            Object* proto_to_use = error_prototype_ptr;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj) {
+                Object* this_proto = this_obj->get_prototype();
+                if (this_proto && this_proto != error_prototype_ptr) {
+                    proto_to_use = this_proto;
+                }
+            }
+            error_obj->set_prototype(proto_to_use);
             
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
