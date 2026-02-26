@@ -73,6 +73,10 @@ public:
 
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    bool has_property(const std::string& key) const override;
+    bool delete_property(const std::string& key) override;
+    Value get_element(uint32_t index) const override;
+    uint32_t get_length() const override;
     Object* get_prototype() const override;
     
 private:

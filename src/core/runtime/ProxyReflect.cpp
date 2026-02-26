@@ -13,6 +13,20 @@
 
 namespace Quanta {
 
+// Helper: convert a Value key (possibly Symbol) to a property key string
+static std::string to_prop_key(const Value& key) {
+    if (key.is_symbol()) return key.as_symbol()->to_property_key();
+    return key.to_string();
+}
+
+// Helper: create Value from property key string, using actual Symbol for well-known symbols
+static Value from_prop_key(const std::string& key) {
+    if (key.find("Symbol.") == 0) {
+        Symbol* sym = Symbol::get_well_known(key);
+        if (sym) return Value(sym);
+    }
+    return Value(key);
+}
 
 Proxy::Proxy(Object* target, Object* handler) 
     : Object(ObjectType::Proxy), target_(target), handler_(handler) {
@@ -32,7 +46,7 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
     if (parsed_handler_.get) {
         Value result = parsed_handler_.get(key, receiver);
         // Invariant: non-writable, non-configurable data property => result must equal target value
-        std::string key_str = key.to_string();
+        std::string key_str = to_prop_key(key);
         PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
         if (target_desc.is_data_descriptor() && !target_desc.is_writable() && !target_desc.is_configurable()) {
             Value tval = target_desc.get_value();
@@ -58,7 +72,7 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
         return result;
     }
 
-    return target_->get_property(key.to_string());
+    return target_->get_property(to_prop_key(key));
 }
 
 bool Proxy::set_trap(const Value& key, const Value& value) {
@@ -75,7 +89,7 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
         bool result = parsed_handler_.set(key, value, receiver);
         if (result) {
             // Invariant: non-writable, non-configurable data property => new value must equal existing
-            std::string key_str = key.to_string();
+            std::string key_str = to_prop_key(key);
             PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
             if (target_desc.is_data_descriptor() && !target_desc.is_writable() && !target_desc.is_configurable()) {
                 Value tval = target_desc.get_value();
@@ -100,7 +114,28 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
         return result;
     }
 
-    return target_->set_property(key.to_string(), value);
+    // Spec: no set trap → target.[[Set]](P, V, Receiver=proxy)
+    // Ordinary [[Set]] calls Receiver.[[GetOwnProperty]] and Receiver.[[DefineOwnProperty]] for data properties
+    std::string key_str = to_prop_key(key);
+    if (parsed_handler_.getOwnPropertyDescriptor || parsed_handler_.defineProperty) {
+        PropertyDescriptor own_desc = target_->get_property_descriptor(key_str);
+        bool is_writable_data = !own_desc.is_accessor_descriptor() &&
+                                (!own_desc.is_data_descriptor() || own_desc.is_writable());
+        if (is_writable_data) {
+            // Receiver.[[GetOwnProperty]](P) fires getOwnPropertyDescriptor trap
+            if (parsed_handler_.getOwnPropertyDescriptor) {
+                get_own_property_descriptor_trap(Value(key_str));
+                if (Object::current_context_ && Object::current_context_->has_exception()) return false;
+            }
+            // Receiver.[[DefineOwnProperty]](P, {[[Value]]:V}) fires defineProperty trap
+            if (parsed_handler_.defineProperty) {
+                PropertyDescriptor new_desc;
+                new_desc.set_value(value);
+                return define_property_trap(Value(key_str), new_desc);
+            }
+        }
+    }
+    return target_->set_property(key_str, value);
 }
 
 bool Proxy::has_trap(const Value& key) {
@@ -448,6 +483,23 @@ bool Proxy::set_property(const std::string& key, const Value& value, PropertyAtt
     return set_trap(Value(key), value);
 }
 
+bool Proxy::has_property(const std::string& key) const {
+    return const_cast<Proxy*>(this)->has_trap(Value(key));
+}
+
+bool Proxy::delete_property(const std::string& key) {
+    return delete_trap(Value(key));
+}
+
+Value Proxy::get_element(uint32_t index) const {
+    return get_property(std::to_string(index));
+}
+
+uint32_t Proxy::get_length() const {
+    Value lv = get_property("length");
+    return lv.is_number() ? static_cast<uint32_t>(lv.as_number()) : 0;
+}
+
 Object* Proxy::get_prototype() const {
     if (is_revoked()) throw std::runtime_error("TypeError: Proxy has been revoked");
     if (parsed_handler_.getPrototypeOf) {
@@ -690,8 +742,8 @@ Value Proxy::get_property(const std::string& key) const {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
-
-    return const_cast<Proxy*>(this)->get_trap(Value(key));
+    // Pass actual Symbol objects for well-known symbol keys so get trap receives them correctly
+    return const_cast<Proxy*>(this)->get_trap(from_prop_key(key));
 }
 
 

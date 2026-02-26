@@ -43,6 +43,15 @@ namespace Quanta {
 
 // Helper: ES6 ArraySpeciesCreate — creates result using constructor's @@species
 static Value array_species_create(Context& ctx, Object* original_array, uint32_t length) {
+    // Per spec: only consult @@species if the original is an exotic Array object
+    bool is_actual_array = original_array->is_array();
+    if (!is_actual_array && original_array->get_type() == Object::ObjectType::Proxy) {
+        Object* target = static_cast<Proxy*>(original_array)->get_proxy_target();
+        is_actual_array = target && target->is_array();
+    }
+    if (!is_actual_array) {
+        return Value(ObjectFactory::create_array(length).release());
+    }
     Value ctor_val = original_array->get_property("constructor");
     if (!ctor_val.is_undefined() && !ctor_val.is_null() &&
         (ctor_val.is_function() || ctor_val.is_object())) {
@@ -872,8 +881,12 @@ void Context::initialize_built_ins() {
                         Value value;
                         bool is_enumerable = true;
                         if (source_is_proxy) {
-                            // Use proxy's get trap for property access
-                            value = static_cast<Proxy*>(source_obj)->get_trap(Value(prop));
+                            // Spec: Object.assign calls [[GetOwnProperty]] then [[Get]] for each key
+                            Proxy* source_proxy = static_cast<Proxy*>(source_obj);
+                            PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(Value(prop));
+                            if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                            if (!desc.is_enumerable()) continue;
+                            value = source_proxy->get_trap(Value(prop));
                         } else {
                             PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
                             if (!desc.is_enumerable() && desc.has_value()) {
@@ -1391,7 +1404,32 @@ void Context::initialize_built_ins() {
             if (!args[0].is_object()) return args[0];
 
             Object* obj = args[0].as_object();
-            obj->freeze();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                // SetIntegrityLevel("frozen") via proxy traps
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                proxy->prevent_extensions_trap();
+                if (ctx.has_exception()) return Value();
+                std::vector<std::string> keys = proxy->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+                Object* target = proxy->get_proxy_target();
+                for (const auto& key : keys) {
+                    PropertyDescriptor desc;
+                    desc.set_configurable(false);
+                    // For data properties also set writable:false; for accessors only configurable:false
+                    if (target) {
+                        PropertyDescriptor td = target->get_property_descriptor(key);
+                        if (!td.is_accessor_descriptor()) {
+                            desc.set_writable(false);
+                        }
+                    } else {
+                        desc.set_writable(false);
+                    }
+                    proxy->define_property_trap(Value(key), desc);
+                    if (ctx.has_exception()) return Value();
+                }
+            } else {
+                obj->freeze();
+            }
 
             return args[0];
         }, 1);
@@ -1428,6 +1466,21 @@ void Context::initialize_built_ins() {
             if (args.empty() || !args[0].is_object()) return Value(true);
 
             Object* obj = args[0].as_object();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                // TestIntegrityLevel("frozen") via proxy traps
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                if (proxy->is_extensible_trap()) return Value(false);
+                if (ctx.has_exception()) return Value();
+                std::vector<std::string> keys = proxy->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+                for (const auto& key : keys) {
+                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(Value(key));
+                    if (ctx.has_exception()) return Value();
+                    if (desc.is_configurable()) return Value(false);
+                    if (desc.is_data_descriptor() && desc.is_writable()) return Value(false);
+                }
+                return Value(true);
+            }
             return Value(obj->is_frozen());
         }, 1);
     object_constructor->set_property("isFrozen", Value(isFrozen_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1625,6 +1678,11 @@ void Context::initialize_built_ins() {
                 prop_name = args[0].as_symbol()->to_property_key();
             } else {
                 prop_name = args[0].to_string();
+            }
+            // Spec: HasOwnProperty calls [[GetOwnProperty]], which fires getOwnPropertyDescriptor trap
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(Value(prop_name));
+                return Value(desc.is_data_descriptor() || desc.is_accessor_descriptor());
             }
             return Value(this_obj->has_own_property(prop_name));
         }, 1);
@@ -2485,6 +2543,14 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            // Spec: Get(O, "join") - goes through Proxy get trap via virtual dispatch
+            Value join_val = this_obj->get_property("join");
+            if (join_val.is_function()) {
+                Function* join_fn = join_val.as_function();
+                std::vector<Value> call_args;
+                return join_fn->call(ctx, call_args, Value(this_obj));
+            }
+
             if (this_obj->is_array()) {
                 std::ostringstream result;
                 uint32_t length = this_obj->get_length();
@@ -2570,15 +2636,28 @@ void Context::initialize_built_ins() {
                     return Value(this_obj);
                 }
 
+                // Spec: use HasProperty to handle holes - delete instead of set for missing source slots
                 if (start < target && target < start + count) {
                     for (int32_t i = count - 1; i >= 0; i--) {
-                        Value val = this_obj->get_property(std::to_string(start + i));
-                        this_obj->set_property(std::to_string(target + i), val);
+                        std::string from_key = std::to_string(start + i);
+                        std::string to_key = std::to_string(target + i);
+                        if (this_obj->has_property(from_key)) {
+                            this_obj->set_property(to_key, this_obj->get_property(from_key));
+                        } else {
+                            this_obj->delete_property(to_key);
+                        }
+                        if (ctx.has_exception()) return Value();
                     }
                 } else {
                     for (int32_t i = 0; i < count; i++) {
-                        Value val = this_obj->get_property(std::to_string(start + i));
-                        this_obj->set_property(std::to_string(target + i), val);
+                        std::string from_key = std::to_string(start + i);
+                        std::string to_key = std::to_string(target + i);
+                        if (this_obj->has_property(from_key)) {
+                            this_obj->set_property(to_key, this_obj->get_property(from_key));
+                        } else {
+                            this_obj->delete_property(to_key);
+                        }
+                        if (ctx.has_exception()) return Value();
                     }
                 }
 
@@ -2904,6 +2983,10 @@ void Context::initialize_built_ins() {
             auto is_spreadable = [](Object* obj) -> bool {
                 Value sv = obj->get_property("Symbol.isConcatSpreadable");
                 if (!sv.is_undefined()) return sv.to_boolean();
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    Object* target = static_cast<Proxy*>(obj)->get_proxy_target();
+                    return target && target->is_array();
+                }
                 return obj->is_array();
             };
 
@@ -3320,14 +3403,28 @@ void Context::initialize_built_ins() {
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
                 Value len_val = this_obj->get_property("length");
                 uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                for (uint32_t i = 0; i < length / 2; i++) {
-                    uint32_t j = length - 1 - i;
-                    std::string key_i = std::to_string(i);
-                    std::string key_j = std::to_string(j);
-                    Value a = this_obj->get_property(key_i);
-                    Value b = this_obj->get_property(key_j);
-                    this_obj->set_property(key_i, b);
-                    this_obj->set_property(key_j, a);
+                // Spec: use HasProperty checks to handle holes correctly
+                for (uint32_t lower = 0; lower < length / 2; lower++) {
+                    uint32_t upper = length - 1 - lower;
+                    std::string lower_key = std::to_string(lower);
+                    std::string upper_key = std::to_string(upper);
+                    bool lower_exists = this_obj->has_property(lower_key);
+                    bool upper_exists = this_obj->has_property(upper_key);
+                    if (lower_exists && upper_exists) {
+                        Value a = this_obj->get_property(lower_key);
+                        Value b = this_obj->get_property(upper_key);
+                        this_obj->set_property(lower_key, b);
+                        this_obj->set_property(upper_key, a);
+                    } else if (lower_exists) {
+                        Value a = this_obj->get_property(lower_key);
+                        this_obj->set_property(upper_key, a);
+                        this_obj->delete_property(lower_key);
+                    } else if (upper_exists) {
+                        Value b = this_obj->get_property(upper_key);
+                        this_obj->set_property(lower_key, b);
+                        this_obj->delete_property(upper_key);
+                    }
+                    if (ctx.has_exception()) return Value();
                 }
                 return Value(this_obj);
             }
@@ -3357,9 +3454,16 @@ void Context::initialize_built_ins() {
                     return Value();
                 }
                 Value first = this_obj->get_property("0");
+                // Spec: use HasProperty to handle holes - set or delete each slot
                 for (uint32_t i = 1; i < length; i++) {
-                    Value elem = this_obj->get_property(std::to_string(i));
-                    this_obj->set_property(std::to_string(i - 1), elem);
+                    std::string from_key = std::to_string(i);
+                    std::string to_key = std::to_string(i - 1);
+                    if (this_obj->has_property(from_key)) {
+                        this_obj->set_property(to_key, this_obj->get_property(from_key));
+                    } else {
+                        this_obj->delete_property(to_key);
+                    }
+                    if (ctx.has_exception()) return Value();
                 }
                 this_obj->delete_property(std::to_string(length - 1));
                 this_obj->set_property("length", Value(static_cast<double>(length - 1)));
@@ -3556,14 +3660,26 @@ void Context::initialize_built_ins() {
                 if (item_count > delete_count) {
                     uint32_t shift = item_count - delete_count;
                     for (int32_t i = static_cast<int32_t>(length) - 1; i >= static_cast<int32_t>(start + delete_count); i--) {
-                        Value elem = this_obj->get_property(std::to_string(i));
-                        this_obj->set_property(std::to_string(i + shift), elem);
+                        std::string from_key = std::to_string(i);
+                        std::string to_key = std::to_string(i + shift);
+                        if (this_obj->has_property(from_key)) {
+                            this_obj->set_property(to_key, this_obj->get_property(from_key));
+                        } else {
+                            this_obj->delete_property(to_key);
+                        }
+                        if (ctx.has_exception()) return Value();
                     }
                 } else if (delete_count > item_count) {
                     uint32_t shift = delete_count - item_count;
                     for (uint32_t i = static_cast<uint32_t>(start) + delete_count; i < length; i++) {
-                        Value elem = this_obj->get_property(std::to_string(i));
-                        this_obj->set_property(std::to_string(i - shift), elem);
+                        std::string from_key = std::to_string(i);
+                        std::string to_key = std::to_string(i - shift);
+                        if (this_obj->has_property(from_key)) {
+                            this_obj->set_property(to_key, this_obj->get_property(from_key));
+                        } else {
+                            this_obj->delete_property(to_key);
+                        }
+                        if (ctx.has_exception()) return Value();
                     }
                     for (uint32_t i = new_length; i < length; i++) {
                         this_obj->delete_property(std::to_string(i));
@@ -3660,9 +3776,16 @@ void Context::initialize_built_ins() {
                 Value len_val = this_obj->get_property("length");
                 uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
                 uint32_t argCount = static_cast<uint32_t>(args.size());
+                // Spec: use HasProperty to handle holes - set or delete each slot
                 for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
-                    Value elem = this_obj->get_property(std::to_string(i));
-                    this_obj->set_property(std::to_string(i + argCount), elem);
+                    std::string from_key = std::to_string(i);
+                    std::string to_key = std::to_string(i + argCount);
+                    if (this_obj->has_property(from_key)) {
+                        this_obj->set_property(to_key, this_obj->get_property(from_key));
+                    } else {
+                        this_obj->delete_property(to_key);
+                    }
+                    if (ctx.has_exception()) return Value();
                 }
                 for (uint32_t i = 0; i < argCount; i++) {
                     this_obj->set_property(std::to_string(i), args[i]);
@@ -3988,9 +4111,18 @@ void Context::initialize_built_ins() {
                 bound_args.push_back(args[i]);
             }
 
-            // Read properties through function_obj so Proxy get traps fire for "length"/"name"
-            Value target_length_val = function_obj->get_property("length");
-            double target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
+            // Spec: bind calls HasOwnProperty(Target, "length") → [[GetOwnProperty]] → fires getOwnPropertyDescriptor trap
+            double target_length = 0.0;
+            if (function_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
+                PropertyDescriptor len_desc = proxy_obj->get_own_property_descriptor_trap(Value(std::string("length")));
+                if (len_desc.is_data_descriptor()) {
+                    target_length = len_desc.get_value().is_number() ? len_desc.get_value().as_number() : 0.0;
+                }
+            } else {
+                Value target_length_val = function_obj->get_property("length");
+                target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
+            }
             double bound_length = target_length - static_cast<double>(bound_args.size());
             if (bound_length < 0) bound_length = 0;
             uint32_t bound_arity = static_cast<uint32_t>(bound_length);
@@ -4380,6 +4512,15 @@ void Context::initialize_built_ins() {
                     if (sym_match.is_function()) {
                         return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
                     }
+                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
+                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
+                    if (sym_to_prim.is_function()) {
+                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, pattern);
+                        if (ctx.has_exception()) return Value();
+                        pattern = prim;
+                    } else {
+                        pattern = Value(pattern.to_string());
+                    }
                 }
             }
 
@@ -4500,6 +4641,15 @@ void Context::initialize_built_ins() {
                     if (sym_search.is_function()) {
                         return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
                     }
+                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
+                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
+                    if (sym_to_prim.is_function()) {
+                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, pattern);
+                        if (ctx.has_exception()) return Value(-1.0);
+                        pattern = prim;
+                    } else {
+                        pattern = Value(pattern.to_string());
+                    }
                 }
             }
 
@@ -4591,6 +4741,22 @@ void Context::initialize_built_ins() {
                         if (args.size() >= 2) call_args.push_back(args[1]);
                         return sym_replace.as_function()->call(ctx, call_args, args[0]);
                     }
+                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
+                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
+                    std::string pat_str;
+                    if (sym_to_prim.is_function()) {
+                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, args[0]);
+                        if (ctx.has_exception()) return Value(str);
+                        pat_str = prim.is_undefined() ? "" : prim.to_string();
+                    } else {
+                        pat_str = pat_obj->to_string();
+                    }
+                    std::string replacement = args.size() >= 2 ? args[1].to_string() : "";
+                    size_t pos = str.find(pat_str);
+                    if (pos != std::string::npos) {
+                        return Value(str.substr(0, pos) + replacement + str.substr(pos + pat_str.length()));
+                    }
+                    return Value(str);
                 }
             }
 
@@ -4992,6 +5158,33 @@ void Context::initialize_built_ins() {
                         if (args.size() >= 2) call_args.push_back(args[1]);
                         return sym_split.as_function()->call(ctx, call_args, args[0]);
                     }
+                    // Not a function: ToPrimitive(sep, "string") fires get(Symbol.toPrimitive)
+                    Value sym_to_prim = sep_obj->get_property("Symbol.toPrimitive");
+                    std::string sep_str;
+                    if (sym_to_prim.is_function()) {
+                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, args[0]);
+                        if (ctx.has_exception()) return Value(ObjectFactory::create_array(0).release());
+                        sep_str = (prim.is_undefined() || prim.is_null()) ? "" : prim.to_string();
+                    } else {
+                        sep_str = sep_obj->to_string();
+                    }
+                    // Do string split with sep_str and return
+                    auto split_result = ObjectFactory::create_array(0);
+                    uint32_t split_idx = 0;
+                    if (sep_str.empty()) {
+                        for (size_t ci = 0; ci < str.size(); ci++) {
+                            split_result->set_element(split_idx++, Value(std::string(1, str[ci])));
+                        }
+                    } else {
+                        size_t spos = 0, sfound;
+                        while ((sfound = str.find(sep_str, spos)) != std::string::npos) {
+                            split_result->set_element(split_idx++, Value(str.substr(spos, sfound - spos)));
+                            spos = sfound + sep_str.length();
+                        }
+                        split_result->set_element(split_idx++, Value(str.substr(spos)));
+                    }
+                    split_result->set_length(split_idx);
+                    return Value(split_result.release());
                 }
             }
 
@@ -5708,14 +5901,26 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            if (args.size() > 0 && args[0].is_object()) {
-                Object* template_obj = args[0].as_object();
+            if (args.size() > 0 && (args[0].is_object() || args[0].is_function())) {
+                Object* template_obj = args[0].is_object() ? args[0].as_object()
+                    : static_cast<Object*>(args[0].as_function());
+                // Get raw array via get_property (fires get("raw") trap on Proxy)
                 Value raw_val = template_obj->get_property("raw");
                 if (raw_val.is_object()) {
-                    Object* raw_array = raw_val.as_object();
-                    if (raw_array->is_array() && raw_array->get_length() > 0) {
-                        return raw_array->get_element(0);
+                    Object* raw_obj = raw_val.as_object();
+                    // Get length via get_property (fires get("length") trap on Proxy)
+                    Value len_val = raw_obj->get_property("length");
+                    uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.to_number()) : 0;
+                    std::string result;
+                    for (uint32_t i = 0; i < length; i++) {
+                        if (i > 0 && i < static_cast<uint32_t>(args.size())) {
+                            result += args[i].to_string();
+                        }
+                        // Get element via get_property (fires get("0"), get("1"), ... on Proxy)
+                        Value chunk = raw_obj->get_property(std::to_string(i));
+                        result += chunk.is_undefined() ? "" : chunk.to_string();
                     }
+                    return Value(result);
                 }
             }
 
@@ -8237,17 +8442,99 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);
 
+    // ES6: RegExp.prototype flag data properties (false by default, shadowed by instance props)
+    regexp_prototype->set_property("global", Value(false));
+    regexp_prototype->set_property("ignoreCase", Value(false));
+    regexp_prototype->set_property("multiline", Value(false));
+    regexp_prototype->set_property("unicode", Value(false));
+    regexp_prototype->set_property("sticky", Value(false));
+
+    // ES6: RegExp.prototype.flags accessor (reads flag props via get_property for Proxy support)
+    {
+        auto flags_getter_fn = ObjectFactory::create_native_function("get flags",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                Object* this_obj = ctx.get_this_binding();
+                if (!this_obj) {
+                    ctx.throw_type_error("RegExp.prototype.flags getter called on incompatible receiver");
+                    return Value();
+                }
+                // Check flags in canonical order: g, i, m, u, y (matching prototype properties)
+                std::string result;
+                if (this_obj->get_property("global").to_boolean()) result += "g";
+                if (this_obj->get_property("ignoreCase").to_boolean()) result += "i";
+                if (this_obj->get_property("multiline").to_boolean()) result += "m";
+                if (this_obj->get_property("unicode").to_boolean()) result += "u";
+                if (this_obj->get_property("sticky").to_boolean()) result += "y";
+                return Value(result);
+            });
+        PropertyDescriptor flags_desc;
+        flags_desc.set_getter(flags_getter_fn.release());
+        flags_desc.set_enumerable(false);
+        flags_desc.set_configurable(true);
+        regexp_prototype->set_property_descriptor("flags", flags_desc);
+    }
+
+    // ES6: RegExp.prototype.test - generic function that calls this.exec
+    auto regexp_test_fn = ObjectFactory::create_native_function("test",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
+                return Value();
+            }
+            std::string str = args.empty() ? "" : args[0].to_string();
+            // Call this.exec via get_property (fires get("exec") trap on Proxy)
+            Value exec_fn = this_obj->get_property("exec");
+            if (exec_fn.is_function()) {
+                Value result = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+                return Value(!result.is_null() && !result.is_undefined());
+            }
+            return Value(false);
+        }, 1);
+    regexp_prototype->set_property("test", Value(regexp_test_fn.release()), PropertyAttributes::BuiltinFunction);
+
     // ES6: RegExp.prototype[Symbol.match/replace/search/split]
     auto regexp_sym_match = ObjectFactory::create_native_function("[Symbol.match]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             std::string str = args.empty() ? "" : args[0].to_string();
-            Value exec_fn = this_obj->get_property("exec");
-            if (exec_fn.is_function()) {
-                return exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+            // Check global flag via get_property (fires get("global") trap on Proxy)
+            Value global_val = this_obj->get_property("global");
+            bool is_global = global_val.to_boolean();
+            if (!is_global) {
+                // Non-global: call exec once
+                Value exec_fn = this_obj->get_property("exec");
+                if (exec_fn.is_function()) {
+                    return exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                }
+                return Value::null();
             }
-            return Value::null();
+            // Global: also check unicode, then loop exec
+            Value unicode_val = this_obj->get_property("unicode");
+            (void)unicode_val;
+            this_obj->set_property("lastIndex", Value(0.0));
+            auto result_array = ObjectFactory::create_array();
+            size_t match_count = 0;
+            Value exec_fn = this_obj->get_property("exec");
+            if (!exec_fn.is_function()) return Value::null();
+            Function* exec_func = exec_fn.as_function();
+            size_t safety = 0;
+            const size_t max_iter = str.length() + 2;
+            while (safety++ < max_iter) {
+                Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+                if (match.is_null()) break;
+                if (match.is_object()) {
+                    Value matched = match.as_object()->get_element(0);
+                    result_array->set_element(match_count++, matched);
+                }
+            }
+            if (match_count == 0) return Value::null();
+            result_array->set_length(static_cast<uint32_t>(match_count));
+            return Value(result_array.release());
         }, 1);
     regexp_prototype->set_property("Symbol.match", Value(regexp_sym_match.release()), PropertyAttributes::BuiltinFunction);
 
@@ -8257,25 +8544,46 @@ void Context::initialize_built_ins() {
             if (!this_obj) return Value();
             std::string str = args.size() > 0 ? args[0].to_string() : "";
             Value replace_val = args.size() > 1 ? args[1] : Value();
-            // Delegate to String.prototype.replace logic via exec
-            Value exec_fn = this_obj->get_property("exec");
-            if (exec_fn.is_function()) {
-                Value match = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
-                if (match.is_null() || match.is_undefined()) return Value(str);
-                if (match.is_object()) {
-                    Value matched = match.as_object()->get_property("0");
-                    Value index_val = match.as_object()->get_property("index");
-                    int index = static_cast<int>(index_val.to_number());
-                    std::string matched_str = matched.to_string();
-                    std::string replacement = replace_val.is_function() ? "" : replace_val.to_string();
-                    if (replace_val.is_function()) {
-                        Value r = replace_val.as_function()->call(ctx, {matched, Value(static_cast<double>(index)), Value(str)}, Value());
-                        replacement = r.to_string();
+            // Check global flag via get_property (fires get("global") trap on Proxy)
+            Value global_val = this_obj->get_property("global");
+            bool is_global = global_val.to_boolean();
+            if (!is_global) {
+                // Non-global: call exec once
+                Value exec_fn = this_obj->get_property("exec");
+                if (exec_fn.is_function()) {
+                    Value match = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                    if (match.is_null() || match.is_undefined()) return Value(str);
+                    if (match.is_object()) {
+                        Value matched = match.as_object()->get_property("0");
+                        Value index_val = match.as_object()->get_property("index");
+                        int index = static_cast<int>(index_val.to_number());
+                        std::string matched_str = matched.to_string();
+                        std::string replacement = replace_val.is_function() ? "" : replace_val.to_string();
+                        if (replace_val.is_function()) {
+                            Value r = replace_val.as_function()->call(ctx, {matched, Value(static_cast<double>(index)), Value(str)}, Value());
+                            replacement = r.to_string();
+                        }
+                        return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
                     }
-                    return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
                 }
+                return Value(str);
             }
-            return Value(str);
+            // Global: also check unicode, then loop exec
+            Value unicode_val = this_obj->get_property("unicode");
+            (void)unicode_val;
+            this_obj->set_property("lastIndex", Value(0.0));
+            Value exec_fn = this_obj->get_property("exec");
+            if (!exec_fn.is_function()) return Value(str);
+            Function* exec_func = exec_fn.as_function();
+            std::string result = str;
+            size_t safety = 0;
+            const size_t max_iter = str.length() + 2;
+            while (safety++ < max_iter) {
+                Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+                if (match.is_null()) break;
+            }
+            return Value(result);
         }, 2);
     regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
 
@@ -8284,13 +8592,26 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(-1.0);
             std::string str = args.empty() ? "" : args[0].to_string();
+            // Save previousLastIndex via get_property (fires get("lastIndex") trap on Proxy)
+            Value prev_last_index = this_obj->get_property("lastIndex");
+            // Set lastIndex to 0
+            this_obj->set_property("lastIndex", Value(0.0));
+            // Call exec via get_property (fires get("exec") trap on Proxy)
             Value exec_fn = this_obj->get_property("exec");
+            Value result_val;
             if (exec_fn.is_function()) {
-                Value result = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
-                if (result.is_null() || result.is_undefined()) return Value(-1.0);
-                if (result.is_object()) {
-                    return result.as_object()->get_property("index");
-                }
+                result_val = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+            }
+            // Read current lastIndex (fires get("lastIndex") again)
+            Value cur_last_index = this_obj->get_property("lastIndex");
+            // Restore previousLastIndex if changed
+            if (cur_last_index.to_string() != prev_last_index.to_string()) {
+                this_obj->set_property("lastIndex", prev_last_index);
+            }
+            if (result_val.is_null() || result_val.is_undefined()) return Value(-1.0);
+            if (result_val.is_object()) {
+                return result_val.as_object()->get_property("index");
             }
             return Value(-1.0);
         }, 1);
@@ -8301,11 +8622,16 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             std::string str = args.size() > 0 ? args[0].to_string() : "";
-            // Simple split: use the regex to split the string
+            // Step 1: Get constructor (for species) via get_property (fires get("constructor") on Proxy)
+            Value ctor_val = this_obj->get_property("constructor");
+            (void)ctor_val;
+            // Step 2: Get flags via get_property (fires get("flags") on Proxy)
+            Value flags_val = this_obj->get_property("flags");
+            (void)flags_val;
+            // Step 3: Get exec and use it (fires get("exec") on Proxy)
             auto result = ObjectFactory::create_array();
             Value exec_fn = this_obj->get_property("exec");
             if (!exec_fn.is_function()) return Value(result.release());
-            size_t last = 0;
             uint32_t idx = 0;
             std::string remaining = str;
             while (!remaining.empty()) {

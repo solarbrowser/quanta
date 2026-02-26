@@ -589,6 +589,7 @@ Token Lexer::read_template_literal() {
     std::string cooked;
     std::string raw;
     bool has_expressions = false;
+    bool cooked_valid = true;  // ES2018: invalid escapes → undefined cooked
 
     while (!at_end() && current_char() != '`') {
         if (current_char() == '$' && peek_char() == '{') {
@@ -608,8 +609,16 @@ Token Lexer::read_template_literal() {
         } else if (current_char() == '\\') {
             // For raw: capture source characters before escape processing
             size_t raw_start = position_;
-            cooked += parse_escape_sequence();
+            size_t error_count_before = errors_.size();
+            std::string cooked_char = parse_escape_sequence();
             raw += source_.substr(raw_start, position_ - raw_start);
+            if (errors_.size() > error_count_before) {
+                // Invalid escape sequence - suppress for tagged template (ES2018)
+                errors_.resize(error_count_before);
+                cooked_valid = false;
+            } else if (cooked_valid) {
+                cooked += cooked_char;
+            }
         } else if (current_char() == '\r') {
             // ES6: Normalize CR and CRLF to LF in template literals
             advance();
@@ -630,6 +639,11 @@ Token Lexer::read_template_literal() {
     }
 
     advance();
+
+    // If any invalid escape was found, mark cooked as undefined (ES2018 tagged template)
+    if (!cooked_valid) {
+        cooked = "\x01";  // sentinel: undefined cooked value
+    }
 
     // Encode both cooked and raw in token value, separated by \0
     return create_token(TokenType::TEMPLATE_LITERAL, cooked + '\0' + raw, start);

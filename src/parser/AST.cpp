@@ -3468,7 +3468,12 @@ Value CallExpression::evaluate(Context& ctx) {
                 auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
                 strings_array = strings_obj.release();
                 for (size_t i = 0; i < cooked_parts.size(); i++) {
-                    strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                    if (cooked_parts[i] == "\x01") {
+                        // ES2018: invalid escape in tagged template -> cooked = undefined
+                        strings_array->set_property(std::to_string(i), Value());
+                    } else {
+                        strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                    }
                 }
                 strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
 

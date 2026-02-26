@@ -622,12 +622,13 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                 }
             }
 
-            if (effective_obj && effective_obj->has_property("toJSON") && context_) {
-                Value toJSON_val = effective_obj->get_property("toJSON");
+            // Per spec: always [[Get]] toJSON (invokes Proxy get trap via virtual dispatch)
+            if (obj && context_) {
+                Value toJSON_val = obj->get_property("toJSON");
                 if (toJSON_val.is_function()) {
                     Function* toJSON_fn = toJSON_val.as_function();
                     std::vector<Value> args;
-                    Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(effective_obj)));
+                    Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(obj)));
                     if (!context_->has_exception()) {
                         return stringify_value(result);
                     }
