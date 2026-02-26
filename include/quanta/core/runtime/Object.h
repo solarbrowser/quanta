@@ -109,18 +109,18 @@ public:
     void set_prototype(Object* prototype);
     bool has_prototype(Object* prototype) const;
     
-    bool has_property(const std::string& key) const;
+    virtual bool has_property(const std::string& key) const;
     bool has_own_property(const std::string& key) const;
-    
+
     virtual Value get_property(const std::string& key) const;
     Value get_property(const Value& key) const;
     Value get_own_property(const std::string& key) const;
 
     virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
-    bool delete_property(const std::string& key);
+    virtual bool delete_property(const std::string& key);
     
-    Value get_element(uint32_t index) const;
+    virtual Value get_element(uint32_t index) const;
 
     // fp: unchecked array access
     inline Value get_element_unchecked(uint32_t index) const {
@@ -144,7 +144,7 @@ public:
     bool is_sealed() const;
     bool is_frozen() const;
     
-    uint32_t get_length() const;
+    virtual uint32_t get_length() const;
     void set_length(uint32_t length);
     void push(const Value& value);
     Value pop();
