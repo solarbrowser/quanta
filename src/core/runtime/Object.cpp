@@ -304,15 +304,15 @@ Value Object::get_own_property(const std::string& key) const {
                 if (getter) {
                     Function* getter_fn = dynamic_cast<Function*>(getter);
                     if (getter_fn) {
-                        std::string getter_name = getter_fn->get_name();
-                        if (getter_name.find("get [Symbol.") == 0) {
-                            if (this->is_function()) {
-                                return Value(const_cast<Function*>(static_cast<const Function*>(this)));
-                            }
-                            return Value(const_cast<Object*>(this));
+                        if (!getter_fn->is_native() && current_context_) {
+                            // Call user-defined (JS) getter
+                            return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                         }
-
-                        return Value();
+                        // Built-in native getter: return this (for Symbol.species etc.)
+                        if (this->is_function()) {
+                            return Value(const_cast<Function*>(static_cast<const Function*>(this)));
+                        }
+                        return Value(const_cast<Object*>(this));
                     }
                 }
             }

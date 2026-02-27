@@ -603,42 +603,49 @@ Value Date::toISOString(Context& ctx, const std::vector<Value>& args) {
 Value Date::toJSON(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
-        return Value::null();
+    if (!date_obj) return Value::null();
+
+    // ES6 spec: Date.prototype.toJSON
+    // Step 1: ToPrimitive(this, "number") — fires get traps on Proxy
+    Value prim_val;
+
+    // Try Symbol.toPrimitive first (fires get(Symbol.toPrimitive) trap on Proxy)
+    Value sym_to_prim = date_obj->get_property("Symbol.toPrimitive");
+    if (sym_to_prim.is_function()) {
+        prim_val = sym_to_prim.as_function()->call(ctx, {Value(std::string("number"))}, Value(date_obj));
+        if (ctx.has_exception()) return Value();
+    } else {
+        // OrdinaryToPrimitive("number"): try "valueOf" then "toString"
+        Value valueOf_fn = date_obj->get_property("valueOf");  // fires get("valueOf") on Proxy
+        if (valueOf_fn.is_function()) {
+            Value v = valueOf_fn.as_function()->call(ctx, {}, Value(date_obj));
+            if (ctx.has_exception()) return Value();
+            if (!v.is_object() && !v.is_function()) {
+                prim_val = v;
+            }
+        }
+        if (prim_val.is_undefined()) {
+            Value toString_fn = date_obj->get_property("toString");  // fires get("toString") on Proxy
+            if (toString_fn.is_function()) {
+                prim_val = toString_fn.as_function()->call(ctx, {}, Value(date_obj));
+                if (ctx.has_exception()) return Value();
+            }
+        }
     }
 
-    Value timestamp_val = date_obj->get_property("_timestamp");
-    double timestamp = timestamp_val.to_number();
-
-    // If timestamp is NaN or infinite, return null (not throw error)
-    if (std::isnan(timestamp) || std::isinf(timestamp)) {
-        return Value::null();
+    // If prim_val is Number and not finite, return null
+    if (prim_val.is_number()) {
+        double tv = prim_val.to_number();
+        if (std::isnan(tv) || std::isinf(tv)) return Value::null();
     }
 
-    // Convert timestamp to UTC time
-    std::time_t tt = static_cast<std::time_t>(timestamp / 1000);
-    std::tm* utc_time = std::gmtime(&tt);
-
-    if (!utc_time) {
-        return Value::null();
+    // Step 2: Get "toISOString" and call it (fires get("toISOString") on Proxy)
+    Value toISO_fn = date_obj->get_property("toISOString");
+    if (!toISO_fn.is_function()) {
+        ctx.throw_type_error("toISOString is not a function");
+        return Value();
     }
-
-    // Get milliseconds
-    double ms_part = std::fmod(timestamp, 1000.0);
-    if (ms_part < 0) ms_part += 1000.0;
-    int milliseconds = static_cast<int>(ms_part);
-
-    std::ostringstream oss;
-    oss << std::setfill('0')
-        << std::setw(4) << (utc_time->tm_year + 1900) << "-"
-        << std::setw(2) << (utc_time->tm_mon + 1) << "-"
-        << std::setw(2) << utc_time->tm_mday << "T"
-        << std::setw(2) << utc_time->tm_hour << ":"
-        << std::setw(2) << utc_time->tm_min << ":"
-        << std::setw(2) << utc_time->tm_sec << "."
-        << std::setw(3) << milliseconds << "Z";
-
-    return Value(oss.str());
+    return toISO_fn.as_function()->call(ctx, {}, Value(date_obj));
 }
 
 double Date::getTimestamp() const {
