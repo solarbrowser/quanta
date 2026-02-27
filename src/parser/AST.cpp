@@ -8103,43 +8103,50 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             // Constructor's [[Prototype]] is Function.prototype (default)
         } else if (super_constructor.is_object_like() && super_constructor.as_object()) {
             Object* super_obj = super_constructor.as_object();
+            Function* super_fn = nullptr;
             if (super_obj->is_function()) {
-                Function* super_fn = static_cast<Function*>(super_obj);
+                super_fn = static_cast<Function*>(super_obj);
+            } else if (super_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy_super = static_cast<Proxy*>(super_obj);
+                Object* target = proxy_super->get_proxy_target();
+                if (target && target->is_function()) {
+                    super_fn = static_cast<Function*>(target);
+                }
+            }
+            if (super_fn && constructor_fn.get()) {
+                // C's [[Prototype]] = B (so B.isPrototypeOf(C) === true)
+                constructor_fn->set_prototype(super_fn);
+                constructor_fn->set_property("__super_constructor__", Value(super_fn));
 
-                if (super_fn && constructor_fn.get()) {
-                    // C's [[Prototype]] = B (so B.isPrototypeOf(C) === true)
-                    constructor_fn->set_prototype(super_fn);
-                    constructor_fn->set_property("__super_constructor__", Value(super_fn));
-
-                    // Set __super_constructor__ on instance methods for static super binding
-                    if (proto_ptr) {
-                        auto method_keys = proto_ptr->get_own_property_keys();
-                        for (const auto& mkey : method_keys) {
-                            if (mkey == "constructor") continue;
-                            Value mval = proto_ptr->get_property(mkey);
-                            if (mval.is_function()) {
-                                mval.as_function()->set_property("__super_constructor__", Value(super_fn));
-                            }
-                            PropertyDescriptor mdesc = proto_ptr->get_property_descriptor(mkey);
-                            if (mdesc.has_getter() && mdesc.get_getter()) {
-                                static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
-                            }
-                            if (mdesc.has_setter() && mdesc.get_setter()) {
-                                static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
-                            }
+                // Set __super_constructor__ on instance methods for static super binding
+                if (proto_ptr) {
+                    auto method_keys = proto_ptr->get_own_property_keys();
+                    for (const auto& mkey : method_keys) {
+                        if (mkey == "constructor") continue;
+                        Value mval = proto_ptr->get_property(mkey);
+                        if (mval.is_function()) {
+                            mval.as_function()->set_property("__super_constructor__", Value(super_fn));
+                        }
+                        PropertyDescriptor mdesc = proto_ptr->get_property_descriptor(mkey);
+                        if (mdesc.has_getter() && mdesc.get_getter()) {
+                            static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                        }
+                        if (mdesc.has_setter() && mdesc.get_setter()) {
+                            static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
                         }
                     }
+                }
 
-                    // C.prototype's [[Prototype]] = B.prototype
-                    Value super_proto_val = super_fn->get_property("prototype");
-                    if (super_proto_val.is_object() && proto_ptr) {
-                        proto_ptr->set_prototype(super_proto_val.as_object());
-                    }
+                // C.prototype's [[Prototype]] = B.prototype
+                // Use super_obj->get_property to fire get trap on Proxy
+                Value super_proto_val = super_obj->get_property("prototype");
+                if (super_proto_val.is_object() && proto_ptr) {
+                    proto_ptr->set_prototype(super_proto_val.as_object());
                 }
             }
         }
     }
-    
+
     // ES6: Class name is lexically scoped inside class methods
     // Set __closure_{className} on all methods so they can reference the class by name
     std::string closure_key = "__closure_" + class_name;

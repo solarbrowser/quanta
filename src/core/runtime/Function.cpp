@@ -658,6 +658,10 @@ bool Function::set_property(const std::string& key, const Value& value, Property
             prototype_ = value.as_object();
             return true;
         }
+        if (value.is_function()) {
+            prototype_ = value.as_function();
+            return true;
+        }
         prototype_ = nullptr;
         return true;
     }

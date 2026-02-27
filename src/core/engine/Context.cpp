@@ -28,7 +28,6 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
-#include <fstream>
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -1283,7 +1282,13 @@ void Context::initialize_built_ins() {
             }
 
             Object* properties = args[1].as_object();
-            auto prop_names = properties->get_own_property_keys();
+            // For Proxy, use ownKeys trap so the target's own keys are enumerated
+            std::vector<std::string> prop_names;
+            if (properties->get_type() == Object::ObjectType::Proxy) {
+                prop_names = static_cast<Proxy*>(properties)->own_keys_trap();
+            } else {
+                prop_names = properties->get_own_property_keys();
+            }
 
             for (const auto& prop_name : prop_names) {
                 Value descriptor_val = properties->get_property(prop_name);
@@ -4003,8 +4008,16 @@ void Context::initialize_built_ins() {
             return Value();
         });
     
-    auto function_prototype = ObjectFactory::create_object();
-    
+    // Function.prototype must be callable (spec: it's an intrinsic function object)
+    // Create it as a native function that returns undefined when called.
+    // NOTE: create_native_function checks get_function_prototype() which is null at this point,
+    // so the proto of function_prototype won't be set here; it will be set later (Object.prototype).
+    auto function_prototype_fn = ObjectFactory::create_native_function("",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx; (void)args; return Value();
+        });
+    auto function_prototype = std::unique_ptr<Object>(static_cast<Object*>(function_prototype_fn.release()));
+
     // Set function prototype early so create_native_function can use it
     Object* function_proto_ptr = function_prototype.get();
     ObjectFactory::set_function_prototype(function_proto_ptr);
@@ -4111,15 +4124,9 @@ void Context::initialize_built_ins() {
                 bound_args.push_back(args[i]);
             }
 
-            // Spec: bind calls HasOwnProperty(Target, "length") → [[GetOwnProperty]] → fires getOwnPropertyDescriptor trap
+            // Spec: bind calls Get(Target, "length") → fires get trap on Proxy
             double target_length = 0.0;
-            if (function_obj->get_type() == Object::ObjectType::Proxy) {
-                Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
-                PropertyDescriptor len_desc = proxy_obj->get_own_property_descriptor_trap(Value(std::string("length")));
-                if (len_desc.is_data_descriptor()) {
-                    target_length = len_desc.get_value().is_number() ? len_desc.get_value().as_number() : 0.0;
-                }
-            } else {
+            {
                 Value target_length_val = function_obj->get_property("length");
                 target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
             }
@@ -8298,22 +8305,49 @@ void Context::initialize_built_ins() {
 
     auto regexp_constructor = ObjectFactory::create_native_constructor("RegExp",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() > 0 && args[0].is_object() && args.size() == 1) {
-                Object* obj = args[0].as_object();
-                Value is_regexp = obj->get_property("_isRegExp");
-                if (is_regexp.is_boolean() && is_regexp.to_boolean()) {
-                    return args[0];
-                }
-            }
-
+            // ES6: Check IsRegExp(pattern) via Symbol.match
+            bool pattern_is_regexp = false;
             std::string pattern = "";
-            std::string flags = "";
+            std::string flags = args.size() > 1 ? args[1].to_string() : "";
 
-            if (args.size() > 0) {
+            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
+                Object* pat_obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
+                // IsRegExp: check Symbol.match (fires get trap on Proxy)
+                Value sym_match = pat_obj->get_property("Symbol.match");
+                if (!sym_match.is_undefined()) {
+                    pattern_is_regexp = sym_match.to_boolean();
+                } else {
+                    // Fallback: check internal _isRegExp flag
+                    Value is_regexp = pat_obj->get_property("_isRegExp");
+                    pattern_is_regexp = is_regexp.is_boolean() && is_regexp.to_boolean();
+                }
+
+                if (pattern_is_regexp) {
+                    // Get constructor to check if it matches current RegExp
+                    Value ctor = pat_obj->get_property("constructor");  // fires get("constructor") on Proxy
+                    Value current_regexp = ctx.get_binding("RegExp");
+                    bool ctor_matches = false;
+                    if (ctor.is_function() && current_regexp.is_function()) {
+                        ctor_matches = (ctor.as_function() == current_regexp.as_function());
+                    }
+                    if (ctor_matches && args.size() < 2) {
+                        // Same constructor and no flags override: return pattern as-is
+                        return args[0];
+                    }
+                    // Different constructor or flags provided: get source and flags
+                    Value src = pat_obj->get_property("source");  // fires get("source") on Proxy
+                    pattern = src.is_undefined() ? "" : src.to_string();
+                    if (args.size() < 2) {
+                        Value fl = pat_obj->get_property("flags");  // fires get("flags") on Proxy
+                        flags = fl.is_undefined() ? "" : fl.to_string();
+                    }
+                } else {
+                    pattern = pat_obj->get_property("_isRegExp").is_undefined() ? args[0].to_string() : "";
+                    // For ordinary objects without IsRegExp, convert to string
+                    pattern = args[0].to_string();
+                }
+            } else if (!args.empty()) {
                 pattern = args[0].to_string();
-            }
-            if (args.size() > 1) {
-                flags = args[1].to_string();
             }
 
             try {
@@ -12553,88 +12587,8 @@ void Context::trigger_gc() {
     }
 }
 
-// Bootstrap loading - Load essential test262 harness files
 void Context::load_bootstrap() {
-    if (!engine_) return;
-
-    // Define $262 object required by test262
-    std::string test262_object = R"(
-var $262 = {
-    // IsHTMLDDA - emulates HTML document.all behavior (falsy object)
-    IsHTMLDDA: {},
-
-    // createRealm - creates a new realm (not fully implemented yet)
-    createRealm: function() {
-        return {
-            global: globalThis
-        };
-    },
-
-    // evalScript - evaluates script in current realm
-    evalScript: function(code) {
-        return eval(code);
-    },
-
-    // detachArrayBuffer - detaches an array buffer
-    detachArrayBuffer: function(buffer) {
-        // Not fully implemented yet
-    },
-
-    // gc - trigger garbage collection (no-op for now)
-    gc: function() {
-        // No-op
-    },
-
-    // agent - agent API for shared memory tests
-    agent: {
-        start: function() {},
-        broadcast: function() {},
-        getReport: function() { return null; },
-        sleep: function() {},
-        monotonicNow: function() { return Date.now(); }
-    }
-};
-)";
-
-    // Execute $262 definition
-    try {
-        auto result = engine_->execute(test262_object, "$262-definition");
-        if (!result.success) {
-            std::cerr << "Warning: Failed to define $262 object: " << result.error_message << std::endl;
-        }
-    } catch (...) {
-        std::cerr << "Exception while defining $262 object" << std::endl;
-    }
-
-    // List of essential harness files in correct order
-    const char* harness_files[] = {
-        "test262/harness/sta.js",           // Test262Error, $DONOTEVALUATE
-        "test262/harness/assert.js",        // assert functions
-        "test262/harness/propertyHelper.js",// verifyProperty and related
-        "test262/harness/isConstructor.js", // isConstructor
-        "test262/harness/compareArray.js"   // compareArray
-    };
-
-    // Load each harness file
-    for (const char* harness_path : harness_files) {
-        std::ifstream file(harness_path);
-        if (file.is_open()) {
-            std::string harness_code((std::istreambuf_iterator<char>(file)),
-                                     std::istreambuf_iterator<char>());
-            file.close();
-
-            try {
-                auto result = engine_->execute(harness_code, harness_path);
-                if (!result.success) {
-                    // Harness loading failed, but continue with next file
-                    std::cerr << "Warning: Failed to load " << harness_path << ": " << result.error_message << std::endl;
-                }
-            } catch (...) {
-                // Silently ignore errors and continue with next file
-                std::cerr << "Exception while loading harness file" << std::endl;
-            }
-        }
-    }
+    // Harness injection removed - kangax-es6 tests are self-contained
 }
 
 }

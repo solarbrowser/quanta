@@ -474,9 +474,53 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     }
 
     Context* ctx = Object::current_context_;
-    if (ctx) return target_fn->construct(*ctx, args);
+    if (!ctx) return Value();
 
-    return Value();
+    // Per spec: GetPrototypeFromConstructor fires get("prototype") on the proxy (new target)
+    Value proto_val = get_trap(Value(std::string("prototype")));
+    if (ctx->has_exception()) return Value();
+
+    // Create new object with proxy's prototype
+    auto new_object = ObjectFactory::create_object();
+    if (proto_val.is_object()) {
+        new_object->set_prototype(proto_val.as_object());
+    } else {
+        Value target_proto = target_fn->get_property("prototype");
+        if (target_proto.is_object()) {
+            new_object->set_prototype(target_proto.as_object());
+        }
+    }
+
+    Value this_value(new_object.get());
+
+    Value super_constructor_prop = target_fn->get_property("__super_constructor__");
+    if (!super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        ctx->create_binding("__super__", super_constructor_prop);
+    }
+
+    ctx->set_in_constructor_call(true);
+    ctx->set_super_called(false);
+    ctx->set_new_target(Value(static_cast<Object*>(this)));
+    Value result = target_fn->call(*ctx, args, this_value);
+    bool super_was_called = ctx->was_super_called();
+    ctx->set_in_constructor_call(false);
+    ctx->set_new_target(Value());
+    if (ctx->has_exception()) return Value();
+
+    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        Function* super_ctor = super_constructor_prop.as_function();
+        ctx->set_in_constructor_call(true);
+        ctx->set_new_target(Value(static_cast<Object*>(this)));
+        Value super_result = super_ctor->call(*ctx, args, this_value);
+        ctx->set_in_constructor_call(false);
+        ctx->set_new_target(Value());
+        if (!super_result.is_undefined()) result = super_result;
+    }
+
+    if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
+        return result;
+    }
+    return Value(new_object.release());
 }
 
 bool Proxy::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
