@@ -7119,13 +7119,22 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 
 
 Value ForInStatement::evaluate(Context& ctx) {
-    // ES6: Hoist var declaration so variable exists even if loop body never executes
+    // ES6/AnnexB: Hoist var declaration. If there's an initializer (e.g. for(var i=0 in obj)),
+    // execute it now (Annex B legacy: initializer runs once before the loop).
     if (left_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* vd = static_cast<VariableDeclaration*>(left_.get());
         if (vd->get_kind() == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
-            std::string vname = vd->get_declarations()[0]->get_id()->get_name();
+            auto* decl = vd->get_declarations()[0].get();
+            std::string vname = decl->get_id()->get_name();
+            Value init_val;
+            if (decl->get_init()) {
+                init_val = decl->get_init()->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+            }
             if (!ctx.has_binding(vname)) {
-                ctx.create_binding(vname, Value(), true);
+                ctx.create_binding(vname, init_val, true);
+            } else if (decl->get_init()) {
+                ctx.set_binding(vname, init_val);
             }
         }
     }
@@ -8424,12 +8433,71 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
 
 Value ArrowFunctionExpression::evaluate(Context& ctx) {
     std::string name = "<arrow>";
-    
+
+    // Async arrow function: delegate to AsyncFunction with arrow semantics
+    if (is_async_) {
+        std::vector<std::string> param_names;
+        for (const auto& param : params_) {
+            param_names.push_back(param->get_name()->get_name());
+        }
+
+        auto* async_fn = new AsyncFunction(name, param_names, body_->clone(), &ctx);
+        async_fn->set_is_arrow(true);
+        async_fn->set_is_constructor(false);
+
+        // Capture lexical this from enclosing scope
+        if (ctx.has_binding("this")) {
+            async_fn->set_property("__arrow_this__", ctx.get_binding("this"));
+        }
+
+        // Set AsyncFunction.prototype so `p instanceof Promise` works on the return value
+        if (ctx.has_binding("AsyncFunction")) {
+            Value async_ctor = ctx.get_binding("AsyncFunction");
+            if (async_ctor.is_function()) {
+                Value proto = async_ctor.as_function()->get_property("prototype");
+                if (proto.is_object()) {
+                    async_fn->set_prototype(proto.as_object());
+                }
+            }
+        }
+
+        // Capture closure variables from enclosing scope
+        std::set<std::string> async_param_set(param_names.begin(), param_names.end());
+        auto var_env = ctx.get_variable_environment();
+        if (var_env) {
+            for (const auto& bname : var_env->get_binding_names()) {
+                if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
+                    Value value = ctx.get_binding(bname);
+                    if (!value.is_undefined()) {
+                        async_fn->set_property("__closure_" + bname, value);
+                    }
+                }
+            }
+        }
+        auto lex_env = ctx.get_lexical_environment();
+        Environment* walk = lex_env;
+        while (walk && walk != var_env) {
+            for (const auto& bname : walk->get_binding_names()) {
+                if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
+                    if (!async_fn->has_property("__closure_" + bname)) {
+                        Value value = ctx.get_binding(bname);
+                        if (!value.is_undefined()) {
+                            async_fn->set_property("__closure_" + bname, value);
+                        }
+                    }
+                }
+            }
+            walk = walk->get_outer();
+        }
+
+        return Value(async_fn);
+    }
+
     std::vector<std::unique_ptr<Parameter>> param_clones;
     for (const auto& param : params_) {
         param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
     }
-    
+
     auto arrow_function = ObjectFactory::create_js_function(
         name,
         std::move(param_clones),
@@ -8825,15 +8893,26 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 
 Value AsyncFunctionExpression::evaluate(Context& ctx) {
     std::string function_name = id_ ? id_->get_name() : "anonymous";
-    
+
     std::vector<std::string> param_names;
     for (const auto& param : params_) {
         param_names.push_back(param->get_name()->get_name());
     }
-    
-    auto function_value = Value(new AsyncFunction(function_name, param_names, std::unique_ptr<ASTNode>(body_->clone().release()), &ctx));
-    
-    return function_value;
+
+    auto* fn = new AsyncFunction(function_name, param_names, std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
+
+    // Set [[Prototype]] to AsyncFunction.prototype for correct prototype chain
+    if (ctx.has_binding("AsyncFunction")) {
+        Value async_ctor = ctx.get_binding("AsyncFunction");
+        if (async_ctor.is_function()) {
+            Value proto = async_ctor.as_function()->get_property("prototype");
+            if (proto.is_object()) {
+                fn->set_prototype(proto.as_object());
+            }
+        }
+    }
+
+    return Value(fn);
 }
 
 std::string AsyncFunctionExpression::to_string() const {

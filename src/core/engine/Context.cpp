@@ -1037,12 +1037,7 @@ void Context::initialize_built_ins() {
 
             Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
 
-            std::string prop_name;
-            if (args[1].is_symbol()) {
-                prop_name = args[1].as_symbol()->get_description();
-            } else {
-                prop_name = args[1].to_string();
-            }
+            std::string prop_name = args[1].to_property_key();
 
             PropertyDescriptor desc;
             if (obj->get_type() == Object::ObjectType::Proxy) {
@@ -1842,6 +1837,64 @@ void Context::initialize_built_ins() {
     proto_desc.set_enumerable(false);
     proto_desc.set_configurable(true);
     object_proto_ptr->set_property_descriptor("__proto__", proto_desc);
+
+    // ES2017 Annex B: Object.prototype.__defineGetter__ / __defineSetter__
+    auto define_getter_fn = ObjectFactory::create_native_function("__defineGetter__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // get_this_binding() returns nullptr when this was null/undefined (see Function::call)
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Cannot convert undefined or null to object");
+                return Value();
+            }
+            if (args.size() < 2 || !args[1].is_function()) {
+                ctx.throw_type_error("__defineGetter__: getter must be a function");
+                return Value();
+            }
+            std::string key = args[0].to_property_key();
+            PropertyDescriptor desc;
+            desc.set_getter(args[1].as_function());
+            desc.set_enumerable(true);
+            desc.set_configurable(true);
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc);
+            } else {
+                this_obj->set_property_descriptor(key, desc);
+            }
+            return Value();
+        }, 2);
+
+    auto define_setter_fn = ObjectFactory::create_native_function("__defineSetter__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // get_this_binding() returns nullptr when this was null/undefined (see Function::call)
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("Cannot convert undefined or null to object");
+                return Value();
+            }
+            if (args.size() < 2 || !args[1].is_function()) {
+                ctx.throw_type_error("__defineSetter__: setter must be a function");
+                return Value();
+            }
+            std::string key = args[0].to_property_key();
+            PropertyDescriptor desc;
+            desc.set_setter(args[1].as_function());
+            desc.set_enumerable(true);
+            desc.set_configurable(true);
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc);
+            } else {
+                this_obj->set_property_descriptor(key, desc);
+            }
+            return Value();
+        }, 2);
+
+    PropertyAttributes define_getter_setter_attrs = static_cast<PropertyAttributes>(
+        PropertyAttributes::Writable | PropertyAttributes::Configurable);
+    object_proto_ptr->set_property_descriptor("__defineGetter__",
+        PropertyDescriptor(Value(define_getter_fn.release()), define_getter_setter_attrs));
+    object_proto_ptr->set_property_descriptor("__defineSetter__",
+        PropertyDescriptor(Value(define_setter_fn.release()), define_getter_setter_attrs));
 
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
@@ -10018,10 +10071,93 @@ void Context::initialize_built_ins() {
     register_built_in_object("ArrayBuffer", arraybuffer_constructor.release());
     
     register_typed_array_constructors();
-    
+
+    // ES2017: Atomics object with stub operations
+    {
+        auto atomics_obj = ObjectFactory::create_object();
+        const char* atomics_ops[] = {
+            "add","and","compareExchange","exchange","isLockFree",
+            "load","notify","or","store","sub","wait","xor", nullptr
+        };
+        for (int i = 0; atomics_ops[i]; ++i) {
+            std::string op_name = atomics_ops[i];
+            auto op_fn = ObjectFactory::create_native_function(op_name,
+                [](Context&, const std::vector<Value>&) -> Value { return Value(0.0); }, 3);
+            atomics_obj->set_property(op_name, Value(op_fn.release()), PropertyAttributes::BuiltinFunction);
+        }
+        register_built_in_object("Atomics", atomics_obj.release());
+    }
+
+    // ES2017: SharedArrayBuffer stub constructor
+    {
+        auto sab_constructor = ObjectFactory::create_native_constructor("SharedArrayBuffer",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                double byte_length = args.empty() ? 0.0 : args[0].to_number();
+                auto buf = ObjectFactory::create_object();
+                buf->set_property("byteLength", Value(byte_length), PropertyAttributes::None);
+                buf->set_property("_isSharedArrayBuffer", Value(true));
+                // Set prototype
+                if (ctx.has_binding("SharedArrayBuffer")) {
+                    Value ctor = ctx.get_binding("SharedArrayBuffer");
+                    if (ctor.is_function()) {
+                        Value proto = ctor.as_function()->get_property("prototype");
+                        if (proto.is_object()) buf->set_prototype(proto.as_object());
+                    }
+                }
+                return Value(buf.release());
+            }, 1);
+
+        auto sab_proto = ObjectFactory::create_object();
+
+        // byteLength getter
+        auto byte_length_getter = ObjectFactory::create_native_function("get byteLength",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Object* this_obj = ctx.get_this_binding();
+                if (!this_obj) return Value(0.0);
+                return this_obj->get_property("byteLength");
+            }, 0);
+        PropertyDescriptor bl_desc;
+        bl_desc.set_getter(byte_length_getter.release());
+        bl_desc.set_configurable(true);
+        sab_proto->set_property_descriptor("byteLength", bl_desc);
+
+        // slice stub
+        auto sab_slice = ObjectFactory::create_native_function("slice",
+            [](Context&, const std::vector<Value>&) -> Value {
+                auto obj = ObjectFactory::create_object();
+                return Value(static_cast<Object*>(obj.release()));
+            }, 2);
+        sab_proto->set_property("slice", Value(sab_slice.release()), PropertyAttributes::BuiltinFunction);
+
+        // Symbol.toStringTag = "SharedArrayBuffer"
+        Symbol* to_string_tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (to_string_tag) {
+            PropertyDescriptor tag_desc(Value(std::string("SharedArrayBuffer")),
+                static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            sab_proto->set_property_descriptor(to_string_tag->to_property_key(), tag_desc);
+        }
+
+        sab_constructor->set_property("prototype", Value(sab_proto.release()), PropertyAttributes::None);
+
+        // Symbol.species getter
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    return ctx.get_binding("SharedArrayBuffer");
+                }, 0);
+            PropertyDescriptor species_desc;
+            species_desc.set_getter(species_getter.release());
+            species_desc.set_configurable(true);
+            sab_constructor->set_property_descriptor(species_sym->to_property_key(), species_desc);
+        }
+
+        register_built_in_object("SharedArrayBuffer", sab_constructor.release());
+    }
+
     Proxy::setup_proxy(*this);
     Reflect::setup_reflect(*this);
-    
+
 }
 
 
@@ -10921,6 +11057,28 @@ void Context::setup_global_bindings() {
     IterableUtils::setup_string_iterator_methods(*this);
     IterableUtils::setup_map_iterator_methods(*this);
     IterableUtils::setup_set_iterator_methods(*this);
+
+    // Expose Object.prototype.__defineGetter__/__defineSetter__ as global bindings
+    // (browsers expose them via window.__proto__ = Object.prototype, we do it explicitly)
+    {
+        Value obj_ctor = get_binding("Object");
+        if (obj_ctor.is_function()) {
+            Value obj_proto = obj_ctor.as_function()->get_property("prototype");
+            if (obj_proto.is_object()) {
+                Object* op = obj_proto.as_object();
+                Value dg = op->get_own_property("__defineGetter__");
+                if (!dg.is_undefined() && lexical_environment_) {
+                    lexical_environment_->create_binding("__defineGetter__", dg, false);
+                    global_object_->set_property("__defineGetter__", dg, PropertyAttributes::BuiltinFunction);
+                }
+                Value ds = op->get_own_property("__defineSetter__");
+                if (!ds.is_undefined() && lexical_environment_) {
+                    lexical_environment_->create_binding("__defineSetter__", ds, false);
+                    global_object_->set_property("__defineSetter__", ds, PropertyAttributes::BuiltinFunction);
+                }
+            }
+        }
+    }
 
     setup_test262_helpers();
 }
