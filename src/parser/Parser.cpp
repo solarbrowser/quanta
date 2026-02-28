@@ -378,6 +378,12 @@ std::unique_ptr<ASTNode> Parser::parse_equality_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
+    if (no_in_mode_) {
+        return parse_binary_expression(
+            [this]() { return parse_shift_expression(); },
+            {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF}
+        );
+    }
     return parse_binary_expression(
         [this]() { return parse_shift_expression(); },
         {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF, TokenType::IN}
@@ -1798,7 +1804,11 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             std::unique_ptr<ASTNode> initializer = nullptr;
             if (current_token().get_type() == TokenType::ASSIGN) {
                 advance();
+                // Use no_in_mode so "0 in {}" doesn't consume the 'in' keyword (Annex B)
+                bool prev_no_in = no_in_mode_;
+                no_in_mode_ = true;
                 initializer = parse_assignment_expression();
+                no_in_mode_ = prev_no_in;
                 if (!initializer) {
                     add_error("Expected expression after '=' in variable declaration");
                     return nullptr;
@@ -3014,8 +3024,17 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     Position start = get_current_position();
 
+    // Save async token end-line BEFORE consuming it (advance() skips newlines)
+    size_t async_end_line = current_token().get_end().line;
+
     if (!consume(TokenType::ASYNC)) {
         add_error("Expected 'async'");
+        return nullptr;
+    }
+
+    // No line terminator allowed between 'async' and 'function' (ES2017)
+    if (match(TokenType::FUNCTION) && current_token().get_start().line != async_end_line) {
+        add_error("Unexpected token: line break between 'async' and 'function' is not allowed");
         return nullptr;
     }
 

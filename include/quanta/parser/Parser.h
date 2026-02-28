@@ -45,6 +45,7 @@ private:
     std::vector<ParseError> errors_;
     
     size_t current_token_index_;
+    bool no_in_mode_ = false; // when true, 'in' is not parsed as a relational operator
 
 public:
     explicit Parser(TokenSequence tokens);

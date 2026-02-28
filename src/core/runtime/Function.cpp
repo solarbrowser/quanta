@@ -188,6 +188,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.set_binding("__primitive_this__", actual_this);
         }
 
+        // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
+        // Override any null→global coercion so native fns can throw TypeError when this is null/undefined.
+        if (this_value.is_null() || this_value.is_undefined()) {
+            ctx.set_this_binding(nullptr);
+        }
+
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
         Value result = native_fn_(ctx, args);
@@ -393,12 +399,13 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_property("Symbol.iterator", Value(iter_fn.release()), PropertyAttributes::BuiltinFunction);
         }
 
-        // In strict mode, arguments.callee and arguments.caller throw TypeError
+        // In strict mode, arguments has no 'caller' own property (ES2017+).
+        // 'callee' is a poison-pill accessor that throws TypeError.
         if (function_context.is_strict_mode()) {
             auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
-                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                    ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
                     return Value();
                 });
 
@@ -408,15 +415,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             callee_desc.set_configurable(false);
             callee_desc.set_enumerable(false);
             arguments_obj->set_property_descriptor("callee", callee_desc);
-
-            PropertyDescriptor caller_desc;
-            caller_desc.set_getter(thrower.get());
-            caller_desc.set_setter(thrower.get());
-            caller_desc.set_configurable(false);
-            caller_desc.set_enumerable(false);
-            arguments_obj->set_property_descriptor("caller", caller_desc);
-
             thrower.release();
+            // 'caller' is NOT added as own property in strict mode (ES2017 spec)
         } else {
             // ES1: In non-strict mode, arguments.callee is the function itself
             PropertyDescriptor callee_desc(Value(this), PropertyAttributes::Default);

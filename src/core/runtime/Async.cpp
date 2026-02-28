@@ -8,6 +8,8 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
+#include "quanta/lexer/Lexer.h"
+#include "quanta/parser/Parser.h"
 #include <iostream>
 #include <chrono>
 
@@ -30,31 +32,41 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 }
 
 std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::vector<Value>& args) {
-    
-    auto promise = std::make_unique<Promise>(&ctx);
-    
+
+    // Use create_promise so the returned promise has Promise.prototype in its chain,
+    // which is required for `p instanceof Promise` to return true.
+    auto promise_obj = ObjectFactory::create_promise(&ctx);
+    std::unique_ptr<Promise> promise(static_cast<Promise*>(promise_obj.release()));
+
     const auto& params = get_parameters();
     std::vector<std::pair<std::string, Value>> old_bindings;
-    
+
     for (size_t i = 0; i < params.size(); ++i) {
         Value arg = i < args.size() ? args[i] : Value();
-        
+
         try {
             Value old_value = ctx.get_binding(params[i]);
             old_bindings.push_back({params[i], old_value});
         } catch (...) {
             old_bindings.push_back({params[i], Value()});
         }
-        
+
         ctx.create_binding(params[i], arg);
     }
-    
+
     try {
         if (body_) {
             Value result = body_->evaluate(ctx);
+            // Capture and clear return value to prevent it from bleeding into the
+            // caller's context and causing the caller to exit early.
+            if (ctx.has_return_value()) {
+                result = ctx.get_return_value();
+                ctx.clear_return_value();
+            }
             if (ctx.has_exception()) {
-                promise->reject(ctx.get_exception());
+                Value exc = ctx.get_exception();
                 ctx.clear_exception();
+                promise->reject(exc);
             } else {
                 promise->fulfill(result);
             }
@@ -62,15 +74,16 @@ std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::v
             promise->fulfill(Value());
         }
     } catch (const std::exception& e) {
+        ctx.clear_return_value();
         promise->reject(Value(e.what()));
     }
-    
+
     for (const auto& binding : old_bindings) {
         if (!binding.second.is_undefined()) {
             ctx.create_binding(binding.first, binding.second);
         }
     }
-    
+
     return promise;
 }
 
@@ -527,26 +540,64 @@ void setup_async_functions(Context& ctx) {
 
     auto async_function_constructor = ObjectFactory::create_native_function("AsyncFunction",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::vector<std::string> params;
-            std::string body_str = "return undefined;";
+            std::string params_str = "";
+            std::string body_str = "";
 
             if (args.size() > 1) {
                 body_str = args.back().to_string();
-
                 for (size_t i = 0; i < args.size() - 1; ++i) {
-                    params.push_back(args[i].to_string());
+                    if (i > 0) params_str += ", ";
+                    params_str += args[i].to_string();
                 }
             } else if (args.size() == 1) {
                 body_str = args[0].to_string();
             }
 
-            auto async_fn = std::make_unique<AsyncFunction>("anonymous", params, nullptr, &ctx);
-            return Value(async_fn.release());
+            // Parse and compile the async function body
+            std::string func_code = "(async function(" + params_str + ") { " + body_str + " })";
+            try {
+                Lexer lexer(func_code);
+                TokenSequence tokens = lexer.tokenize();
+                Parser::ParseOptions opts;
+                Parser parser(tokens, opts);
+                auto expr = parser.parse_expression();
+                if (parser.has_errors() || !expr) {
+                    ctx.throw_syntax_error("Invalid async function body");
+                    return Value();
+                }
+                return expr->evaluate(ctx);
+            } catch (...) {
+                ctx.throw_syntax_error("Invalid async function body in AsyncFunction constructor");
+                return Value();
+            }
         });
 
     async_function_constructor->set_property("name", Value(std::string("AsyncFunction")));
 
-    Function* async_func_ctor = async_function_constructor.get();
+    // Build AsyncFunction.prototype with correct prototype chain:
+    // AsyncFunction.prototype[[Prototype]] = Function.prototype
+    auto async_fn_proto = ObjectFactory::create_object();
+    Object* fn_proto = ObjectFactory::get_function_prototype();
+    if (fn_proto) {
+        async_fn_proto->set_prototype(fn_proto);
+    }
+    // Symbol.toStringTag = "AsyncFunction"
+    Symbol* to_string_tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (to_string_tag) {
+        async_fn_proto->set_property(to_string_tag->to_property_key(),
+            Value(std::string("AsyncFunction")), PropertyAttributes::Configurable);
+    }
+
+    // AsyncFunction.prototype.constructor = AsyncFunction (must be set before releasing proto)
+    async_fn_proto->set_property("constructor", Value(async_function_constructor.get()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    Object* async_fn_proto_ptr = async_fn_proto.get();
+    async_function_constructor->set_property("prototype", Value(async_fn_proto.release()), PropertyAttributes::None);
+
+    // Store raw pointer on constructor so AsyncFunctionExpression can find it
+    async_function_constructor->set_property("__asyncProtoPtr__",
+        Value(async_fn_proto_ptr), PropertyAttributes::None);
 
     ctx.create_binding("AsyncFunction", Value(async_function_constructor.release()));
 
