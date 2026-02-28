@@ -4527,24 +4527,40 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         
         std::vector<std::unique_ptr<Identifier>> targets;
         std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> default_exprs;
-        
+        std::unique_ptr<ASTNode> nested_rest_pat;
+
         while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
             if (current_token().get_type() == TokenType::ELLIPSIS) {
                 advance();
-                
-                if (current_token().get_type() != TokenType::IDENTIFIER) {
+
+                if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+                    current_token().get_type() == TokenType::LEFT_BRACE) {
+                    // ...[pattern] or ...{pattern}: nested rest destructuring
+                    auto nested_pattern = parse_destructuring_pattern(depth + 1);
+                    if (!nested_pattern) {
+                        add_error("Invalid nested pattern after '...' in array destructuring");
+                        return nullptr;
+                    }
+                    auto rest_id = std::make_unique<Identifier>(
+                        "...__nested_rest__",
+                        nested_pattern->get_start(),
+                        nested_pattern->get_end()
+                    );
+                    targets.push_back(std::move(rest_id));
+                    nested_rest_pat = std::move(nested_pattern);
+                } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+                    auto rest_id = std::make_unique<Identifier>(
+                        "..." + current_token().get_value(),
+                        current_token().get_start(),
+                        current_token().get_end()
+                    );
+                    targets.push_back(std::move(rest_id));
+                    advance();
+                } else {
                     add_error("Expected identifier after '...' in array destructuring");
                     return nullptr;
                 }
-                
-                auto rest_id = std::make_unique<Identifier>(
-                    "..." + current_token().get_value(),
-                    current_token().get_start(),
-                    current_token().get_end()
-                );
-                targets.push_back(std::move(rest_id));
-                advance();
-                
+
                 if (match(TokenType::COMMA)) {
                     add_error("Rest element must be last element in array destructuring");
                     return nullptr;
@@ -4687,11 +4703,15 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         auto destructuring = std::make_unique<DestructuringAssignment>(
             std::move(targets), nullptr, DestructuringAssignment::Type::ARRAY, start, end
         );
-        
+
         for (auto& default_pair : default_exprs) {
             destructuring->add_default_value(default_pair.first, std::move(default_pair.second));
         }
-        
+
+        if (nested_rest_pat) {
+            destructuring->set_nested_rest_pattern(std::move(nested_rest_pat));
+        }
+
         return std::move(destructuring);
         
     } else if (current_token().get_type() == TokenType::LEFT_BRACE) {

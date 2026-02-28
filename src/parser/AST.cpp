@@ -2249,10 +2249,17 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
 
                     rest_array->set_length(rest_index);
 
-                    if (!ctx.has_binding(rest_name)) {
-                        ctx.create_binding(rest_name, Value(rest_array.release()), true);
+                    if (rest_name == "__nested_rest__" && nested_rest_pattern_) {
+                        // ...[pattern] - apply nested destructuring to rest array
+                        DestructuringAssignment* nested =
+                            static_cast<DestructuringAssignment*>(nested_rest_pattern_.get());
+                        nested->evaluate_with_value(ctx, Value(rest_array.release()));
                     } else {
-                        ctx.set_binding(rest_name, Value(rest_array.release()));
+                        if (!ctx.has_binding(rest_name)) {
+                            ctx.create_binding(rest_name, Value(rest_array.release()), true);
+                        } else {
+                            ctx.set_binding(rest_name, Value(rest_array.release()));
+                        }
                     }
 
                     break;
@@ -3281,6 +3288,10 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
 
     for (const auto& default_val : default_values_) {
         cloned->add_default_value(default_val.index, default_val.expr->clone());
+    }
+
+    if (nested_rest_pattern_) {
+        cloned->set_nested_rest_pattern(nested_rest_pattern_->clone());
     }
 
     return std::move(cloned);
@@ -8617,6 +8628,90 @@ Value YieldExpression::evaluate(Context& ctx) {
 
             Generator::set_current_generator(saved_gen);
         };
+
+        // Helper: propagate throw to inner iterator, returns false if exception uncaught
+        // Returns true if the inner iterator handled the throw (done or yielded a value via throw)
+        // If the inner iterator yielded a value through throw, throws YieldException.
+        auto throw_at_iterator = [&](Value iter_val) -> bool {
+            Object* iter_obj = nullptr;
+            if (iter_val.is_object()) iter_obj = iter_val.as_object();
+            else if (iter_val.is_function()) iter_obj = iter_val.as_function();
+            if (!iter_obj) return false;
+
+            Value next_fn = iter_obj->get_property("next");
+            if (!next_fn.is_function()) return false;
+
+            Generator* saved_gen = Generator::get_current_generator();
+            Generator::set_current_generator(nullptr);
+
+            // Advance iterator needed_idx times (to reach the suspended yield)
+            bool iter_done = false;
+            for (size_t i = 0; i < needed_idx && !iter_done; i++) {
+                std::vector<Value> no_args;
+                Value nr = next_fn.as_function()->call(ctx, no_args, iter_val);
+                if (ctx.has_exception()) { iter_done = true; break; }
+                if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) {
+                    iter_done = true;
+                }
+            }
+
+            if (!iter_done) {
+                // Propagate throw to inner iterator
+                Value throw_fn = iter_obj->get_property("throw");
+                if (throw_fn.is_function()) {
+                    std::vector<Value> throw_args = {current_gen->throw_value_};
+                    Value throw_result = throw_fn.as_function()->call(ctx, throw_args, iter_val);
+                    Generator::set_current_generator(saved_gen);
+                    if (ctx.has_exception()) return false; // Inner propagated exception
+                    if (throw_result.is_object()) {
+                        Value done_v = throw_result.as_object()->get_property("done");
+                        if (!done_v.to_boolean()) {
+                            // Inner yielded through throw - yield that value upward
+                            Value val = throw_result.as_object()->get_property("value");
+                            current_gen->throwing_ = false;
+                            throw YieldException(val);
+                        }
+                    }
+                    // done=true: throw handled internally, delegate exhausted
+                } else {
+                    // No throw method: throw the exception into context
+                    Generator::set_current_generator(saved_gen);
+                    ctx.throw_exception(current_gen->throw_value_, true);
+                    return false;
+                }
+            }
+            Generator::set_current_generator(saved_gen);
+            return true; // Delegate handled or was already done
+        };
+
+        if (current_gen->throwing_) {
+            // Propagate throw to the delegate at the suspended yield position
+            bool handled = false;
+            if (iterable.is_object() || iterable.is_function()) {
+                Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+                Value sym_iter_fn = obj->get_property("Symbol.iterator");
+                if (sym_iter_fn.is_function()) {
+                    Generator* saved_gen = Generator::get_current_generator();
+                    Generator::set_current_generator(nullptr);
+                    std::vector<Value> no_args;
+                    Value iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+                    Generator::set_current_generator(saved_gen);
+                    if (!ctx.has_exception()) {
+                        handled = throw_at_iterator(iter_val);
+                    }
+                } else {
+                    Value next_fn = obj->get_property("next");
+                    if (next_fn.is_function()) {
+                        handled = throw_at_iterator(iterable);
+                    }
+                }
+            }
+            current_gen->throwing_ = false;
+            // Delegate exhausted (throw handled or iterator was done): let outer body continue
+            // Outer yield 'bar' (at higher counter) will be > target and trigger normally
+            (void)handled;
+            return Value();
+        }
 
         if (iterable.is_string()) {
             // String: iterate by character (each code unit)
