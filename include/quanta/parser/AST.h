@@ -456,6 +456,7 @@ private:
     std::vector<PropertyMapping> property_mappings_;
     std::vector<DefaultValue> default_values_;
     std::unique_ptr<ASTNode> source_;
+    std::unique_ptr<ASTNode> nested_rest_pattern_;
     Type type_;
 
 public:
@@ -477,6 +478,10 @@ public:
     void add_default_value(size_t index, std::unique_ptr<ASTNode> expr) {
         default_values_.emplace_back(index, std::move(expr));
     }
+    void set_nested_rest_pattern(std::unique_ptr<ASTNode> pattern) {
+        nested_rest_pattern_ = std::move(pattern);
+    }
+    ASTNode* get_nested_rest_pattern() const { return nested_rest_pattern_.get(); }
     
     Value evaluate(Context& ctx) override;
     Value evaluate_with_value(Context& ctx, const Value& source_value);

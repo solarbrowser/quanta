@@ -2301,10 +2301,12 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
-            if (args.empty()) return Value(false);
+            // searchElement defaults to undefined if no args
+            Value search_element = args.empty() ? Value() : args[0];
 
-            Value search_element = args[0];
-            uint32_t length = this_obj->get_length();
+            // Use get_property("length") to invoke getters on generic objects
+            Value length_val = this_obj->get_property("length");
+            uint32_t length = static_cast<uint32_t>(length_val.to_number());
 
             int64_t from_index = 0;
             if (args.size() > 1) {
@@ -2321,7 +2323,8 @@ void Context::initialize_built_ins() {
             }
 
             for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
-                Value element = this_obj->get_element(i);
+                // Use get_property to invoke getters and treat sparse holes as undefined
+                Value element = this_obj->get_property(std::to_string(i));
 
                 if (search_element.is_number() && element.is_number()) {
                     double search_num = search_element.to_number();
@@ -12140,6 +12143,38 @@ void Context::register_typed_array_constructors() {
             return Value(r);
         }, 2);
     typedarray_proto_ptr->set_property_descriptor("subarray", PropertyDescriptor(Value(ta_subarray_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    auto ta_includes_fn = ObjectFactory::create_native_function("includes",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) {
+                ctx.throw_type_error("TypedArray.prototype.includes called on non-TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            uint32_t length = static_cast<uint32_t>(ta->length());
+            Value search_element = args.empty() ? Value() : args[0];
+            int64_t from_index = 0;
+            if (args.size() > 1) {
+                from_index = static_cast<int64_t>(args[1].to_number());
+            }
+            if (from_index < 0) {
+                from_index = static_cast<int64_t>(length) + from_index;
+                if (from_index < 0) from_index = 0;
+            }
+            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
+                Value element = ta->get_element(i);
+                if (search_element.is_number() && element.is_number()) {
+                    double sn = search_element.to_number(), en = element.to_number();
+                    if (std::isnan(sn) && std::isnan(en)) return Value(true);
+                    if (sn == en) return Value(true);
+                } else if (element.strict_equals(search_element)) {
+                    return Value(true);
+                }
+            }
+            return Value(false);
+        }, 1);
+    typedarray_proto_ptr->set_property_descriptor("includes", PropertyDescriptor(Value(ta_includes_fn.release()), PropertyAttributes::BuiltinFunction));
 
     PropertyDescriptor typedarray_prototype_desc(Value(typedarray_prototype.release()), PropertyAttributes::None);
     typedarray_constructor->set_property_descriptor("prototype", typedarray_prototype_desc);

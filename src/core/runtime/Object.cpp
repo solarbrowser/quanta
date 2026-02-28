@@ -274,9 +274,56 @@ Value Object::get_property(const std::string& key) const {
 Value Object::get_own_property(const std::string& key) const {
     uint32_t index;
     if (is_array_index(key, &index)) {
+        // Check descriptors first (handles accessor properties like get "0"(){...})
+        if (descriptors_) {
+            auto desc_it = descriptors_->find(key);
+            if (desc_it != descriptors_->end()) {
+                const PropertyDescriptor& desc = desc_it->second;
+                if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                    Object* getter = desc.get_getter();
+                    if (getter) {
+                        Function* getter_fn = dynamic_cast<Function*>(getter);
+                        if (getter_fn && !getter_fn->is_native() && current_context_) {
+                            return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                        }
+                    }
+                }
+                if (desc.is_data_descriptor()) {
+                    return desc.get_value();
+                }
+            }
+        }
         return get_element(index);
     }
 
+
+    // Check accessor descriptors BEFORE shape: shape stores Value() placeholder for them.
+    // Data descriptors are checked AFTER shape since shape holds the live value for those.
+    if (descriptors_) {
+        auto desc_it = descriptors_->find(key);
+        if (desc_it != descriptors_->end() && desc_it->second.is_accessor_descriptor()) {
+            const PropertyDescriptor& desc = desc_it->second;
+            if (desc.has_getter()) {
+                if (key == "cookie") {
+                    return Value(std::string(""));
+                }
+                Object* getter = desc.get_getter();
+                if (getter) {
+                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    if (getter_fn) {
+                        if (!getter_fn->is_native() && current_context_) {
+                            return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                        }
+                        if (this->is_function()) {
+                            return Value(const_cast<Function*>(static_cast<const Function*>(this)));
+                        }
+                        return Value(const_cast<Object*>(this));
+                    }
+                }
+            }
+            return Value(); // accessor with no getter
+        }
+    }
 
     if (header_.shape && header_.shape->has_property(key)) {
         auto info = header_.shape->get_property_info(key);
@@ -291,37 +338,13 @@ Value Object::get_own_property(const std::string& key) const {
             return it->second;
         }
     }
-    
+
     if (descriptors_) {
         auto desc_it = descriptors_->find(key);
-        if (desc_it != descriptors_->end()) {
-            const PropertyDescriptor& desc = desc_it->second;
-            if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                if (key == "cookie") {
-                    return Value(std::string(""));
-                }
-                Object* getter = desc.get_getter();
-                if (getter) {
-                    Function* getter_fn = dynamic_cast<Function*>(getter);
-                    if (getter_fn) {
-                        if (!getter_fn->is_native() && current_context_) {
-                            // Call user-defined (JS) getter
-                            return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
-                        }
-                        // Built-in native getter: return this (for Symbol.species etc.)
-                        if (this->is_function()) {
-                            return Value(const_cast<Function*>(static_cast<const Function*>(this)));
-                        }
-                        return Value(const_cast<Object*>(this));
-                    }
-                }
-            }
-            if (desc.is_data_descriptor()) {
-                return desc.get_value();
-            }
+        if (desc_it != descriptors_->end() && desc_it->second.is_data_descriptor()) {
+            return desc_it->second.get_value();
         }
     }
-    
 
     return Value();
 }

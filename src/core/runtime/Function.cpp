@@ -188,7 +188,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.set_binding("__primitive_this__", actual_this);
         }
 
+        Context* prev_context = Object::current_context_;
+        Object::current_context_ = &ctx;
         Value result = native_fn_(ctx, args);
+        Object::current_context_ = prev_context;
 
         ctx.set_this_binding(old_this);
 
@@ -715,6 +718,11 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
     // If constructor explicitly returned an object or function, use that
     if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
+        // Set constructor's prototype on returned object if it has none yet
+        Object* ret_obj = result.as_object();
+        if (!ret_obj->get_prototype() && constructor_prototype.is_object()) {
+            ret_obj->set_prototype(constructor_prototype.as_object());
+        }
         return result;
     } else {
         return Value(new_object.release());
