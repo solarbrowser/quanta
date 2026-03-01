@@ -6724,42 +6724,48 @@ Value BlockStatement::evaluate(Context& ctx) {
     auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
     Environment* block_env_ptr = block_env.release();
     ctx.set_lexical_environment(block_env_ptr);
-    
-    for (const auto& statement : statements_) {
-        if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-            last_value = statement->evaluate(ctx);
-            if (ctx.has_exception()) {
-                ctx.set_lexical_environment(old_lexical_env);
-                delete block_env_ptr;
-                return Value();
+
+    try {
+        for (const auto& statement : statements_) {
+            if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                last_value = statement->evaluate(ctx);
+                if (ctx.has_exception()) {
+                    ctx.set_lexical_environment(old_lexical_env);
+                    delete block_env_ptr;
+                    return Value();
+                }
             }
         }
-    }
-    
-    for (const auto& statement : statements_) {
-        if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-            last_value = statement->evaluate(ctx);
-            if (ctx.has_exception()) {
-                ctx.set_lexical_environment(old_lexical_env);
-                delete block_env_ptr;
-                return Value();
-            }
-            if (ctx.has_return_value()) {
-                ctx.set_lexical_environment(old_lexical_env);
-                delete block_env_ptr;
-                return ctx.get_return_value();
-            }
-            if (ctx.has_break() || ctx.has_continue()) {
-                ctx.set_lexical_environment(old_lexical_env);
-                delete block_env_ptr;
-                return Value();
+
+        for (const auto& statement : statements_) {
+            if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
+                last_value = statement->evaluate(ctx);
+                if (ctx.has_exception()) {
+                    ctx.set_lexical_environment(old_lexical_env);
+                    delete block_env_ptr;
+                    return Value();
+                }
+                if (ctx.has_return_value()) {
+                    ctx.set_lexical_environment(old_lexical_env);
+                    delete block_env_ptr;
+                    return ctx.get_return_value();
+                }
+                if (ctx.has_break() || ctx.has_continue()) {
+                    ctx.set_lexical_environment(old_lexical_env);
+                    delete block_env_ptr;
+                    return Value();
+                }
             }
         }
+    } catch (...) {
+        ctx.set_lexical_environment(old_lexical_env);
+        delete block_env_ptr;
+        throw;
     }
-    
+
     ctx.set_lexical_environment(old_lexical_env);
     delete block_env_ptr;
-    
+
     return last_value;
 }
 
@@ -7952,10 +7958,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 } else if (method->is_static()) {
                 } else {
                     bool method_is_gen = false;
+                    bool method_is_async = false;
                     std::vector<std::unique_ptr<Parameter>> method_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
                         method_is_gen = func_expr->is_generator();
+                        method_is_async = func_expr->is_async();
                         const auto& params = func_expr->get_params();
                         method_params.reserve(params.size());
                         for (const auto& param : params) {
@@ -7967,6 +7975,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         std::vector<std::string> gen_params;
                         for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
                         instance_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else if (method_is_async) {
+                        std::vector<std::string> async_params;
+                        for (const auto& p : method_params) async_params.push_back(p->get_name()->get_name());
+                        instance_method = std::make_unique<AsyncFunction>(method_name, async_params, method->get_value()->get_body()->clone(), &ctx);
                     } else {
                         instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
                     }
@@ -8067,10 +8079,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         method_name = "[unknown]";
                     }
                     bool static_is_gen = false;
+                    bool static_is_async = false;
                     std::vector<std::unique_ptr<Parameter>> static_params;
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
                         static_is_gen = func_expr->is_generator();
+                        static_is_async = func_expr->is_async();
                         const auto& params = func_expr->get_params();
                         static_params.reserve(params.size());
                         for (const auto& param : params) {
@@ -8082,6 +8096,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         std::vector<std::string> gen_params;
                         for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
                         static_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else if (static_is_async) {
+                        std::vector<std::string> async_params;
+                        for (const auto& p : static_params) async_params.push_back(p->get_name()->get_name());
+                        static_method = std::make_unique<AsyncFunction>(method_name, async_params, method->get_value()->get_body()->clone(), &ctx);
                     } else {
                         static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
                     }
@@ -8426,7 +8444,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
         std::move(cloned_id),
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
-        start_, end_, is_generator_
+        start_, end_, is_generator_, is_async_
     );
 }
 
@@ -8598,33 +8616,112 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
 
 
 Value AwaitExpression::evaluate(Context& ctx) {
-    
-    if (!argument_) {
-        return Value();
+    AsyncExecutor* exec = AsyncExecutor::get_current();
+
+    if (exec) {
+        size_t await_index = exec->next_await_index_++;
+
+        if (await_index < exec->target_await_index_) {
+            if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
+                ctx.throw_exception(exec->await_results_[await_index]);
+                return Value();
+            }
+            if (await_index < exec->await_results_.size()) {
+                return exec->await_results_[await_index];
+            }
+            return Value();
+        }
+
+        if (!argument_) {
+            exec->await_results_.push_back(Value());
+            exec->await_is_throw_.push_back(false);
+            exec->target_await_index_++;
+            return Value();
+        }
+
+        Value expr_val = argument_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+
+        Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+
+        Promise* awaited_promise = nullptr;
+        Value resolved_value;
+        bool is_throw = false;
+        bool is_pending = false;
+
+        if (AsyncUtils::is_promise(expr_val)) {
+            awaited_promise = static_cast<Promise*>(expr_val.as_object());
+            if (awaited_promise->get_state() == PromiseState::FULFILLED) {
+                resolved_value = awaited_promise->get_value();
+            } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
+                resolved_value = awaited_promise->get_value();
+                is_throw = true;
+            } else {
+                is_pending = true;
+            }
+        } else {
+            resolved_value = expr_val;
+        }
+
+        if (is_pending) {
+            auto self = exec->shared_from_this();
+            size_t target_idx = exec->target_await_index_;
+
+            auto on_fulfill_fn = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    self->await_results_.push_back(args.empty() ? Value() : args[0]);
+                    self->await_is_throw_.push_back(false);
+                    self->target_await_index_++;
+                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                    return Value();
+                });
+
+            auto on_reject_fn = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    self->await_results_.push_back(args.empty() ? Value() : args[0]);
+                    self->await_is_throw_.push_back(true);
+                    self->target_await_index_++;
+                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                    return Value();
+                });
+
+            Function* fulfill_raw = on_fulfill_fn.get();
+            Function* reject_raw = on_reject_fn.get();
+            std::string suffix = std::to_string(target_idx);
+            awaited_promise->set_property("__af__" + suffix, Value(on_fulfill_fn.release()));
+            awaited_promise->set_property("__ar__" + suffix, Value(on_reject_fn.release()));
+            awaited_promise->then(fulfill_raw, reject_raw);
+            throw AwaitSuspendException{};
+        }
+
+        // Settled (fulfilled/rejected) or non-promise: store and return synchronously
+        exec->await_results_.push_back(resolved_value);
+        exec->await_is_throw_.push_back(is_throw);
+        exec->target_await_index_++;
+        if (is_throw) {
+            ctx.throw_exception(resolved_value);
+            return Value();
+        }
+        return resolved_value;
     }
-    
+
+    if (!argument_) return Value();
     Value arg_value = argument_->evaluate(ctx);
-    if (ctx.has_exception()) {
-        return Value();
-    }
-    
-    if (!arg_value.is_object()) {
-        return arg_value;
-    }
-    
+    if (ctx.has_exception()) return Value();
+
+    if (!arg_value.is_object()) return arg_value;
     Object* obj = arg_value.as_object();
-    if (!obj) {
-        return arg_value;
-    }
-    
+    if (!obj) return arg_value;
     if (obj->get_type() == Object::ObjectType::Promise) {
         Promise* promise = static_cast<Promise*>(obj);
         if (promise && promise->get_state() == PromiseState::FULFILLED) {
             return promise->get_value();
         }
-        return Value(std::string("PromiseResult"));
+        if (promise && promise->get_state() == PromiseState::REJECTED) {
+            ctx.throw_exception(promise->get_value());
+            return Value();
+        }
     }
-    
     return arg_value;
 }
 
@@ -9343,6 +9440,10 @@ Value TryStatement::evaluate(Context& ctx) {
         }
     } catch (const YieldException&) {
         // YieldException is internal control flow - must never be caught by user try/catch
+        try_recursion_depth--;
+        throw;
+    } catch (const AwaitSuspendException&) {
+        // AwaitSuspendException is internal control flow - must never be caught by user try/catch
         try_recursion_depth--;
         throw;
     } catch (const std::exception& e) {

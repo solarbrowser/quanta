@@ -11,6 +11,36 @@
 
 namespace Quanta {
 
+// Unicode simple case folding for characters outside ASCII that fold to ASCII word chars.
+// Per ECMAScript spec, /\w/ui matches chars whose CaseFold maps into [A-Za-z0-9_].
+// Only two non-ASCII Unicode code points fold into ASCII letters:
+//   U+017F LATIN SMALL LETTER LONG S  (UTF-8: C5 BF) → 's'
+//   U+212A KELVIN SIGN                (UTF-8: E2 84 AA) → 'k'
+static std::string apply_unicode_word_case_fold(const std::string& str) {
+    std::string result;
+    result.reserve(str.size());
+    size_t i = 0;
+    while (i < str.size()) {
+        unsigned char c0 = static_cast<unsigned char>(str[i]);
+        if (c0 == 0xC5 && i + 1 < str.size() &&
+            static_cast<unsigned char>(str[i+1]) == 0xBF) {
+            // U+017F → 's'
+            result += 's';
+            i += 2;
+        } else if (c0 == 0xE2 && i + 2 < str.size() &&
+                   static_cast<unsigned char>(str[i+1]) == 0x84 &&
+                   static_cast<unsigned char>(str[i+2]) == 0xAA) {
+            // U+212A → 'k'
+            result += 'k';
+            i += 3;
+        } else {
+            result += str[i];
+            i++;
+        }
+    }
+    return result;
+}
+
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false),
       multiline_(false), unicode_(false), sticky_(false), last_index_(0) {
@@ -30,21 +60,23 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
 bool RegExp::test(const std::string& str) {
     try {
         std::smatch match;
-        std::string::const_iterator start = str.begin();
+        std::string effective_str = (unicode_ && ignore_case_) ? apply_unicode_word_case_fold(str) : str;
+        const std::string& s = effective_str;
+        std::string::const_iterator start = s.begin();
 
         if (global_ && last_index_ > 0) {
-            if (last_index_ >= static_cast<int>(str.length())) {
+            if (last_index_ >= static_cast<int>(s.length())) {
                 last_index_ = 0;
                 return false;
             }
-            start = str.begin() + last_index_;
+            start = s.begin() + last_index_;
         }
 
-        bool result = std::regex_search(start, str.end(), match, regex_);
+        bool result = std::regex_search(start, s.end(), match, regex_);
 
         if (global_) {
             if (result) {
-                size_t actual_position = (start - str.begin()) + match.position();
+                size_t actual_position = (start - s.begin()) + match.position();
                 size_t match_len = match.length();
 
                 if (multiline_ && match_len > 0 && match[0].str()[0] == '\n') {
@@ -71,11 +103,13 @@ Value RegExp::exec(const std::string& str) {
     try {
         std::smatch match;
         bool advances_index = global_ || sticky_;
+        std::string effective_str = (unicode_ && ignore_case_) ? apply_unicode_word_case_fold(str) : str;
+        const std::string& s = effective_str;
 
-        std::string::const_iterator start = str.begin();
-        if (advances_index && last_index_ > 0 && last_index_ < str.length()) {
-            start = str.begin() + last_index_;
-        } else if (advances_index && last_index_ >= str.length()) {
+        std::string::const_iterator start = s.begin();
+        if (advances_index && last_index_ > 0 && last_index_ < s.length()) {
+            start = s.begin() + last_index_;
+        } else if (advances_index && last_index_ >= s.length()) {
             last_index_ = 0;
             return Value::null();
         }
@@ -83,14 +117,14 @@ Value RegExp::exec(const std::string& str) {
         bool found = false;
         if (sticky_) {
             // Sticky: must match exactly at lastIndex (use regex_search with match_continuous)
-            found = std::regex_search(start, str.cend(), match, regex_,
+            found = std::regex_search(start, s.cend(), match, regex_,
                                       std::regex_constants::match_continuous);
         } else {
-            found = std::regex_search(start, str.cend(), match, regex_);
+            found = std::regex_search(start, s.cend(), match, regex_);
         }
 
         if (found) {
-            size_t actual_position = (start - str.begin()) + match.position();
+            size_t actual_position = (start - s.begin()) + match.position();
             std::string matched_str = match[0].str();
 
             if (multiline_ && !matched_str.empty() && matched_str[0] == '\n') {

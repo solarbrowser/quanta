@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/Async.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
 #include "quanta/lexer/Lexer.h"
@@ -15,6 +16,79 @@
 
 namespace Quanta {
 
+// AsyncExecutor
+
+thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
+
+AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
+                              std::unique_ptr<Context> exec_ctx,
+                              Promise* outer_promise,
+                              Engine* engine)
+    : next_await_index_(0), target_await_index_(0),
+      outer_promise_(outer_promise),
+      exec_context_owned_(std::move(exec_ctx)),
+      exec_context_(exec_context_owned_.get()),
+      engine_(engine),
+      initial_lex_env_(exec_context_ ? exec_context_->get_lexical_environment() : nullptr),
+      body_(std::move(body)) {}
+
+AsyncExecutor::~AsyncExecutor() = default;
+
+void AsyncExecutor::run() {
+    auto* prev = current_;
+    current_ = this;
+    next_await_index_ = 0;
+
+    // Restore the lexical env to the initial state (as it was after parameter binding)
+    // to prevent block scope accumulation across replayed runs.
+    if (initial_lex_env_ && exec_context_) {
+        exec_context_->set_lexical_environment(initial_lex_env_);
+    }
+
+    // Clear state from previous execution pass
+    exec_context_->clear_exception();
+    exec_context_->clear_return_value();
+
+    try {
+        Value result;
+        if (body_) {
+            result = body_->evaluate(*exec_context_);
+        }
+        current_ = prev;
+
+        // Body ran to completion
+        if (exec_context_->has_exception()) {
+            Value exc = exec_context_->get_exception();
+            exec_context_->clear_exception();
+            outer_promise_->reject(exc);
+        } else if (exec_context_->has_return_value()) {
+            Value ret = exec_context_->get_return_value();
+            exec_context_->clear_return_value();
+            if (AsyncUtils::is_promise(ret)) {
+                Promise* p = static_cast<Promise*>(ret.as_object());
+                if (p->get_state() == PromiseState::FULFILLED) {
+                    outer_promise_->fulfill(p->get_value());
+                } else if (p->get_state() == PromiseState::REJECTED) {
+                    outer_promise_->reject(p->get_value());
+                } else {
+                    outer_promise_->fulfill(ret);
+                }
+            } else {
+                outer_promise_->fulfill(ret);
+            }
+        } else {
+            outer_promise_->fulfill(result);
+        }
+    } catch (const AwaitSuspendException&) {
+        // Suspended at an await — callbacks capture shared_ptr keeping us alive
+        current_ = prev;
+    } catch (...) {
+        current_ = prev;
+        outer_promise_->reject(Value(std::string("Async execution error")));
+    }
+}
+
+// AsyncFunction
 
 AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
@@ -25,10 +99,36 @@ AsyncFunction::AsyncFunction(const std::string& name,
 }
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
-    (void)this_value;
-    
-    auto promise = execute_async(ctx, args);
-    return Value(promise.release());
+    // Create the outer promise returned to caller
+    auto promise_obj = ObjectFactory::create_promise(&ctx);
+    Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
+    Value promise_value(promise_obj.release());
+
+    // Create a persistent function-level context for this execution
+    auto exec_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+
+    // Bind 'this' (use __arrow_this__ if arrow function)
+    Value bound_this = this_value;
+    Value arrow_this_val = get_property("__arrow_this__");
+    if (!arrow_this_val.is_undefined()) {
+        bound_this = arrow_this_val;
+    }
+    exec_ctx->create_binding("this", bound_this, true);
+
+    // Bind parameters
+    const auto& params = get_parameters();
+    for (size_t i = 0; i < params.size(); ++i) {
+        Value arg = i < args.size() ? args[i] : Value();
+        exec_ctx->create_binding(params[i], arg);
+    }
+
+    // Clone body and start executor
+    std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
+    auto executor = std::make_shared<AsyncExecutor>(
+        std::move(body_clone), std::move(exec_ctx), promise_raw, ctx.get_engine());
+    executor->run();
+
+    return promise_value;
 }
 
 std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::vector<Value>& args) {
@@ -106,38 +206,124 @@ AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
 }
 
 Value AsyncAwaitExpression::evaluate(Context& ctx) {
-    if (!expression_) {
-        return Value();
-    }
-    
-    Value awaited_value = expression_->evaluate(ctx);
-    
-    if (!is_awaitable(awaited_value)) {
-        return awaited_value;
-    }
-    
-    auto promise = to_promise(awaited_value, ctx);
-    if (!promise) {
-        return awaited_value;
-    }
-    
-    if (promise->get_state() == PromiseState::PENDING) {
-        EventLoop& event_loop = EventLoop::instance();
-        
-        while (promise->get_state() == PromiseState::PENDING && event_loop.is_running()) {
-            event_loop.process_microtasks();
-            event_loop.process_macrotasks();
-            
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+    AsyncExecutor* exec = AsyncExecutor::get_current();
+
+    if (exec) {
+        // Replay-based path 
+        size_t await_index = exec->next_await_index_++;
+
+        if (await_index < exec->target_await_index_) {
+            // REPLAY: return stored result without re-evaluating the expression
+            if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
+                ctx.throw_exception(exec->await_results_[await_index]);
+                return Value();
+            }
+            if (await_index < exec->await_results_.size()) {
+                return exec->await_results_[await_index];
+            }
+            return Value();
         }
+
+        // NEW AWAIT: evaluate the expression for the first time
+        if (!expression_) {
+            exec->await_results_.push_back(Value());
+            exec->await_is_throw_.push_back(false);
+            exec->target_await_index_++;
+            auto self = exec->shared_from_this();
+            Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+            if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+            throw AwaitSuspendException{};
+        }
+
+        Value expr_val = expression_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+
+        // Get global context for the microtask queue
+        Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+
+        // Determine the state of the awaited value
+        Promise* awaited_promise = nullptr;
+        Value resolved_value;
+        bool is_throw = false;
+        bool is_pending = false;
+
+        if (AsyncUtils::is_promise(expr_val)) {
+            awaited_promise = static_cast<Promise*>(expr_val.as_object());
+            if (awaited_promise->get_state() == PromiseState::FULFILLED) {
+                resolved_value = awaited_promise->get_value();
+            } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
+                resolved_value = awaited_promise->get_value();
+                is_throw = true;
+            } else {
+                is_pending = true;
+            }
+        } else {
+            resolved_value = expr_val;
+        }
+
+        if (is_pending) {
+            // Register callbacks on the pending Promise to resume when it settles
+            auto self = exec->shared_from_this();
+            size_t target_idx = exec->target_await_index_;
+
+            auto on_fulfill_fn = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value val = args.empty() ? Value() : args[0];
+                    self->await_results_.push_back(val);
+                    self->await_is_throw_.push_back(false);
+                    self->target_await_index_++;
+                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                    return Value();
+                });
+
+            auto on_reject_fn = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value reason = args.empty() ? Value() : args[0];
+                    self->await_results_.push_back(reason);
+                    self->await_is_throw_.push_back(true);
+                    self->target_await_index_++;
+                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                    return Value();
+                });
+
+            Function* fulfill_raw = on_fulfill_fn.get();
+            Function* reject_raw = on_reject_fn.get();
+
+            // Store on the awaited Promise to keep native functions alive
+            std::string suffix = std::to_string(target_idx);
+            awaited_promise->set_property("__af__" + suffix, Value(on_fulfill_fn.release()));
+            awaited_promise->set_property("__ar__" + suffix, Value(on_reject_fn.release()));
+
+            awaited_promise->then(fulfill_raw, reject_raw);
+
+            throw AwaitSuspendException{};
+        }
+
+        // Already settled: store result and queue re-run as microtask
+        exec->await_results_.push_back(resolved_value);
+        exec->await_is_throw_.push_back(is_throw);
+        exec->target_await_index_++;
+        auto self = exec->shared_from_this();
+        if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+        throw AwaitSuspendException{};
     }
-    
+
+    //  Fallback path (no executor active) 
+    if (!expression_) return Value();
+    Value awaited_value = expression_->evaluate(ctx);
+    if (ctx.has_exception()) return Value();
+    if (!is_awaitable(awaited_value)) return awaited_value;
+
+    auto promise = to_promise(awaited_value, ctx);
+    if (!promise) return awaited_value;
+
     if (promise->get_state() == PromiseState::FULFILLED) {
         return promise->get_value();
-    } else {
+    } else if (promise->get_state() == PromiseState::REJECTED) {
         ctx.throw_exception(promise->get_value());
         return Value();
     }
+    return Value();
 }
 
 bool AsyncAwaitExpression::is_awaitable(const Value& value) {

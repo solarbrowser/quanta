@@ -13,12 +13,53 @@
 #include <functional>
 #include <future>
 #include <thread>
+#include <vector>
 
 namespace Quanta {
 
 class Context;
 class ASTNode;
 class Function;
+class Engine;
+class Environment;
+
+// Thrown by AsyncAwaitExpression to suspend the async body (like YieldException for generators)
+class AwaitSuspendException : public std::exception {
+public:
+    const char* what() const noexcept override { return "Await suspended"; }
+};
+
+// Manages replay-based async function execution (similar to Generator's replay mechanism).
+// When `await pendingPromise` is hit, body exits via AwaitSuspendException.
+// When the promise resolves, run() is called again and replays past awaits.
+class AsyncExecutor : public std::enable_shared_from_this<AsyncExecutor> {
+public:
+    AsyncExecutor(std::unique_ptr<ASTNode> body,
+                  std::unique_ptr<Context> exec_ctx,
+                  Promise* outer_promise,
+                  Engine* engine);
+    ~AsyncExecutor();
+
+    void run();
+
+    static AsyncExecutor* get_current() { return current_; }
+
+    // Public for AsyncAwaitExpression access
+    size_t next_await_index_;
+    size_t target_await_index_;
+    std::vector<Value> await_results_;
+    std::vector<bool> await_is_throw_;
+    Promise* outer_promise_;       // raw ptr — Promise is kept alive by JS value chain
+    std::unique_ptr<Context> exec_context_owned_;
+    Context* exec_context_;        // raw ptr into exec_context_owned_
+    Engine* engine_;               // for global context / microtask queue access
+    Environment* initial_lex_env_; // saved lex env at executor creation; restored before each run
+
+private:
+    std::unique_ptr<ASTNode> body_;
+
+    static thread_local AsyncExecutor* current_;
+};
 
 
 class AsyncFunction : public Function {
