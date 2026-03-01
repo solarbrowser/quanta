@@ -2824,7 +2824,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         nullptr,
         std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, get_current_position(), is_generator
+        start, get_current_position(), is_generator, is_async
     );
 
     Position end = get_current_position();
@@ -3189,12 +3189,21 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     Position start = get_current_position();
-    
+
+    // Save async token end-line BEFORE consuming it
+    size_t async_end_line = current_token().get_end().line;
+
     if (!consume(TokenType::ASYNC)) {
         add_error("Expected 'async'");
         return nullptr;
     }
-    
+
+    // ES2017: No line terminator allowed between 'async' and 'function'
+    if (match(TokenType::FUNCTION) && current_token().get_start().line != async_end_line) {
+        add_error("Unexpected token: line break between 'async' and 'function' is not allowed");
+        return nullptr;
+    }
+
     if (!consume(TokenType::FUNCTION)) {
         add_error("Expected 'function' after 'async'");
         return nullptr;

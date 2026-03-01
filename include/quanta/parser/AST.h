@@ -1003,16 +1003,18 @@ private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
     bool is_generator_;
+    bool is_async_;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
                       std::vector<std::unique_ptr<Parameter>> params,
                       std::unique_ptr<BlockStatement> body,
                       const Position& start, const Position& end,
-                      bool is_generator = false)
+                      bool is_generator = false,
+                      bool is_async = false)
         : ASTNode(Type::FUNCTION_EXPRESSION, start, end),
           id_(std::move(id)), params_(std::move(params)), body_(std::move(body)),
-          is_generator_(is_generator) {}
+          is_generator_(is_generator), is_async_(is_async) {}
 
     Identifier* get_id() const { return id_.get(); }
     const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
@@ -1020,6 +1022,7 @@ public:
     size_t param_count() const { return params_.size(); }
     bool is_named() const { return id_ != nullptr; }
     bool is_generator() const { return is_generator_; }
+    bool is_async() const { return is_async_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
