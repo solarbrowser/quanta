@@ -103,37 +103,49 @@ public:
         SuspendedYield,
         Completed
     };
-    
+
     struct AsyncGeneratorResult {
         std::unique_ptr<Promise> promise;
-        
+
         AsyncGeneratorResult(std::unique_ptr<Promise> p) : promise(std::move(p)) {}
     };
 
 private:
-    AsyncFunction* generator_function_;
+    std::unique_ptr<Context> context_owned_;
     Context* generator_context_;
     std::unique_ptr<ASTNode> body_;
     State state_;
-    
+
 public:
-    AsyncGenerator(AsyncFunction* gen_func, Context* ctx, std::unique_ptr<ASTNode> body);
+    AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body);
     virtual ~AsyncGenerator() = default;
-    
+
     AsyncGeneratorResult next(const Value& value = Value());
     AsyncGeneratorResult return_value(const Value& value);
     AsyncGeneratorResult throw_exception(const Value& exception);
-    
+
     Value get_async_iterator();
-    
+
     State get_state() const { return state_; }
     bool is_done() const { return state_ == State::Completed; }
-    
+
     static Value async_generator_next(Context& ctx, const std::vector<Value>& args);
     static Value async_generator_return(Context& ctx, const std::vector<Value>& args);
     static Value async_generator_throw(Context& ctx, const std::vector<Value>& args);
-    
+
     static void setup_async_generator_prototype(Context& ctx);
+    static Object* s_async_generator_prototype_;
+};
+
+
+class AsyncGeneratorFunction : public Function {
+    std::unique_ptr<ASTNode> body_;
+public:
+    AsyncGeneratorFunction(const std::string& name,
+                           const std::vector<std::string>& params,
+                           std::unique_ptr<ASTNode> body,
+                           Context* closure_context);
+    Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
 };
 
 

@@ -586,50 +586,55 @@ Token Lexer::read_template_literal() {
     Position start = current_position_;
     advance();
 
-    std::string cooked;
-    std::string raw;
-    bool has_expressions = false;
-    bool cooked_valid = true;  // ES2018: invalid escapes → undefined cooked
+    // ES2018: track cooked validity per text segment, not globally.
+    // Expression markers ${...} are preserved in full_cooked so the parser can
+    // find them even when a prior text segment has invalid escapes.
+    std::string full_cooked;  // final cooked output (with expression markers)
+    std::string full_raw;     // final raw output (with expression markers)
+    std::string seg_cooked;   // accumulated cooked chars for current text segment
+    bool seg_valid = true;    // is current text segment's cooked value valid?
 
     while (!at_end() && current_char() != '`') {
         if (current_char() == '$' && peek_char() == '{') {
-            has_expressions = true;
+            // End of text segment: commit it, then pass expression through verbatim
+            if (!seg_valid) full_cooked += "\x01";
+            else full_cooked += seg_cooked;
+            seg_cooked.clear();
+            seg_valid = true;
+
             char c1 = advance(); // '$'
             char c2 = advance(); // '{'
-            cooked += c1; raw += c1;
-            cooked += c2; raw += c2;
+            full_cooked += c1; full_raw += c1;
+            full_cooked += c2; full_raw += c2;
 
             int brace_count = 1;
             while (!at_end() && brace_count > 0) {
                 char ch = advance();
-                cooked += ch; raw += ch;
+                full_cooked += ch; full_raw += ch;
                 if (ch == '{') brace_count++;
                 else if (ch == '}') brace_count--;
             }
         } else if (current_char() == '\\') {
-            // For raw: capture source characters before escape processing
             size_t raw_start = position_;
             size_t error_count_before = errors_.size();
             std::string cooked_char = parse_escape_sequence();
-            raw += source_.substr(raw_start, position_ - raw_start);
+            full_raw += source_.substr(raw_start, position_ - raw_start);
             if (errors_.size() > error_count_before) {
-                // Invalid escape sequence - suppress for tagged template (ES2018)
                 errors_.resize(error_count_before);
-                cooked_valid = false;
-            } else if (cooked_valid) {
-                cooked += cooked_char;
+                seg_valid = false;
+            } else if (seg_valid) {
+                seg_cooked += cooked_char;
             }
         } else if (current_char() == '\r') {
             // ES6: Normalize CR and CRLF to LF in template literals
             advance();
-            if (!at_end() && current_char() == '\n') {
-                advance();
-            }
-            cooked += '\n';
-            raw += '\n';
+            if (!at_end() && current_char() == '\n') advance();
+            if (seg_valid) seg_cooked += '\n';
+            full_raw += '\n';
         } else {
             char ch = advance();
-            cooked += ch; raw += ch;
+            if (seg_valid) seg_cooked += ch;
+            full_raw += ch;
         }
     }
 
@@ -638,15 +643,14 @@ Token Lexer::read_template_literal() {
         return create_token(TokenType::INVALID, start);
     }
 
-    advance();
+    advance(); // skip closing backtick
 
-    // If any invalid escape was found, mark cooked as undefined (ES2018 tagged template)
-    if (!cooked_valid) {
-        cooked = "\x01";  // sentinel: undefined cooked value
-    }
+    // Commit the final text segment
+    if (!seg_valid) full_cooked += "\x01";
+    else full_cooked += seg_cooked;
 
     // Encode both cooked and raw in token value, separated by \0
-    return create_token(TokenType::TEMPLATE_LITERAL, cooked + '\0' + raw, start);
+    return create_token(TokenType::TEMPLATE_LITERAL, full_cooked + '\0' + full_raw, start);
 }
 
 Token Lexer::read_single_line_comment() {

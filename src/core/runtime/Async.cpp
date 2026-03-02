@@ -335,9 +335,15 @@ std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Co
 }
 
 
-AsyncGenerator::AsyncGenerator(AsyncFunction* gen_func, Context* ctx, std::unique_ptr<ASTNode> body)
-    : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
+Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
+
+AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body)
+    : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
+      generator_context_(context_owned_.get()),
       body_(std::move(body)), state_(State::SuspendedStart) {
+    if (s_async_generator_prototype_) {
+        set_prototype(s_async_generator_prototype_);
+    }
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
@@ -423,14 +429,15 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
     if (async_iterator_symbol) {
-        auto async_iterator_fn = ObjectFactory::create_native_function("@@asyncIterator", 
+        auto async_iterator_fn = ObjectFactory::create_native_function("@@asyncIterator",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 return ctx.get_binding("this");
             });
-        async_gen_prototype->set_property(async_iterator_symbol->to_string(), Value(async_iterator_fn.release()));
+        async_gen_prototype->set_property(async_iterator_symbol->to_property_key(), Value(async_iterator_fn.release()));
     }
-    
+
+    s_async_generator_prototype_ = async_gen_prototype.get();
     ctx.create_binding("AsyncGeneratorPrototype", Value(async_gen_prototype.release()));
 }
 
@@ -852,6 +859,53 @@ void EventLoop::process_macrotasks() {
 EventLoop& EventLoop::instance() {
     static EventLoop instance;
     return instance;
+}
+
+
+AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
+                                               const std::vector<std::string>& params,
+                                               std::unique_ptr<ASTNode> body,
+                                               Context* closure_context)
+    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {}
+
+Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
+
+    Value bound_this = this_value;
+    try {
+        gen_ctx->create_binding("this", bound_this, true);
+    } catch (...) {
+        gen_ctx->set_binding("this", bound_this);
+    }
+
+    // Apply closures
+    auto prop_keys = get_own_property_keys();
+    for (const auto& key : prop_keys) {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+            std::string var_name = key.substr(10);
+            Value closure_value = get_property(key);
+            if (var_name != "arguments" && var_name != "this") {
+                if (ctx.has_binding(var_name)) {
+                    Value parent_val = ctx.get_binding(var_name);
+                    if (!parent_val.is_undefined() && !parent_val.is_function()) {
+                        closure_value = parent_val;
+                    }
+                }
+                gen_ctx->create_binding(var_name, closure_value, true);
+            }
+        }
+    }
+
+    // Bind parameters
+    const auto& params = get_parameters();
+    for (size_t i = 0; i < params.size(); ++i) {
+        Value arg = i < args.size() ? args[i] : Value();
+        gen_ctx->create_binding(params[i], arg);
+    }
+
+    std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
+    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), std::move(body_clone));
+    return Value(async_gen.release());
 }
 
 }

@@ -7257,7 +7257,178 @@ std::unique_ptr<ASTNode> ForInStatement::clone() const {
 Value ForOfStatement::evaluate(Context& ctx) {
     Value iterable = right_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
+
+    if (is_await_) {
+        AsyncExecutor* exec = AsyncExecutor::get_current();
+        Context* gctx = (exec && exec->engine_) ? exec->engine_->get_current_context() : &ctx;
+
+        if (!iterable.is_object()) {
+            ctx.throw_exception(Value(std::string("for-await-of: iterable must be an object")));
+            return Value();
+        }
+
+        Object* iterable_obj = iterable.as_object();
+
+        Value iter_method;
+        Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
+        if (async_iter_sym) {
+            iter_method = iterable_obj->get_property(async_iter_sym->to_property_key());
+        }
+        if (!iter_method.is_function()) {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                iter_method = iterable_obj->get_property(iter_sym->to_property_key());
+            }
+        }
+        if (!iter_method.is_function()) {
+            ctx.throw_exception(Value(std::string("for-await-of: object is not iterable")));
+            return Value();
+        }
+
+        Value iterator_val = iter_method.as_function()->call(ctx, {}, iterable);
+        if (ctx.has_exception()) return Value();
+        if (!iterator_val.is_object()) {
+            ctx.throw_exception(Value(std::string("for-await-of: iterator must be an object")));
+            return Value();
+        }
+        Object* iterator_obj = iterator_val.as_object();
+
+        std::string var_name;
+        VariableDeclarator::Kind var_kind = VariableDeclarator::Kind::VAR;
+        if (left_->get_type() == Type::VARIABLE_DECLARATION) {
+            VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
+            if (var_decl->declaration_count() > 0) {
+                VariableDeclarator* declarator = var_decl->get_declarations()[0].get();
+                var_name = declarator->get_id()->get_name();
+                var_kind = declarator->get_kind();
+            }
+        } else if (left_->get_type() == Type::IDENTIFIER) {
+            Identifier* id = static_cast<Identifier*>(left_.get());
+            var_name = id->get_name();
+        }
+        if (var_name.empty()) {
+            ctx.throw_exception(Value(std::string("for-await-of: invalid loop variable")));
+            return Value();
+        }
+
+        const uint32_t MAX_ITER = 1000000;
+        for (uint32_t i = 0; i < MAX_ITER; i++) {
+            Value next_method_val = iterator_obj->get_property("next");
+            if (!next_method_val.is_function()) {
+                ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
+                return Value();
+            }
+            Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+            if (ctx.has_exception()) return Value();
+
+            Value awaited;
+            if (exec) {
+                size_t await_index = exec->next_await_index_++;
+                if (await_index < exec->target_await_index_) {
+                    if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
+                        ctx.throw_exception(exec->await_results_[await_index]);
+                        return Value();
+                    }
+                    awaited = (await_index < exec->await_results_.size()) ? exec->await_results_[await_index] : Value();
+                } else {
+                    bool is_throw = false;
+                    bool is_pending = false;
+                    Promise* prom = nullptr;
+                    if (AsyncUtils::is_promise(next_result)) {
+                        prom = static_cast<Promise*>(next_result.as_object());
+                        if (prom->get_state() == PromiseState::FULFILLED) {
+                            awaited = prom->get_value();
+                        } else if (prom->get_state() == PromiseState::REJECTED) {
+                            awaited = prom->get_value();
+                            is_throw = true;
+                        } else {
+                            is_pending = true;
+                        }
+                    } else {
+                        awaited = next_result;
+                    }
+                    if (is_pending) {
+                        auto self = exec->shared_from_this();
+                        size_t target_idx = exec->target_await_index_;
+                        auto on_fulfill_fn = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                self->await_results_.push_back(args.empty() ? Value() : args[0]);
+                                self->await_is_throw_.push_back(false);
+                                self->target_await_index_++;
+                                if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                                return Value();
+                            });
+                        auto on_reject_fn = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                self->await_results_.push_back(args.empty() ? Value() : args[0]);
+                                self->await_is_throw_.push_back(true);
+                                self->target_await_index_++;
+                                if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
+                                return Value();
+                            });
+                        Function* ff = on_fulfill_fn.get();
+                        Function* rf = on_reject_fn.get();
+                        std::string suffix = std::to_string(target_idx);
+                        prom->set_property("__af__" + suffix, Value(on_fulfill_fn.release()));
+                        prom->set_property("__ar__" + suffix, Value(on_reject_fn.release()));
+                        prom->then(ff, rf);
+                        throw AwaitSuspendException{};
+                    }
+                    exec->await_results_.push_back(awaited);
+                    exec->await_is_throw_.push_back(is_throw);
+                    exec->target_await_index_++;
+                    if (is_throw) {
+                        ctx.throw_exception(awaited);
+                        return Value();
+                    }
+                }
+            } else {
+                if (AsyncUtils::is_promise(next_result)) {
+                    Promise* p = static_cast<Promise*>(next_result.as_object());
+                    if (p->get_state() == PromiseState::FULFILLED) {
+                        awaited = p->get_value();
+                    } else if (p->get_state() == PromiseState::REJECTED) {
+                        ctx.throw_exception(p->get_value());
+                        return Value();
+                    } else {
+                        ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));
+                        return Value();
+                    }
+                } else {
+                    awaited = next_result;
+                }
+            }
+
+            if (!awaited.is_object()) {
+                ctx.throw_exception(Value(std::string("for-await-of: iterator result must be an object")));
+                return Value();
+            }
+            Object* iter_result = awaited.as_object();
+            Value done = iter_result->get_property("done");
+            if (done.to_boolean()) break;
+            Value value = iter_result->get_property("value");
+
+            bool per_iter = (var_kind == VariableDeclarator::Kind::LET || var_kind == VariableDeclarator::Kind::CONST);
+            if (per_iter) {
+                ctx.push_block_scope();
+                ctx.create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
+            } else if (ctx.has_binding(var_name)) {
+                ctx.set_binding(var_name, value);
+            } else {
+                ctx.create_binding(var_name, value, true);
+            }
+
+            body_->evaluate(ctx);
+
+            if (per_iter) ctx.pop_block_scope();
+            if (ctx.has_exception()) return Value();
+            if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+            if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
+            if (ctx.has_return_value()) return Value();
+        }
+        return Value();
+    }
+
     if (iterable.is_object() || iterable.is_string()) {
         Object* obj = nullptr;
         
@@ -7788,7 +7959,13 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     }
     
     std::unique_ptr<Function> function_obj;
-    if (is_generator_) {
+    if (is_async_ && is_generator_) {
+        std::vector<std::string> param_names;
+        for (const auto& param : param_clones) {
+            param_names.push_back(param->get_name()->get_name());
+        }
+        function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, param_names, body_->clone(), &ctx);
+    } else if (is_generator_) {
         std::vector<std::string> param_names;
         for (const auto& param : param_clones) {
             param_names.push_back(param->get_name()->get_name());
@@ -7802,8 +7979,8 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         function_obj = std::make_unique<AsyncFunction>(function_name, param_names, body_->clone(), &ctx);
     } else {
         function_obj = ObjectFactory::create_js_function(
-            function_name, 
-            std::move(param_clones), 
+            function_name,
+            std::move(param_clones),
             body_->clone(),
             &ctx
         );
