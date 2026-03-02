@@ -10,6 +10,7 @@
 #include "quanta/parser/AST.h"
 #include <iostream>
 #include <algorithm>
+#include <unordered_set>
 
 namespace Quanta {
 
@@ -201,6 +202,16 @@ std::vector<std::string> Proxy::own_keys_trap() {
 
     if (parsed_handler_.ownKeys) {
         std::vector<std::string> result = parsed_handler_.ownKeys();
+        // Invariant: no duplicate keys (spec step 22)
+        {
+            std::unordered_set<std::string> seen;
+            for (const auto& rk : result) {
+                if (!seen.insert(rk).second) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy trap returned duplicate key");
+                    throw std::runtime_error("TypeError: 'ownKeys' proxy trap returned duplicate key");
+                }
+            }
+        }
         // Invariant: must include all non-configurable own properties
         std::vector<std::string> target_keys = target_->get_own_property_keys();
         for (const auto& tkey : target_keys) {

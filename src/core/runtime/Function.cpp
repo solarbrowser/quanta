@@ -275,6 +275,36 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
 
     auto prop_keys = this->get_own_property_keys();
+
+    // Pre-pull: refresh own closure values from sibling closure functions before loading.
+    // This handles async/microtask scenarios where a sibling ran before us (e.g., in a
+    // promise chain) and updated its own __closure_* values which we need as our starting
+    // point. Priority: parent_context > sibling pull > own stale value.
+    {
+        std::unordered_map<std::string, Value> sibling_updates;
+        for (const auto& pk : prop_keys) {
+            if (pk.length() <= 10 || pk.substr(0, 10) != "__closure_") continue;
+            Value pval = this->get_property(pk);
+            if (!pval.is_function()) continue;
+            Function* pfn = pval.as_function();
+            if (pfn == this) continue;
+            auto sib_keys = pfn->get_own_property_keys();
+            for (const auto& sk : sib_keys) {
+                if (sk.length() <= 10 || sk.substr(0, 10) != "__closure_") continue;
+                Value sv = pfn->get_property(sk);
+                if (sv.is_undefined() || sv.is_function()) continue;
+                if (!this->has_property(sk)) continue;
+                Value our_val = this->get_property(sk);
+                if (!sv.strict_equals(our_val) && !our_val.is_function()) {
+                    sibling_updates[sk] = sv;
+                }
+            }
+        }
+        for (auto& [uk, uv] : sibling_updates) {
+            this->set_property(uk, uv);
+        }
+    }
+
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);
@@ -465,6 +495,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 auto binding_names = var_env->get_binding_names();
 
                 std::vector<std::pair<std::string, Value>> var_values;
+                std::vector<std::pair<std::string, Value>> func_values;
                 std::vector<Function*> func_objects;
 
                 // Build set of parameter names to exclude from sibling closure propagation
@@ -486,6 +517,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                         // binding) to avoid capturing parameters as stale closures
                         if (fn != this) {
                             func_objects.push_back(fn);
+                            func_values.push_back({bname, val});
                         }
                     } else {
                         var_values.push_back({bname, val});
@@ -495,6 +527,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 for (auto* func : func_objects) {
                     for (auto& [vname, vval] : var_values) {
                         func->set_property("__closure_" + vname, vval);
+                    }
+                    for (auto& [fname, fval] : func_values) {
+                        if (fval.as_function() != func) {
+                            func->set_property("__closure_" + fname, fval);
+                        }
                     }
                 }
 
@@ -513,6 +550,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                         if (!already_updated) {
                             for (auto& [vname, vval] : var_values) {
                                 ret_func->set_property("__closure_" + vname, vval);
+                            }
+                            for (auto& [fname, fval] : func_values) {
+                                if (fval.as_function() != ret_func) {
+                                    ret_func->set_property("__closure_" + fname, fval);
+                                }
                             }
                         }
                     }
@@ -550,6 +592,20 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 auto sibling_names = var_env->get_binding_names();
                 for (const auto& sname : sibling_names) {
                     Value sval = parent_context->get_binding(sname);
+                    if (sval.is_function() && sval.as_function() != this) {
+                        Function* sibling = sval.as_function();
+                        for (auto& [vname, vval] : modified_closures) {
+                            if (sibling->has_property("__closure_" + vname)) {
+                                sibling->set_property("__closure_" + vname, vval);
+                            }
+                        }
+                    }
+                }
+            }
+            auto own_keys = this->get_own_property_keys();
+            for (const auto& okey : own_keys) {
+                if (okey.length() > 10 && okey.substr(0, 10) == "__closure_") {
+                    Value sval = this->get_property(okey);
                     if (sval.is_function() && sval.as_function() != this) {
                         Function* sibling = sval.as_function();
                         for (auto& [vname, vval] : modified_closures) {

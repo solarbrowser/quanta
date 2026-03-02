@@ -600,7 +600,15 @@ void Context::initialize_built_ins() {
 
             std::vector<std::string> raw_keys;
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                raw_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+                try {
+                    raw_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+                } catch (const std::runtime_error&) {
+                    if (!ctx.has_exception()) {
+                        ctx.throw_type_error("'ownKeys' proxy invariant violated");
+                    }
+                    return Value();
+                }
+                if (ctx.has_exception()) return Value();
             } else {
                 raw_keys = obj->get_enumerable_keys();
             }
@@ -8422,6 +8430,7 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
                 regex_obj->set_property("unicode", Value(regexp_impl->get_unicode()));
                 regex_obj->set_property("sticky", Value(regexp_impl->get_sticky()));
+                regex_obj->set_property("dotAll", Value(regexp_impl->get_dotall()));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
                 
                 Object* regex_obj_ptr = regex_obj.get();
@@ -8983,20 +8992,52 @@ void Context::initialize_built_ins() {
                 ctx.throw_exception(Value(std::string("Promise.prototype.finally called on non-object")));
                 return Value();
             }
-            
             Promise* promise = dynamic_cast<Promise*>(this_obj);
             if (!promise) {
                 ctx.throw_exception(Value(std::string("Promise.prototype.finally called on non-Promise")));
                 return Value();
             }
-            
             Function* on_finally = nullptr;
-            if (args.size() > 0 && args[0].is_function()) {
+            if (!args.empty() && args[0].is_function()) {
                 on_finally = args[0].as_function();
             }
-            
-            Promise* new_promise = promise->finally_method(on_finally);
-            return Value(new_promise);
+            if (!on_finally) {
+                return Value(promise->then(nullptr, nullptr));
+            }
+            auto then_wrapper = ObjectFactory::create_native_function("thenFinally",
+                [on_finally](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value original_val = args.empty() ? Value() : args[0];
+                    std::vector<Value> no_args;
+                    Value result = on_finally->call(ctx, no_args);
+                    if (ctx.has_exception()) return Value();
+                    if (result.is_object()) {
+                        Promise* rp = dynamic_cast<Promise*>(result.as_object());
+                        if (rp && rp->is_rejected()) {
+                            ctx.throw_exception(rp->get_value());
+                            return Value();
+                        }
+                    }
+                    return original_val;
+                });
+            auto catch_wrapper = ObjectFactory::create_native_function("catchFinally",
+                [on_finally](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value original_reason = args.empty() ? Value() : args[0];
+                    std::vector<Value> no_args;
+                    Value result = on_finally->call(ctx, no_args);
+                    if (ctx.has_exception()) return Value();
+                    if (result.is_object()) {
+                        Promise* rp = dynamic_cast<Promise*>(result.as_object());
+                        if (rp && rp->is_rejected()) {
+                            ctx.throw_exception(rp->get_value());
+                            return Value();
+                        }
+                    }
+                    ctx.throw_exception(original_reason);
+                    return Value();
+                });
+            Function* then_fn = static_cast<Function*>(then_wrapper.release());
+            Function* catch_fn = static_cast<Function*>(catch_wrapper.release());
+            return Value(promise->then(then_fn, catch_fn));
         });
     promise_prototype->set_property("finally", Value(promise_finally.release()));
 

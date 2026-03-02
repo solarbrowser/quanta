@@ -3345,7 +3345,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     return std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, end, true, false
+        start, end, true, is_generator
     );
 }
 

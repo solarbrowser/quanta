@@ -43,14 +43,15 @@ static std::string apply_unicode_word_case_fold(const std::string& str) {
 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false),
-      multiline_(false), unicode_(false), sticky_(false), last_index_(0) {
+      multiline_(false), unicode_(false), sticky_(false), dotall_(false), last_index_(0) {
 
     parse_flags(flags);
 
     try {
-        // Apply Annex B transformations for non-unicode patterns
-        std::string annex_b_pattern = unicode_ ? pattern_ : transform_annex_b(pattern_);
+        std::string stripped = strip_named_groups(pattern_);
+        std::string annex_b_pattern = unicode_ ? stripped : transform_annex_b(stripped);
         std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
+        if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
         regex_ = std::regex(transformed_pattern, get_regex_flags());
     } catch (const std::regex_error& e) {
         regex_ = std::regex("(?!)");
@@ -150,6 +151,23 @@ Value RegExp::exec(const std::string& str) {
                 }
             }
 
+            bool has_named = false;
+            for (const auto& n : named_groups_) { if (!n.empty()) { has_named = true; break; } }
+            if (has_named) {
+                auto groups_obj = new Object();
+                for (size_t i = 0; i < named_groups_.size(); ++i) {
+                    if (!named_groups_[i].empty()) {
+                        size_t gi = i + 1;
+                        if (gi < match.size() && match[gi].matched) {
+                            groups_obj->set_property(named_groups_[i], Value(match[gi].str()));
+                        } else {
+                            groups_obj->set_property(named_groups_[i], Value());
+                        }
+                    }
+                }
+                result->set_property("groups", Value(groups_obj));
+            }
+
             return Value(result);
         } else if (advances_index) {
             last_index_ = 0;
@@ -168,13 +186,16 @@ void RegExp::compile(const std::string& pattern, const std::string& flags) {
     multiline_ = false;
     unicode_ = false;
     sticky_ = false;
+    dotall_ = false;
     last_index_ = 0;
 
     parse_flags(flags_);
 
     try {
-        std::string annex_b_pattern = unicode_ ? pattern_ : transform_annex_b(pattern_);
+        std::string stripped = strip_named_groups(pattern_);
+        std::string annex_b_pattern = unicode_ ? stripped : transform_annex_b(stripped);
         std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
+        if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
         regex_ = std::regex(transformed_pattern, get_regex_flags());
     } catch (const std::regex_error& e) {
         regex_ = std::regex("(?!)");
@@ -188,25 +209,69 @@ std::string RegExp::to_string() const {
 void RegExp::parse_flags(const std::string& flags) {
     for (char flag : flags) {
         switch (flag) {
-            case 'g':
-                global_ = true;
-                break;
-            case 'i':
-                ignore_case_ = true;
-                break;
-            case 'm':
-                multiline_ = true;
-                break;
-            case 'u':
-                unicode_ = true;
-                break;
-            case 'y':
-                sticky_ = true;
-                break;
-            default:
-                break;
+            case 'g': global_ = true; break;
+            case 'i': ignore_case_ = true; break;
+            case 'm': multiline_ = true; break;
+            case 'u': unicode_ = true; break;
+            case 'y': sticky_ = true; break;
+            case 's': dotall_ = true; break;
+            default: break;
         }
     }
+}
+
+std::string RegExp::strip_named_groups(const std::string& pattern) {
+    named_groups_.clear();
+    std::string result;
+    bool escaped = false;
+    bool in_char_class = false;
+    int group_index = 0;
+
+    for (size_t i = 0; i < pattern.length(); ++i) {
+        char ch = pattern[i];
+        if (escaped) { result += ch; escaped = false; continue; }
+        if (ch == '\\') { result += ch; escaped = true; continue; }
+        if (ch == '[') { in_char_class = true; result += ch; continue; }
+        if (ch == ']') { in_char_class = false; result += ch; continue; }
+        if (in_char_class) { result += ch; continue; }
+
+        if (ch == '(' && i + 2 < pattern.length() && pattern[i+1] == '?' && pattern[i+2] == '<'
+            && i + 3 < pattern.length() && pattern[i+3] != '=' && pattern[i+3] != '!') {
+            group_index++;
+            size_t j = i + 3;
+            std::string name;
+            while (j < pattern.length() && pattern[j] != '>') name += pattern[j++];
+            while ((int)named_groups_.size() < group_index) named_groups_.push_back("");
+            named_groups_[group_index - 1] = name;
+            result += '(';
+            i = j;
+        } else if (ch == '(' && i + 1 < pattern.length() && pattern[i+1] == '?') {
+            result += ch;
+        } else if (ch == '(') {
+            group_index++;
+            while ((int)named_groups_.size() < group_index) named_groups_.push_back("");
+            result += ch;
+        } else {
+            result += ch;
+        }
+    }
+    return result;
+}
+
+std::string RegExp::transform_pattern_for_dotall(const std::string& pattern) const {
+    std::string result;
+    bool escaped = false;
+    bool in_char_class = false;
+    for (size_t i = 0; i < pattern.length(); ++i) {
+        char ch = pattern[i];
+        if (escaped) { result += ch; escaped = false; continue; }
+        if (ch == '\\') { result += ch; escaped = true; continue; }
+        if (ch == '[') { in_char_class = true; result += ch; continue; }
+        if (ch == ']') { in_char_class = false; result += ch; continue; }
+        if (ch == '.' && !in_char_class) { result += "[\\s\\S]"; continue; }
+        result += ch;
+    }
+    return result;
 }
 
 std::regex::flag_type RegExp::get_regex_flags() const {

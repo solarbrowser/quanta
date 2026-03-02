@@ -47,8 +47,9 @@ void Promise::reject(const Value& reason) {
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Context* exec_ctx = get_exec_ctx(engine_, context_);
 
-    // Create child promise
-    auto child_obj = ObjectFactory::create_promise(exec_ctx);
+    // Create child promise — inherit parent's context so closure propagation works
+    // correctly when promises are created inside nested function scopes.
+    auto child_obj = ObjectFactory::create_promise(context_ ? context_ : exec_ctx);
     Promise* child = static_cast<Promise*>(child_obj.release());
 
     if (state_ == PromiseState::PENDING) {
