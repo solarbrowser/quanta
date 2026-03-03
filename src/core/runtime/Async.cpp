@@ -348,20 +348,25 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     (void)value;
-    
+
+    auto make_promise = [this]() -> std::unique_ptr<Promise> {
+        auto obj = ObjectFactory::create_promise(generator_context_);
+        return std::unique_ptr<Promise>(static_cast<Promise*>(obj.release()));
+    };
+
     if (state_ == State::Completed) {
-        auto promise = std::make_unique<Promise>(generator_context_);
-        
+        auto promise = make_promise();
+
         auto result_obj = ObjectFactory::create_object();
         result_obj->set_property("value", Value());
         result_obj->set_property("done", Value(true));
-        
+
         promise->fulfill(Value(result_obj.release()));
         return AsyncGeneratorResult(std::move(promise));
     }
-    
-    auto promise = std::make_unique<Promise>(generator_context_);
-    
+
+    auto promise = make_promise();
+
     EventLoop::instance().schedule_microtask([this, promise_ptr = promise.get()]() {
         try {
             if (body_) {
@@ -391,23 +396,25 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& value) {
     state_ = State::Completed;
-    
-    auto promise = std::make_unique<Promise>(generator_context_);
-    
+
+    auto promise_obj = ObjectFactory::create_promise(generator_context_);
+    auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
+
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("value", value);
     result_obj->set_property("done", Value(true));
-    
+
     promise->fulfill(Value(result_obj.release()));
     return AsyncGeneratorResult(std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value& exception) {
     state_ = State::Completed;
-    
-    auto promise = std::make_unique<Promise>(generator_context_);
+
+    auto promise_obj = ObjectFactory::create_promise(generator_context_);
+    auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
     promise->reject(exception);
-    
+
     return AsyncGeneratorResult(std::move(promise));
 }
 

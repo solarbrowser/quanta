@@ -1042,12 +1042,19 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
 
     advance();
 
-    // Split cooked and raw parts (separated by \0 from lexer)
-    size_t null_sep = template_str.find('\0');
+    // Split cooked and raw parts: 4-byte big-endian cooked length prefix, then cooked, then raw.
     std::string cooked_str, raw_str;
-    if (null_sep != std::string::npos) {
-        cooked_str = template_str.substr(0, null_sep);
-        raw_str = template_str.substr(null_sep + 1);
+    if (template_str.size() >= 4) {
+        uint32_t cooked_len = (static_cast<uint8_t>(template_str[0]) << 24) |
+                              (static_cast<uint8_t>(template_str[1]) << 16) |
+                              (static_cast<uint8_t>(template_str[2]) << 8)  |
+                               static_cast<uint8_t>(template_str[3]);
+        if (4 + cooked_len <= template_str.size()) {
+            cooked_str = template_str.substr(4, cooked_len);
+            raw_str = template_str.substr(4 + cooked_len);
+        } else {
+            cooked_str = template_str.substr(4);
+        }
     } else {
         cooked_str = template_str;
         raw_str = template_str;

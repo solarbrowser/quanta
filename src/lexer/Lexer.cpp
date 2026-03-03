@@ -649,8 +649,17 @@ Token Lexer::read_template_literal() {
     if (!seg_valid) full_cooked += "\x01";
     else full_cooked += seg_cooked;
 
-    // Encode both cooked and raw in token value, separated by \0
-    return create_token(TokenType::TEMPLATE_LITERAL, full_cooked + '\0' + full_raw, start);
+    // Encode: 4-byte big-endian cooked length, then cooked bytes, then raw bytes.
+    // Using a length prefix avoids conflicts when cooked contains null chars (\0 escapes).
+    uint32_t cooked_len = static_cast<uint32_t>(full_cooked.size());
+    std::string token_value(4, '\0');
+    token_value[0] = static_cast<char>((cooked_len >> 24) & 0xFF);
+    token_value[1] = static_cast<char>((cooked_len >> 16) & 0xFF);
+    token_value[2] = static_cast<char>((cooked_len >> 8) & 0xFF);
+    token_value[3] = static_cast<char>(cooked_len & 0xFF);
+    token_value += full_cooked;
+    token_value += full_raw;
+    return create_token(TokenType::TEMPLATE_LITERAL, token_value, start);
 }
 
 Token Lexer::read_single_line_comment() {

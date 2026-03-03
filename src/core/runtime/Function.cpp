@@ -25,7 +25,6 @@ namespace Quanta {
 
 namespace Quanta {
 
-
 Function::Function(const std::string& name,
                    const std::vector<std::string>& params,
                    std::unique_ptr<ASTNode> body,
@@ -305,12 +304,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
 
+    auto* parent_var_env = parent_context->get_variable_environment();
+    std::unordered_set<std::string> parent_var_names;
+    if (parent_var_env) {
+        auto names = parent_var_env->get_binding_names();
+        parent_var_names.insert(names.begin(), names.end());
+    }
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);
             Value closure_value = this->get_property(key);
             if (var_name != "arguments" && var_name != "this") {
-                if (parent_context->has_binding(var_name)) {
+                if (parent_var_names.count(var_name)) {
                     Value parent_val = parent_context->get_binding(var_name);
                     if (!parent_val.is_undefined() && !parent_val.is_function()) {
                         closure_value = parent_val;
@@ -472,8 +477,27 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             function_context.create_binding(name_, Value(this), false);
         }
 
+        std::unordered_set<std::string> pre_scan_names;
+        {
+            auto* ve = function_context.get_variable_environment();
+            if (ve) {
+                auto ns = ve->get_binding_names();
+                pre_scan_names.insert(ns.begin(), ns.end());
+            }
+        }
+
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             scan_for_var_declarations(body_.get(), function_context);
+        }
+
+        std::unordered_set<std::string> scan_created_names;
+        {
+            auto* ve = function_context.get_variable_environment();
+            if (ve) {
+                for (const auto& n : ve->get_binding_names()) {
+                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
+                }
+            }
         }
 
         Context* prev_context = Object::current_context_;
@@ -491,9 +515,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // var initializations, so their __closure_ properties had stale values.
         {
             auto var_env = function_context.get_variable_environment();
-            if (var_env) {
-                auto binding_names = var_env->get_binding_names();
-
+            if (var_env && !scan_created_names.empty()) {
                 std::vector<std::pair<std::string, Value>> var_values;
                 std::vector<std::pair<std::string, Value>> func_values;
                 std::vector<Function*> func_objects;
@@ -506,15 +528,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     }
                 }
 
-                for (const auto& bname : binding_names) {
+                for (const auto& bname : scan_created_names) {
                     if (bname == "this" || bname == "arguments") continue;
-                    // Parameters are local to this function - don't propagate to siblings
                     if (param_name_set.count(bname)) continue;
                     Value val = function_context.get_binding(bname);
                     if (val.is_function()) {
                         Function* fn = val.as_function();
-                        // Skip the current function itself (named function expression
-                        // binding) to avoid capturing parameters as stale closures
                         if (fn != this) {
                             func_objects.push_back(fn);
                             func_values.push_back({bname, val});
@@ -575,7 +594,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     Value old_value = this->get_property(key);
                     this->set_property(key, current_value);
 
-                    if (parent_context->has_binding(var_name)) {
+                    if (parent_var_names.count(var_name)) {
                         parent_context->set_binding(var_name, current_value);
                     }
 

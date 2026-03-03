@@ -41,6 +41,58 @@ static std::string apply_unicode_word_case_fold(const std::string& str) {
     return result;
 }
 
+// Extract and remove lookbehind assertions (?<=...) and (?<!...) from the pattern.
+// Stores extracted assertions in lookbehinds_ and returns the modified pattern.
+std::string RegExp::extract_lookbehinds(const std::string& pattern) {
+    lookbehinds_.clear();
+    std::string result;
+    size_t i = 0;
+    while (i < pattern.size()) {
+        if (pattern[i] == '\\') {
+            result += pattern[i];
+            if (i + 1 < pattern.size()) result += pattern[i + 1];
+            i += 2;
+            continue;
+        }
+        if (pattern[i] == '(' && i + 3 < pattern.size() &&
+            pattern[i + 1] == '?' && pattern[i + 2] == '<' &&
+            (pattern[i + 3] == '=' || pattern[i + 3] == '!')) {
+            bool positive = (pattern[i + 3] == '=');
+            size_t start = i + 4;
+            int depth = 1;
+            size_t j = start;
+            while (j < pattern.size() && depth > 0) {
+                if (pattern[j] == '\\') { j += 2; continue; }
+                if (pattern[j] == '(') depth++;
+                else if (pattern[j] == ')') depth--;
+                if (depth > 0) j++;
+                else break;
+            }
+            std::string lb_pat = pattern.substr(start, j - start);
+            try {
+                std::regex lb_re(lb_pat + "$", get_regex_flags());
+                lookbehinds_.push_back({lb_pat, std::move(lb_re), positive});
+            } catch (...) {}
+            i = j + 1;
+        } else {
+            result += pattern[i];
+            i++;
+        }
+    }
+    return result;
+}
+
+bool RegExp::check_lookbehinds(const std::string& str, size_t match_pos) const {
+    if (lookbehinds_.empty()) return true;
+    std::string before = str.substr(0, match_pos);
+    for (const auto& lb : lookbehinds_) {
+        bool found = std::regex_search(before, lb.compiled);
+        if (lb.positive && !found) return false;
+        if (!lb.positive && found) return false;
+    }
+    return true;
+}
+
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false),
       multiline_(false), unicode_(false), sticky_(false), dotall_(false), last_index_(0) {
@@ -49,7 +101,8 @@ RegExp::RegExp(const std::string& pattern, const std::string& flags)
 
     try {
         std::string stripped = strip_named_groups(pattern_);
-        std::string annex_b_pattern = unicode_ ? stripped : transform_annex_b(stripped);
+        std::string no_lb = extract_lookbehinds(stripped);
+        std::string annex_b_pattern = unicode_ ? no_lb : transform_annex_b(no_lb);
         std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
         if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
         regex_ = std::regex(transformed_pattern, get_regex_flags());
@@ -63,21 +116,38 @@ bool RegExp::test(const std::string& str) {
         std::smatch match;
         std::string effective_str = (unicode_ && ignore_case_) ? apply_unicode_word_case_fold(str) : str;
         const std::string& s = effective_str;
-        std::string::const_iterator start = s.begin();
+        std::string::const_iterator search_start = s.begin();
 
         if (global_ && last_index_ > 0) {
             if (last_index_ >= static_cast<int>(s.length())) {
                 last_index_ = 0;
                 return false;
             }
-            start = s.begin() + last_index_;
+            search_start = s.begin() + last_index_;
         }
 
-        bool result = std::regex_search(start, s.end(), match, regex_);
+        if (!lookbehinds_.empty()) {
+            // For patterns with lookbehinds: find first match that satisfies all conditions.
+            auto it = search_start;
+            while (it < s.cend()) {
+                if (!std::regex_search(it, s.cend(), match, regex_)) break;
+                size_t match_pos = static_cast<size_t>(it - s.begin()) + match.position();
+                if (check_lookbehinds(s, match_pos)) {
+                    if (global_) last_index_ = static_cast<int>(match_pos + match.length());
+                    return true;
+                }
+                size_t advance = match.position() + match.length();
+                if (advance == 0) ++it; else it += advance;
+            }
+            if (global_) last_index_ = 0;
+            return false;
+        }
+
+        bool result = std::regex_search(search_start, s.cend(), match, regex_);
 
         if (global_) {
             if (result) {
-                size_t actual_position = (start - s.begin()) + match.position();
+                size_t actual_position = static_cast<size_t>(search_start - s.begin()) + match.position();
                 size_t match_len = match.length();
 
                 if (multiline_ && match_len > 0 && match[0].str()[0] == '\n') {
@@ -85,17 +155,15 @@ bool RegExp::test(const std::string& str) {
                     match_len--;
                 }
 
-                last_index_ = actual_position + match_len;
+                last_index_ = static_cast<int>(actual_position + match_len);
             } else {
                 last_index_ = 0;
             }
         }
 
         return result;
-    } catch (const std::regex_error& e) {
-        if (global_) {
-            last_index_ = 0;
-        }
+    } catch (const std::regex_error&) {
+        if (global_) last_index_ = 0;
         return false;
     }
 }
@@ -116,16 +184,26 @@ Value RegExp::exec(const std::string& str) {
         }
 
         bool found = false;
+        size_t actual_position = 0;
         if (sticky_) {
-            // Sticky: must match exactly at lastIndex (use regex_search with match_continuous)
             found = std::regex_search(start, s.cend(), match, regex_,
                                       std::regex_constants::match_continuous);
+            if (found) actual_position = static_cast<size_t>(start - s.begin()) + match.position();
+        } else if (!lookbehinds_.empty()) {
+            auto it = start;
+            while (it < s.cend()) {
+                if (!std::regex_search(it, s.cend(), match, regex_)) break;
+                actual_position = static_cast<size_t>(it - s.begin()) + match.position();
+                if (check_lookbehinds(s, actual_position)) { found = true; break; }
+                size_t step = match.position() + match.length();
+                if (step == 0) ++it; else it += step;
+            }
         } else {
             found = std::regex_search(start, s.cend(), match, regex_);
+            if (found) actual_position = static_cast<size_t>(start - s.begin()) + match.position();
         }
 
         if (found) {
-            size_t actual_position = (start - s.begin()) + match.position();
             std::string matched_str = match[0].str();
 
             if (multiline_ && !matched_str.empty() && matched_str[0] == '\n') {
@@ -193,7 +271,8 @@ void RegExp::compile(const std::string& pattern, const std::string& flags) {
 
     try {
         std::string stripped = strip_named_groups(pattern_);
-        std::string annex_b_pattern = unicode_ ? stripped : transform_annex_b(stripped);
+        std::string no_lb = extract_lookbehinds(stripped);
+        std::string annex_b_pattern = unicode_ ? no_lb : transform_annex_b(no_lb);
         std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
         if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
         regex_ = std::regex(transformed_pattern, get_regex_flags());

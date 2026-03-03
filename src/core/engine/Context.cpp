@@ -9013,7 +9013,7 @@ void Context::initialize_built_ins() {
                     if (result.is_object()) {
                         Promise* rp = dynamic_cast<Promise*>(result.as_object());
                         if (rp && rp->is_rejected()) {
-                            ctx.throw_exception(rp->get_value());
+                            ctx.throw_exception(rp->get_value(), true);
                             return Value();
                         }
                     }
@@ -9028,11 +9028,11 @@ void Context::initialize_built_ins() {
                     if (result.is_object()) {
                         Promise* rp = dynamic_cast<Promise*>(result.as_object());
                         if (rp && rp->is_rejected()) {
-                            ctx.throw_exception(rp->get_value());
+                            ctx.throw_exception(rp->get_value(), true);
                             return Value();
                         }
                     }
-                    ctx.throw_exception(original_reason);
+                    ctx.throw_exception(original_reason, true);
                     return Value();
                 });
             Function* then_fn = static_cast<Function*>(then_wrapper.release());

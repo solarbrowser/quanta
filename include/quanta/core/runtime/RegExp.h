@@ -31,6 +31,13 @@ private:
     int last_index_;
     std::vector<std::string> named_groups_;
 
+    struct LookbehindInfo {
+        std::string pattern;
+        std::regex compiled;
+        bool positive;
+    };
+    std::vector<LookbehindInfo> lookbehinds_;
+
 public:
     RegExp(const std::string& pattern, const std::string& flags = "");
 
@@ -58,6 +65,8 @@ private:
     std::string transform_pattern_for_multiline(const std::string& pattern) const;
     std::string transform_pattern_for_dotall(const std::string& pattern) const;
     std::string transform_annex_b(const std::string& pattern) const;
+    std::string extract_lookbehinds(const std::string& pattern);
+    bool check_lookbehinds(const std::string& str, size_t match_pos) const;
 };
 
 }
