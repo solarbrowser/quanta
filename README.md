@@ -6,6 +6,7 @@
 > Updates will resume after the break.
 >
 > Thank you for your patience & understanding.
+> COMING BACK AT 4/10/2026
 
 <div align="center">
   <img src="docs/images/quanta_transparent.png" alt="Quanta Logo" width="200"/>
