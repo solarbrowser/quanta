@@ -113,8 +113,8 @@ make -j$(nproc)
 </details>
 </details>
 
+### Troubleshooting
 <details>
-<summary><strong>Troubleshooting</strong></summary>
 
 ### Clang not found
 - Windows: Ensure LLVM is in PATH, restart terminal  
