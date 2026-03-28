@@ -19,7 +19,7 @@ Quanta is an experimental ECMAScript (or JS) engine focused on both **memory eff
 
 | ECMAScript Version | Support |
 |--------------------|--------|
-| ES1 – ES3 – ES5    | ~100%  |
+| ES1-ES5            | ~100%  |
 | ES6                | ~90%   |
 | ES2016+            | ~57%   |
 
@@ -42,8 +42,8 @@ You can reach all the documentation files from [here](https://quanta.js.org/page
   
 Quanta uses **Clang++** across all platforms.
 
-#### Windows
 <details>
+<summary><strong>Windows</strong></summary>
 
 ```bash
 # Install LLVM and add to PATH
@@ -55,8 +55,8 @@ build-windows.bat
 ```
 </details>
 
-#### Linux
 <details>
+<summary><strong>Linux</strong></summary>
 
 ```bash
 # Ubuntu/Debian
@@ -76,8 +76,8 @@ make -j$(nproc)
 ```
 </details>
 
-#### macOS
 <details>
+<summary><strong>macOS</strong></summary>
 
 ```bash
 xcode-select --install
@@ -90,8 +90,8 @@ make -j$(nproc)
 ```
 </details>
 
-### Build Outputs
 <details>
+<summary><strong>Build Outputs</strong></summary>
 
 - **Windows:** `build/bin/quanta.exe`  
 - **Linux/macOS:** `build/bin/quanta`  
@@ -100,8 +100,8 @@ make -j$(nproc)
 </details>
 
 
-### Usage
 <details>
+<summary><strong>Usae</strong></summary>
 
 ```bash
 # Run a JavaScript file
@@ -113,8 +113,8 @@ make -j$(nproc)
 </details>
 </details>
 
-### Troubleshooting
 <details>
+<summary><strong>Troubleshooting</strong></summary>
 
 ### Clang not found
 - Windows: Ensure LLVM is in PATH, restart terminal  
