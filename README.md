@@ -103,6 +103,7 @@ make -j$(nproc)
 
 ### Usage
 <details>
+<summary><strong>Usae</strong></summary>
 
 ```bash
 # Run a JavaScript file
