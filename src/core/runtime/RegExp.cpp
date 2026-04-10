@@ -4,285 +4,28 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
+#define PCRE2_CODE_UNIT_WIDTH 8
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Object.h"
-#include <iostream>
-#include <sstream>
+#include <pcre2.h>
+#include <vector>
+#include <cstring>
 
 namespace Quanta {
 
-// Unicode simple case folding for characters outside ASCII that fold to ASCII word chars.
-// Per ECMAScript spec, /\w/ui matches chars whose CaseFold maps into [A-Za-z0-9_].
-// Only two non-ASCII Unicode code points fold into ASCII letters:
-//   U+017F LATIN SMALL LETTER LONG S  (UTF-8: C5 BF) → 's'
-//   U+212A KELVIN SIGN                (UTF-8: E2 84 AA) → 'k'
-static std::string apply_unicode_word_case_fold(const std::string& str) {
-    std::string result;
-    result.reserve(str.size());
-    size_t i = 0;
-    while (i < str.size()) {
-        unsigned char c0 = static_cast<unsigned char>(str[i]);
-        if (c0 == 0xC5 && i + 1 < str.size() &&
-            static_cast<unsigned char>(str[i+1]) == 0xBF) {
-            // U+017F → 's'
-            result += 's';
-            i += 2;
-        } else if (c0 == 0xE2 && i + 2 < str.size() &&
-                   static_cast<unsigned char>(str[i+1]) == 0x84 &&
-                   static_cast<unsigned char>(str[i+2]) == 0xAA) {
-            // U+212A → 'k'
-            result += 'k';
-            i += 3;
-        } else {
-            result += str[i];
-            i++;
-        }
-    }
-    return result;
-}
-
-// Extract and remove lookbehind assertions (?<=...) and (?<!...) from the pattern.
-// Stores extracted assertions in lookbehinds_ and returns the modified pattern.
-std::string RegExp::extract_lookbehinds(const std::string& pattern) {
-    lookbehinds_.clear();
-    std::string result;
-    size_t i = 0;
-    while (i < pattern.size()) {
-        if (pattern[i] == '\\') {
-            result += pattern[i];
-            if (i + 1 < pattern.size()) result += pattern[i + 1];
-            i += 2;
-            continue;
-        }
-        if (pattern[i] == '(' && i + 3 < pattern.size() &&
-            pattern[i + 1] == '?' && pattern[i + 2] == '<' &&
-            (pattern[i + 3] == '=' || pattern[i + 3] == '!')) {
-            bool positive = (pattern[i + 3] == '=');
-            size_t start = i + 4;
-            int depth = 1;
-            size_t j = start;
-            while (j < pattern.size() && depth > 0) {
-                if (pattern[j] == '\\') { j += 2; continue; }
-                if (pattern[j] == '(') depth++;
-                else if (pattern[j] == ')') depth--;
-                if (depth > 0) j++;
-                else break;
-            }
-            std::string lb_pat = pattern.substr(start, j - start);
-            try {
-                std::regex lb_re(lb_pat + "$", get_regex_flags());
-                lookbehinds_.push_back({lb_pat, std::move(lb_re), positive});
-            } catch (...) {}
-            i = j + 1;
-        } else {
-            result += pattern[i];
-            i++;
-        }
-    }
-    return result;
-}
-
-bool RegExp::check_lookbehinds(const std::string& str, size_t match_pos) const {
-    if (lookbehinds_.empty()) return true;
-    std::string before = str.substr(0, match_pos);
-    for (const auto& lb : lookbehinds_) {
-        bool found = std::regex_search(before, lb.compiled);
-        if (lb.positive && !found) return false;
-        if (!lb.positive && found) return false;
-    }
-    return true;
-}
-
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
-    : pattern_(pattern), flags_(flags), global_(false), ignore_case_(false),
-      multiline_(false), unicode_(false), sticky_(false), dotall_(false), last_index_(0) {
-
+    : pattern_(pattern), flags_(flags), code_(nullptr),
+      global_(false), ignore_case_(false), multiline_(false),
+      unicode_(false), sticky_(false), dotall_(false), last_index_(0) {
     parse_flags(flags);
-
-    try {
-        std::string stripped = strip_named_groups(pattern_);
-        std::string no_lb = extract_lookbehinds(stripped);
-        std::string annex_b_pattern = unicode_ ? no_lb : transform_annex_b(no_lb);
-        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
-        if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
-        regex_ = std::regex(transformed_pattern, get_regex_flags());
-    } catch (const std::regex_error& e) {
-        regex_ = std::regex("(?!)");
-    }
+    do_compile();
 }
 
-bool RegExp::test(const std::string& str) {
-    try {
-        std::smatch match;
-        std::string effective_str = (unicode_ && ignore_case_) ? apply_unicode_word_case_fold(str) : str;
-        const std::string& s = effective_str;
-        std::string::const_iterator search_start = s.begin();
-
-        if (global_ && last_index_ > 0) {
-            if (last_index_ >= static_cast<int>(s.length())) {
-                last_index_ = 0;
-                return false;
-            }
-            search_start = s.begin() + last_index_;
-        }
-
-        if (!lookbehinds_.empty()) {
-            // For patterns with lookbehinds: find first match that satisfies all conditions.
-            auto it = search_start;
-            while (it < s.cend()) {
-                if (!std::regex_search(it, s.cend(), match, regex_)) break;
-                size_t match_pos = static_cast<size_t>(it - s.begin()) + match.position();
-                if (check_lookbehinds(s, match_pos)) {
-                    if (global_) last_index_ = static_cast<int>(match_pos + match.length());
-                    return true;
-                }
-                size_t advance = match.position() + match.length();
-                if (advance == 0) ++it; else it += advance;
-            }
-            if (global_) last_index_ = 0;
-            return false;
-        }
-
-        bool result = std::regex_search(search_start, s.cend(), match, regex_);
-
-        if (global_) {
-            if (result) {
-                size_t actual_position = static_cast<size_t>(search_start - s.begin()) + match.position();
-                size_t match_len = match.length();
-
-                if (multiline_ && match_len > 0 && match[0].str()[0] == '\n') {
-                    actual_position++;
-                    match_len--;
-                }
-
-                last_index_ = static_cast<int>(actual_position + match_len);
-            } else {
-                last_index_ = 0;
-            }
-        }
-
-        return result;
-    } catch (const std::regex_error&) {
-        if (global_) last_index_ = 0;
-        return false;
+RegExp::~RegExp() {
+    if (code_) {
+        pcre2_code_free(static_cast<pcre2_code*>(code_));
+        code_ = nullptr;
     }
-}
-
-Value RegExp::exec(const std::string& str) {
-    try {
-        std::smatch match;
-        bool advances_index = global_ || sticky_;
-        std::string effective_str = (unicode_ && ignore_case_) ? apply_unicode_word_case_fold(str) : str;
-        const std::string& s = effective_str;
-
-        std::string::const_iterator start = s.begin();
-        if (advances_index && last_index_ > 0 && last_index_ < s.length()) {
-            start = s.begin() + last_index_;
-        } else if (advances_index && last_index_ >= s.length()) {
-            last_index_ = 0;
-            return Value::null();
-        }
-
-        bool found = false;
-        size_t actual_position = 0;
-        if (sticky_) {
-            found = std::regex_search(start, s.cend(), match, regex_,
-                                      std::regex_constants::match_continuous);
-            if (found) actual_position = static_cast<size_t>(start - s.begin()) + match.position();
-        } else if (!lookbehinds_.empty()) {
-            auto it = start;
-            while (it < s.cend()) {
-                if (!std::regex_search(it, s.cend(), match, regex_)) break;
-                actual_position = static_cast<size_t>(it - s.begin()) + match.position();
-                if (check_lookbehinds(s, actual_position)) { found = true; break; }
-                size_t step = match.position() + match.length();
-                if (step == 0) ++it; else it += step;
-            }
-        } else {
-            found = std::regex_search(start, s.cend(), match, regex_);
-            if (found) actual_position = static_cast<size_t>(start - s.begin()) + match.position();
-        }
-
-        if (found) {
-            std::string matched_str = match[0].str();
-
-            if (multiline_ && !matched_str.empty() && matched_str[0] == '\n') {
-                actual_position++;
-                matched_str = matched_str.substr(1);
-            }
-
-            if (advances_index) {
-                last_index_ = actual_position + matched_str.length();
-            }
-
-            auto result = new Object();
-            result->set_property("0", Value(matched_str));
-            result->set_property("index", Value(static_cast<double>(actual_position)));
-            result->set_property("input", Value(str));
-            result->set_property("length", Value(static_cast<double>(match.size())));
-
-            for (size_t i = 1; i < match.size(); ++i) {
-                if (match[i].matched) {
-                    result->set_property(std::to_string(i), Value(match[i].str()));
-                } else {
-                    result->set_property(std::to_string(i), Value());
-                }
-            }
-
-            bool has_named = false;
-            for (const auto& n : named_groups_) { if (!n.empty()) { has_named = true; break; } }
-            if (has_named) {
-                auto groups_obj = new Object();
-                for (size_t i = 0; i < named_groups_.size(); ++i) {
-                    if (!named_groups_[i].empty()) {
-                        size_t gi = i + 1;
-                        if (gi < match.size() && match[gi].matched) {
-                            groups_obj->set_property(named_groups_[i], Value(match[gi].str()));
-                        } else {
-                            groups_obj->set_property(named_groups_[i], Value());
-                        }
-                    }
-                }
-                result->set_property("groups", Value(groups_obj));
-            }
-
-            return Value(result);
-        } else if (advances_index) {
-            last_index_ = 0;
-        }
-    } catch (const std::regex_error& e) {
-    }
-
-    return Value::null();
-}
-
-void RegExp::compile(const std::string& pattern, const std::string& flags) {
-    pattern_ = pattern;
-    flags_ = flags;
-    global_ = false;
-    ignore_case_ = false;
-    multiline_ = false;
-    unicode_ = false;
-    sticky_ = false;
-    dotall_ = false;
-    last_index_ = 0;
-
-    parse_flags(flags_);
-
-    try {
-        std::string stripped = strip_named_groups(pattern_);
-        std::string no_lb = extract_lookbehinds(stripped);
-        std::string annex_b_pattern = unicode_ ? no_lb : transform_annex_b(no_lb);
-        std::string transformed_pattern = multiline_ ? transform_pattern_for_multiline(annex_b_pattern) : annex_b_pattern;
-        if (dotall_) transformed_pattern = transform_pattern_for_dotall(transformed_pattern);
-        regex_ = std::regex(transformed_pattern, get_regex_flags());
-    } catch (const std::regex_error& e) {
-        regex_ = std::regex("(?!)");
-    }
-}
-
-std::string RegExp::to_string() const {
-    return "/" + pattern_ + "/" + flags_;
 }
 
 void RegExp::parse_flags(const std::string& flags) {
@@ -299,327 +42,360 @@ void RegExp::parse_flags(const std::string& flags) {
     }
 }
 
-std::string RegExp::strip_named_groups(const std::string& pattern) {
-    named_groups_.clear();
+// For non-unicode mode: strip unknown escapes (Annex B identity escapes).
+// PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL handles most cases, but lone ] needs fixing.
+// Convert \uXXXX and \u{XXXXX} to \x{XXXX} for PCRE2, in both unicode and non-unicode mode.
+// Also convert \uD800\uDC00 surrogate pairs to the combined codepoint.
+static std::string convert_unicode_escapes(const std::string& pat) {
     std::string result;
-    bool escaped = false;
-    bool in_char_class = false;
-    int group_index = 0;
-
-    for (size_t i = 0; i < pattern.length(); ++i) {
-        char ch = pattern[i];
-        if (escaped) { result += ch; escaped = false; continue; }
-        if (ch == '\\') { result += ch; escaped = true; continue; }
-        if (ch == '[') { in_char_class = true; result += ch; continue; }
-        if (ch == ']') { in_char_class = false; result += ch; continue; }
-        if (in_char_class) { result += ch; continue; }
-
-        if (ch == '(' && i + 2 < pattern.length() && pattern[i+1] == '?' && pattern[i+2] == '<'
-            && i + 3 < pattern.length() && pattern[i+3] != '=' && pattern[i+3] != '!') {
-            group_index++;
-            size_t j = i + 3;
-            std::string name;
-            while (j < pattern.length() && pattern[j] != '>') name += pattern[j++];
-            while ((int)named_groups_.size() < group_index) named_groups_.push_back("");
-            named_groups_[group_index - 1] = name;
-            result += '(';
-            i = j;
-        } else if (ch == '(' && i + 1 < pattern.length() && pattern[i+1] == '?') {
-            result += ch;
-        } else if (ch == '(') {
-            group_index++;
-            while ((int)named_groups_.size() < group_index) named_groups_.push_back("");
-            result += ch;
-        } else {
-            result += ch;
-        }
-    }
-    return result;
-}
-
-std::string RegExp::transform_pattern_for_dotall(const std::string& pattern) const {
-    std::string result;
-    bool escaped = false;
-    bool in_char_class = false;
-    for (size_t i = 0; i < pattern.length(); ++i) {
-        char ch = pattern[i];
-        if (escaped) { result += ch; escaped = false; continue; }
-        if (ch == '\\') { result += ch; escaped = true; continue; }
-        if (ch == '[') { in_char_class = true; result += ch; continue; }
-        if (ch == ']') { in_char_class = false; result += ch; continue; }
-        if (ch == '.' && !in_char_class) { result += "[\\s\\S]"; continue; }
-        result += ch;
-    }
-    return result;
-}
-
-std::regex::flag_type RegExp::get_regex_flags() const {
-    std::regex::flag_type flags = std::regex::ECMAScript;
-
-    if (ignore_case_) {
-        flags |= std::regex::icase;
-    }
-
-    return flags;
-}
-
-std::string RegExp::transform_pattern_for_multiline(const std::string& pattern) const {
-    std::string result;
-    bool in_char_class = false;
-    bool escaped = false;
-
-    for (size_t i = 0; i < pattern.length(); ++i) {
-        char ch = pattern[i];
-
-        if (escaped) {
-            result += ch;
-            escaped = false;
-            continue;
-        }
-
-        if (ch == '\\') {
-            result += ch;
-            escaped = true;
-            continue;
-        }
-
-        if (ch == '[') {
-            in_char_class = true;
-            result += ch;
-            continue;
-        }
-
-        if (ch == ']') {
-            in_char_class = false;
-            result += ch;
-            continue;
-        }
-
-        if (!in_char_class && ch == '^') {
-            result += "(?:(?:^)|(?:\\n))";
-            continue;
-        }
-
-        if (!in_char_class && ch == '$') {
-            result += "(?:$|(?=\\n))";
-            continue;
-        }
-
-        result += ch;
-    }
-
-    return result;
-}
-
-// ES6 Annex B: Transform legacy regex patterns to std::regex compatible form
-std::string RegExp::transform_annex_b(const std::string& pattern) const {
-    std::string result;
-    bool in_char_class = false;
-
-    auto is_shorthand_class = [](char c) -> bool {
-        return c == 'w' || c == 'W' || c == 'd' || c == 'D' || c == 's' || c == 'S';
+    result.reserve(pat.size());
+    size_t i = 0;
+    auto is_hex = [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     };
-
-    auto is_valid_escape = [](char c) -> bool {
-        if (c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S') return true;
-        if (c == 'b' || c == 'B') return true;
-        if (c == 'n' || c == 'r' || c == 't' || c == 'f' || c == 'v') return true;
-        if (c == '0') return true;
-        if (c == 'x' || c == 'u' || c == 'c') return true;
-        if (c >= '1' && c <= '9') return true;
-        if (c == '.' || c == '*' || c == '+' || c == '?' || c == '(' || c == ')' ||
-            c == '[' || c == ']' || c == '{' || c == '}' || c == '\\' ||
-            c == '^' || c == '$' || c == '|' || c == '/' || c == '-') return true;
-        return false;
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        return c - 'A' + 10;
     };
-
-    // Count capture groups to distinguish backreferences from octals
-    int num_groups = 0;
-    {
-        bool esc = false, in_cc = false;
-        for (size_t j = 0; j < pattern.length(); ++j) {
-            if (esc) { esc = false; continue; }
-            if (pattern[j] == '\\') { esc = true; continue; }
-            if (pattern[j] == '[') in_cc = true;
-            else if (pattern[j] == ']') in_cc = false;
-            else if (pattern[j] == '(' && !in_cc) {
-                if (j + 1 < pattern.length() && pattern[j + 1] == '?') continue; // non-capturing
-                num_groups++;
-            }
-        }
-    }
-
-    for (size_t i = 0; i < pattern.length(); ++i) {
-        char ch = pattern[i];
-
-        if (ch == '\\' && i + 1 < pattern.length()) {
-            char next = pattern[i + 1];
-
-            // Annex B: \N where N is 1-9 digits
-            // If N <= num_groups, it's a backreference (pass through)
-            // If N > num_groups, treat as octal escape
-            if (next >= '1' && next <= '9') {
-                // Parse the full decimal number
-                size_t start = i + 1;
-                size_t end = start;
-                while (end < pattern.length() && pattern[end] >= '0' && pattern[end] <= '9') end++;
-                int ref_num = 0;
-                for (size_t k = start; k < end; k++) ref_num = ref_num * 10 + (pattern[k] - '0');
-
-                if (ref_num <= num_groups) {
-                    // Valid backreference - pass through
-                    for (size_t k = i; k < end; k++) result += pattern[k];
-                    i = end - 1;
+    while (i < pat.size()) {
+        if (pat[i] == '\\' && i + 1 < pat.size() && pat[i+1] == 'u') {
+            if (i + 2 < pat.size() && pat[i+2] == '{') {
+                // \u{XXXXX}
+                size_t end = pat.find('}', i+3);
+                if (end != std::string::npos) {
+                    result += "\\x{";
+                    result += pat.substr(i+3, end - (i+3));
+                    result += '}';
+                    i = end + 1;
                     continue;
                 }
-                // Invalid backreference - treat as octal
-                end = start;
-                int val = 0;
-                while (end < pattern.length() && end < start + 3 && pattern[end] >= '0' && pattern[end] <= '7') {
-                    int new_val = val * 8 + (pattern[end] - '0');
-                    if (new_val > 255) break;
-                    val = new_val;
-                    end++;
-                }
-                if (val > 0 && val <= 255) {
-                    char hex[8];
-                    snprintf(hex, sizeof(hex), "\\x%02x", val);
-                    result += hex;
-                    i = end - 1;
-                    continue;
-                }
-                // Fallback: pass through
-                result += ch;
-                continue;
-            }
-
-            // \0nn octal starting with 0
-            if (next == '0' && i + 2 < pattern.length() && pattern[i + 2] >= '0' && pattern[i + 2] <= '7') {
-                size_t start = i + 1;
-                size_t end = start;
-                int val = 0;
-                while (end < pattern.length() && end < start + 3 && pattern[end] >= '0' && pattern[end] <= '7') {
-                    int new_val = val * 8 + (pattern[end] - '0');
-                    if (new_val > 255) break;
-                    val = new_val;
-                    end++;
-                }
-                char hex[8];
-                snprintf(hex, sizeof(hex), "\\x%02x", val);
-                result += hex;
-                i = end - 1;
-                continue;
-            }
-
-            // Invalid hex escape: \xN (less than 2 hex digits)
-            if (next == 'x') {
-                bool valid = (i + 3 < pattern.length());
-                if (valid) {
-                    for (int j = 0; j < 2; j++) {
-                        if (i + 2 + j >= pattern.length()) { valid = false; break; }
-                        char c = pattern[i + 2 + j];
-                        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { valid = false; break; }
+            } else if (i + 5 < pat.size() &&
+                       is_hex(pat[i+2]) && is_hex(pat[i+3]) && is_hex(pat[i+4]) && is_hex(pat[i+5])) {
+                int cp = (hex_val(pat[i+2]) << 12) | (hex_val(pat[i+3]) << 8) |
+                         (hex_val(pat[i+4]) << 4) | hex_val(pat[i+5]);
+                // Check for surrogate pair
+                if (cp >= 0xD800 && cp <= 0xDBFF && i + 11 < pat.size() &&
+                    pat[i+6] == '\\' && pat[i+7] == 'u' &&
+                    is_hex(pat[i+8]) && is_hex(pat[i+9]) && is_hex(pat[i+10]) && is_hex(pat[i+11])) {
+                    int lo = (hex_val(pat[i+8]) << 12) | (hex_val(pat[i+9]) << 8) |
+                             (hex_val(pat[i+10]) << 4) | hex_val(pat[i+11]);
+                    if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                        int full = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        char buf[16];
+                        snprintf(buf, sizeof(buf), "\\x{%X}", full);
+                        result += buf;
+                        i += 12;
+                        continue;
                     }
                 }
+                char buf[12];
+                snprintf(buf, sizeof(buf), "\\x{%04X}", cp);
+                result += buf;
+                i += 6;
+                continue;
+            }
+        }
+        result += pat[i++];
+    }
+    return result;
+}
+
+static bool is_hex_ch(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+std::string RegExp::preprocess_pattern(const std::string& pat) const {
+    std::string result;
+    result.reserve(pat.size() * 2);
+    bool in_char_class = false;
+    size_t i = 0;
+    while (i < pat.size()) {
+        char ch = pat[i];
+
+        if (ch == '\\' && i + 1 < pat.size()) {
+            char next = pat[i+1];
+
+            // \x with < 2 hex digits → literal 'x' + next chars (Annex B)
+            if (next == 'x') {
+                bool valid = (i+3 < pat.size() && is_hex_ch(pat[i+2]) && is_hex_ch(pat[i+3]));
                 if (!valid) {
                     result += 'x';
-                    i++;
+                    i += 2;
                     continue;
                 }
-                result += ch;
-                continue;
             }
 
-            // Invalid unicode escape: \uN (less than 4 hex digits)
-            if (next == 'u') {
-                if (i + 2 < pattern.length() && pattern[i + 2] != '{') {
-                    bool valid = true;
-                    for (int j = 0; j < 4; j++) {
-                        if (i + 2 + j >= pattern.length()) { valid = false; break; }
-                        char c = pattern[i + 2 + j];
-                        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) { valid = false; break; }
-                    }
-                    if (!valid) {
-                        result += 'u';
-                        i++;
-                        continue;
-                    }
-                }
-                result += ch;
-                continue;
-            }
-
-            // Invalid control escape: \cN where N is not a letter
-            if (next == 'c') {
-                if (i + 2 < pattern.length()) {
-                    char ctrl = pattern[i + 2];
-                    if (!((ctrl >= 'a' && ctrl <= 'z') || (ctrl >= 'A' && ctrl <= 'Z'))) {
-                        result += "\\\\c";
-                        i++;
-                        continue;
-                    }
-                } else {
+            // \c followed by non-letter → literal backslash + c + char (Annex B)
+            if (next == 'c' && i+2 < pat.size()) {
+                char ctrl = pat[i+2];
+                if (!((ctrl >= 'a' && ctrl <= 'z') || (ctrl >= 'A' && ctrl <= 'Z'))) {
                     result += "\\\\c";
-                    i++;
+                    i += 2;
                     continue;
                 }
             }
 
-            // Shorthand class in char class: escape following hyphen to prevent invalid range
-            if (in_char_class && is_shorthand_class(next)) {
-                result += ch;
-                result += next;
-                i++;
-                if (i + 1 < pattern.length() && pattern[i + 1] == '-' &&
-                    i + 2 < pattern.length() && pattern[i + 2] != ']') {
-                    result += "\\x2d";
-                    i++;
+            // Shorthand class (\w, \d, \s etc.) followed by '-' in char class → escape the hyphen
+            if (in_char_class &&
+                (next == 'w' || next == 'W' || next == 'd' || next == 'D' || next == 's' || next == 'S') &&
+                i+2 < pat.size() && pat[i+2] == '-' && i+3 < pat.size() && pat[i+3] != ']') {
+                result += ch; result += next;
+                result += "\\-";
+                i += 3;
+                continue;
+            }
+
+            // Annex B identity escapes: unknown escape chars become their literal char.
+            // But some letters are valid PCRE2 sequences with different semantics (e.g. \z, \Z, \A, \G).
+            // ECMAScript only allows specific escape sequences; unknown ones → literal.
+            static const char* js_valid_escapes = "dDwWsSnrtfvbBxu0123456789().[]{}\\^$|*+?/";
+            bool is_valid = false;
+            if (next == 'k' || next == 'p' || next == 'P') {
+                is_valid = true; // named backrefs, unicode properties
+            } else {
+                for (const char* p = js_valid_escapes; *p; ++p) {
+                    if (next == *p) { is_valid = true; break; }
                 }
-                continue;
             }
-
-            // Unknown/invalid escape like \z, \a - treat as literal character
-            if (!is_valid_escape(next)) {
+            if (!is_valid) {
+                // Unknown escape: output literal char (not the backslash)
                 result += next;
-                i++;
+                i += 2;
                 continue;
             }
 
-            // Normal escape - pass through
             result += ch;
+            result += next;
+            i += 2;
             continue;
         }
 
-        // Lone ] outside character class - treat as literal (check BEFORE updating state)
         if (ch == ']' && !in_char_class) {
             result += "\\]";
+            i++;
             continue;
         }
-
-        // Track character class state
-        if (ch == '[' && !in_char_class) {
-            in_char_class = true;
-        } else if (ch == ']' && in_char_class) {
-            in_char_class = false;
-        }
-
-        // Incomplete quantifier: { not followed by valid quantifier syntax
-        if (ch == '{' && !in_char_class) {
-            size_t j = i + 1;
-            bool has_digit = false;
-            while (j < pattern.length() && pattern[j] >= '0' && pattern[j] <= '9') { has_digit = true; j++; }
-            if (has_digit && j < pattern.length() && (pattern[j] == '}' || pattern[j] == ',')) {
-                result += ch;
-                continue;
-            }
-            result += "\\{";
-            continue;
-        }
-
+        if (ch == '[') in_char_class = true;
+        else if (ch == ']') in_char_class = false;
         result += ch;
+        i++;
+    }
+    return result;
+}
+
+static std::string expand_gc_aliases(const std::string& pattern) {
+    static const std::pair<const char*, const char*> aliases[] = {
+        {"Other_Symbol", "So"}, {"Uppercase_Letter", "Lu"}, {"Lowercase_Letter", "Ll"},
+        {"Titlecase_Letter", "Lt"}, {"Modifier_Letter", "Lm"}, {"Other_Letter", "Lo"},
+        {"Nonspacing_Mark", "Mn"}, {"Spacing_Mark", "Mc"}, {"Enclosing_Mark", "Me"},
+        {"Decimal_Number", "Nd"}, {"Letter_Number", "Nl"}, {"Other_Number", "No"},
+        {"Connector_Punctuation", "Pc"}, {"Dash_Punctuation", "Pd"},
+        {"Open_Punctuation", "Ps"}, {"Close_Punctuation", "Pe"},
+        {"Initial_Punctuation", "Pi"}, {"Final_Punctuation", "Pf"},
+        {"Other_Punctuation", "Po"}, {"Math_Symbol", "Sm"}, {"Currency_Symbol", "Sc"},
+        {"Modifier_Symbol", "Sk"}, {"Space_Separator", "Zs"}, {"Line_Separator", "Zl"},
+        {"Paragraph_Separator", "Zp"}, {"Control", "Cc"}, {"Format", "Cf"},
+        {"Surrogate", "Cs"}, {"Private_Use", "Co"}, {"Unassigned", "Cn"},
+    };
+    std::string result;
+    result.reserve(pattern.size());
+    size_t i = 0;
+    while (i < pattern.size()) {
+        if (pattern[i] == '\\' && i+1 < pattern.size() &&
+            (pattern[i+1] == 'p' || pattern[i+1] == 'P') &&
+            i+2 < pattern.size() && pattern[i+2] == '{') {
+            size_t end = pattern.find('}', i+3);
+            if (end != std::string::npos) {
+                std::string prop = pattern.substr(i+3, end - (i+3));
+                bool replaced = false;
+                for (auto& a : aliases) {
+                    if (prop == a.first) {
+                        result += pattern[i]; result += pattern[i+1];
+                        result += '{'; result += a.second; result += '}';
+                        i = end + 1; replaced = true; break;
+                    }
+                }
+                if (!replaced) { result += pattern[i++]; }
+            } else { result += pattern[i++]; }
+        } else { result += pattern[i++]; }
+    }
+    return result;
+}
+
+void RegExp::do_compile() {
+    if (code_) {
+        pcre2_code_free(static_cast<pcre2_code*>(code_));
+        code_ = nullptr;
     }
 
-    return result;
+    std::string pat = unicode_
+        ? convert_unicode_escapes(expand_gc_aliases(pattern_))
+        : convert_unicode_escapes(preprocess_pattern(pattern_));
+
+    uint32_t options = PCRE2_UTF;
+    if (unicode_)    options |= PCRE2_UCP;
+    if (ignore_case_) options |= PCRE2_CASELESS;
+    if (multiline_)  options |= PCRE2_MULTILINE;
+    if (dotall_)     options |= PCRE2_DOTALL;
+
+    int errcode = 0;
+    PCRE2_SIZE erroffset = 0;
+
+    pcre2_compile_context* cctx = nullptr;
+    if (!unicode_) {
+        cctx = pcre2_compile_context_create(nullptr);
+        if (cctx)
+            pcre2_set_compile_extra_options(cctx, PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL);
+    }
+
+    pcre2_code* re = pcre2_compile(
+        reinterpret_cast<PCRE2_SPTR>(pat.c_str()),
+        PCRE2_ZERO_TERMINATED,
+        options,
+        &errcode,
+        &erroffset,
+        cctx
+    );
+
+    if (cctx) pcre2_compile_context_free(cctx);
+
+    if (!re) {
+        re = pcre2_compile(
+            reinterpret_cast<PCRE2_SPTR>("(?!)"),
+            PCRE2_ZERO_TERMINATED, 0, &errcode, &erroffset, nullptr
+        );
+    } else {
+        pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);
+    }
+
+    code_ = re;
+}
+
+bool RegExp::test(const std::string& str) {
+    if (!code_) return false;
+
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+    if (!md) return false;
+
+    PCRE2_SIZE start = 0;
+    if ((global_ || sticky_) && last_index_ > 0) {
+        start = static_cast<PCRE2_SIZE>(last_index_);
+        if (start > str.length()) {
+            last_index_ = 0;
+            pcre2_match_data_free(md);
+            return false;
+        }
+    }
+
+    uint32_t opts = sticky_ ? PCRE2_ANCHORED : 0;
+    int rc = pcre2_match(re,
+        reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
+        start, opts, md, nullptr);
+
+    bool found = (rc >= 0);
+    if (found && global_) {
+        last_index_ = static_cast<int>(pcre2_get_ovector_pointer(md)[1]);
+    } else if (!found && (global_ || sticky_)) {
+        last_index_ = 0;
+    }
+
+    pcre2_match_data_free(md);
+    return found;
+}
+
+Value RegExp::exec(const std::string& str) {
+    if (!code_) return Value::null();
+
+    pcre2_code* re = static_cast<pcre2_code*>(code_);
+    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+    if (!md) return Value::null();
+
+    bool advances = global_ || sticky_;
+    PCRE2_SIZE start = 0;
+    if (advances && last_index_ > 0) {
+        start = static_cast<PCRE2_SIZE>(last_index_);
+        if (start > str.length()) {
+            last_index_ = 0;
+            pcre2_match_data_free(md);
+            return Value::null();
+        }
+    }
+
+    uint32_t opts = sticky_ ? PCRE2_ANCHORED : 0;
+    int rc = pcre2_match(re,
+        reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
+        start, opts, md, nullptr);
+
+    if (rc < 0) {
+        if (advances) last_index_ = 0;
+        pcre2_match_data_free(md);
+        return Value::null();
+    }
+
+    PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+
+    uint32_t capture_count = 0;
+    pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &capture_count);
+
+    size_t match_start = ov[0];
+    size_t match_end   = ov[1];
+    std::vector<PCRE2_SIZE> saved(ov, ov + (capture_count + 1) * 2);
+
+    if (advances) last_index_ = static_cast<int>(match_end);
+    pcre2_match_data_free(md);
+
+    auto result = new Object();
+    result->set_property("0", Value(str.substr(match_start, match_end - match_start)));
+    result->set_property("index", Value(static_cast<double>(match_start)));
+    result->set_property("input", Value(str));
+    result->set_property("length", Value(static_cast<double>(capture_count + 1)));
+
+    for (uint32_t i = 1; i <= capture_count; ++i) {
+        if (saved[2 * i] == PCRE2_UNSET)
+            result->set_property(std::to_string(i), Value());
+        else
+            result->set_property(std::to_string(i),
+                Value(str.substr(saved[2*i], saved[2*i+1] - saved[2*i])));
+    }
+
+    uint32_t name_count = 0;
+    pcre2_pattern_info(re, PCRE2_INFO_NAMECOUNT, &name_count);
+    if (name_count > 0) {
+        uint32_t entry_size = 0;
+        PCRE2_SPTR name_table = nullptr;
+        pcre2_pattern_info(re, PCRE2_INFO_NAMEENTRYSIZE, &entry_size);
+        pcre2_pattern_info(re, PCRE2_INFO_NAMETABLE, &name_table);
+
+        auto groups = new Object();
+        const unsigned char* tbl = reinterpret_cast<const unsigned char*>(name_table);
+        for (uint32_t i = 0; i < name_count; ++i) {
+            const unsigned char* e = tbl + i * entry_size;
+            uint32_t gn = (e[0] << 8) | e[1];
+            const char* name = reinterpret_cast<const char*>(e + 2);
+            if (gn <= capture_count && saved[2*gn] != PCRE2_UNSET)
+                groups->set_property(name, Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])));
+            else
+                groups->set_property(name, Value());
+        }
+        result->set_property("groups", Value(groups));
+    }
+
+    return Value(result);
+}
+
+void RegExp::compile(const std::string& pattern, const std::string& flags) {
+    pattern_ = pattern;
+    flags_ = flags;
+    global_ = ignore_case_ = multiline_ = unicode_ = sticky_ = dotall_ = false;
+    last_index_ = 0;
+    parse_flags(flags_);
+    do_compile();
+}
+
+std::string RegExp::to_string() const {
+    return "/" + pattern_ + "/" + flags_;
 }
 
 }

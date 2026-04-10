@@ -1232,7 +1232,14 @@ std::string Lexer::parse_hex_escape() {
     else if (low >= 'a' && low <= 'f') value += low - 'a' + 10;
     else value += low - 'A' + 10;
     
-    return std::string(1, static_cast<char>(value));
+    if (value <= 0x7F) {
+        return std::string(1, static_cast<char>(value));
+    }
+    // Encode as 2-byte UTF-8 (0x80-0xFF range)
+    std::string utf8;
+    utf8 += static_cast<char>(0xC0 | (value >> 6));
+    utf8 += static_cast<char>(0x80 | (value & 0x3F));
+    return utf8;
 }
 
 std::string Lexer::parse_unicode_escape() {
