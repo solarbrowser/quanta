@@ -36,7 +36,44 @@ CXXFLAGS += -pthread
 # CXXFLAGS += -fno-signed-zeros -fno-trapping-math
 
 DEBUG_FLAGS = -g -DDEBUG -O0
-INCLUDES = -Iinclude
+
+PCRE2_DIR = third_party/pcre2/src
+PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
+PCRE2_SRCS = \
+    $(PCRE2_DIR)/pcre2_auto_possess.c \
+    $(PCRE2_DIR)/pcre2_chartables.c \
+    $(PCRE2_DIR)/pcre2_chkdint.c \
+    $(PCRE2_DIR)/pcre2_compile.c \
+    $(PCRE2_DIR)/pcre2_compile_cgroup.c \
+    $(PCRE2_DIR)/pcre2_compile_class.c \
+    $(PCRE2_DIR)/pcre2_config.c \
+    $(PCRE2_DIR)/pcre2_context.c \
+    $(PCRE2_DIR)/pcre2_convert.c \
+    $(PCRE2_DIR)/pcre2_dfa_match.c \
+    $(PCRE2_DIR)/pcre2_error.c \
+    $(PCRE2_DIR)/pcre2_extuni.c \
+    $(PCRE2_DIR)/pcre2_find_bracket.c \
+    $(PCRE2_DIR)/pcre2_jit_compile.c \
+    $(PCRE2_DIR)/pcre2_maketables.c \
+    $(PCRE2_DIR)/pcre2_match.c \
+    $(PCRE2_DIR)/pcre2_match_data.c \
+    $(PCRE2_DIR)/pcre2_match_next.c \
+    $(PCRE2_DIR)/pcre2_newline.c \
+    $(PCRE2_DIR)/pcre2_ord2utf.c \
+    $(PCRE2_DIR)/pcre2_pattern_info.c \
+    $(PCRE2_DIR)/pcre2_script_run.c \
+    $(PCRE2_DIR)/pcre2_serialize.c \
+    $(PCRE2_DIR)/pcre2_string_utils.c \
+    $(PCRE2_DIR)/pcre2_study.c \
+    $(PCRE2_DIR)/pcre2_substitute.c \
+    $(PCRE2_DIR)/pcre2_substring.c \
+    $(PCRE2_DIR)/pcre2_tables.c \
+    $(PCRE2_DIR)/pcre2_ucd.c \
+    $(PCRE2_DIR)/pcre2_valid_utf.c \
+    $(PCRE2_DIR)/pcre2_xclass.c
+PCRE2_OBJS = $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=$(OBJ_DIR)/pcre2/%.o)
+
+INCLUDES = -Iinclude -I$(PCRE2_DIR)
 
 # Platform detection
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -90,7 +127,7 @@ CORE_OBJECTS = $(CORE_SOURCES:$(CORE_SRC)/%.cpp=$(OBJ_DIR)/core/%.o)
 LEXER_OBJECTS = $(LEXER_SOURCES:$(LEXER_SRC)/%.cpp=$(OBJ_DIR)/lexer/%.o)
 PARSER_OBJECTS = $(PARSER_SOURCES:$(PARSER_SRC)/%.cpp=$(OBJ_DIR)/parser/%.o)
 
-ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS)
+ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS)
 
 # Static library
 LIBQUANTA = $(BUILD_DIR)/libquanta.a
@@ -157,6 +194,10 @@ $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
 	@echo "[BUILD] Compiling parser: $<"
 	@echo "[BUILD] $<" >> $(LOG_FILE)
 	@$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+
+$(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
+	@$(MKDIR_P) $(dir $@)
+	@clang $(PCRE2_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)
