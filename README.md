@@ -124,7 +124,6 @@ build/errors.log
 
 ## Roadmap
 
-- Replace `std::regex` with **PCRE2**  
 - Improve **ES6 and ES2016+** support  
 - Implement **bytecode virtual machine (VM)**  
 
