@@ -1,161 +1,53 @@
-> ⚠️ Notice
->
-> Development of Quanta is temporarily paused for approximately one month.
-> This is a planned break to refocus, study for exams and clear my head.
-> The project is NOT abandoned.
-> Updates will resume after the break.
->
-> Thank you for your patience & understanding.
+# Quanta
 
-<div align="center">
-  <img src="docs/images/quanta_transparent.png" alt="Quanta Logo" width="200"/>
+Quanta is an experimental ECMAScript (or JS) engine focused on both **memory efficiency** and **execution speed**.  
 
-  # Quanta
 
-  *Spec-first, experimental JavaScript engine written in C++.*
- <br><br>
-  <span>
-    <img src="https://img.shields.io/github/stars/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
-    <img src="https://img.shields.io/github/forks/solarbrowser/quanta?style=for-the-badge&logo=github&labelColor=1b1f23&color=2f81f7" />
-    ![Issues](https://img.shields.io/github/issues/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=6e40c9)
-    ![PRs](https://img.shields.io/github/issues-pr/solarbrowser/quanta?style=for-the-badge&labelColor=1b1f23&color=6e40c9)
-  </span>
-  <br><br>
-</div>
+## Specification Support
 
----
+> Tested with Kangax compatibility tables
 
-## Table of Contents
+| ECMAScript Version | Support |
+|--------------------|--------|
+| ES1-ES5            | ~100%  |
+| ES6                | ~90%   |
+| ES2016+            | ~57%   |
 
-- [Motivation](#motivation)
-- [What is Quanta](#what-is-quanta)
-- [Project Goals](#project-goals)
-- [Current Status](#current-status)
-- [ECMAScript Compatibility](#ecmascript-compatibility)
-- [Design Philosophy](#design-philosophy)
-- [Known Limitations](#known-limitations)
-- [What Quanta is NOT](#what-quanta-is-not)
-- [Roadmap](#roadmap)
-- [For Developers](#for-developers)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Star History](#star-history)
-- [Author](#author)
-- [License](#license)
+## Test262
+  
+You can review executed tests here: [quanta.js.org](https://quanta.js.org/pages/test262/test262.html)
 
----
-
-## Motivation
-
-Quanta originally started as a part of my personal browser project. However, modern browsers consist of many complex subsystems, and implementing all of them solo, including a JavaScript engine, quickly became unrealistic.
-
-Instead of building everything superficially, I decided to focus deeply on one core component: the JavaScript engine. Quanta exists as a result of that decision.
-
---- 
-
-## What is Quanta
-
-Quanta is a spec-first JavaScript engine written in C++.
-
-It is built to explore how JavaScript actually works beneath the surface, not how fast it can run, but how precisely it follows the ECMAScript specification. The project emphasizes correctness, explicit semantics, and test-driven validation using the official Test262 suite.
-
----
-
-## Project Goals
-
-- Achieve 80%+ overall Test262 pass rate
-- Maintain spec-correct behavior before performance optimizations
-- Become fast enough to handle complex real-world computations
-- Serve as a long-term learning and research project in language implementation
-
----
-
-## Current Status
-
-**Quanta is not production-ready.** It is currently in an early development stage and not performance-optimized. The project prioritizes correctness, explicit semantics, and long-term maintainability over short-term speed gains.
-
----
-
-## ECMAScript Compatibility
-
-Quanta has been tested multiple times against the official **Test262** test suite.
-
-Early test runs can be misleading: while fixing ES1, ES3, and ES5 behavior, overall pass rates temporarily dropped. This was expected, as earlier results contained false positives caused by incomplete or incorrect implementations.
-
-Additionally, Quanta does **not yet have a fully mature Test262 runner**, so some results may still include false passes or failures.
-
-**Current Approximate Results (as of February 2026)**
-
-- ECMAScript 1: 100% pass rate (as of February 1, 2026)
-- ECMAScript 3: 100% pass rate (as of February 6, 2026)
-- ECMAScript 5: 100% pass rate (as of February 7, 2026)
-
-*Tested with conformance of **[JavaScript Engines zoo.](https://github.com/ivankra/javascript-zoo/tree/master/conformance)***
-
-### Test262 Compliance Results
-
-**Test262 results should be interpreted with caution, as [the runner](https://github.com/ataturkcu/quanta-test262-runner) is still under active development.**
-
-**[View Test Results →](docs/documents/test262-results.md)**
-
----
-
-## Design Philosophy
-
-- Specification-first implementation
-- Correctness over performance
-- Explicit behavior over implicit shortcuts
-- Minimal abstractions
-- Test-driven development using Test262
-
----
-
-## Known Limitations
-
-- Most ES2016+ features are not implemented
-- Performance is currently slow
-- No JIT or advanced optimization pipeline
-
----
-
-## What Quanta Is Not
-
-- Not a production browser engine
-- Not a V8, SpiderMonkey, or JavaScriptCore replacement
-- Not optimized for benchmarks
-
-**Quanta is a learning-oriented, correctness-driven engine, not a commercial runtime.**
-
----
-
-## Roadmap
-
-- Improve performance
-- Reach 80%+ overall Test262 pass rate
-- Implement core ECMAScript 2015 (ES6) features
-- Improve memory management
-- Stabilize the Test262 runner
+If the results are outdated, use the dedicated [runner](https://github.com/ataturkcu/quanta-test262-runner)
 
 ---
 
 ## For Developers
 
-### Building Quanta
+### Documentation
 
+You can reach all the documentation files from [here](https://quanta.js.org/pages/docs/docs.html).
+
+### Build
+<details>
+  
 Quanta uses **Clang++** across all platforms.
 
-#### Requirements
+<details>
+<summary><strong>Windows</strong></summary>
 
-- C++17 compatible compiler
-- Clang/LLVM 10 or higher
-- Make (for Makefile builds)
+```bash
+# Install LLVM and add to PATH
+clang++ --version
 
-**Windows:**
-1. Download LLVM from [llvm.org/releases](https://github.com/llvm/llvm-project/releases)
-2. Install and add to PATH
-3. Verify: `clang++ --version`
+git clone https://github.com/solarbrowser/quanta
+cd quanta
+build-windows.bat
+```
+</details>
 
-**Linux:**
+<details>
+<summary><strong>Linux</strong></summary>
+
 ```bash
 # Ubuntu/Debian
 sudo apt install clang lld
@@ -165,68 +57,76 @@ sudo dnf install clang lld
 
 # Arch
 sudo pacman -S clang lld
-```
 
-**macOS:**
-```bash
-# Clang included with Xcode Command Line Tools
-xcode-select --install
-```
-
-#### Quick Start
-
-Clone the repository:
-```bash
 git clone https://github.com/solarbrowser/quanta
 cd quanta
-```
-
-**Windows:**
-```cmd
-build-windows.bat
-```
-
-**Linux/macOS:**
-```bash
 ./build.sh
 # or
 make -j$(nproc)
 ```
+</details>
 
-#### Build Outputs
-
-- **Windows**: `build/bin/quanta.exe`
-- **Linux/macOS**: `build/bin/quanta`
-- **Static Library**: `build/libquanta.a`
-- **Logs**: `build/build.log`, `build/errors.log`
-
-### Testing
+<details>
+<summary><strong>macOS</strong></summary>
 
 ```bash
-# Execute JavaScript file
+xcode-select --install
+
+git clone https://github.com/solarbrowser/quanta
+cd quanta
+./build.sh
+# or
+make -j$(nproc)
+```
+</details>
+
+<details>
+<summary><strong>Build Outputs</strong></summary>
+
+- **Windows:** `build/bin/quanta.exe`  
+- **Linux/macOS:** `build/bin/quanta`  
+- **Static Library:** `build/libquanta.a`  
+- **Logs:** `build/build.log`, `build/errors.log`  
+</details>
+
+
+<details>
+<summary><strong>Usage</strong></summary>
+
+```bash
+# Run a JavaScript file
 ./build/bin/quanta example.js
 
-# Interactive REPL
+# Start REPL
 ./build/bin/quanta
 ```
+</details>
+</details>
 
 ### Troubleshooting
+<details>
 
-**Clang not found:**
-- Windows: Verify LLVM is in PATH, restart terminal
-- Linux: Install clang and lld packages
+### Clang not found
+- Windows: Ensure LLVM is in PATH, restart terminal  
+- Linux: Install clang and lld  
 
-**Build errors:**
-- Clean: `make clean` or delete `build/` directory
-- Check: `build/errors.log`
+### Build errors
+```bash
+make clean
+# or delete build/ directory
+```
 
----
+Check logs:
+```
+build/errors.log
+```
+</details>
 
-## Documentation
+## Roadmap
 
-You can reach all the documentation files from [here](https://quanta.js.org/pages/docs/docs.html).
-
----
+- Replace `std::regex` with **PCRE2**  
+- Improve **ES6 and ES2016+** support  
+- Implement **bytecode virtual machine (VM)**  
 
 ## Contributing
 
@@ -246,25 +146,6 @@ We welcome contributions! Areas for enhancement:
 4. Add comprehensive tests
 5. Update documentation as needed
 6. Submit a pull request
-
-### Priority Areas
-- ECMAScript 2015+ compatibility testing
-- Performance optimization
-- Memory management improvements
-- Cross-platform build enhancements
-
----
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=solarbrowser/quanta&type=date&legend=top-left)](https://www.star-history.com/#solarbrowser/quanta&type=date&legend=top-left)
-
----
-
-## Author
-
-Quanta is developed by a single student developer as a long-term systems programming project,
-with the goal of deeply understanding JavaScript semantics, ECMAScript specifications, and language runtime design.
 
 ---
 

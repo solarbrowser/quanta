@@ -47,14 +47,16 @@ if not exist "build\obj\core\modules" mkdir build\obj\core\modules
 if not exist "build\obj\core\runtime" mkdir build\obj\core\runtime
 if not exist "build\obj\lexer" mkdir build\obj\lexer
 if not exist "build\obj\parser" mkdir build\obj\parser
+if not exist "build\obj\pcre2" mkdir build\obj\pcre2
 if not exist "build\bin" mkdir build\bin
 echo   [OK] Directories ready
 echo.
 
 REM Compiler flags
 set "CXXFLAGS=-std=c++17 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.1.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
-set "INCLUDES=-Iinclude"
+set "INCLUDES=-Iinclude -Ithird_party/pcre2/src"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
+set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
 set "STACK=-Xlinker /STACK:67108864"
 
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
@@ -68,6 +70,20 @@ REM Track compilation stats
 set /a TOTAL_FILES=0
 set /a COMPILED_FILES=0
 set /a FAILED_FILES=0
+
+REM Compile PCRE2 (C library with JIT)
+echo [0/4] Compiling PCRE2...
+echo [%time%] === PCRE2 === >> "%LOG_FILE%"
+for %%f in (third_party\pcre2\src\pcre2_auto_possess.c third_party\pcre2\src\pcre2_chartables.c third_party\pcre2\src\pcre2_chkdint.c third_party\pcre2\src\pcre2_compile.c third_party\pcre2\src\pcre2_compile_cgroup.c third_party\pcre2\src\pcre2_compile_class.c third_party\pcre2\src\pcre2_config.c third_party\pcre2\src\pcre2_context.c third_party\pcre2\src\pcre2_convert.c third_party\pcre2\src\pcre2_dfa_match.c third_party\pcre2\src\pcre2_error.c third_party\pcre2\src\pcre2_extuni.c third_party\pcre2\src\pcre2_find_bracket.c third_party\pcre2\src\pcre2_jit_compile.c third_party\pcre2\src\pcre2_maketables.c third_party\pcre2\src\pcre2_match.c third_party\pcre2\src\pcre2_match_data.c third_party\pcre2\src\pcre2_match_next.c third_party\pcre2\src\pcre2_newline.c third_party\pcre2\src\pcre2_ord2utf.c third_party\pcre2\src\pcre2_pattern_info.c third_party\pcre2\src\pcre2_script_run.c third_party\pcre2\src\pcre2_serialize.c third_party\pcre2\src\pcre2_string_utils.c third_party\pcre2\src\pcre2_study.c third_party\pcre2\src\pcre2_substitute.c third_party\pcre2\src\pcre2_substring.c third_party\pcre2\src\pcre2_tables.c third_party\pcre2\src\pcre2_ucd.c third_party\pcre2\src\pcre2_valid_utf.c third_party\pcre2\src\pcre2_xclass.c) do (
+    clang %PCRE2FLAGS% -c %%f -o build\obj\pcre2\%%~nf.o 2>> "%ERROR_LOG%"
+    if !ERRORLEVEL! NEQ 0 (
+        echo   [FAILED] %%f
+        echo [%time%] ERROR compiling %%f >> "%LOG_FILE%"
+        goto :build_failed
+    )
+)
+echo   [OK] PCRE2 + JIT compiled
+echo.
 
 REM Count total files
 for %%f in (src\core\engine\*.cpp src\core\gc\*.cpp src\core\modules\*.cpp src\core\runtime\*.cpp src\lexer\*.cpp src\parser\*.cpp) do set /a TOTAL_FILES+=1
@@ -176,7 +192,7 @@ echo.
 echo [LINK] Creating executable with ThinLTO...
 echo [%time%] === LINKING === >> "%LOG_FILE%"
 
-clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
+clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o build\obj\pcre2\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Linking failed!
