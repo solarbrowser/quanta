@@ -1,13 +1,3 @@
-> ⚠️ Notice
->
-> Development of Quanta is temporarily paused for approximately one month.
-> This is a planned break to refocus, study for exams and clear my head.
-> The project is NOT abandoned.
-> Updates will resume after the break.
->
-> Thank you for your patience & understanding.
-> COMING BACK AT 4/10/2026
-
 # Quanta
 
 Quanta is an experimental ECMAScript (or JS) engine focused on both **memory efficiency** and **execution speed**.  
