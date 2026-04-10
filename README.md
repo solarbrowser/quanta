@@ -8,9 +8,6 @@
 > Thank you for your patience & understanding.
 > COMING BACK AT 4/10/2026
 
-<div align="center">
-  <img src="docs/images/quanta_transparent.png" alt="Quanta Logo" width="200"/>
-
 # Quanta
 
 Quanta is an experimental ECMAScript (or JS) engine focused on both **memory efficiency** and **execution speed**.  
