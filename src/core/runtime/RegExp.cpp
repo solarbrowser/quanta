@@ -105,6 +105,110 @@ static bool is_hex_ch(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
 }
 
+// Find groups that are "optional" (may not capture): groups followed by ?/* quantifier,
+// or groups defined inside a lookahead/lookbehind assertion.
+// ECMAScript spec: backreference to an undefined group always succeeds (matches empty string).
+// PCRE2 doesn't support this, so we replace \N for optional groups with (?:\N|).
+static std::string fix_optional_backrefs(const std::string& pat) {
+    int n_groups = 0;
+    std::vector<bool> optional_group;
+
+    // Pass 1: find which groups are optional
+    {
+        struct StackEntry { int group_num; bool in_lookahead; };
+        std::vector<StackEntry> stack;
+        int lookahead_depth = 0;
+        bool esc = false, in_cc = false;
+
+        for (size_t i = 0; i < pat.size(); i++) {
+            if (esc) { esc = false; continue; }
+            if (pat[i] == '\\') { esc = true; continue; }
+            if (pat[i] == '[' && !in_cc) { in_cc = true; continue; }
+            if (pat[i] == ']' && in_cc) { in_cc = false; continue; }
+            if (in_cc) continue;
+
+            if (pat[i] == '(') {
+                bool is_lookahead = false;
+                bool is_capture = true;
+                if (i+1 < pat.size() && pat[i+1] == '?') {
+                    if (i+2 < pat.size() && (pat[i+2] == '=' || pat[i+2] == '!')) {
+                        is_lookahead = true; is_capture = false;
+                    } else if (i+3 < pat.size() && pat[i+2] == '<' &&
+                               (pat[i+3] == '=' || pat[i+3] == '!')) {
+                        is_lookahead = true; is_capture = false;
+                    } else {
+                        is_capture = false; // non-capturing group (?:...) etc.
+                    }
+                }
+                if (is_lookahead) lookahead_depth++;
+                int gnum = -1;
+                if (is_capture) {
+                    n_groups++;
+                    while ((int)optional_group.size() < n_groups) optional_group.push_back(false);
+                    if (lookahead_depth > 0) optional_group[n_groups-1] = true;
+                    gnum = n_groups;
+                }
+                stack.push_back({gnum, is_lookahead});
+            } else if (pat[i] == ')') {
+                if (!stack.empty()) {
+                    auto top = stack.back();
+                    stack.pop_back();
+                    if (top.in_lookahead) lookahead_depth--;
+                    // Check quantifier after ')'
+                    if (top.group_num > 0 && i+1 < pat.size()) {
+                        char q = pat[i+1];
+                        if (q == '?' || q == '*') optional_group[top.group_num-1] = true;
+                        else if (q == '{' && i+2 < pat.size() && pat[i+2] == '0')
+                            optional_group[top.group_num-1] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if any backrefs to optional groups exist
+    bool any = false;
+    {
+        bool esc = false;
+        for (size_t i = 0; i < pat.size() && !any; i++) {
+            if (esc) {
+                if (pat[i] >= '1' && pat[i] <= '9') {
+                    int n = pat[i] - '0';
+                    if (n <= (int)optional_group.size() && optional_group[n-1]) any = true;
+                }
+                esc = false; continue;
+            }
+            if (pat[i] == '\\') esc = true;
+        }
+    }
+    if (!any) return pat;
+
+    // Pass 2: replace \N for optional groups with (?:\N|)
+    std::string result;
+    result.reserve(pat.size() * 2);
+    bool esc = false;
+    for (size_t i = 0; i < pat.size(); i++) {
+        if (esc) {
+            if (pat[i] >= '1' && pat[i] <= '9') {
+                int n = pat[i] - '0';
+                if (n <= (int)optional_group.size() && optional_group[n-1]) {
+                    result.pop_back(); // remove the backslash 
+                    result += "(?:\\";
+                    result += pat[i];
+                    result += "|)";
+                    esc = false; continue;
+                }
+            }
+            esc = false;
+            result += pat[i];
+            continue;
+        }
+        if (pat[i] == '\\') { esc = true; result += pat[i]; continue; }
+        result += pat[i];
+    }
+    return result;
+}
+
 std::string RegExp::preprocess_pattern(const std::string& pat) const {
     std::string result;
     result.reserve(pat.size() * 2);
@@ -230,8 +334,8 @@ void RegExp::do_compile() {
     }
 
     std::string pat = unicode_
-        ? convert_unicode_escapes(expand_gc_aliases(pattern_))
-        : convert_unicode_escapes(preprocess_pattern(pattern_));
+        ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(pattern_)))
+        : fix_optional_backrefs(convert_unicode_escapes(preprocess_pattern(pattern_)));
 
     uint32_t options = PCRE2_UTF;
     if (unicode_)    options |= PCRE2_UCP;
