@@ -79,6 +79,57 @@ else()
     endif()
 endif()
 
+# PCRE2 (bundled, 8-bit, Unicode + JIT)
+set(PCRE2_DIR ${CMAKE_SOURCE_DIR}/third_party/pcre2/src)
+
+set(PCRE2_SOURCES
+    ${PCRE2_DIR}/pcre2_auto_possess.c
+    ${PCRE2_DIR}/pcre2_chartables.c
+    ${PCRE2_DIR}/pcre2_chkdint.c
+    ${PCRE2_DIR}/pcre2_compile.c
+    ${PCRE2_DIR}/pcre2_compile_cgroup.c
+    ${PCRE2_DIR}/pcre2_compile_class.c
+    ${PCRE2_DIR}/pcre2_config.c
+    ${PCRE2_DIR}/pcre2_context.c
+    ${PCRE2_DIR}/pcre2_convert.c
+    ${PCRE2_DIR}/pcre2_dfa_match.c
+    ${PCRE2_DIR}/pcre2_error.c
+    ${PCRE2_DIR}/pcre2_extuni.c
+    ${PCRE2_DIR}/pcre2_find_bracket.c
+    ${PCRE2_DIR}/pcre2_jit_compile.c
+    ${PCRE2_DIR}/pcre2_maketables.c
+    ${PCRE2_DIR}/pcre2_match.c
+    ${PCRE2_DIR}/pcre2_match_data.c
+    ${PCRE2_DIR}/pcre2_match_next.c
+    ${PCRE2_DIR}/pcre2_newline.c
+    ${PCRE2_DIR}/pcre2_ord2utf.c
+    ${PCRE2_DIR}/pcre2_pattern_info.c
+    ${PCRE2_DIR}/pcre2_script_run.c
+    ${PCRE2_DIR}/pcre2_serialize.c
+    ${PCRE2_DIR}/pcre2_string_utils.c
+    ${PCRE2_DIR}/pcre2_study.c
+    ${PCRE2_DIR}/pcre2_substitute.c
+    ${PCRE2_DIR}/pcre2_substring.c
+    ${PCRE2_DIR}/pcre2_tables.c
+    ${PCRE2_DIR}/pcre2_ucd.c
+    ${PCRE2_DIR}/pcre2_valid_utf.c
+    ${PCRE2_DIR}/pcre2_xclass.c
+)
+
+add_library(pcre2-8 STATIC ${PCRE2_SOURCES})
+target_compile_definitions(pcre2-8 PRIVATE
+    PCRE2_CODE_UNIT_WIDTH=8
+    HAVE_CONFIG_H
+    SUPPORT_PCRE2_8
+    SUPPORT_UNICODE
+    SUPPORT_JIT
+)
+target_include_directories(pcre2-8 PRIVATE ${PCRE2_DIR})
+set_target_properties(pcre2-8 PROPERTIES
+    C_STANDARD 99
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # Core source files
 file(GLOB_RECURSE CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/core/*.cpp
@@ -122,7 +173,10 @@ set_target_properties(quantalib PROPERTIES
 # Add include directories
 target_include_directories(quantalib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
+    ${PCRE2_DIR}
 )
+
+target_link_libraries(quantalib PUBLIC pcre2-8)
 
 # Console executable
 add_executable(quanta

@@ -60,6 +60,11 @@ build_makefile() {
         exit 1
     fi
 
+    if [ ! -f "third_party/pcre2/src/pcre2_compile.c" ]; then
+        print_info "Initializing submodules..."
+        git submodule update --init --recursive
+    fi
+
     print_info "Cleaning previous build..."
     make clean 2>/dev/null || true
 
@@ -85,6 +90,11 @@ build_cmake() {
         print_error "CMake is not installed!"
         echo "Install CMake from https://cmake.org/download/"
         exit 1
+    fi
+
+    if [ ! -f "third_party/pcre2/src/pcre2_compile.c" ]; then
+        print_info "Initializing submodules..."
+        git submodule update --init --recursive
     fi
 
     # Create and enter build directory
