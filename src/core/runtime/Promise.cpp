@@ -59,8 +59,6 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         if (on_fulfilled) {
             bool should_async = exec_ctx ? exec_ctx->should_queue_then_async() : false;
             if (context_ && !should_async) {
-                // Sync path: call with creation context so Function::call's parent_context
-                // includes the defining scope, enabling live closure variable access
                 if (exec_ctx) exec_ctx->increment_sync_then_depth();
                 std::vector<Value> args = {value_};
                 Value result = on_fulfilled->call(*context_, args);
