@@ -482,7 +482,8 @@ Token Lexer::read_identifier() {
     TokenType type = lookup_keyword(value);
 
     if (contains_unicode_escapes && type != TokenType::IDENTIFIER) {
-        type = TokenType::IDENTIFIER;
+        add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
+        return create_token(TokenType::INVALID, value, start);
     }
 
     if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
@@ -888,6 +889,54 @@ Token Lexer::read_operator() {
     }
 }
 
+static uint32_t decode_utf8_at(const std::string& src, size_t pos) {
+    unsigned char c0 = static_cast<unsigned char>(src[pos]);
+    if (c0 < 0x80) return c0;
+    if (c0 < 0xC2) return 0xFFFD;
+    if (c0 < 0xE0) {
+        if (pos + 1 >= src.size()) return 0xFFFD;
+        return ((c0 & 0x1F) << 6) | (static_cast<unsigned char>(src[pos + 1]) & 0x3F);
+    }
+    if (c0 < 0xF0) {
+        if (pos + 2 >= src.size()) return 0xFFFD;
+        return ((c0 & 0x0F) << 12)
+             | ((static_cast<unsigned char>(src[pos + 1]) & 0x3F) << 6)
+             | (static_cast<unsigned char>(src[pos + 2]) & 0x3F);
+    }
+    if (c0 < 0xF8) {
+        if (pos + 3 >= src.size()) return 0xFFFD;
+        return ((c0 & 0x07) << 18)
+             | ((static_cast<unsigned char>(src[pos + 1]) & 0x3F) << 12)
+             | ((static_cast<unsigned char>(src[pos + 2]) & 0x3F) << 6)
+             | (static_cast<unsigned char>(src[pos + 3]) & 0x3F);
+    }
+    return 0xFFFD;
+}
+
+static bool is_unicode_id_start(uint32_t cp) {
+    if (cp > 0xFFFF) return true;
+    if (cp >= 0x00C0 && cp < 0x2000) return true;
+    if (cp < 0x2070) return false;
+    if (cp == 0x2071 || cp == 0x207F) return true;
+    if (cp >= 0x2090 && cp <= 0x209C) return true;
+    if (cp < 0x2100) return false;
+    if (cp == 0x2102 || cp == 0x2107) return true;
+    if (cp >= 0x210A && cp <= 0x2113) return true;
+    if (cp == 0x2115) return true;
+    if (cp >= 0x2119 && cp <= 0x211D) return true;
+    if (cp == 0x2124 || cp == 0x2126 || cp == 0x2128) return true;
+    if (cp >= 0x212A && cp <= 0x2139) return true;
+    if (cp >= 0x213C && cp <= 0x213F) return true;
+    if (cp >= 0x2145 && cp <= 0x2149) return true;
+    if (cp == 0x214E) return true;
+    if (cp < 0x2160) return false;
+    if (cp <= 0x2188) return true;
+    if (cp < 0x2C00) return false;
+    if (cp <= 0x2DFF) return true;
+    if (cp < 0x2E80) return false;
+    return true;
+}
+
 bool Lexer::is_identifier_start(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
     if (std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\') {
@@ -896,7 +945,8 @@ bool Lexer::is_identifier_start(char ch) const {
     if (uch >= 0x80) {
         if (utf8_whitespace_bytes() > 0) return false;
         if (utf8_line_terminator_bytes() > 0) return false;
-        return true;
+        uint32_t cp = decode_utf8_at(source_, position_);
+        return is_unicode_id_start(cp);
     }
     return false;
 }

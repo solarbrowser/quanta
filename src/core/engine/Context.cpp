@@ -548,12 +548,12 @@ void Context::initialize_built_ins() {
                     [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
                         return captured_sym;
                     }, 0);
-                symbol_obj->set_property("valueOf", Value(valueOf_fn.release()));
+                symbol_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
                 auto toString_fn = ObjectFactory::create_native_function("toString",
                     [sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
                         return Value(sym->to_string());
                     }, 0);
-                symbol_obj->set_property("toString", Value(toString_fn.release()));
+                symbol_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
                 return Value(symbol_obj.release());
             } else if (value.is_bigint()) {
                 auto bigint_obj = ObjectFactory::create_object();
@@ -3059,21 +3059,19 @@ void Context::initialize_built_ins() {
                 return obj->is_array();
             };
 
-            // Helper: get length via property access (Proxy-safe)
+            // Helper: get length via property access
             auto get_length_prop = [](Object* obj) -> uint32_t {
-                if (obj->get_type() == Object::ObjectType::Proxy) {
-                    Value lv = obj->get_property("length");
-                    return lv.is_number() ? static_cast<uint32_t>(lv.as_number()) : 0;
-                }
-                return obj->get_length();
+                Value lv = obj->get_property("length");
+                if (!lv.is_number()) return 0;
+                double n = lv.as_number();
+                if (std::isnan(n) || n <= 0) return 0;
+                if (n > 0xFFFFFFFFu) return 0xFFFFFFFFu;
+                return static_cast<uint32_t>(n);
             };
 
-            // Helper: get element via property access (Proxy-safe)
+            // Helper: get element via property access (triggers accessor descriptors)
             auto get_elem_prop = [](Object* obj, uint32_t idx) -> Value {
-                if (obj->get_type() == Object::ObjectType::Proxy) {
-                    return obj->get_property(std::to_string(idx));
-                }
-                return obj->get_element(idx);
+                return obj->get_property(std::to_string(idx));
             };
 
             // Spread this_array
@@ -3081,7 +3079,9 @@ void Context::initialize_built_ins() {
                 uint32_t this_length = get_length_prop(this_array);
                 for (uint32_t i = 0; i < this_length; i++) {
                     if (this_array->has_property(std::to_string(i))) {
-                        result->set_element(result_index, get_elem_prop(this_array, i));
+                        Value elem = get_elem_prop(this_array, i);
+                        if (ctx.has_exception()) return Value();
+                        result->set_element(result_index, elem);
                     }
                     result_index++;
                 }
@@ -3098,7 +3098,9 @@ void Context::initialize_built_ins() {
                         uint32_t arg_length = get_length_prop(arg_obj);
                         for (uint32_t i = 0; i < arg_length; i++) {
                             if (arg_obj->has_property(std::to_string(i))) {
-                                result->set_element(result_index, get_elem_prop(arg_obj, i));
+                                Value elem = get_elem_prop(arg_obj, i);
+                                if (ctx.has_exception()) return Value();
+                                result->set_element(result_index, elem);
                             }
                             result_index++;
                         }
