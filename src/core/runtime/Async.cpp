@@ -215,7 +215,7 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         if (await_index < exec->target_await_index_) {
             // REPLAY: return stored result without re-evaluating the expression
             if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
-                ctx.throw_exception(exec->await_results_[await_index]);
+                ctx.throw_exception(exec->await_results_[await_index], true);
                 return Value();
             }
             if (await_index < exec->await_results_.size()) {
@@ -320,7 +320,7 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
     if (promise->get_state() == PromiseState::FULFILLED) {
         return promise->get_value();
     } else if (promise->get_state() == PromiseState::REJECTED) {
-        ctx.throw_exception(promise->get_value());
+        ctx.throw_exception(promise->get_value(), true);
         return Value();
     }
     return Value();
