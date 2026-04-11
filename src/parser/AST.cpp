@@ -1624,6 +1624,22 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (ctx.has_exception()) return Value();
             if (prop_value.is_symbol()) {
                 prop_name = prop_value.as_symbol()->to_property_key();
+            } else if (prop_value.is_object() || prop_value.is_function()) {
+                Object* pobj = prop_value.is_function()
+                    ? static_cast<Object*>(prop_value.as_function())
+                    : prop_value.as_object();
+                Value vo = pobj ? pobj->get_property("valueOf") : Value();
+                if (vo.is_function()) {
+                    Value prim = vo.as_function()->call(ctx, {}, prop_value);
+                    if (ctx.has_exception()) return Value();
+                    if (prim.is_symbol()) {
+                        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                        return Value();
+                    }
+                    prop_name = prim.is_object() ? prop_value.to_string() : prim.to_string();
+                } else {
+                    prop_name = prop_value.to_string();
+                }
             } else {
                 prop_name = prop_value.to_string();
             }

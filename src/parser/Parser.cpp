@@ -1877,8 +1877,17 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
 
     if (current_token().get_type() == TokenType::IN) {
+        if (options_.strict_mode && init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(init.get());
+            if (vd->get_kind() == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
+                if (vd->get_declarations()[0]->get_init()) {
+                    add_error("SyntaxError: for-in loop variable declaration may not have an initializer");
+                    return nullptr;
+                }
+            }
+        }
         advance();
-        
+
         if (at_end()) {
             add_error("Unexpected end of input after 'in'");
             return nullptr;
