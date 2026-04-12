@@ -594,7 +594,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     Value old_value = this->get_property(key);
                     this->set_property(key, current_value);
 
-                    if (parent_var_names.count(var_name)) {
+                    if (parent_var_names.count(var_name) && !current_value.strict_equals(old_value)) {
                         parent_context->set_binding(var_name, current_value);
                     }
 
