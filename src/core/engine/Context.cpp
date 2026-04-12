@@ -11510,11 +11510,23 @@ std::unique_ptr<Context> create_global_context(Engine* engine) {
 
 std::unique_ptr<Context> create_function_context(Engine* engine, Context* parent, Function* function) {
     auto context = std::make_unique<Context>(engine, parent, Context::Type::Function);
-    
-    auto func_env = std::make_unique<Environment>(Environment::Type::Function, parent->get_lexical_environment());
+
+    Environment* outer_env = parent->get_lexical_environment();
+    if (function && function->is_param_default()) {
+        Environment* walk = outer_env;
+        while (walk && walk->get_type() == Environment::Type::Declarative) {
+            if (!walk->get_outer()) break;
+            walk = walk->get_outer();
+        }
+        if (walk && walk->get_type() != Environment::Type::Declarative) {
+            outer_env = walk;
+        }
+    }
+
+    auto func_env = std::make_unique<Environment>(Environment::Type::Function, outer_env);
     context->set_lexical_environment(func_env.release());
     context->set_variable_environment(context->get_lexical_environment());
-    
+
     return context;
 }
 

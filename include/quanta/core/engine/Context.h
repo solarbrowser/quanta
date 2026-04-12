@@ -96,6 +96,7 @@ private:
     std::vector<std::function<void()>> microtask_queue_;
     bool is_draining_microtasks_ = false;
     int sync_then_depth_ = 0;
+    bool in_param_eval_ = false;
 
 public:
     explicit Context(Engine* engine, Type type = Type::Global);
@@ -114,6 +115,8 @@ public:
     bool should_queue_then_async() const { return is_draining_microtasks_ || sync_then_depth_ > 0; }
     void increment_sync_then_depth() { sync_then_depth_++; }
     void decrement_sync_then_depth() { if (sync_then_depth_ > 0) sync_then_depth_--; }
+    bool is_in_param_eval() const { return in_param_eval_; }
+    void set_in_param_eval(bool v) { in_param_eval_ = v; }
     
     const std::string& get_current_filename() const { return current_filename_; }
     void set_current_filename(const std::string& filename) { current_filename_ = filename; }
