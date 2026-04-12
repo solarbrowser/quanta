@@ -9077,6 +9077,11 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            // ES6: use this constructor's prototype for subclassing
+            Function* this_ctor = nullptr;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
+
             Object* iterable = args[0].as_object();
             // ES6: Support Symbol.iterator for non-array iterables
             Object* collected_arr = nullptr;
@@ -9116,6 +9121,11 @@ void Context::initialize_built_ins() {
 
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+
+            if (this_ctor) {
+                Value proto = this_ctor->get_property("prototype");
+                if (proto.is_object()) result_promise->set_prototype(proto.as_object());
+            }
 
             if (length == 0) {
                 auto empty_array = ObjectFactory::create_array(0);
@@ -9195,6 +9205,10 @@ void Context::initialize_built_ins() {
                 return Value();
             }
 
+            Function* this_ctor = nullptr;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
+
             Object* iterable = args[0].as_object();
             // ES6: Support Symbol.iterator for non-array iterables
             Object* race_collected = nullptr;
@@ -9233,6 +9247,11 @@ void Context::initialize_built_ins() {
             uint32_t length = iterable->get_length();
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+
+            if (this_ctor) {
+                Value proto = this_ctor->get_property("prototype");
+                if (proto.is_object()) result_promise->set_prototype(proto.as_object());
+            }
 
             if (length == 0) {
                 return Value(result_promise_obj.release());
