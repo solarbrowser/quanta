@@ -8520,7 +8520,10 @@ Value FunctionExpression::evaluate(Context& ctx) {
     }
     
     if (function) {
-        
+        if (ctx.is_in_param_eval()) {
+            function->set_is_param_default(true);
+        }
+
         auto var_env = ctx.get_variable_environment();
         if (var_env) {
             auto var_binding_names = var_env->get_binding_names();

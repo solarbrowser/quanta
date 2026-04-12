@@ -31,7 +31,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
 
@@ -50,7 +50,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
-      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
     }
@@ -76,7 +76,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -97,7 +97,7 @@ Function::Function(const std::string& name,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -329,23 +329,24 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     if (!parameter_objects_.empty()) {
         size_t regular_param_count = 0;
-        
+
         for (const auto& param : parameter_objects_) {
             if (!param->is_rest()) {
                 regular_param_count++;
             }
         }
-        
+
+        function_context.set_in_param_eval(true);
         for (size_t i = 0; i < parameter_objects_.size(); ++i) {
             const auto& param = parameter_objects_[i];
-            
+
             if (param->is_rest()) {
                 auto rest_array = ObjectFactory::create_array(0);
-                
+
                 for (size_t j = regular_param_count; j < args.size(); ++j) {
                     rest_array->push(args[j]);
                 }
-                
+
                 function_context.create_binding(param->get_name()->get_name(), Value(rest_array.release()), false);
             } else {
                 Value arg_value;
@@ -355,6 +356,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 } else if (param->has_default()) {
                     arg_value = param->get_default_value()->evaluate(function_context);
                     if (function_context.has_exception()) {
+                        function_context.set_in_param_eval(false);
                         ctx.throw_exception(function_context.get_exception());
                         return Value();
                     }
@@ -363,22 +365,22 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 }
 
                 if (param->has_destructuring()) {
-                    // ES6: Destructuring parameter - evaluate the pattern with the arg value
                     auto* pattern = param->get_destructuring_pattern();
                     auto* destructuring = dynamic_cast<DestructuringAssignment*>(pattern);
                     if (destructuring) {
                         destructuring->evaluate_with_value(function_context, arg_value);
                         if (function_context.has_exception()) {
+                            function_context.set_in_param_eval(false);
                             ctx.throw_exception(function_context.get_exception());
                             return Value();
                         }
                     }
                 } else {
-                    // ES1: Function parameters are mutable bindings
                     function_context.create_binding(param->get_name()->get_name(), arg_value, true);
                 }
             }
         }
+        function_context.set_in_param_eval(false);
     } else {
         for (size_t i = 0; i < parameters_.size(); ++i) {
             Value arg_value = (i < args.size()) ? args[i] : Value();
@@ -475,6 +477,20 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // ES5: Named function expressions have their name as an immutable binding
         if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {
             function_context.create_binding(name_, Value(this), false);
+        }
+
+        {
+            bool has_complex_params = false;
+            for (const auto& p : parameter_objects_) {
+                if (p->has_default() || p->has_destructuring()) {
+                    has_complex_params = true;
+                    break;
+                }
+            }
+            if (has_complex_params) {
+                function_context.push_block_scope();
+                function_context.set_variable_environment(function_context.get_lexical_environment());
+            }
         }
 
         std::unordered_set<std::string> pre_scan_names;

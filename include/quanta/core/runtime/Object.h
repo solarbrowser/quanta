@@ -374,6 +374,7 @@ private:
     bool is_arrow_;        // Arrow functions have lexical this binding
     bool is_class_constructor_;  // Class constructors must be called with new
     bool is_strict_;       // Function runs in strict mode (e.g. class methods)
+    bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
@@ -415,6 +416,8 @@ public:
     void set_is_class_constructor(bool value) { is_class_constructor_ = value; }
     bool is_strict() const { return is_strict_; }
     void set_is_strict(bool value) { is_strict_ = value; }
+    bool is_param_default() const { return is_param_default_; }
+    void set_is_param_default(bool v) { is_param_default_ = v; }
     
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }
