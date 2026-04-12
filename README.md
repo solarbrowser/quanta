@@ -129,22 +129,9 @@ build/errors.log
 
 ## Contributing
 
-We welcome contributions! Areas for enhancement:
+Please ignore the `CONTRIBUTING.md` file for now. I kept it because I don’t want to recreate it when the initial release is ready.
 
-### Development Areas
-- **ECMAScript Features** - Additional ES6+ feature implementation
-- **Performance** - Optimization improvements and benchmarking
-- **Testing** - Expand test coverage and compatibility testing
-- **Documentation** - Improve documentation and examples
-- **Platform Support** - Enhanced cross-platform compatibility
-
-### Contribution Guidelines
-1. Fork the repository
-2. Create a feature branch
-3. Follow the modular architecture patterns
-4. Add comprehensive tests
-5. Update documentation as needed
-6. Submit a pull request
+At this stage, I want to fully shape Quanta’s architecture on my own, without external changes. The engine is evolving rapidly, and even small additions can unintentionally break other parts of the system. For that reason, I prefer to develop it solo until the initial release. Thanks for your understanding and for considering contributing!
 
 ---
 
