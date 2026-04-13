@@ -51,6 +51,26 @@ get_cpu_cores() {
     fi
 }
 
+setup_pcre2() {
+    local PCRE2_SRC="third_party/pcre2/src"
+    if [ ! -f "$PCRE2_SRC/pcre2.h.generic" ]; then
+        print_info "Initializing PCRE2 submodule..."
+        git submodule update --init third_party/pcre2
+    fi
+    if [ ! -f "$PCRE2_SRC/config.h" ]; then
+        cp "$PCRE2_SRC/config.h.generic" "$PCRE2_SRC/config.h"
+        print_success "Generated config.h"
+    fi
+    if [ ! -f "$PCRE2_SRC/pcre2.h" ]; then
+        cp "$PCRE2_SRC/pcre2.h.generic" "$PCRE2_SRC/pcre2.h"
+        print_success "Generated pcre2.h"
+    fi
+    if [ ! -f "$PCRE2_SRC/pcre2_chartables.c" ]; then
+        cp "$PCRE2_SRC/pcre2_chartables.c.dist" "$PCRE2_SRC/pcre2_chartables.c"
+        print_success "Generated pcre2_chartables.c"
+    fi
+}
+
 # Build with Makefile
 build_makefile() {
     print_header "Building with Makefile"
@@ -60,10 +80,7 @@ build_makefile() {
         exit 1
     fi
 
-    if [ ! -f "third_party/pcre2/src/pcre2_compile.c" ]; then
-        print_info "Initializing submodules..."
-        git submodule update --init --recursive
-    fi
+    setup_pcre2
 
     print_info "Cleaning previous build..."
     make clean 2>/dev/null || true
@@ -92,10 +109,7 @@ build_cmake() {
         exit 1
     fi
 
-    if [ ! -f "third_party/pcre2/src/pcre2_compile.c" ]; then
-        print_info "Initializing submodules..."
-        git submodule update --init --recursive
-    fi
+    setup_pcre2
 
     # Create and enter build directory
     BUILD_DIR="build-cmake"

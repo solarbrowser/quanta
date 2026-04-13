@@ -136,9 +136,27 @@ LIBQUANTA = $(BUILD_DIR)/libquanta.a
 CONSOLE_MAIN = console.cpp
 
 # Main targets
-.PHONY: all clean debug release
+.PHONY: all clean debug release setup-pcre2
 
-all: build_header $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT) build_footer
+setup-pcre2:
+	@if [ ! -f "$(PCRE2_DIR)/pcre2.h.generic" ]; then \
+	    echo "[INFO] Initializing PCRE2 submodule..."; \
+	    git submodule update --init third_party/pcre2; \
+	fi
+	@if [ ! -f "$(PCRE2_DIR)/config.h" ]; then \
+	    cp "$(PCRE2_DIR)/config.h.generic" "$(PCRE2_DIR)/config.h"; \
+	    echo "[OK] Generated config.h"; \
+	fi
+	@if [ ! -f "$(PCRE2_DIR)/pcre2.h" ]; then \
+	    cp "$(PCRE2_DIR)/pcre2.h.generic" "$(PCRE2_DIR)/pcre2.h"; \
+	    echo "[OK] Generated pcre2.h"; \
+	fi
+	@if [ ! -f "$(PCRE2_DIR)/pcre2_chartables.c" ]; then \
+	    cp "$(PCRE2_DIR)/pcre2_chartables.c.dist" "$(PCRE2_DIR)/pcre2_chartables.c"; \
+	    echo "[OK] Generated pcre2_chartables.c"; \
+	fi
+
+all: setup-pcre2 build_header $(LIBQUANTA) $(BIN_DIR)/quanta$(EXE_EXT) build_footer
 
 build_header:
 	@echo ""
