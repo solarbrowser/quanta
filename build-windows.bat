@@ -39,6 +39,33 @@ echo   [OK] Clang++ %CLANG_VER% detected
 echo [%time%] Clang version: %CLANG_VER% >> "%LOG_FILE%"
 echo.
 
+REM Initialize PCRE2 submodule if needed
+echo [INFO] Checking PCRE2 submodule...
+if not exist "third_party\pcre2\src\pcre2.h.generic" (
+    echo   [INFO] Initializing PCRE2 submodule...
+    git submodule update --init third_party/pcre2
+    if !ERRORLEVEL! NEQ 0 (
+        echo [ERROR] Failed to initialize PCRE2 submodule
+        echo Please run: git submodule update --init
+        pause
+        exit /b 1
+    )
+)
+if not exist "third_party\pcre2\src\config.h" (
+    copy "third_party\pcre2\src\config.h.generic" "third_party\pcre2\src\config.h" >nul
+    echo   [OK] Generated config.h
+)
+if not exist "third_party\pcre2\src\pcre2.h" (
+    copy "third_party\pcre2\src\pcre2.h.generic" "third_party\pcre2\src\pcre2.h" >nul
+    echo   [OK] Generated pcre2.h
+)
+if not exist "third_party\pcre2\src\pcre2_chartables.c" (
+    copy "third_party\pcre2\src\pcre2_chartables.c.dist" "third_party\pcre2\src\pcre2_chartables.c" >nul
+    echo   [OK] Generated pcre2_chartables.c
+)
+echo   [OK] PCRE2 ready
+echo.
+
 REM Create directory structure
 echo [INFO] Setting up build directories...
 if not exist "build\obj\core\engine" mkdir build\obj\core\engine

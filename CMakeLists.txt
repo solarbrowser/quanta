@@ -82,6 +82,36 @@ endif()
 # PCRE2 (bundled, 8-bit, Unicode + JIT)
 set(PCRE2_DIR ${CMAKE_SOURCE_DIR}/third_party/pcre2/src)
 
+# Initialize submodule and generate required files if missing
+if(NOT EXISTS "${PCRE2_DIR}/pcre2.h.generic")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        message(STATUS "Initializing PCRE2 submodule...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init third_party/pcre2
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE GIT_RESULT
+        )
+        if(NOT GIT_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize PCRE2 submodule. Run: git submodule update --init")
+        endif()
+    else()
+        message(FATAL_ERROR "Git not found and PCRE2 submodule is missing. Run: git submodule update --init")
+    endif()
+endif()
+if(NOT EXISTS "${PCRE2_DIR}/config.h")
+    configure_file("${PCRE2_DIR}/config.h.generic" "${PCRE2_DIR}/config.h" COPYONLY)
+    message(STATUS "Generated PCRE2 config.h")
+endif()
+if(NOT EXISTS "${PCRE2_DIR}/pcre2.h")
+    configure_file("${PCRE2_DIR}/pcre2.h.generic" "${PCRE2_DIR}/pcre2.h" COPYONLY)
+    message(STATUS "Generated PCRE2 pcre2.h")
+endif()
+if(NOT EXISTS "${PCRE2_DIR}/pcre2_chartables.c")
+    configure_file("${PCRE2_DIR}/pcre2_chartables.c.dist" "${PCRE2_DIR}/pcre2_chartables.c" COPYONLY)
+    message(STATUS "Generated PCRE2 pcre2_chartables.c")
+endif()
+
 set(PCRE2_SOURCES
     ${PCRE2_DIR}/pcre2_auto_possess.c
     ${PCRE2_DIR}/pcre2_chartables.c
