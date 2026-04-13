@@ -4061,8 +4061,17 @@ void Context::initialize_built_ins() {
                         return Value();
                     }
 
-                    // Return the created function
                     Function* raw_func = func.release();
+                    Value new_target = ctx.get_new_target();
+                    if (!new_target.is_undefined()) {
+                        Object* nt_obj = new_target.is_function()
+                            ? static_cast<Object*>(new_target.as_function())
+                            : new_target.is_object() ? new_target.as_object() : nullptr;
+                        if (nt_obj) {
+                            Value nt_proto = nt_obj->get_property("prototype");
+                            if (nt_proto.is_object()) raw_func->set_prototype(nt_proto.as_object());
+                        }
+                    }
                     return Value{raw_func};
                 }
             } catch (...) {
@@ -8514,8 +8523,25 @@ void Context::initialize_built_ins() {
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
 
-                return Value(regex_obj.release());
-                
+                Object* regex_raw = regex_obj.release();
+                Value new_target = ctx.get_new_target();
+                if (!new_target.is_undefined()) {
+                    Object* nt_obj = new_target.is_function()
+                        ? static_cast<Object*>(new_target.as_function())
+                        : new_target.is_object() ? new_target.as_object() : nullptr;
+                    if (nt_obj) {
+                        Value nt_proto = nt_obj->get_property("prototype");
+                        if (nt_proto.is_object()) regex_raw->set_prototype(nt_proto.as_object());
+                    }
+                } else {
+                    Value regexp_ctor = ctx.get_binding("RegExp");
+                    if (regexp_ctor.is_function()) {
+                        Value proto = regexp_ctor.as_function()->get_property("prototype");
+                        if (proto.is_object()) regex_raw->set_prototype(proto.as_object());
+                    }
+                }
+                return Value(regex_raw);
+
             } catch (const std::exception& e) {
                 ctx.throw_error("Invalid RegExp: " + std::string(e.what()));
                 return Value::null();
@@ -10109,26 +10135,20 @@ void Context::initialize_built_ins() {
 
     arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
 
-    auto arraybuffer_species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(ctx.get_this_binding());
-        }, 0);
-
-    PropertyDescriptor arraybuffer_species_desc;
-    arraybuffer_species_desc.set_getter(arraybuffer_species_getter.get());
-    arraybuffer_species_desc.set_enumerable(false);
-    arraybuffer_species_desc.set_configurable(true);
-
-    Value arraybuffer_species_symbol = global_object_->get_property("Symbol");
-    if (arraybuffer_species_symbol.is_object()) {
-        Object* symbol_constructor = arraybuffer_species_symbol.as_object();
-        Value species_key = symbol_constructor->get_property("species");
-        if (species_key.is_symbol()) {
-            arraybuffer_constructor->set_property_descriptor(species_key.as_symbol()->to_property_key(), arraybuffer_species_desc);
+    {
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        if (species_sym) {
+            auto getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    return Value(ctx.get_this_binding());
+                }, 0);
+            PropertyDescriptor desc;
+            desc.set_getter(getter.release());
+            desc.set_enumerable(false);
+            desc.set_configurable(true);
+            arraybuffer_constructor->set_property_descriptor(species_sym->to_property_key(), desc);
         }
     }
-
-    arraybuffer_species_getter.release();
 
     register_built_in_object("ArrayBuffer", arraybuffer_constructor.release());
     
@@ -12648,25 +12668,33 @@ void Context::register_typed_array_constructors() {
         {"Int16Array", 2}, {"Uint16Array", 2}, {"Int32Array", 4}, {"Uint32Array", 4},
         {"Float32Array", 4}, {"Float64Array", 8}
     };
+    Symbol* ta_species_sym = Symbol::get_well_known(Symbol::SPECIES);
     for (const auto& info : typed_infos) {
         Object* ctor = get_built_in_object(info.name);
         if (ctor) {
-            // Constructor chain: XArray.__proto__ = TypedArray
             if (typedarray_ctor_ptr) {
                 ctor->set_prototype(typedarray_ctor_ptr);
+            }
+            if (ta_species_sym) {
+                auto getter = ObjectFactory::create_native_function("get [Symbol.species]",
+                    [](Context& ctx, const std::vector<Value>&) -> Value {
+                        return Value(ctx.get_this_binding());
+                    }, 0);
+                PropertyDescriptor species_desc;
+                species_desc.set_getter(getter.release());
+                species_desc.set_enumerable(false);
+                species_desc.set_configurable(true);
+                ctor->set_property_descriptor(ta_species_sym->to_property_key(), species_desc);
             }
             Value proto_val = ctor->get_property("prototype");
             if (proto_val.is_object_like() && proto_val.as_object()) {
                 Object* proto = proto_val.as_object();
-                // Prototype chain: XArray.prototype.__proto__ = TypedArray.prototype
                 proto->set_prototype(typedarray_proto_ptr);
-                // Add BYTES_PER_ELEMENT as own property
                 PropertyDescriptor bpe_desc(Value(static_cast<double>(info.bytes)), PropertyAttributes::None);
                 bpe_desc.set_enumerable(false);
                 bpe_desc.set_writable(false);
                 bpe_desc.set_configurable(false);
                 proto->set_property_descriptor("BYTES_PER_ELEMENT", bpe_desc);
-                // Add constructor property pointing back to the constructor
                 PropertyDescriptor ctor_desc(Value(static_cast<Function*>(ctor)), PropertyAttributes::BuiltinFunction);
                 ctor_desc.set_enumerable(false);
                 proto->set_property_descriptor("constructor", ctor_desc);

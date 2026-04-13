@@ -668,11 +668,17 @@ bool Value::instanceof_check(const Value& constructor) const {
     std::string ctor_name = ctor->get_name();
     
     if (is_function()) {
-        if (ctor_name == "Function") {
-            return true;
-        }
-        if (ctor_name == "Object") {
-            return true;
+        if (ctor_name == "Function") return true;
+        if (ctor_name == "Object") return true;
+        Function* fn = as_function();
+        Value prototype_prop = ctor->get_property("prototype");
+        if (prototype_prop.is_object()) {
+            Object* ctor_prototype = prototype_prop.as_object();
+            Object* current = fn->get_prototype();
+            while (current) {
+                if (current == ctor_prototype) return true;
+                current = current->get_prototype();
+            }
         }
         return false;
     }
