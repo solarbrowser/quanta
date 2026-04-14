@@ -8371,8 +8371,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 // C.prototype's [[Prototype]] = B.prototype
                 // Use super_obj->get_property to fire get trap on Proxy
                 Value super_proto_val = super_obj->get_property("prototype");
-                if (super_proto_val.is_object() && proto_ptr) {
-                    proto_ptr->set_prototype(super_proto_val.as_object());
+                if (proto_ptr) {
+                    Object* super_proto_obj = nullptr;
+                    if (super_proto_val.is_object()) super_proto_obj = super_proto_val.as_object();
+                    else if (super_proto_val.is_function()) super_proto_obj = super_proto_val.as_function();
+                    if (super_proto_obj) proto_ptr->set_prototype(super_proto_obj);
                 }
             }
         }
