@@ -8602,6 +8602,24 @@ void Context::initialize_built_ins() {
         regexp_prototype->set_property_descriptor("flags", flags_desc);
     }
 
+    // RegExp.prototype.exec - generic, delegates to own exec on instance
+    auto regexp_exec_proto_fn = ObjectFactory::create_native_function("exec",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) {
+                ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
+                return Value();
+            }
+            Value own_exec = this_obj->get_own_property("exec");
+            if (own_exec.is_function()) {
+                std::string str = args.empty() ? "undefined" : args[0].to_string();
+                return own_exec.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+            }
+            ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
+            return Value();
+        }, 1);
+    regexp_prototype->set_property("exec", Value(regexp_exec_proto_fn.release()), PropertyAttributes::BuiltinFunction);
+
     // ES6: RegExp.prototype.test - generic function that calls this.exec
     auto regexp_test_fn = ObjectFactory::create_native_function("test",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -8749,13 +8767,28 @@ void Context::initialize_built_ins() {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             std::string str = args.size() > 0 ? args[0].to_string() : "";
-            // Step 1: Get constructor (for species) via get_property (fires get("constructor") on Proxy)
+            // ES6: SpeciesConstructor - check constructor[Symbol.species]
             Value ctor_val = this_obj->get_property("constructor");
-            (void)ctor_val;
-            // Step 2: Get flags via get_property (fires get("flags") on Proxy)
+            if (ctor_val.is_object() || ctor_val.is_function()) {
+                Object* ctor_obj = ctor_val.is_function() ? static_cast<Object*>(ctor_val.as_function()) : ctor_val.as_object();
+                Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+                if (species_sym) {
+                    Value species_val = ctor_obj->get_property(species_sym->to_property_key());
+                    if (species_val.is_function()) {
+                        Value flags_val = this_obj->get_property("flags");
+                        std::vector<Value> species_args = { Value(this_obj), flags_val };
+                        Value splitter = species_val.as_function()->call(ctx, species_args, Value(ctor_obj));
+                        if (ctx.has_exception()) return Value();
+                        if (splitter.is_object() || splitter.is_function()) {
+                            this_obj = splitter.is_function() ? static_cast<Object*>(splitter.as_function()) : splitter.as_object();
+                        }
+                    }
+                }
+            }
+            // Get flags via get_property
             Value flags_val = this_obj->get_property("flags");
             (void)flags_val;
-            // Step 3: Get exec and use it (fires get("exec") on Proxy)
+            // Get exec and use it
             auto result = ObjectFactory::create_array();
             Value exec_fn = this_obj->get_property("exec");
             if (!exec_fn.is_function()) return Value(result.release());
