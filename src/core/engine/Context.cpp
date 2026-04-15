@@ -4294,7 +4294,15 @@ void Context::initialize_built_ins() {
             if (this_obj) {
                 this_obj->set_property("value", Value(str_value));
                 this_obj->set_property("[[PrimitiveValue]]", Value(str_value));
-                PropertyDescriptor length_desc(Value(static_cast<double>(str_value.length())),
+                size_t str_utf16_len = 0;
+                for (size_t i = 0; i < str_value.size(); ) {
+                    unsigned char c = (unsigned char)str_value[i];
+                    if (c >= 0xF0) { str_utf16_len += 2; i += 4; }
+                    else if (c >= 0xE0) { str_utf16_len += 1; i += 3; }
+                    else if (c >= 0xC0) { str_utf16_len += 1; i += 2; }
+                    else { str_utf16_len += 1; i += 1; }
+                }
+                PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),
                     static_cast<PropertyAttributes>(PropertyAttributes::None));
                 this_obj->set_property_descriptor("length", length_desc);
 
@@ -8633,7 +8641,7 @@ void Context::initialize_built_ins() {
     auto regexp_exec_proto_fn = ObjectFactory::create_native_function("exec",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
+            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
                 ctx.throw_type_error("RegExp.prototype.exec called on incompatible receiver");
                 return Value();
             }

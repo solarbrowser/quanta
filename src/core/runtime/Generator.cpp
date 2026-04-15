@@ -54,6 +54,10 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
         return GeneratorResult(value, true);
     }
 
+    if (state_ == State::SuspendedYield) {
+        return execute_until_yield_return(value);
+    }
+
     complete_generator(value);
     return GeneratorResult(value, true);
 }
@@ -134,6 +138,7 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
         set_current_generator(nullptr);
         throwing_ = false;
         complete_generator(result);
+        writeback_closures();
 
         return GeneratorResult(result, true);
 
@@ -146,6 +151,64 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
     } catch (const std::exception& e) {
         set_current_generator(nullptr);
         throwing_ = false;
+        complete_generator(Value());
+        generator_context_->throw_exception(Value(std::string(e.what())));
+        return GeneratorResult(Value(), true);
+    }
+}
+
+void Generator::writeback_closures() {
+    if (!generator_function_) return;
+    Context* cc = generator_function_->get_closure_context();
+    if (!cc) return;
+    auto pk = generator_function_->get_own_property_keys();
+    for (const auto& k : pk) {
+        if (k.length() <= 10 || k.substr(0, 10) != "__closure_") continue;
+        std::string vn = k.substr(10);
+        if (vn == "this" || vn == "arguments") continue;
+        if (!generator_context_->has_binding(vn)) continue;
+        Value nv = generator_context_->get_binding(vn);
+        Value ov = generator_function_->get_property(k);
+        if (!nv.strict_equals(ov) && !nv.is_function()) {
+            generator_function_->set_property(k, nv);
+            cc->set_binding(vn, nv);
+        }
+    }
+}
+
+Generator::GeneratorResult Generator::execute_until_yield_return(const Value& value) {
+    if (!body_) {
+        complete_generator(value);
+        return GeneratorResult(value, true);
+    }
+
+    try {
+        returning_ = true;
+        return_argument_ = value;
+
+        generator_context_->clear_exception();
+
+        set_current_generator(this);
+        reset_yield_counter();
+
+        body_->evaluate(*generator_context_);
+
+        set_current_generator(nullptr);
+        returning_ = false;
+        complete_generator(value);
+        writeback_closures();
+        return GeneratorResult(value, true);
+
+    } catch (const YieldException&) {
+        set_current_generator(nullptr);
+        returning_ = false;
+        complete_generator(value);
+        writeback_closures();
+        return GeneratorResult(value, true);
+
+    } catch (const std::exception& e) {
+        set_current_generator(nullptr);
+        returning_ = false;
         complete_generator(Value());
         generator_context_->throw_exception(Value(std::string(e.what())));
         return GeneratorResult(Value(), true);
