@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iostream>
 #include <map>
+#include <unordered_set>
 
 namespace Quanta {
 
@@ -578,6 +579,21 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 Position end = property->get_end();
                 constructor = std::make_unique<MemberExpression>(
                     std::move(constructor), std::move(property), false, ctor_start, end
+                );
+            } else if (match(TokenType::LEFT_BRACKET)) {
+                advance();
+                auto computed_prop = parse_assignment_expression();
+                if (!computed_prop) {
+                    add_error("Expected expression in computed member access");
+                    return nullptr;
+                }
+                if (!consume(TokenType::RIGHT_BRACKET)) {
+                    add_error("Expected ']' after computed member expression");
+                    return nullptr;
+                }
+                Position end = get_current_position();
+                constructor = std::make_unique<MemberExpression>(
+                    std::move(constructor), std::move(computed_prop), true, ctor_start, end
                 );
             }
         }
@@ -2354,6 +2370,38 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         }
     }
 
+
+    // ES6: Duplicate binding identifiers inside destructuring params always SyntaxError
+    {
+        std::unordered_set<std::string> seen_bindings;
+        for (const auto& param : params) {
+            if (param->has_destructuring()) {
+                ASTNode* pattern = param->get_destructuring_pattern();
+                if (pattern && pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    DestructuringAssignment* da = static_cast<DestructuringAssignment*>(pattern);
+                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
+                        for (const auto& target : da->get_targets()) {
+                            if (!target) continue;
+                            const std::string& name = target->get_name();
+                            if (name.empty() || name[0] == '_') continue;
+                            if (!seen_bindings.insert(name).second) {
+                                add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
+                                return nullptr;
+                            }
+                        }
+                    } else {
+                        for (const auto& pm : da->get_property_mappings()) {
+                            if (pm.variable_name.empty() || pm.variable_name[0] == '_') continue;
+                            if (!seen_bindings.insert(pm.variable_name).second) {
+                                add_error("Duplicate binding identifier '" + pm.variable_name + "' in destructuring parameter");
+                                return nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if (has_non_simple_params && body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
@@ -2369,10 +2417,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             }
         }
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<FunctionDeclaration>(
-        std::move(id), std::move(params), 
+        std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, false, is_generator
     );
@@ -3013,6 +3061,38 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         }
     }
 
+
+    // ES6: Duplicate binding identifiers inside destructuring params always SyntaxError
+    {
+        std::unordered_set<std::string> seen_bindings;
+        for (const auto& param : params) {
+            if (param->has_destructuring()) {
+                ASTNode* pattern = param->get_destructuring_pattern();
+                if (pattern && pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    DestructuringAssignment* da = static_cast<DestructuringAssignment*>(pattern);
+                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
+                        for (const auto& target : da->get_targets()) {
+                            if (!target) continue;
+                            const std::string& name = target->get_name();
+                            if (name.empty() || name[0] == '_') continue;
+                            if (!seen_bindings.insert(name).second) {
+                                add_error("Duplicate binding identifier '" + name + "' in destructuring parameter");
+                                return nullptr;
+                            }
+                        }
+                    } else {
+                        for (const auto& pm : da->get_property_mappings()) {
+                            if (pm.variable_name.empty() || pm.variable_name[0] == '_') continue;
+                            if (!seen_bindings.insert(pm.variable_name).second) {
+                                add_error("Duplicate binding identifier '" + pm.variable_name + "' in destructuring parameter");
+                                return nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if (has_non_simple_params && body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
@@ -3028,7 +3108,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             }
         }
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<FunctionExpression>(
         std::move(id), std::move(params),

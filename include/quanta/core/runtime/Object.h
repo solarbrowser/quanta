@@ -411,6 +411,7 @@ public:
     bool is_constructor() const { return is_constructor_; }
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
+    class Context* get_closure_context() const { return closure_context_; }
     void set_is_arrow(bool value) { is_arrow_ = value; }
     bool is_class_constructor() const { return is_class_constructor_; }
     void set_is_class_constructor(bool value) { is_class_constructor_ = value; }

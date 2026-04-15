@@ -5943,6 +5943,9 @@ void Context::initialize_built_ins() {
             Value this_val = ctx.get_binding("this");
             std::string str = this_val.to_string();
             auto iterator = ObjectFactory::create_object();
+            if (Iterator::s_string_iterator_prototype_) {
+                iterator->set_prototype(Iterator::s_string_iterator_prototype_);
+            }
             auto index = std::make_shared<size_t>(0);
             auto str_copy = std::make_shared<std::string>(str);
             auto next_fn = ObjectFactory::create_native_function("next",
@@ -6383,6 +6386,30 @@ void Context::initialize_built_ins() {
         symbol_constructor->set_property("unscopables", Value(unscopables_sym));
     }
     
+    {
+        auto sym_proto = ObjectFactory::create_object();
+        sym_proto->set_property("constructor", Value(symbol_constructor.get()));
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            PropertyDescriptor tag_desc(Value(std::string("Symbol")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            sym_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+        }
+        auto desc_getter = ObjectFactory::create_native_function("get description",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Object* self = ctx.get_this_binding();
+                if (!self) return Value();
+                Value prim = ctx.get_binding("__primitive_this__");
+                if (prim.is_symbol()) return prim.as_symbol()->get_description().empty() ? Value() : Value(prim.as_symbol()->get_description());
+                return Value();
+            });
+        PropertyDescriptor desc_prop;
+        desc_prop.set_getter(desc_getter.release());
+        desc_prop.set_enumerable(false);
+        desc_prop.set_configurable(true);
+        sym_proto->set_property_descriptor("description", desc_prop);
+        symbol_constructor->set_property("prototype", Value(sym_proto.release()));
+    }
+
     register_built_in_object("Symbol", symbol_constructor.release());
     
     Proxy::setup_proxy(*this);
@@ -10166,6 +10193,14 @@ void Context::initialize_built_ins() {
     ab_transferToFixedLength_fn->set_property("name", Value(std::string("transferToFixedLength")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     arraybuffer_prototype->set_property("transferToFixedLength", Value(ab_transferToFixedLength_fn.release()), PropertyAttributes::BuiltinFunction);
 
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            PropertyDescriptor tag_desc(Value(std::string("ArrayBuffer")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            arraybuffer_prototype->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+        }
+    }
+
     arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
 
     {
@@ -11678,6 +11713,41 @@ void Context::register_typed_array_constructors() {
 
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_uint8_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
 
             ctx.throw_type_error("Uint8Array constructor argument not supported");
@@ -11734,6 +11804,41 @@ void Context::register_typed_array_constructors() {
 
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_uint8_clamped_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
 
             ctx.throw_type_error("Uint8ClampedArray constructor argument not supported");
@@ -11780,6 +11885,41 @@ void Context::register_typed_array_constructors() {
                     }
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_float32_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
 
             ctx.throw_type_error("Float32Array constructor argument not supported");
@@ -11808,8 +11948,23 @@ void Context::register_typed_array_constructors() {
         PropertyAttributes::BuiltinFunction);
     typedarray_prototype->set_property_descriptor("constructor", typedarray_constructor_desc);
 
-    PropertyDescriptor typedarray_tag_desc(Value(std::string("TypedArray")), PropertyAttributes::Configurable);
-    typedarray_prototype->set_property_descriptor("Symbol.toStringTag", typedarray_tag_desc);
+    {
+        Symbol* ta_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (ta_tag_sym) {
+            auto ta_tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self || !self->is_typed_array()) return Value();
+                    TypedArrayBase* ta = static_cast<TypedArrayBase*>(self);
+                    return Value(std::string(TypedArrayBase::array_type_to_string(ta->get_array_type())));
+                });
+            PropertyDescriptor ta_tag_desc;
+            ta_tag_desc.set_getter(ta_tag_getter.release());
+            ta_tag_desc.set_enumerable(false);
+            ta_tag_desc.set_configurable(true);
+            typedarray_prototype->set_property_descriptor(ta_tag_sym->to_property_key(), ta_tag_desc);
+        }
+    }
 
 
     auto buffer_getter = ObjectFactory::create_native_function("get buffer",
@@ -12511,6 +12666,41 @@ void Context::register_typed_array_constructors() {
                     }
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_int8_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
             ctx.throw_type_error("Int8Array constructor argument not supported");
             return Value();
@@ -12542,6 +12732,41 @@ void Context::register_typed_array_constructors() {
                         typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
                     }
                     return Value(typed_array.release());
+                }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_uint16_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
                 }
             }
             ctx.throw_type_error("Uint16Array constructor argument not supported");
@@ -12575,6 +12800,41 @@ void Context::register_typed_array_constructors() {
                     }
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_int16_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
             ctx.throw_type_error("Int16Array constructor argument not supported");
             return Value();
@@ -12607,6 +12867,41 @@ void Context::register_typed_array_constructors() {
                     }
                     return Value(typed_array.release());
                 }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_uint32_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
             ctx.throw_type_error("Uint32Array constructor argument not supported");
             return Value();
@@ -12638,6 +12933,41 @@ void Context::register_typed_array_constructors() {
                         typed_array->set_element(i, obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->get_element(i) : obj->get_element(i));
                     }
                     return Value(typed_array.release());
+                }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_int32_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
                 }
             }
             ctx.throw_type_error("Int32Array constructor argument not supported");
@@ -12684,6 +13014,41 @@ void Context::register_typed_array_constructors() {
                         typed_array->set_element(i, source->get_element(i));
                     }
                     return Value(typed_array.release());
+                }
+
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = TypedArrayFactory::create_float64_array(items.size());
+                            for (size_t i = 0; i < items.size(); i++) ta->set_element(i, items[i]);
+                            return Value(ta.release());
+                        }
+                    }
                 }
             }
 
