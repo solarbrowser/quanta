@@ -140,27 +140,45 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     s_iterator_prototype_ = iter_proto.get();
     ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
 
-    // %ArrayIteratorPrototype% - inherits from %IteratorPrototype%, no own [Symbol.iterator]
+    Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+
+    // %ArrayIteratorPrototype%
     auto arr_iter_proto = ObjectFactory::create_object();
     arr_iter_proto->set_prototype(s_iterator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor tag_desc(Value(std::string("Array Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        arr_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+    }
     s_array_iterator_prototype_ = arr_iter_proto.get();
     ctx.create_binding("@@ArrayIteratorPrototype", Value(arr_iter_proto.release()));
 
     // %StringIteratorPrototype%
     auto str_iter_proto = ObjectFactory::create_object();
     str_iter_proto->set_prototype(s_iterator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor tag_desc(Value(std::string("String Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        str_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+    }
     s_string_iterator_prototype_ = str_iter_proto.get();
     ctx.create_binding("@@StringIteratorPrototype", Value(str_iter_proto.release()));
 
     // %MapIteratorPrototype%
     auto map_iter_proto = ObjectFactory::create_object();
     map_iter_proto->set_prototype(s_iterator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor tag_desc(Value(std::string("Map Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        map_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+    }
     s_map_iterator_prototype_ = map_iter_proto.get();
     ctx.create_binding("@@MapIteratorPrototype", Value(map_iter_proto.release()));
 
     // %SetIteratorPrototype%
     auto set_iter_proto = ObjectFactory::create_object();
     set_iter_proto->set_prototype(s_iterator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor tag_desc(Value(std::string("Set Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        set_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+    }
     s_set_iterator_prototype_ = set_iter_proto.get();
     ctx.create_binding("@@SetIteratorPrototype", Value(set_iter_proto.release()));
 }

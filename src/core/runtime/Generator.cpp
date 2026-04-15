@@ -18,6 +18,7 @@ namespace Quanta {
 thread_local Generator* Generator::current_generator_ = nullptr;
 thread_local size_t Generator::current_yield_counter_ = 0;
 Object* Generator::s_generator_prototype_ = nullptr;
+Object* Generator::s_generator_function_prototype_ = nullptr;
 
 Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
@@ -256,8 +257,24 @@ void Generator::setup_generator_prototype(Context& ctx) {
 
     // Note: [Symbol.iterator] is NOT on %GeneratorPrototype% - it's on %IteratorPrototype%
 
+    Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (tag_sym) {
+        PropertyDescriptor gen_tag(Value(std::string("Generator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        gen_prototype->set_property_descriptor(tag_sym->to_property_key(), gen_tag);
+    }
+
     s_generator_prototype_ = gen_prototype.get();
     ctx.create_binding("@@GeneratorPrototype", Value(gen_prototype.release()));
+
+    // %GeneratorFunction.prototype% — [[Prototype]] of all generator functions
+    auto gen_fn_proto = ObjectFactory::create_object();
+    gen_fn_proto->set_prototype(s_generator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor gf_tag(Value(std::string("GeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), gf_tag);
+    }
+    s_generator_function_prototype_ = gen_fn_proto.get();
+    ctx.create_binding("@@GeneratorFunctionPrototype", Value(gen_fn_proto.release()));
 
     // GeneratorFunction constructor - parses body string to create a real generator function
     auto generator_function_constructor = ObjectFactory::create_native_constructor("GeneratorFunction",
@@ -351,9 +368,10 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
         fn_proto->set_property("constructor", Value(static_cast<Function*>(this)));
         this->set_property("prototype", Value(fn_proto.release()));
 
-        // Set this GeneratorFunction's own __proto__ to %GeneratorPrototype%
-        // so that g.constructor walks: g -> %GeneratorPrototype% -> finds constructor = GeneratorFunction
-        this->set_prototype(Generator::s_generator_prototype_);
+        // Set this GeneratorFunction's __proto__ to %GeneratorFunction.prototype%
+        if (Generator::s_generator_function_prototype_) {
+            this->set_prototype(Generator::s_generator_function_prototype_);
+        }
     }
 }
 
