@@ -76,8 +76,10 @@ public:
     size_t target_yield_index_;
     Value last_value_;
     std::vector<Value> sent_values_; // History of values sent to each yield index
-    bool throwing_ = false;         // True when throw() was called on this generator
-    Value throw_value_;             // The value being thrown
+    bool throwing_ = false;
+    Value throw_value_;
+    bool returning_ = false;
+    Value return_argument_;
 
     Context* get_context() const { return generator_context_; }
 
@@ -104,7 +106,9 @@ public:
 private:
     GeneratorResult execute_until_yield(const Value& sent_value);
     GeneratorResult execute_until_yield_throw(const Value& exception);
+    GeneratorResult execute_until_yield_return(const Value& value);
     void complete_generator(const Value& value);
+    void writeback_closures();
 };
 
 /**

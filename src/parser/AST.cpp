@@ -43,6 +43,18 @@
 
 namespace Quanta {
 
+static size_t utf16_length(const std::string& str) {
+    size_t count = 0;
+    for (size_t i = 0; i < str.size(); ) {
+        unsigned char c = (unsigned char)str[i];
+        if (c >= 0xF0) { count += 2; i += 4; }
+        else if (c >= 0xE0) { count += 1; i += 3; }
+        else if (c >= 0xC0) { count += 1; i += 2; }
+        else { count += 1; i += 1; }
+    }
+    return count;
+}
+
 static std::unordered_map<std::string, Value> g_object_function_map;
 
 static std::unordered_map<const Context*, std::string> g_this_variable_map;
@@ -5250,7 +5262,7 @@ Value MemberExpression::evaluate(Context& ctx) {
 
             if (object_value.is_string() && prop_name == "length") {
                 std::string str_value = object_value.to_string();
-                return Value(static_cast<double>(str_value.length()));
+                return Value(static_cast<double>(utf16_length(str_value)));
             }
 
             std::string ctor_name = object_value.is_string() ? "String" :
@@ -5652,9 +5664,9 @@ Value MemberExpression::evaluate(Context& ctx) {
         }
         
         if (!computed_ && prop_name == "length") {
-            return Value(static_cast<double>(str_value.length()));
+            return Value(static_cast<double>(utf16_length(str_value)));
         }
-        
+
         if (!computed_ && prop_name == "charAt") {
             auto char_at_fn = ObjectFactory::create_native_function("charAt",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6209,9 +6221,9 @@ Value MemberExpression::evaluate(Context& ctx) {
             std::string prop_name = prop->get_name();
             
             if (prop_name == "length") {
-                return Value(static_cast<double>(str_value.length()));
+                return Value(static_cast<double>(utf16_length(str_value)));
             }
-            
+
             if (prop_name == "charAt") {
                 auto char_at_fn = ObjectFactory::create_native_function("charAt",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -7451,7 +7463,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
         std::unique_ptr<Object> boxed_string = nullptr;
         if (iterable.is_string()) {
             boxed_string = std::make_unique<Object>();
-            boxed_string->set_property("length", Value(static_cast<double>(iterable.to_string().length())));
+            boxed_string->set_property("length", Value(static_cast<double>(utf16_length(iterable.to_string()))));
             
             Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
             if (iterator_symbol) {
@@ -9038,7 +9050,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                     }
                     // done=true: throw handled internally, delegate exhausted
                 } else {
-                    // No throw method: throw the exception into context
+                    // No throw method: call return() to close the iterator, then throw
+                    Value return_fn_v = iter_obj->get_property("return");
+                    if (return_fn_v.is_function()) {
+                        std::vector<Value> ret_args;
+                        return_fn_v.as_function()->call(ctx, ret_args, iter_val);
+                        ctx.clear_exception();
+                    }
                     Generator::set_current_generator(saved_gen);
                     ctx.throw_exception(current_gen->throw_value_, true);
                     return false;
@@ -9071,17 +9089,68 @@ Value YieldExpression::evaluate(Context& ctx) {
                 }
             }
             current_gen->throwing_ = false;
-            // Delegate exhausted (throw handled or iterator was done): let outer body continue
-            // Outer yield 'bar' (at higher counter) will be > target and trigger normally
             (void)handled;
             return Value();
         }
 
+        if (current_gen->returning_) {
+            // gen.return() was called: close the inner iterator, then continue (so finally blocks run)
+            if (iterable.is_object() || iterable.is_function()) {
+                Object* obj = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                Value iter_val;
+
+                Generator* saved_gen = Generator::get_current_generator();
+                Generator::set_current_generator(nullptr);
+
+                if (iter_sym) {
+                    Value sym_iter_fn = obj->get_property(iter_sym->to_property_key());
+                    if (sym_iter_fn.is_function()) {
+                        std::vector<Value> no_args;
+                        iter_val = sym_iter_fn.as_function()->call(ctx, no_args, iterable);
+                    }
+                }
+                if (iter_val.is_undefined()) iter_val = iterable;
+
+                Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
+                                 : iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : nullptr;
+
+                if (iter_obj && !ctx.has_exception()) {
+                    Value next_fn_v = iter_obj->get_property("next");
+                    for (size_t i = 0; i < needed_idx && next_fn_v.is_function(); i++) {
+                        std::vector<Value> no_args;
+                        Value nr = next_fn_v.as_function()->call(ctx, no_args, iter_val);
+                        if (ctx.has_exception()) break;
+                        if (nr.is_object() && nr.as_object()->get_property("done").to_boolean()) break;
+                    }
+                    if (!ctx.has_exception()) {
+                        Value return_fn_v = iter_obj->get_property("return");
+                        if (return_fn_v.is_function()) {
+                            std::vector<Value> ret_args = {current_gen->return_argument_};
+                            return_fn_v.as_function()->call(ctx, ret_args, iter_val);
+                            ctx.clear_exception();
+                        }
+                    }
+                }
+                Generator::set_current_generator(saved_gen);
+            }
+            return Value();
+        }
+
         if (iterable.is_string()) {
-            // String: iterate by character (each code unit)
+            // String: iterate by Unicode code point (UTF-8 aware)
             std::string str = iterable.to_string();
-            for (size_t i = 0; i <= needed_idx && i < str.size(); i++) {
-                elements.push_back(Value(std::string(1, str[i])));
+            size_t byte_idx = 0;
+            size_t char_idx = 0;
+            while (byte_idx < str.size() && char_idx <= needed_idx) {
+                unsigned char c = (unsigned char)str[byte_idx];
+                size_t char_len = 1;
+                if (c >= 0xF0) char_len = 4;
+                else if (c >= 0xE0) char_len = 3;
+                else if (c >= 0xC0) char_len = 2;
+                elements.push_back(Value(str.substr(byte_idx, char_len)));
+                byte_idx += char_len;
+                char_idx++;
             }
             if (elements.size() < needed_idx + 1) delegate_exhausted = true;
         } else if (iterable.is_object() || iterable.is_function()) {
@@ -9147,6 +9216,10 @@ Value YieldExpression::evaluate(Context& ctx) {
             return current_gen->sent_values_[yield_index];
         }
         return current_gen->last_value_;
+    }
+
+    if (current_gen->returning_) {
+        return Value();
     }
 
     if (current_gen->throwing_) {
