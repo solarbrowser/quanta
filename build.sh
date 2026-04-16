@@ -42,15 +42,16 @@ fail() {
 
 setup_pcre2() {
     local pcre2_src="third_party/pcre2/src"
+    local pcre2_configs="third_party/pcre2_configs"
 
     if [[ ! -f "$pcre2_src/pcre2.h.generic" ]]; then
         print_info "Initializing PCRE2 submodule..."
-        git submodule update --init third_party/pcre2 || fail "Failed to initialize PCRE2 submodule"
+        git submodule update --init --recursive third_party/pcre2 || fail "Failed to initialize PCRE2 submodule"
     fi
 
     if [[ ! -f "$pcre2_src/config.h" ]]; then
-        cp "$pcre2_src/config.h.generic" "$pcre2_src/config.h"
-        print_success "Generated config.h"
+        cp "$pcre2_configs/config.h" "$pcre2_src/config.h"
+        print_success "Installed config.h from pcre2_configs"
     fi
 
     if [[ ! -f "$pcre2_src/pcre2.h" ]]; then
