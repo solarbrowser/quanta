@@ -116,9 +116,13 @@ bool Object::has_own_property(const std::string& key) const {
 
 
 Value Object::get_property(const std::string& key) const {
+    if (this->get_type() == ObjectType::Proxy) {
+        return const_cast<Proxy*>(static_cast<const Proxy*>(this))->get_trap(Value(key));
+    }
+
     if (this->get_type() == ObjectType::Function) {
         const Function* func = static_cast<const Function*>(this);
-        
+
         if (key == "name") {
             return Value(func->get_name());
         }
@@ -129,10 +133,7 @@ Value Object::get_property(const std::string& key) const {
             }
             return Value(static_cast<double>(func->get_arity()));
         }
-        if (key == "prototype") {
-            return Value(func->get_prototype());
-        }
-        
+
         // call, apply, bind are now handled via Function.prototype
         // No need for special handling here anymore
 
@@ -441,12 +442,24 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
                 if (deleted_shape_properties_) deleted_shape_properties_->erase(key);
+                if (descriptors_) {
+                    auto dit = descriptors_->find(key);
+                    if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
+                        dit->second.set_value(value);
+                    }
+                }
                 return true;
             }
         }
 
         if (overflow_properties_) {
             (*overflow_properties_)[key] = value;
+            if (descriptors_) {
+                auto dit = descriptors_->find(key);
+                if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
+                    dit->second.set_value(value);
+                }
+            }
             return true;
         }
     }
@@ -744,8 +757,22 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             }
             elements_[index] = desc.get_value();
         } else {
-            // Use set_property for proper array length handling etc.
-            set_property(key, desc.get_value(), desc.get_attributes());
+            // Directly update shape/overflow to bypass writable check on existing props
+            bool updated = false;
+            if (header_.shape && header_.shape->has_property(key)) {
+                auto info = header_.shape->get_property_info(key);
+                if (info.offset < properties_.size()) {
+                    properties_[info.offset] = desc.get_value();
+                    updated = true;
+                }
+            }
+            if (!updated && overflow_properties_ && overflow_properties_->count(key)) {
+                (*overflow_properties_)[key] = desc.get_value();
+                updated = true;
+            }
+            if (!updated) {
+                set_property(key, desc.get_value(), desc.get_attributes());
+            }
         }
     } else if (desc.is_accessor_descriptor() || desc.is_generic_descriptor()) {
         // Ensure the property exists in shape so has_own_property works
