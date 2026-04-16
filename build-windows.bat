@@ -43,17 +43,17 @@ REM Initialize PCRE2 submodule if needed
 echo [INFO] Checking PCRE2 submodule...
 if not exist "third_party\pcre2\src\pcre2.h.generic" (
     echo   [INFO] Initializing PCRE2 submodule...
-    git submodule update --init third_party/pcre2
+    git submodule update --init --recursive third_party/pcre2
     if !ERRORLEVEL! NEQ 0 (
         echo [ERROR] Failed to initialize PCRE2 submodule
-        echo Please run: git submodule update --init
+        echo Please run: git submodule update --init --recursive
         pause
         exit /b 1
     )
 )
 if not exist "third_party\pcre2\src\config.h" (
-    copy "third_party\pcre2\src\config.h.generic" "third_party\pcre2\src\config.h" >nul
-    echo   [OK] Generated config.h
+    copy "third_party\pcre2_configs\config.h" "third_party\pcre2\src\config.h" >nul
+    echo   [OK] Installed config.h from pcre2_configs
 )
 if not exist "third_party\pcre2\src\pcre2.h" (
     copy "third_party\pcre2\src\pcre2.h.generic" "third_party\pcre2\src\pcre2.h" >nul
