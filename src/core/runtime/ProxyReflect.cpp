@@ -487,19 +487,14 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     Context* ctx = Object::current_context_;
     if (!ctx) return Value();
 
-    // Per spec: GetPrototypeFromConstructor fires get("prototype") on the proxy (new target)
-    Value proto_val = get_trap(Value(std::string("prototype")));
-    if (ctx->has_exception()) return Value();
-
-    // Create new object with proxy's prototype
+    // GetPrototypeFromConstructor: the Function constructor body will call new_target->get_property("prototype")
+    // which fires the Proxy get trap once (via Object::get_property dispatch). Don't call get_trap here.
     auto new_object = ObjectFactory::create_object();
-    if (proto_val.is_object()) {
-        new_object->set_prototype(proto_val.as_object());
-    } else {
-        Value target_proto = target_fn->get_property("prototype");
-        if (target_proto.is_object()) {
-            new_object->set_prototype(target_proto.as_object());
-        }
+    Value target_proto = target_fn->get_property("prototype");
+    if (target_proto.is_object()) {
+        new_object->set_prototype(target_proto.as_object());
+    } else if (target_proto.is_function()) {
+        new_object->set_prototype(target_proto.as_object());
     }
 
     Value this_value(new_object.get());

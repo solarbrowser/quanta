@@ -4280,7 +4280,12 @@ void Context::initialize_built_ins() {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     function_proto_ptr->set_property_descriptor("constructor", function_proto_ctor_desc);
 
-    function_constructor->set_property("prototype", Value(function_prototype.release()), PropertyAttributes::None);
+    {
+        Object* fp = function_prototype.release();
+        Value fp_val = fp->is_function() ? Value(static_cast<Function*>(fp)) : Value(fp);
+        PropertyDescriptor fp_desc(fp_val, PropertyAttributes::None);
+        function_constructor->set_property_descriptor("prototype", fp_desc);
+    }
 
     static_cast<Object*>(function_constructor.get())->set_prototype(function_proto_ptr);
 
