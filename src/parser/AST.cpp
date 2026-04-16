@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
+#include <climits>
 #include <set>
 #include <map>
 #include <cstdio>

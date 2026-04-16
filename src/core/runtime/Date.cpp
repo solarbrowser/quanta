@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/Date.h"
+#include <climits>
 #include <iostream>
 
 namespace Quanta {
