@@ -8,7 +8,6 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
-#include <climits>
 #include <set>
 #include <map>
 #include <cstdio>
@@ -1510,7 +1509,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return Value();
         }
         
-        std::string str_value = object_value.to_string();
+        std::string str_value = object_value.is_string() ? object_value.to_string() : "";
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
             Value index_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();

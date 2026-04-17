@@ -8825,9 +8825,6 @@ void Context::initialize_built_ins() {
                     }
                 }
             }
-            // Get flags via get_property
-            Value flags_val = this_obj->get_property("flags");
-            (void)flags_val;
             // Get exec and use it
             auto result = ObjectFactory::create_array();
             Value exec_fn = this_obj->get_property("exec");
@@ -8912,8 +8909,29 @@ void Context::initialize_built_ins() {
             
             auto resolve_fn = ObjectFactory::create_native_function("resolve",
                 [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx;
                     Value value = args.empty() ? Value() : args[0];
+                    // Promise Resolution Procedure: check for thenable
+                    if (value.is_object() || value.is_function()) {
+                        Object* obj = value.as_object();
+                        Value then_val = obj->get_property("then");
+                        if (ctx.has_exception()) return Value();
+                        if (then_val.is_function()) {
+                            Function* then_fn = then_val.as_function();
+                            auto res_fn = ObjectFactory::create_native_function("resolve",
+                                [promise_ptr](Context&, const std::vector<Value>& a) -> Value {
+                                    promise_ptr->fulfill(a.empty() ? Value() : a[0]);
+                                    return Value();
+                                });
+                            auto rej_fn = ObjectFactory::create_native_function("reject",
+                                [promise_ptr](Context&, const std::vector<Value>& a) -> Value {
+                                    promise_ptr->reject(a.empty() ? Value() : a[0]);
+                                    return Value();
+                                });
+                            std::vector<Value> then_args = { Value(res_fn.release()), Value(rej_fn.release()) };
+                            then_fn->call(ctx, then_args, value);
+                            return Value();
+                        }
+                    }
                     promise_ptr->fulfill(value);
                     return Value();
                 });
@@ -11459,7 +11477,7 @@ Value Environment::get_binding_with_depth(const std::string& name, int depth) co
     if (depth > 100) {
         return Value();
     }
-    
+
     if (has_own_binding(name)) {
         if (type_ == Type::Object && binding_object_) {
             return binding_object_->get_property(name);
@@ -11587,13 +11605,18 @@ std::string Environment::debug_string() const {
 bool Environment::has_own_binding(const std::string& name) const {
     if (type_ == Type::Object && binding_object_) {
         if (!binding_object_->has_own_property(name)) return false;
-        // ES6: Check Symbol.unscopables
+        // ES6: Check Symbol.unscopables (guard against re-entrancy from Proxy get trap)
         Symbol* unscopables_sym = Symbol::get_well_known(Symbol::UNSCOPABLES);
         if (unscopables_sym) {
-            Value unscopables = binding_object_->get_property(unscopables_sym->to_property_key());
-            if (unscopables.is_object()) {
-                Value blocked = unscopables.as_object()->get_property(name);
-                if (blocked.to_boolean()) return false;
+            static thread_local int unscopables_depth = 0;
+            if (unscopables_depth == 0) {
+                unscopables_depth++;
+                Value unscopables = binding_object_->get_property(unscopables_sym->to_property_key());
+                unscopables_depth--;
+                if (unscopables.is_object()) {
+                    Value blocked = unscopables.as_object()->get_property(name);
+                    if (blocked.to_boolean()) return false;
+                }
             }
         }
         return true;

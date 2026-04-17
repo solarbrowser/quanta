@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
 #include <algorithm>
 #include <sstream>
@@ -27,6 +28,14 @@ uint32_t Shape::next_shape_id_ = 1;
 
 
 static Shape* g_root_shape = nullptr;
+
+static Value make_prop_key_value(const std::string& key) {
+    if (key.find("Symbol.") == 0) {
+        Symbol* sym = Symbol::get_well_known(key);
+        if (sym) return Value(sym);
+    }
+    return Value(key);
+}
 
 
 Object::Object(ObjectType type) {
@@ -85,6 +94,10 @@ bool Object::has_property(const std::string& key) const {
 }
 
 bool Object::has_own_property(const std::string& key) const {
+    if (this->get_type() == ObjectType::Proxy) {
+        return const_cast<Proxy*>(static_cast<const Proxy*>(this))->has_trap(make_prop_key_value(key));
+    }
+
     if (descriptors_) {
         auto it = descriptors_->find(key);
         if (it != descriptors_->end()) {
@@ -117,7 +130,7 @@ bool Object::has_own_property(const std::string& key) const {
 
 Value Object::get_property(const std::string& key) const {
     if (this->get_type() == ObjectType::Proxy) {
-        return const_cast<Proxy*>(static_cast<const Proxy*>(this))->get_trap(Value(key));
+        return const_cast<Proxy*>(static_cast<const Proxy*>(this))->get_trap(make_prop_key_value(key));
     }
 
     if (this->get_type() == ObjectType::Function) {
@@ -1486,6 +1499,10 @@ std::string Object::to_string() const {
             }
         }
         return oss.str();
+    }
+
+    if (header_.type == ObjectType::Proxy) {
+        return "[object Object]";
     }
 
     // Check for custom toString property in constructor
