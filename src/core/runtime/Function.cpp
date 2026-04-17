@@ -316,7 +316,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             Value closure_value = this->get_property(key);
             if (var_name != "arguments" && var_name != "this") {
                 if (parent_var_names.count(var_name)) {
-                    Value parent_val = parent_context->get_binding(var_name);
+                    Value parent_val = parent_var_env->get_binding(var_name);
                     if (!parent_val.is_undefined() && !parent_val.is_function()) {
                         closure_value = parent_val;
                     }
@@ -326,7 +326,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
 
-    
+
     if (!parameter_objects_.empty()) {
         size_t regular_param_count = 0;
 
@@ -611,7 +611,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     this->set_property(key, current_value);
 
                     if (parent_var_names.count(var_name) && !current_value.strict_equals(old_value)) {
-                        parent_context->set_binding(var_name, current_value);
+                        parent_var_env->set_binding(var_name, current_value);
                     }
 
                     if (!current_value.strict_equals(old_value)) {
@@ -626,7 +626,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (var_env) {
                 auto sibling_names = var_env->get_binding_names();
                 for (const auto& sname : sibling_names) {
-                    Value sval = parent_context->get_binding(sname);
+                    Value sval = parent_var_env->get_binding(sname);
                     if (sval.is_function() && sval.as_function() != this) {
                         Function* sibling = sval.as_function();
                         for (auto& [vname, vval] : modified_closures) {

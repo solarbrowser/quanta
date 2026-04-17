@@ -166,7 +166,16 @@ bool Proxy::has_trap(const Value& key) {
         return result;
     }
 
-    return target_->has_property(key.to_string());
+    // Use has_own_property to avoid Object.prototype methods leaking into with scopes
+    // and causing infinite recursion via get trap re-entrancy.
+    std::string key_str = to_prop_key(key);
+    if (target_->has_own_property(key_str)) return true;
+    Object* proto = target_->get_prototype();
+    while (proto) {
+        if (proto->has_own_property(key_str)) return true;
+        proto = proto->get_prototype();
+    }
+    return false;
 }
 
 bool Proxy::delete_trap(const Value& key) {
