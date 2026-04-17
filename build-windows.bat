@@ -75,15 +75,17 @@ if not exist "build\obj\core\runtime" mkdir build\obj\core\runtime
 if not exist "build\obj\lexer" mkdir build\obj\lexer
 if not exist "build\obj\parser" mkdir build\obj\parser
 if not exist "build\obj\pcre2" mkdir build\obj\pcre2
+if not exist "build\obj\utf8proc" mkdir build\obj\utf8proc
 if not exist "build\bin" mkdir build\bin
 echo   [OK] Directories ready
 echo.
 
 REM Compiler flags
-set "CXXFLAGS=-std=c++17 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.1.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
-set "INCLUDES=-Iinclude -Ithird_party/pcre2/src"
+set "CXXFLAGS=-std=c++17 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.1.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"
+set "UTF8PROC_FLAGS=-O3 -DUTF8PROC_STATIC -Ithird_party/utf8proc -march=native -fomit-frame-pointer"
 set "STACK=-Xlinker /STACK:67108864"
 
 echo [%time%] Compiler flags: %CXXFLAGS% >> "%LOG_FILE%"
@@ -110,6 +112,18 @@ for %%f in (third_party\pcre2\src\pcre2_auto_possess.c third_party\pcre2\src\pcr
     )
 )
 echo   [OK] PCRE2 + JIT compiled
+echo.
+
+REM Compile utf8proc (C library for Unicode normalization)
+echo [0/4] Compiling utf8proc...
+echo [%time%] === UTF8PROC === >> "%LOG_FILE%"
+clang %UTF8PROC_FLAGS% -c third_party\utf8proc\utf8proc.c -o build\obj\utf8proc\utf8proc.o 2>> "%ERROR_LOG%"
+if !ERRORLEVEL! NEQ 0 (
+    echo   [FAILED] utf8proc.c
+    echo [%time%] ERROR compiling utf8proc.c >> "%LOG_FILE%"
+    goto :build_failed
+)
+echo   [OK] utf8proc compiled
 echo.
 
 REM Count total files
@@ -219,7 +233,7 @@ echo.
 echo [LINK] Creating executable with ThinLTO...
 echo [%time%] === LINKING === >> "%LOG_FILE%"
 
-clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o build\obj\pcre2\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
+clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o build\obj\pcre2\*.o build\obj\utf8proc\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Linking failed!
