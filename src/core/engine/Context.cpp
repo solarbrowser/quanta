@@ -4199,9 +4199,14 @@ void Context::initialize_built_ins() {
                 bound_args.push_back(args[i]);
             }
 
-            // Spec: bind calls Get(Target, "length") → fires get trap on Proxy
+            // Spec: HasOwnProperty(Target,"length") fires getOwnPropertyDescriptor trap,
+            // then Get(Target,"length") fires get trap on Proxy
             double target_length = 0.0;
             {
+                if (function_obj->get_type() == Object::ObjectType::Proxy) {
+                    Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
+                    proxy_obj->get_own_property_descriptor_trap(Value(std::string("length")));
+                }
                 Value target_length_val = function_obj->get_property("length");
                 target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
             }
