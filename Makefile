@@ -19,7 +19,7 @@ C_CYAN = \033[96m
 CXX = clang++
 CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.1.0"
-CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD
+CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC
 
 # Clang-specific optimizations
 CXXFLAGS += -funroll-loops -finline-functions
@@ -39,6 +39,11 @@ DEBUG_FLAGS = -g -DDEBUG -O0
 
 PCRE2_DIR = third_party/pcre2/src
 PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
+
+UTF8PROC_DIR = third_party/utf8proc
+UTF8PROC_CFLAGS = -O3 -DUTF8PROC_STATIC -I$(UTF8PROC_DIR) -march=native -fomit-frame-pointer
+UTF8PROC_SRCS = $(UTF8PROC_DIR)/utf8proc.c
+UTF8PROC_OBJS = $(OBJ_DIR)/utf8proc/utf8proc.o
 PCRE2_SRCS = \
     $(PCRE2_DIR)/pcre2_auto_possess.c \
     $(PCRE2_DIR)/pcre2_chartables.c \
@@ -73,7 +78,7 @@ PCRE2_SRCS = \
     $(PCRE2_DIR)/pcre2_xclass.c
 PCRE2_OBJS = $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=$(OBJ_DIR)/pcre2/%.o)
 
-INCLUDES = -Iinclude -I$(PCRE2_DIR)
+INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR)
 
 # Platform detection
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
@@ -127,7 +132,7 @@ CORE_OBJECTS = $(CORE_SOURCES:$(CORE_SRC)/%.cpp=$(OBJ_DIR)/core/%.o)
 LEXER_OBJECTS = $(LEXER_SOURCES:$(LEXER_SRC)/%.cpp=$(OBJ_DIR)/lexer/%.o)
 PARSER_OBJECTS = $(PARSER_SOURCES:$(PARSER_SRC)/%.cpp=$(OBJ_DIR)/parser/%.o)
 
-ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS)
+ALL_OBJECTS = $(CORE_OBJECTS) $(LEXER_OBJECTS) $(PARSER_OBJECTS) $(PCRE2_OBJS) $(UTF8PROC_OBJS)
 
 # Static library
 LIBQUANTA = $(BUILD_DIR)/libquanta.a
@@ -216,6 +221,10 @@ $(OBJ_DIR)/parser/%.o: $(PARSER_SRC)/%.cpp
 $(OBJ_DIR)/pcre2/%.o: $(PCRE2_DIR)/%.c
 	@$(MKDIR_P) $(dir $@)
 	@clang $(PCRE2_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
+
+$(OBJ_DIR)/utf8proc/utf8proc.o: $(UTF8PROC_DIR)/utf8proc.c
+	@$(MKDIR_P) $(dir $@)
+	@clang $(UTF8PROC_CFLAGS) -c $< -o $@ 2>> $(ERROR_LOG) || (echo "[ERROR] Failed: $<" >> $(LOG_FILE) && exit 1)
 
 # Debug build
 debug: CXXFLAGS += $(DEBUG_FLAGS)

@@ -160,6 +160,34 @@ set_target_properties(pcre2-8 PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# utf8proc (Unicode normalization)
+set(UTF8PROC_DIR ${CMAKE_SOURCE_DIR}/third_party/utf8proc)
+
+if(NOT EXISTS "${UTF8PROC_DIR}/utf8proc.h")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        message(STATUS "Initializing utf8proc submodule...")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} submodule update --init third_party/utf8proc
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            RESULT_VARIABLE GIT_RESULT
+        )
+        if(NOT GIT_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize utf8proc submodule.")
+        endif()
+    else()
+        message(FATAL_ERROR "Git not found and utf8proc submodule is missing.")
+    endif()
+endif()
+
+add_library(utf8proc STATIC ${UTF8PROC_DIR}/utf8proc.c)
+target_compile_definitions(utf8proc PRIVATE UTF8PROC_STATIC)
+target_include_directories(utf8proc PUBLIC ${UTF8PROC_DIR})
+set_target_properties(utf8proc PROPERTIES
+    C_STANDARD 99
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # Core source files
 file(GLOB_RECURSE CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/core/*.cpp
@@ -204,9 +232,11 @@ set_target_properties(quantalib PROPERTIES
 target_include_directories(quantalib PUBLIC
     ${CMAKE_SOURCE_DIR}/include
     ${PCRE2_DIR}
+    ${UTF8PROC_DIR}
 )
 
-target_link_libraries(quantalib PUBLIC pcre2-8)
+target_compile_definitions(quantalib PUBLIC UTF8PROC_STATIC)
+target_link_libraries(quantalib PUBLIC pcre2-8 utf8proc)
 
 # Console executable
 add_executable(quanta

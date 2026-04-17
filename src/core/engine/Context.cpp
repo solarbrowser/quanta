@@ -28,6 +28,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include "utf8proc.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -5953,6 +5954,38 @@ void Context::initialize_built_ins() {
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("repeat", repeat_desc);
+
+    auto normalize_fn = ObjectFactory::create_native_function("normalize",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value this_value = ctx.get_binding("this");
+            std::string str = this_value.to_string();
+            std::string form = (args.size() > 0 && !args[0].is_undefined()) ? args[0].to_string() : "NFC";
+
+            const utf8proc_uint8_t* input = reinterpret_cast<const utf8proc_uint8_t*>(str.c_str());
+            utf8proc_uint8_t* output = nullptr;
+
+            if (form == "NFC") {
+                output = utf8proc_NFC(input);
+            } else if (form == "NFD") {
+                output = utf8proc_NFD(input);
+            } else if (form == "NFKC") {
+                output = utf8proc_NFKC(input);
+            } else if (form == "NFKD") {
+                output = utf8proc_NFKD(input);
+            } else {
+                throw std::runtime_error("RangeError: The normalization form should be one of NFC, NFD, NFKC, NFKD");
+            }
+
+            if (!output) {
+                return Value(str);
+            }
+            std::string result(reinterpret_cast<const char*>(output));
+            free(output);
+            return Value(result);
+        }, 0);
+    PropertyDescriptor normalize_desc(Value(normalize_fn.release()),
+        PropertyAttributes::BuiltinFunction);
+    string_prototype->set_property_descriptor("normalize", normalize_desc);
 
     // ES6: String.prototype[Symbol.iterator] - iterates by Unicode codepoints
     auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",

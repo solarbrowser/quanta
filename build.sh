@@ -123,7 +123,8 @@ mkdir -p \
     "$OBJ_DIR/core/runtime" \
     "$OBJ_DIR/lexer" \
     "$OBJ_DIR/parser" \
-    "$OBJ_DIR/pcre2"
+    "$OBJ_DIR/pcre2" \
+    "$OBJ_DIR/utf8proc"
 
 CXXFLAGS=(
     -std=c++17
@@ -134,6 +135,7 @@ CXXFLAGS=(
     -DQUANTA_VERSION=\"0.1.0\"
     -DPROMISE_STABILITY_FIXED
     -DNATIVE_BUILD
+    -DUTF8PROC_STATIC
     -funroll-loops
     -finline-functions
     -fvectorize
@@ -144,13 +146,21 @@ CXXFLAGS=(
     -pthread
 )
 
-INCLUDES=(-Iinclude -Ithird_party/pcre2/src)
+INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc)
 
 PCRE2FLAGS=(
     -O3
     -DPCRE2_CODE_UNIT_WIDTH=8
     -DHAVE_CONFIG_H
     -Ithird_party/pcre2/src
+    -march=native
+    -fomit-frame-pointer
+)
+
+UTF8PROC_FLAGS=(
+    -O3
+    -DUTF8PROC_STATIC
+    -Ithird_party/utf8proc
     -march=native
     -fomit-frame-pointer
 )
@@ -216,6 +226,7 @@ TOTAL_FILES=$((
 COMPILED_FILES=0
 FAILED_FILES=0
 PCRE2_OBJECTS=()
+UTF8PROC_OBJECTS=()
 CORE_ENGINE_OBJECTS=()
 CORE_GC_OBJECTS=()
 CORE_MODULE_OBJECTS=()
@@ -240,6 +251,17 @@ for src in "${PCRE2_SOURCES[@]}"; do
     ((COMPILED_FILES++))
 done
 print_success "PCRE2 + JIT compiled"
+
+echo
+echo "[0/4] Compiling utf8proc..."
+echo "[$(date '+%H:%M:%S')] === UTF8PROC ===" >> "$LOG_FILE"
+obj="$OBJ_DIR/utf8proc/utf8proc.o"
+if ! clang "${UTF8PROC_FLAGS[@]}" -c third_party/utf8proc/utf8proc.c -o "$obj" 2>>"$ERROR_LOG"; then
+    echo "[$(date '+%H:%M:%S')] ERROR compiling utf8proc.c" >> "$LOG_FILE"
+    fail "utf8proc compilation failed"
+fi
+UTF8PROC_OBJECTS+=("$obj")
+print_success "utf8proc compiled"
 
 echo
 echo "[1/4] Compiling core engine modules..."
@@ -346,6 +368,7 @@ if ! clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" -DMAIN_EXECUTAB
     "${LEXER_OBJECTS[@]}" \
     "${PARSER_OBJECTS[@]}" \
     "${PCRE2_OBJECTS[@]}" \
+    "${UTF8PROC_OBJECTS[@]}" \
     "${LIBS[@]}" \
     "${STACK_FLAGS[@]}" \
     2>>"$ERROR_LOG"; then
