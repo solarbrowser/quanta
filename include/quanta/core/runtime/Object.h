@@ -375,6 +375,7 @@ private:
     bool is_class_constructor_;  // Class constructors must be called with new
     bool is_strict_;       // Function runs in strict mode (e.g. class methods)
     bool is_param_default_;  // Created as a default param expression; uses param scope as outer env
+    std::string source_text_;
     std::function<Value(Context&, const std::vector<Value>&)> native_fn_;
 
     mutable uint32_t execution_count_;
@@ -419,6 +420,8 @@ public:
     void set_is_strict(bool value) { is_strict_ = value; }
     bool is_param_default() const { return is_param_default_; }
     void set_is_param_default(bool v) { is_param_default_ = v; }
+    const std::string& get_source_text() const { return source_text_; }
+    void set_source_text(const std::string& s) { source_text_ = s; }
     
     uint32_t get_execution_count() const { return execution_count_; }
     bool is_hot_function() const { return is_hot_; }

@@ -5247,7 +5247,14 @@ Value MemberExpression::evaluate(Context& ctx) {
             if (ctor.is_function()) {
                 Value proto = ctor.as_function()->get_property("prototype");
                 if (proto.is_object()) {
-                    Value val = proto.as_object()->get_property(prop_name);
+                    Object* proto_obj = proto.as_object();
+                    PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
+                    if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                        if (getter) return getter->call(ctx, {}, object_value);
+                        return Value();
+                    }
+                    Value val = proto_obj->get_property(prop_name);
                     if (!val.is_undefined()) return val;
                 }
             }
@@ -8062,10 +8069,14 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         }
     }
     
+    if (function_obj && !source_text_.empty()) {
+        function_obj->set_source_text(source_text_);
+    }
+
     Function* func_ptr = function_obj.release();
     Value function_value(func_ptr);
-    
-    
+
+
     // ES6: In strict mode, function declarations in blocks are block-scoped
     bool use_lexical = ctx.is_strict_mode() &&
         ctx.get_lexical_environment() != ctx.get_variable_environment();
@@ -8258,6 +8269,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         proto_ptr->set_property("constructor", Value(constructor_fn.get()));
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
+        if (!source_text_.empty()) {
+            constructor_fn->set_source_text(source_text_);
+        }
 
         prototype.release();
     } else {
@@ -8621,6 +8635,10 @@ Value FunctionExpression::evaluate(Context& ctx) {
         }
     }
 
+    if (function && !source_text_.empty()) {
+        function->set_source_text(source_text_);
+    }
+
     return Value(function.release());
 }
 
@@ -8720,6 +8738,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
             walk = walk->get_outer();
         }
 
+        if (!source_text_.empty()) {
+            async_fn->set_source_text(source_text_);
+        }
         return Value(async_fn);
     }
 
@@ -8785,6 +8806,10 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
             }
         }
         walk = walk->get_outer();
+    }
+
+    if (!source_text_.empty()) {
+        arrow_function->set_source_text(source_text_);
     }
 
     return Value(arrow_function.release());

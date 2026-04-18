@@ -183,8 +183,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         ctx.set_binding("this", actual_this);
 
         if (actual_this.is_number() || actual_this.is_string() || actual_this.is_boolean() ||
-            actual_this.is_null() || actual_this.is_undefined()) {
-            ctx.set_binding("__primitive_this__", actual_this);
+            actual_this.is_null() || actual_this.is_undefined() || actual_this.is_symbol()) {
+            if (!ctx.has_binding("__primitive_this__")) {
+                ctx.create_binding("__primitive_this__", actual_this, true);
+            } else {
+                ctx.set_binding("__primitive_this__", actual_this);
+            }
         }
 
         // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
@@ -834,9 +838,11 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
 std::string Function::to_string() const {
     if (is_native_) {
-        return "[native function " + name_ + "]";
+        return "function " + name_ + "() { [native code] }";
     }
-    
+    if (!source_text_.empty()) {
+        return source_text_;
+    }
     std::ostringstream oss;
     oss << "function " << name_ << "(";
     for (size_t i = 0; i < parameters_.size(); ++i) {

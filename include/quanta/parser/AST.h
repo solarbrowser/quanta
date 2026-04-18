@@ -905,6 +905,7 @@ private:
     std::unique_ptr<BlockStatement> body_;
     bool is_async_;
     bool is_generator_;
+    std::string source_text_;
 
 public:
     FunctionDeclaration(std::unique_ptr<Identifier> id, 
@@ -921,7 +922,9 @@ public:
     size_t param_count() const { return params_.size(); }
     bool is_async() const { return is_async_; }
     bool is_generator() const { return is_generator_; }
-    
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -932,6 +935,7 @@ private:
     std::unique_ptr<Identifier> id_;
     std::unique_ptr<ASTNode> superclass_;
     std::unique_ptr<BlockStatement> body_;
+    std::string source_text_;
 
 public:
     ClassDeclaration(std::unique_ptr<Identifier> id,
@@ -951,7 +955,9 @@ public:
     ASTNode* get_superclass() const { return superclass_.get(); }
     BlockStatement* get_body() const { return body_.get(); }
     bool has_superclass() const { return superclass_ != nullptr; }
-    
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -973,6 +979,7 @@ private:
     Kind kind_;
     bool is_static_;
     bool computed_;
+    std::string source_text_;
 
 public:
     MethodDefinition(std::unique_ptr<ASTNode> key,
@@ -990,6 +997,8 @@ public:
     Kind get_kind() const { return kind_; }
     bool is_static() const { return is_static_; }
     bool is_constructor() const { return kind_ == CONSTRUCTOR; }
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1004,6 +1013,7 @@ private:
     std::unique_ptr<BlockStatement> body_;
     bool is_generator_;
     bool is_async_;
+    std::string source_text_;
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1023,6 +1033,8 @@ public:
     bool is_named() const { return id_ != nullptr; }
     bool is_generator() const { return is_generator_; }
     bool is_async() const { return is_async_; }
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1034,6 +1046,7 @@ private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<ASTNode> body_;
     bool is_async_;
+    std::string source_text_;
 
 public:
     ArrowFunctionExpression(std::vector<std::unique_ptr<Parameter>> params,
@@ -1048,7 +1061,9 @@ public:
     size_t param_count() const { return params_.size(); }
     bool is_async() const { return is_async_; }
     bool has_block_body() const { return body_->get_type() == Type::BLOCK_STATEMENT; }
-    
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;

@@ -2419,11 +2419,13 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     }
 
     Position end = get_current_position();
-    return std::make_unique<FunctionDeclaration>(
+    auto fn_decl = std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, false, is_generator
     );
+    fn_decl->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    return fn_decl;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
@@ -2493,20 +2495,24 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     Position end = get_current_position();
 
+    std::string class_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::unique_ptr<ClassDeclaration> cls_decl;
     if (superclass) {
-        return std::make_unique<ClassDeclaration>(
+        cls_decl = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
             std::move(superclass),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
             start, end
         );
     } else {
-        return std::make_unique<ClassDeclaration>(
+        cls_decl = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
             start, end
         );
     }
+    cls_decl->set_source_text(class_src);
+    return cls_decl;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_class_expression() {
@@ -2574,16 +2580,18 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     Position end = get_current_position();
 
+    std::string cls_expr_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::unique_ptr<ClassDeclaration> cls_expr;
     if (id) {
         if (superclass) {
-            return std::make_unique<ClassDeclaration>(
+            cls_expr = std::make_unique<ClassDeclaration>(
                 std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
                 std::move(superclass),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
                 start, end
             );
         } else {
-            return std::make_unique<ClassDeclaration>(
+            cls_expr = std::make_unique<ClassDeclaration>(
                 std::unique_ptr<Identifier>(static_cast<Identifier*>(id.release())),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
                 start, end
@@ -2592,20 +2600,22 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     } else {
         auto anonymous_id = std::make_unique<Identifier>("", start, start);
         if (superclass) {
-            return std::make_unique<ClassDeclaration>(
+            cls_expr = std::make_unique<ClassDeclaration>(
                 std::move(anonymous_id),
                 std::move(superclass),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
                 start, end
             );
         } else {
-            return std::make_unique<ClassDeclaration>(
+            cls_expr = std::make_unique<ClassDeclaration>(
                 std::move(anonymous_id),
                 std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
                 start, end
             );
         }
     }
+    cls_expr->set_source_text(cls_expr_src);
+    return cls_expr;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_method_definition() {
@@ -2884,19 +2894,24 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         return nullptr;
     }
     
+    std::string method_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+
     auto function_expr = std::make_unique<FunctionExpression>(
         nullptr,
         std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, get_current_position(), is_generator, is_async
     );
+    function_expr->set_source_text(method_src);
 
     Position end = get_current_position();
-    return std::make_unique<MethodDefinition>(
+    auto method = std::make_unique<MethodDefinition>(
         std::move(key),
         std::move(function_expr),
         kind, is_static, computed, start, end
     );
+    method->set_source_text(method_src);
+    return method;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_function_expression() {
@@ -3110,11 +3125,13 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
 
     Position end = get_current_position();
-    return std::make_unique<FunctionExpression>(
+    auto fn_expr = std::make_unique<FunctionExpression>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, is_generator
     );
+    fn_expr->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    return fn_expr;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
@@ -3567,9 +3584,17 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     }
     
     Position end = get_current_position();
-    return std::make_unique<ArrowFunctionExpression>(
+    auto arrow_expr = std::make_unique<ArrowFunctionExpression>(
         std::move(params), std::move(body), false, start, end
     );
+    {
+        const Token& last = previous_token();
+        size_t src_end = (last.get_start().offset == last.get_end().offset)
+            ? last.get_start().offset + 1
+            : last.get_end().offset;
+        arrow_expr->set_source_text(get_source_slice(start.offset, src_end));
+    }
+    return arrow_expr;
 }
 
 bool Parser::try_parse_arrow_function_params() {
@@ -3782,6 +3807,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
         }
         
+        Position prop_start = get_current_position();
         ObjectLiteral::PropertyType property_type = ObjectLiteral::PropertyType::Value;
         bool is_async = false;
 
@@ -3996,6 +4022,15 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 );
             }
             
+            {
+                std::string method_src = get_source_slice(prop_start.offset, previous_token().get_start().offset + 1);
+                if (!method_src.empty()) {
+                    if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                        static_cast<FunctionExpression*>(method_value.get())->set_source_text(method_src);
+                    }
+                }
+            }
+
             ObjectLiteral::PropertyType final_type = property_type;
             if (final_type == ObjectLiteral::PropertyType::Value) {
                 final_type = ObjectLiteral::PropertyType::Method;

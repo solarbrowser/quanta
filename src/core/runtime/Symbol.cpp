@@ -31,8 +31,9 @@ const std::string Symbol::UNSCOPABLES = "Symbol.unscopables";
 
 Symbol::Symbol(const std::string& description) : description_(description), id_(next_id_++) {}
 
-std::unique_ptr<Symbol> Symbol::create(const std::string& description) {
+std::unique_ptr<Symbol> Symbol::create(const std::string& description, bool has_description) {
     auto sym = std::unique_ptr<Symbol>(new Symbol(description));
+    sym->has_description_ = has_description;
     // Register user symbols for getOwnPropertySymbols lookup
     std::string key = sym->to_property_key();
     if (key.find("@@sym:") == 0) {

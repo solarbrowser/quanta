@@ -167,7 +167,7 @@ std::string Value::to_string() const {
         return obj->to_string();
     }
     if (is_function()) {
-        return "[function Function]";
+        return as_function()->to_string();
     }
     return "unknown";
 }
