@@ -3396,6 +3396,55 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
 }
 
 Value CallExpression::evaluate(Context& ctx) {
+    if (callee_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+        OptionalChainingExpression* opt = static_cast<OptionalChainingExpression*>(callee_.get());
+        Value base = opt->get_object()->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        if (base.is_null() || base.is_undefined()) {
+            return Value();
+        }
+        // base is non-null: get property and call with base as this
+        std::string prop_name;
+        if (opt->is_computed()) {
+            Value prop_val = opt->get_property()->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            prop_name = prop_val.to_string();
+        } else if (opt->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+            prop_name = static_cast<Identifier*>(opt->get_property())->get_name();
+        }
+        Value method_val;
+        if (base.is_object()) {
+            method_val = base.as_object()->get_property(prop_name);
+        } else if (base.is_function()) {
+            method_val = base.as_function()->get_property(prop_name);
+        }
+        if (!method_val.is_function()) {
+            ctx.throw_type_error(prop_name + " is not a function");
+            return Value();
+        }
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        return method_val.as_function()->call(ctx, arg_values, base);
+    }
+
+    if (is_optional_) {
+        Value callee_val = callee_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        if (callee_val.is_null() || callee_val.is_undefined()) {
+            return Value();
+        }
+        if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+            return handle_member_expression_call(ctx);
+        }
+        if (!callee_val.is_function()) {
+            ctx.throw_type_error("is not a function");
+            return Value();
+        }
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        return callee_val.as_function()->call(ctx, arg_values);
+    }
+
     if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         return handle_member_expression_call(ctx);
     }
@@ -3680,7 +3729,7 @@ std::unique_ptr<ASTNode> CallExpression::clone() const {
     for (const auto& arg : arguments_) {
         cloned_args.push_back(arg->clone());
     }
-    auto cloned = std::make_unique<CallExpression>(callee_->clone(), std::move(cloned_args), start_, end_);
+    auto cloned = std::make_unique<CallExpression>(callee_->clone(), std::move(cloned_args), start_, end_, is_optional_);
     cloned->set_tagged_template(is_tagged_template_);
     return cloned;
 }

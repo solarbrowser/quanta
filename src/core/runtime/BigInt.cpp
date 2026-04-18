@@ -300,6 +300,13 @@ std::string BigInt::to_string() const {
     return result;
 }
 
+int64_t BigInt::to_int64() const {
+    uint64_t result = 0;
+    if (digits_.size() > 0) result |= static_cast<uint64_t>(digits_[0]);
+    if (digits_.size() > 1) result |= static_cast<uint64_t>(digits_[1]) << 32;
+    return is_negative_ ? -static_cast<int64_t>(result) : static_cast<int64_t>(result);
+}
+
 double BigInt::to_double() const {
     if (is_zero()) return 0.0;
     
