@@ -544,6 +544,15 @@ Value Value::unary_minus() const {
         return Value::nan();
     }
     
+    if (is_bigint()) {
+        BigInt* bg = as_bigint();
+        if (bg) {
+            BigInt negated = -(*bg);
+            return Value(new BigInt(negated));
+        }
+        return Value(new BigInt(0));
+    }
+
     if (is_number()) {
         double result = -as_number();
         if (std::isinf(result)) {
@@ -554,7 +563,7 @@ Value Value::unary_minus() const {
         }
         return Value(result);
     }
-    
+
     double result = -to_number();
     if (std::isinf(result)) {
         return result > 0 ? Value::positive_infinity() : Value::negative_infinity();

@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/runtime/Value.h"
+#include "quanta/core/runtime/BigInt.h"
 #include <memory>
 #include <cstdint>
 
@@ -205,8 +206,30 @@ public:
     Float64Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArray(ArrayType::FLOAT64, buffer) {}
     Float64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX)
         : TypedArray(ArrayType::FLOAT64, buffer, byte_offset, length) {}
-        
+
     std::string get_type_name() const override { return "Float64Array"; }
+};
+
+class BigInt64Array : public TypedArrayBase {
+public:
+    BigInt64Array(size_t length);
+    BigInt64Array(std::shared_ptr<ArrayBuffer> buffer);
+    BigInt64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX);
+
+    std::string get_type_name() const override { return "BigInt64Array"; }
+    Value get_element(size_t index) const override;
+    bool set_element(size_t index, const Value& value) override;
+};
+
+class BigUint64Array : public TypedArrayBase {
+public:
+    BigUint64Array(size_t length);
+    BigUint64Array(std::shared_ptr<ArrayBuffer> buffer);
+    BigUint64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length = SIZE_MAX);
+
+    std::string get_type_name() const override { return "BigUint64Array"; }
+    Value get_element(size_t index) const override;
+    bool set_element(size_t index, const Value& value) override;
 };
 
 /**

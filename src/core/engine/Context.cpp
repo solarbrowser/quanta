@@ -6421,8 +6421,40 @@ void Context::initialize_built_ins() {
                 return Value();
             }
         });
+    {
+        auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
+                int64_t n = static_cast<int64_t>(args[0].to_number());
+                if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
+                if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+                int64_t val = args[1].as_bigint()->to_int64();
+                if (n == 0) return Value(new BigInt(0));
+                if (n == 64) return Value(new BigInt(val));
+                int64_t mod = 1LL << n;
+                int64_t result = val & (mod - 1);
+                if (result >= (mod >> 1)) result -= mod;
+                return Value(new BigInt(result));
+            });
+        bigint_constructor->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
+                int64_t n = static_cast<int64_t>(args[0].to_number());
+                if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
+                if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+                int64_t val = args[1].as_bigint()->to_int64();
+                if (n == 0) return Value(new BigInt(0));
+                if (n == 64) return Value(new BigInt(val));
+                uint64_t mask = (1ULL << n) - 1;
+                uint64_t result = static_cast<uint64_t>(val) & mask;
+                return Value(new BigInt(static_cast<int64_t>(result)));
+            });
+        bigint_constructor->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
+    }
     register_built_in_object("BigInt", bigint_constructor.release());
-    
+
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             bool has_desc = !args.empty() && !args[0].is_undefined();
@@ -13281,6 +13313,42 @@ void Context::register_typed_array_constructors() {
         });
     register_built_in_object("Float64Array", float64array_constructor.release());
 
+    auto bigint64array_constructor = ObjectFactory::create_native_constructor("BigInt64Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+            if (args.empty()) return Value(new BigInt64Array(0));
+            if (args[0].is_number()) return Value(new BigInt64Array(static_cast<size_t>(args[0].as_number())));
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> sb(ab, [](ArrayBuffer*){});
+                    return Value(new BigInt64Array(sb));
+                }
+            }
+            ctx.throw_type_error("BigInt64Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("BigInt64Array", bigint64array_constructor.release());
+
+    auto biguint64array_constructor = ObjectFactory::create_native_constructor("BigUint64Array",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+            if (args.empty()) return Value(new BigUint64Array(0));
+            if (args[0].is_number()) return Value(new BigUint64Array(static_cast<size_t>(args[0].as_number())));
+            if (args[0].is_object()) {
+                Object* obj = args[0].as_object();
+                if (obj->is_array_buffer()) {
+                    ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
+                    std::shared_ptr<ArrayBuffer> sb(ab, [](ArrayBuffer*){});
+                    return Value(new BigUint64Array(sb));
+                }
+            }
+            ctx.throw_type_error("BigUint64Array constructor argument not supported");
+            return Value();
+        });
+    register_built_in_object("BigUint64Array", biguint64array_constructor.release());
+
     // Set up prototype chains: XArray.prototype.__proto__ = TypedArray.prototype
     // Also: XArray.__proto__ = TypedArray (constructor chain)
     Object* typedarray_ctor_ptr = get_built_in_object("TypedArray");
@@ -13376,11 +13444,23 @@ void Context::register_typed_array_constructors() {
                 
                 auto get_float64_method = ObjectFactory::create_native_function("getFloat64", DataView::js_get_float64);
                 dataview_obj->set_property("getFloat64", Value(get_float64_method.release()));
-                
+
                 auto set_float64_method = ObjectFactory::create_native_function("setFloat64", DataView::js_set_float64);
                 dataview_obj->set_property("setFloat64", Value(set_float64_method.release()));
+
+                auto get_bigint64_method = ObjectFactory::create_native_function("getBigInt64", DataView::js_get_bigint64);
+                dataview_obj->set_property("getBigInt64", Value(get_bigint64_method.release()));
+
+                auto set_bigint64_method = ObjectFactory::create_native_function("setBigInt64", DataView::js_set_bigint64);
+                dataview_obj->set_property("setBigInt64", Value(set_bigint64_method.release()));
+
+                auto get_biguint64_method = ObjectFactory::create_native_function("getBigUint64", DataView::js_get_biguint64);
+                dataview_obj->set_property("getBigUint64", Value(get_biguint64_method.release()));
+
+                auto set_biguint64_method = ObjectFactory::create_native_function("setBigUint64", DataView::js_set_biguint64);
+                dataview_obj->set_property("setBigUint64", Value(set_biguint64_method.release()));
             }
-            
+
             return result;
         });
 
@@ -13433,6 +13513,18 @@ void Context::register_typed_array_constructors() {
 
     auto set_float64_proto = ObjectFactory::create_native_function("setFloat64", DataView::js_set_float64);
     dataview_prototype->set_property("setFloat64", Value(set_float64_proto.release()));
+
+    auto get_bigint64_proto = ObjectFactory::create_native_function("getBigInt64", DataView::js_get_bigint64);
+    dataview_prototype->set_property("getBigInt64", Value(get_bigint64_proto.release()));
+
+    auto set_bigint64_proto = ObjectFactory::create_native_function("setBigInt64", DataView::js_set_bigint64);
+    dataview_prototype->set_property("setBigInt64", Value(set_bigint64_proto.release()));
+
+    auto get_biguint64_proto = ObjectFactory::create_native_function("getBigUint64", DataView::js_get_biguint64);
+    dataview_prototype->set_property("getBigUint64", Value(get_biguint64_proto.release()));
+
+    auto set_biguint64_proto = ObjectFactory::create_native_function("setBigUint64", DataView::js_set_biguint64);
+    dataview_prototype->set_property("setBigUint64", Value(set_biguint64_proto.release()));
 
     PropertyDescriptor dataview_tag_desc(Value(std::string("DataView")), PropertyAttributes::Configurable);
     dataview_prototype->set_property_descriptor("Symbol.toStringTag", dataview_tag_desc);

@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
 #include <algorithm>
@@ -329,6 +330,54 @@ bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
     }
 }
 
+
+BigInt64Array::BigInt64Array(size_t length) : TypedArrayBase(ArrayType::BIGINT64, 8, length) {}
+BigInt64Array::BigInt64Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArrayBase(ArrayType::BIGINT64, 8, buffer) {}
+BigInt64Array::BigInt64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length)
+    : TypedArrayBase(ArrayType::BIGINT64, 8, buffer, byte_offset, length) {}
+
+Value BigInt64Array::get_element(size_t index) const {
+    if (!check_bounds(index)) return Value();
+    uint8_t* data = get_data_ptr();
+    if (!data) return Value();
+    int64_t val;
+    quanta_memcpy(&val, data + index * 8, 8);
+    return Value(new BigInt(val));
+}
+
+bool BigInt64Array::set_element(size_t index, const Value& value) {
+    if (!check_bounds(index)) return false;
+    uint8_t* data = get_data_ptr();
+    if (!data) return false;
+    int64_t val = 0;
+    if (value.is_bigint()) val = value.as_bigint()->to_int64();
+    quanta_memcpy(data + index * 8, &val, 8);
+    return true;
+}
+
+BigUint64Array::BigUint64Array(size_t length) : TypedArrayBase(ArrayType::BIGUINT64, 8, length) {}
+BigUint64Array::BigUint64Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArrayBase(ArrayType::BIGUINT64, 8, buffer) {}
+BigUint64Array::BigUint64Array(std::shared_ptr<ArrayBuffer> buffer, size_t byte_offset, size_t length)
+    : TypedArrayBase(ArrayType::BIGUINT64, 8, buffer, byte_offset, length) {}
+
+Value BigUint64Array::get_element(size_t index) const {
+    if (!check_bounds(index)) return Value();
+    uint8_t* data = get_data_ptr();
+    if (!data) return Value();
+    uint64_t val;
+    quanta_memcpy(&val, data + index * 8, 8);
+    return Value(new BigInt(static_cast<int64_t>(val)));
+}
+
+bool BigUint64Array::set_element(size_t index, const Value& value) {
+    if (!check_bounds(index)) return false;
+    uint8_t* data = get_data_ptr();
+    if (!data) return false;
+    uint64_t val = 0;
+    if (value.is_bigint()) val = static_cast<uint64_t>(value.as_bigint()->to_int64());
+    quanta_memcpy(data + index * 8, &val, 8);
+    return true;
+}
 
 namespace TypedArrayFactory {
 
