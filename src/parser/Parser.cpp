@@ -719,12 +719,18 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 std::vector<std::unique_ptr<ASTNode>> arguments;
                 if (!match(TokenType::RIGHT_PAREN)) {
                     do {
-                        auto arg = parse_assignment_expression();
-                        if (!arg) {
-                            add_error("Expected argument in optional call");
-                            break;
+                        if (match(TokenType::ELLIPSIS)) {
+                            auto spread = parse_spread_element();
+                            if (!spread) { add_error("Invalid spread in optional call"); break; }
+                            arguments.push_back(std::move(spread));
+                        } else {
+                            auto arg = parse_assignment_expression();
+                            if (!arg) {
+                                add_error("Expected argument in optional call");
+                                break;
+                            }
+                            arguments.push_back(std::move(arg));
                         }
-                        arguments.push_back(std::move(arg));
 
                         if (consume_if_match(TokenType::COMMA)) {
                             if (current_token().get_type() == TokenType::RIGHT_PAREN) {
@@ -742,7 +748,7 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 }
 
                 Position end = get_current_position();
-                expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
+                expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end, true);
             } else {
                 if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
                     current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&

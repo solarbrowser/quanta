@@ -4716,12 +4716,69 @@ void Context::initialize_built_ins() {
             }
 
             if (args.empty()) {
-                throw std::runtime_error("TypeError: matchAll requires a regexp argument");
+                ctx.throw_type_error("matchAll requires a regexp argument");
+                return Value();
             }
 
-            auto result = ObjectFactory::create_array();
-            result->set_length(0);
-            return Value(result.release());
+            Value regex_val = args[0];
+            if (!regex_val.is_object()) {
+                ctx.throw_type_error("matchAll argument must be a RegExp");
+                return Value();
+            }
+            Object* regex_obj = regex_val.as_object();
+
+            Value global_val = regex_obj->get_property("global");
+            if (!global_val.is_boolean() || !global_val.as_boolean()) {
+                ctx.throw_type_error("String.prototype.matchAll called with a non-global RegExp argument");
+                return Value();
+            }
+
+            auto shared_str = std::make_shared<std::string>(str);
+            auto shared_regex = std::make_shared<Value>(regex_val);
+            auto done_flag = std::make_shared<bool>(false);
+
+            auto iterator = ObjectFactory::create_object();
+            Object* iter_ptr = iterator.get();
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [shared_str, shared_regex, done_flag](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    auto result = ObjectFactory::create_object();
+                    if (*done_flag) {
+                        result->set_property("done", Value(true));
+                        result->set_property("value", Value());
+                        return Value(result.release());
+                    }
+                    Object* rx = shared_regex->as_object();
+                    Value exec_method = rx->get_property("exec");
+                    if (!exec_method.is_function()) {
+                        *done_flag = true;
+                        result->set_property("done", Value(true));
+                        result->set_property("value", Value());
+                        return Value(result.release());
+                    }
+                    Value match = exec_method.as_function()->call(ctx, {Value(*shared_str)}, *shared_regex);
+                    if (ctx.has_exception()) return Value();
+                    if (match.is_null() || match.is_undefined()) {
+                        *done_flag = true;
+                        result->set_property("done", Value(true));
+                        result->set_property("value", Value());
+                    } else {
+                        result->set_property("done", Value(false));
+                        result->set_property("value", match);
+                    }
+                    return Value(result.release());
+                }, 0);
+            iterator->set_property("next", Value(next_fn.release()));
+
+            auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+                [iter_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)ctx; (void)args;
+                    return Value(iter_ptr);
+                }, 0);
+            iterator->set_property("Symbol.iterator", Value(sym_iter_fn.release()));
+
+            return Value(iterator.release());
         }, 1);
     PropertyDescriptor matchAll_desc(Value(matchAll_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -9475,27 +9532,81 @@ void Context::initialize_built_ins() {
             }
 
             Object* iterable = args[0].as_object();
-            if (!iterable->is_array()) {
-                ctx.throw_exception(Value(std::string("Promise.allSettled expects an array")));
-                return Value();
-            }
-
             uint32_t length = iterable->get_length();
+
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
 
-            auto results_array = ObjectFactory::create_array(length);
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = iterable->get_element(i);
-                auto settled_obj = ObjectFactory::create_object();
-
-                settled_obj->set_property("status", Value(std::string("fulfilled")));
-                settled_obj->set_property("value", element);
-
-                results_array->set_element(i, Value(settled_obj.release()));
+            if (length == 0) {
+                auto empty_array = ObjectFactory::create_array(0);
+                result_promise->fulfill(Value(empty_array.release()));
+                return Value(result_promise_obj.release());
             }
 
-            result_promise->fulfill(Value(results_array.release()));
+            auto results_arr_owner = ObjectFactory::create_array(length);
+            Object* results_arr = results_arr_owner.release();
+            result_promise->set_property("__settled_results__", Value(results_arr));
+            result_promise->set_property("__settled_remaining__", Value((double)length));
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value element = iterable->get_element(i);
+
+                Promise* p = nullptr;
+                std::unique_ptr<Object> wrapped_obj;
+                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
+                if (p_cast) {
+                    p = p_cast;
+                } else {
+                    wrapped_obj = ObjectFactory::create_promise(&ctx);
+                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
+                    p = static_cast<Promise*>(wrapped_obj.release());
+                }
+
+                uint32_t idx = i;
+                Promise* rp = result_promise;
+
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [idx, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value val = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("fulfilled")));
+                        settled->set_property("value", val);
+                        Value arr_v = rp->get_property("__settled_results__");
+                        if (arr_v.is_object()) arr_v.as_object()->set_element(idx, Value(settled.release()));
+                        Value rem_v = rp->get_property("__settled_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__settled_remaining__", Value(remaining));
+                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settled_results__"));
+                        return Value();
+                    });
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [idx, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value reason = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("rejected")));
+                        settled->set_property("reason", reason);
+                        Value arr_v = rp->get_property("__settled_results__");
+                        if (arr_v.is_object()) arr_v.as_object()->set_element(idx, Value(settled.release()));
+                        Value rem_v = rp->get_property("__settled_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__settled_remaining__", Value(remaining));
+                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settled_results__"));
+                        return Value();
+                    });
+
+                std::string k_ful = "__settled_ful_" + std::to_string(i) + "__";
+                std::string k_rej = "__settled_rej_" + std::to_string(i) + "__";
+                Function* ful_fn = on_ful.get();
+                Function* rej_fn = on_rej.get();
+                result_promise->set_property(k_ful, Value(on_ful.release()));
+                result_promise->set_property(k_rej, Value(on_rej.release()));
+
+                p->then(ful_fn, rej_fn);
+            }
+
             return Value(result_promise_obj.release());
         }, 1);
     promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()));
@@ -10881,6 +10992,37 @@ void Context::setup_global_bindings() {
             ctx.throw_type_error("Cannot convert value to BigInt");
             return Value();
         });
+    auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
+            int64_t n = static_cast<int64_t>(args[0].to_number());
+            if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
+            if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+            int64_t val = args[1].as_bigint()->to_int64();
+            if (n == 0) return Value(new Quanta::BigInt(0));
+            if (n == 64) return Value(new Quanta::BigInt(val));
+            int64_t mod = 1LL << n;
+            int64_t result = val & (mod - 1);
+            if (result >= (mod >> 1)) result -= mod;
+            return Value(new Quanta::BigInt(result));
+        });
+    bigint_fn->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
+            int64_t n = static_cast<int64_t>(args[0].to_number());
+            if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
+            if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+            int64_t val = args[1].as_bigint()->to_int64();
+            if (n == 0) return Value(new Quanta::BigInt(0));
+            if (n == 64) return Value(new Quanta::BigInt(val));
+            uint64_t mask = (1ULL << n) - 1;
+            uint64_t result = static_cast<uint64_t>(val) & mask;
+            return Value(new Quanta::BigInt(static_cast<int64_t>(result)));
+        });
+    bigint_fn->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
+
     lexical_environment_->create_binding("BigInt", Value(bigint_fn.release()), false);
 
     auto escape_fn = ObjectFactory::create_native_function("escape",

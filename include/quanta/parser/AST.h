@@ -504,18 +504,20 @@ private:
     std::unique_ptr<ASTNode> callee_;
     std::vector<std::unique_ptr<ASTNode>> arguments_;
     bool is_tagged_template_ = false;
+    bool is_optional_ = false;
 
 public:
     CallExpression(std::unique_ptr<ASTNode> callee, std::vector<std::unique_ptr<ASTNode>> arguments,
-                  const Position& start, const Position& end)
+                  const Position& start, const Position& end, bool is_optional = false)
         : ASTNode(Type::CALL_EXPRESSION, start, end),
-          callee_(std::move(callee)), arguments_(std::move(arguments)) {}
+          callee_(std::move(callee)), arguments_(std::move(arguments)), is_optional_(is_optional) {}
 
     ASTNode* get_callee() const { return callee_.get(); }
     const std::vector<std::unique_ptr<ASTNode>>& get_arguments() const { return arguments_; }
     size_t argument_count() const { return arguments_.size(); }
     void set_tagged_template(bool v) { is_tagged_template_ = v; }
     bool is_tagged_template() const { return is_tagged_template_; }
+    bool is_optional() const { return is_optional_; }
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
