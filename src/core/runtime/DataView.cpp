@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/ArrayBuffer.h"
+#include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
 #include <algorithm>
@@ -817,18 +818,64 @@ Value DataView::js_set_float64(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_type_error("DataView.setFloat64 requires offset and value arguments");
         return Value();
     }
-    
+
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj || !this_obj->is_data_view()) {
         ctx.throw_type_error("setFloat64 called on non-DataView object");
         return Value();
     }
-    
+
     DataView* dataview = static_cast<DataView*>(this_obj);
     size_t offset = static_cast<size_t>(args[0].to_number());
     double value = args[1].to_number();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     dataview->set_float64(offset, value, little_endian);
+    return Value();
+}
+
+Value DataView::js_get_bigint64(Context& ctx, const std::vector<Value>& args) {
+    if (args.empty()) { ctx.throw_type_error("DataView.getBigInt64 requires offset argument"); return Value(); }
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) { ctx.throw_type_error("getBigInt64 called on non-DataView"); return Value(); }
+    DataView* dv = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool le = (args.size() > 1) ? args[1].to_boolean() : false;
+    int64_t val = static_cast<int64_t>(dv->read_value<uint64_t>(offset, le));
+    return Value(new BigInt(val));
+}
+
+Value DataView::js_set_bigint64(Context& ctx, const std::vector<Value>& args) {
+    if (args.size() < 2) { ctx.throw_type_error("DataView.setBigInt64 requires offset and value"); return Value(); }
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) { ctx.throw_type_error("setBigInt64 called on non-DataView"); return Value(); }
+    DataView* dv = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    int64_t val = args[1].is_bigint() ? args[1].as_bigint()->to_int64() : static_cast<int64_t>(args[1].to_number());
+    bool le = (args.size() > 2) ? args[2].to_boolean() : false;
+    dv->write_value<uint64_t>(offset, static_cast<uint64_t>(val), le);
+    return Value();
+}
+
+Value DataView::js_get_biguint64(Context& ctx, const std::vector<Value>& args) {
+    if (args.empty()) { ctx.throw_type_error("DataView.getBigUint64 requires offset argument"); return Value(); }
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) { ctx.throw_type_error("getBigUint64 called on non-DataView"); return Value(); }
+    DataView* dv = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    bool le = (args.size() > 1) ? args[1].to_boolean() : false;
+    uint64_t val = dv->read_value<uint64_t>(offset, le);
+    return Value(new BigInt(static_cast<int64_t>(val)));
+}
+
+Value DataView::js_set_biguint64(Context& ctx, const std::vector<Value>& args) {
+    if (args.size() < 2) { ctx.throw_type_error("DataView.setBigUint64 requires offset and value"); return Value(); }
+    Object* this_obj = ctx.get_this_binding();
+    if (!this_obj || !this_obj->is_data_view()) { ctx.throw_type_error("setBigUint64 called on non-DataView"); return Value(); }
+    DataView* dv = static_cast<DataView*>(this_obj);
+    size_t offset = static_cast<size_t>(args[0].to_number());
+    uint64_t val = args[1].is_bigint() ? static_cast<uint64_t>(args[1].as_bigint()->to_int64()) : static_cast<uint64_t>(args[1].to_number());
+    bool le = (args.size() > 2) ? args[2].to_boolean() : false;
+    dv->write_value<uint64_t>(offset, val, le);
     return Value();
 }
 

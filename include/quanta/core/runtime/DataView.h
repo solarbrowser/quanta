@@ -103,6 +103,11 @@ public:
     static Value js_set_float32(Context& ctx, const std::vector<Value>& args);
     static Value js_set_float64(Context& ctx, const std::vector<Value>& args);
 
+    static Value js_get_bigint64(Context& ctx, const std::vector<Value>& args);
+    static Value js_set_bigint64(Context& ctx, const std::vector<Value>& args);
+    static Value js_get_biguint64(Context& ctx, const std::vector<Value>& args);
+    static Value js_set_biguint64(Context& ctx, const std::vector<Value>& args);
+
 private:
     void setup_methods();
     
