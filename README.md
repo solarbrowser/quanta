@@ -11,7 +11,7 @@ Quanta is an experimental ECMAScript (or JS) engine focused on both **memory eff
 |--------------------|--------|
 | ES1-ES5            | ~100%  |
 | ES6                | ~99%   |
-| ES2016+            | ~64.15%   |
+| ES2016+            | ~75%   |
 
 ## Test262
   
