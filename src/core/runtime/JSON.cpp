@@ -834,33 +834,71 @@ std::string JSON::Stringifier::get_newline() const {
     return options_.indent.empty() ? "" : "\n";
 }
 
+static void append_unicode_escape(std::string& result, uint32_t cp) {
+    static const char hex[] = "0123456789abcdef";
+    result += "\\u";
+    result += hex[(cp >> 12) & 0xF];
+    result += hex[(cp >> 8) & 0xF];
+    result += hex[(cp >> 4) & 0xF];
+    result += hex[cp & 0xF];
+}
+
 std::string JSON::Stringifier::escape_string(const std::string& str) {
     std::string result;
     result.reserve(str.length());
-    
-    for (char ch : str) {
-        switch (ch) {
-            case '"':  result += "\\\""; break;
-            case '\\': result += "\\\\"; break;
-            case '\b': result += "\\b"; break;
-            case '\f': result += "\\f"; break;
-            case '\n': result += "\\n"; break;
-            case '\r': result += "\\r"; break;
-            case '\t': result += "\\t"; break;
-            default:
-                if (ch < 0x20) {
-                    result += "\\u";
-                    result += std::to_string((ch >> 12) & 0xF);
-                    result += std::to_string((ch >> 8) & 0xF);
-                    result += std::to_string((ch >> 4) & 0xF);
-                    result += std::to_string(ch & 0xF);
-                } else {
-                    result += ch;
-                }
-                break;
+
+    size_t i = 0;
+    while (i < str.size()) {
+        unsigned char b = static_cast<unsigned char>(str[i]);
+
+        if (b < 0x80) {
+            char ch = static_cast<char>(b);
+            switch (ch) {
+                case '"':  result += "\\\""; break;
+                case '\\': result += "\\\\"; break;
+                case '\b': result += "\\b"; break;
+                case '\f': result += "\\f"; break;
+                case '\n': result += "\\n"; break;
+                case '\r': result += "\\r"; break;
+                case '\t': result += "\\t"; break;
+                default:
+                    if (b < 0x20) {
+                        append_unicode_escape(result, b);
+                    } else {
+                        result += ch;
+                    }
+                    break;
+            }
+            i++;
+        } else if ((b & 0xE0) == 0xC0 && i + 1 < str.size()) {
+            unsigned char b2 = static_cast<unsigned char>(str[i + 1]);
+            result += static_cast<char>(b);
+            result += static_cast<char>(b2);
+            i += 2;
+        } else if ((b & 0xF0) == 0xE0 && i + 2 < str.size()) {
+            unsigned char b2 = static_cast<unsigned char>(str[i + 1]);
+            unsigned char b3 = static_cast<unsigned char>(str[i + 2]);
+            uint32_t cp = ((b & 0x0F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+            if (cp >= 0xD800 && cp <= 0xDFFF) {
+                append_unicode_escape(result, cp);
+            } else {
+                result += static_cast<char>(b);
+                result += static_cast<char>(b2);
+                result += static_cast<char>(b3);
+            }
+            i += 3;
+        } else if ((b & 0xF8) == 0xF0 && i + 3 < str.size()) {
+            result += static_cast<char>(b);
+            result += static_cast<char>(str[i + 1]);
+            result += static_cast<char>(str[i + 2]);
+            result += static_cast<char>(str[i + 3]);
+            i += 4;
+        } else {
+            result += static_cast<char>(b);
+            i++;
         }
     }
-    
+
     return result;
 }
 

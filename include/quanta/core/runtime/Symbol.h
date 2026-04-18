@@ -23,6 +23,7 @@ class Context;
 class Symbol {
 private:
     std::string description_;
+    bool has_description_ = false;
     static uint64_t next_id_;
     uint64_t id_;
     
@@ -38,7 +39,7 @@ private:
 public:
     ~Symbol() = default;
     
-    static std::unique_ptr<Symbol> create(const std::string& description = "");
+    static std::unique_ptr<Symbol> create(const std::string& description = "", bool has_description = true);
     
     static Symbol* for_key(const std::string& key);
     
@@ -49,6 +50,7 @@ public:
     static void initialize_well_known_symbols();
     
     std::string get_description() const { return description_; }
+    bool get_has_description() const { return has_description_; }
     uint64_t get_id() const { return id_; }
     std::string to_string() const;
     std::string to_property_key() const;

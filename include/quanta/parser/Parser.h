@@ -43,7 +43,8 @@ private:
     TokenSequence tokens_;
     ParseOptions options_;
     std::vector<ParseError> errors_;
-    
+    std::string source_;
+
     size_t current_token_index_;
     bool no_in_mode_ = false; // when true, 'in' is not parsed as a relational operator
 
@@ -155,6 +156,12 @@ public:
     const std::vector<ParseError>& get_errors() const { return errors_; }
     bool has_errors() const { return !errors_.empty(); }
     
+    void set_source(const std::string& src) { source_ = src; }
+    std::string get_source_slice(size_t start_offset, size_t end_offset) const {
+        if (source_.empty() || start_offset >= source_.size()) return "";
+        if (end_offset > source_.size()) end_offset = source_.size();
+        return source_.substr(start_offset, end_offset - start_offset);
+    }
     Position get_current_position() const;
     
     bool at_end() const;

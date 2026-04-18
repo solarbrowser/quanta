@@ -734,26 +734,39 @@ void Context::initialize_built_ins() {
             }
             
             Object* iterable = args[0].as_object();
-            if (!iterable->is_array()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries expects an array")));
-                return Value();
-            }
-            
             auto result_obj = ObjectFactory::create_object();
-            uint32_t length = iterable->get_length();
-            
-            for (uint32_t i = 0; i < length; i++) {
-                Value entry = iterable->get_element(i);
-                if (entry.is_object() && entry.as_object()->is_array()) {
-                    Object* pair = entry.as_object();
-                    if (pair->get_length() >= 2) {
-                        Value key = pair->get_element(0);
-                        Value value = pair->get_element(1);
-                        result_obj->set_property(key.to_string(), value);
+
+            auto process_entry = [&](Value entry) {
+                if (!entry.is_object()) return;
+                Object* pair = entry.as_object();
+                Value key = pair->get_element(0);
+                Value val = pair->get_element(1);
+                result_obj->set_property(key.to_string(), val);
+            };
+
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            Value iter_method = iterable->get_property(iter_sym->to_property_key());
+            if (iter_method.is_function()) {
+                Value iterator_obj = iter_method.as_function()->call(ctx, {}, Value(iterable));
+                if (iterator_obj.is_object()) {
+                    Object* iterator = iterator_obj.as_object();
+                    Value next_method = iterator->get_property("next");
+                    if (next_method.is_function()) {
+                        while (true) {
+                            Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
+                            if (!result.is_object()) break;
+                            if (result.as_object()->get_property("done").to_boolean()) break;
+                            process_entry(result.as_object()->get_property("value"));
+                        }
                     }
                 }
+            } else {
+                uint32_t length = iterable->get_length();
+                for (uint32_t i = 0; i < length; i++) {
+                    process_entry(iterable->get_element(i));
+                }
             }
-            
+
             return Value(result_obj.release());
         }, 1);
     object_constructor->set_property("fromEntries", Value(fromEntries_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -2439,6 +2452,7 @@ void Context::initialize_built_ins() {
                         Object* element_obj = element.as_object();
                         if (element_obj->has_property("length")) {
                             flatten_helper(element_obj, target, current_depth - 1);
+                            target_length = target->get_length();
                             continue;
                         }
                     }
@@ -3991,7 +4005,7 @@ void Context::initialize_built_ins() {
             } else {
                 // new Function(param1, param2, ..., body)
                 for (size_t i = 0; i < args.size() - 1; i++) {
-                    if (i > 0) params += ", ";
+                    if (i > 0) params += ",";
                     params += args[i].to_string();
                 }
                 body = args[args.size() - 1].to_string();
@@ -4025,14 +4039,16 @@ void Context::initialize_built_ins() {
                 }
             }
 
-            // Create function code string - wrap in parens to make it an expression
-            std::string func_code = "(function(" + params + ") { " + body + " })";
+            // Spec-compliant Function constructor toString format
+            std::string toString_src = "function anonymous(" + params + "\n) {\n" + body + "\n}";
+            std::string func_code = "(" + toString_src + ")";
 
             // Parse and create the function
             try {
                 Lexer lexer(func_code);
                 TokenSequence tokens = lexer.tokenize();
                 Parser parser(tokens);
+                parser.set_source(func_code);
                 auto expr = parser.parse_expression();
 
                 // Check for parser errors (e.g. invalid syntax in body)
@@ -4061,6 +4077,7 @@ void Context::initialize_built_ins() {
                         ctx.throw_syntax_error("Failed to create function object");
                         return Value();
                     }
+                    func->set_source_text(toString_src);
 
                     Function* raw_func = func.release();
                     Value new_target = ctx.get_new_target();
@@ -4255,14 +4272,7 @@ void Context::initialize_built_ins() {
             }
 
             Function* func = static_cast<Function*>(function_obj);
-            std::string func_name = "anonymous";
-
-            Value name_val = func->get_property("name");
-            if (!name_val.is_undefined() && !name_val.to_string().empty()) {
-                func_name = name_val.to_string();
-            }
-
-            return Value("function " + func_name + "() { [native code] }");
+            return Value(func->to_string());
         });
 
     PropertyDescriptor function_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
@@ -6302,8 +6312,9 @@ void Context::initialize_built_ins() {
 
                     return Value(str.substr(start));
                 });
+            Function* trimStart_raw = string_trimStart_fn.get();
             global_prototype->set_property("trimStart", Value(string_trimStart_fn.release()), PropertyAttributes::BuiltinFunction);
-            global_prototype->set_property("trimLeft", Value(string_trimStart_fn.get()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimLeft", Value(trimStart_raw), PropertyAttributes::BuiltinFunction);
 
             auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -6318,8 +6329,9 @@ void Context::initialize_built_ins() {
 
                     return Value(str.substr(0, end));
                 });
+            Function* trimEnd_raw = string_trimEnd_fn.get();
             global_prototype->set_property("trimEnd", Value(string_trimEnd_fn.release()), PropertyAttributes::BuiltinFunction);
-            global_prototype->set_property("trimRight", Value(string_trimEnd_fn.get()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimRight", Value(trimEnd_raw), PropertyAttributes::BuiltinFunction);
 
         }
     }
@@ -6356,12 +6368,9 @@ void Context::initialize_built_ins() {
     
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string description = "";
-            if (!args.empty() && !args[0].is_undefined()) {
-                description = args[0].to_string();
-            }
-            
-            auto symbol = Symbol::create(description);
+            bool has_desc = !args.empty() && !args[0].is_undefined();
+            std::string description = has_desc ? args[0].to_string() : "";
+            auto symbol = Symbol::create(description, has_desc);
             return Value(symbol.release());
         });
     
@@ -6447,10 +6456,8 @@ void Context::initialize_built_ins() {
         }
         auto desc_getter = ObjectFactory::create_native_function("get description",
             [](Context& ctx, const std::vector<Value>&) -> Value {
-                Object* self = ctx.get_this_binding();
-                if (!self) return Value();
                 Value prim = ctx.get_binding("__primitive_this__");
-                if (prim.is_symbol()) return prim.as_symbol()->get_description().empty() ? Value() : Value(prim.as_symbol()->get_description());
+                if (prim.is_symbol()) return prim.as_symbol()->get_has_description() ? Value(prim.as_symbol()->get_description()) : Value();
                 return Value();
             });
         PropertyDescriptor desc_prop;
@@ -10547,6 +10554,7 @@ void Context::setup_global_bindings() {
                 Parser::ParseOptions parse_opts;
                 parse_opts.strict_mode = strict;
                 Parser parser(tokens, parse_opts);
+                parser.set_source(code);
                 auto program = parser.parse_program();
 
                 if (parser.has_errors()) {
