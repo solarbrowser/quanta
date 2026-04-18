@@ -9651,33 +9651,108 @@ void Context::initialize_built_ins() {
             }
 
             Object* iterable = args[0].as_object();
-            if (!iterable->is_array()) {
-                ctx.throw_exception(Value(std::string("Promise.any expects an array")));
-                return Value();
+            uint32_t length = 0;
+            std::vector<Value> promises_vec;
+            if (iterable->is_array()) {
+                length = iterable->get_length();
+                for (uint32_t i = 0; i < length; i++)
+                    promises_vec.push_back(iterable->get_element(i));
+            } else {
+                Value len_val = iterable->get_property("length");
+                if (len_val.is_number()) {
+                    length = static_cast<uint32_t>(len_val.to_number());
+                    for (uint32_t i = 0; i < length; i++)
+                        promises_vec.push_back(iterable->get_element(i));
+                }
             }
 
-            uint32_t length = iterable->get_length();
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+            Value result_promise_val(result_promise_obj.release());
 
             if (length == 0) {
-                ctx.throw_exception(Value(std::string("AggregateError: All promises were rejected")));
-                return Value();
-            }
-
-            Value first_element = iterable->get_element(0);
-            if (first_element.is_object()) {
-                Promise* p = dynamic_cast<Promise*>(first_element.as_object());
-                if (p && p->is_fulfilled()) {
-                    result_promise->fulfill(p->get_value());
+                auto errors_arr = ObjectFactory::create_array();
+                Value errors_val(errors_arr.release());
+                Object* agg_ctor = ctx.get_built_in_object("AggregateError");
+                if (agg_ctor && agg_ctor->is_function()) {
+                    Value agg = static_cast<Function*>(agg_ctor)->call(ctx, {errors_val, Value(std::string("All promises were rejected"))});
+                    result_promise->reject(agg);
                 } else {
-                    result_promise->fulfill(first_element);
+                    result_promise->reject(Value(std::string("AggregateError: All promises were rejected")));
                 }
-            } else {
-                result_promise->fulfill(first_element);
+                return result_promise_val;
             }
 
-            return Value(result_promise_obj.release());
+            struct AnyState {
+                Promise* result;
+                std::vector<Value> errors;
+                uint32_t total;
+                uint32_t rejected_count;
+                bool settled;
+                Context* ctx;
+            };
+            auto state = std::make_shared<AnyState>();
+            state->result = result_promise;
+            state->errors.resize(length);
+            state->total = length;
+            state->rejected_count = 0;
+            state->settled = false;
+            state->ctx = &ctx;
+
+            for (uint32_t i = 0; i < length; i++) {
+                Value elem = promises_vec[i];
+                Promise* p = nullptr;
+                if (elem.is_object()) p = dynamic_cast<Promise*>(elem.as_object());
+
+                auto on_fulfill = ObjectFactory::create_native_function("",
+                    [state](Context&, const std::vector<Value>& a) -> Value {
+                        if (state->settled) return Value();
+                        state->settled = true;
+                        state->result->fulfill(a.empty() ? Value() : a[0]);
+                        return Value();
+                    });
+                auto on_reject = ObjectFactory::create_native_function("",
+                    [state, i](Context& c, const std::vector<Value>& a) -> Value {
+                        if (state->settled) return Value();
+                        state->errors[i] = a.empty() ? Value() : a[0];
+                        state->rejected_count++;
+                        if (state->rejected_count == state->total) {
+                            state->settled = true;
+                            auto errors_arr = ObjectFactory::create_array();
+                            for (uint32_t j = 0; j < state->total; j++)
+                                errors_arr->set_element(j, state->errors[j]);
+                            Value errors_val(errors_arr.release());
+                            Object* agg_ctor = c.get_built_in_object("AggregateError");
+                            if (agg_ctor && agg_ctor->is_function()) {
+                                Value agg = static_cast<Function*>(agg_ctor)->call(c, {errors_val, Value(std::string("All promises were rejected"))});
+                                state->result->reject(agg);
+                            } else {
+                                state->result->reject(Value(std::string("AggregateError: All promises were rejected")));
+                            }
+                        }
+                        return Value();
+                    });
+
+                Function* fulfill_raw = on_fulfill.get();
+                Function* reject_raw = on_reject.get();
+                std::string suffix = std::to_string(i);
+
+                if (p) {
+                    p->set_property("__any_f__" + suffix, Value(on_fulfill.release()));
+                    p->set_property("__any_r__" + suffix, Value(on_reject.release()));
+                    p->then(fulfill_raw, reject_raw);
+                } else {
+                    result_promise_obj = nullptr;
+                    on_reject.release();
+                    on_fulfill.release();
+                    if (!state->settled) {
+                        state->settled = true;
+                        state->result->fulfill(elem);
+                    }
+                }
+            }
+
+            return result_promise_val;
         }, 1);
     promise_constructor->set_property("any", Value(promise_any_static.release()));
 
@@ -9725,14 +9800,19 @@ void Context::initialize_built_ins() {
         });
     register_built_in_object("WeakRef", weakref_constructor.release());
 
+    auto finalizationregistry_prototype = ObjectFactory::create_object();
+    Object* fr_proto_ptr = finalizationregistry_prototype.get();
+    finalizationregistry_prototype.release();
+
     auto finalizationregistry_constructor = ObjectFactory::create_native_constructor("FinalizationRegistry",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [fr_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("FinalizationRegistry constructor requires a callback function");
                 return Value();
             }
 
             auto registry_obj = ObjectFactory::create_object();
+            registry_obj->set_prototype(fr_proto_ptr);
             registry_obj->set_property("_callback", args[0]);
 
             auto map_constructor = ctx.get_binding("Map");
@@ -9799,6 +9879,8 @@ void Context::initialize_built_ins() {
 
             return Value(registry_obj.release());
         });
+    finalizationregistry_constructor->set_property("prototype", Value(fr_proto_ptr));
+    fr_proto_ptr->set_property("constructor", Value(finalizationregistry_constructor.get()));
     register_built_in_object("FinalizationRegistry", finalizationregistry_constructor.release());
 
     auto disposablestack_constructor = ObjectFactory::create_native_constructor("DisposableStack",
