@@ -206,6 +206,21 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             return nullptr;
         }
 
+        if (current_token().get_type() == TokenType::ASSIGN &&
+            left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+            auto* obj = static_cast<ObjectLiteral*>(left.get());
+            for (const auto& prop : obj->get_properties()) {
+                if (prop->shorthand) {
+                    if (auto* id = dynamic_cast<Identifier*>(prop->key.get())) {
+                        if (id->has_escaped_keyword()) {
+                            add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+        }
+
         TokenType op_token = current_token().get_type();
         Position op_start = current_token().get_start();
         advance();
@@ -605,12 +620,21 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
 
             if (current_token().get_type() != TokenType::RIGHT_PAREN) {
                 do {
-                    auto arg = parse_assignment_expression();
-                    if (!arg) {
-                        add_error("Expected argument expression");
-                        return nullptr;
+                    if (match(TokenType::ELLIPSIS)) {
+                        auto spread = parse_spread_element();
+                        if (!spread) {
+                            add_error("Invalid spread argument in new expression");
+                            return nullptr;
+                        }
+                        arguments.push_back(std::move(spread));
+                    } else {
+                        auto arg = parse_assignment_expression();
+                        if (!arg) {
+                            add_error("Expected argument expression");
+                            return nullptr;
+                        }
+                        arguments.push_back(std::move(arg));
                     }
-                    arguments.push_back(std::move(arg));
 
                     if (consume_if_match(TokenType::COMMA)) {
                         if (current_token().get_type() == TokenType::RIGHT_PAREN) {
@@ -1222,12 +1246,13 @@ std::unique_ptr<ASTNode> Parser::parse_undefined_literal() {
 std::unique_ptr<ASTNode> Parser::parse_identifier() {
     const Token& token = current_token();
     std::string name = token.get_value();
-    
+    bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
     Position end = token.get_end();
     advance();
-    
-    return std::make_unique<Identifier>(name, start, end);
+    auto id = std::make_unique<Identifier>(name, start, end);
+    if (escaped_kw) id->set_escaped_keyword(true);
+    return id;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_private_field() {
@@ -4941,6 +4966,10 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 break;
 
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+                if (current_token().has_escaped_keyword()) {
+                    add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
+                    return nullptr;
+                }
                 auto id = std::make_unique<Identifier>(
                     current_token().get_value(),
                     current_token().get_start(),

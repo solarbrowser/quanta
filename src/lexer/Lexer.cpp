@@ -482,8 +482,9 @@ Token Lexer::read_identifier() {
     TokenType type = lookup_keyword(value);
 
     if (contains_unicode_escapes && type != TokenType::IDENTIFIER) {
-        add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
-        return create_token(TokenType::INVALID, value, start);
+        Token tok = create_token(TokenType::IDENTIFIER, value, start);
+        tok.set_escaped_keyword(true);
+        return tok;
     }
 
     if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
