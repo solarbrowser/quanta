@@ -2498,6 +2498,20 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
             prop_value = obj->get_property(mapping.property_name);
         }
 
+        // Apply default if property is undefined (for nested patterns too)
+        if (prop_value.is_undefined()) {
+            for (const auto& dv : default_values_) {
+                if (dv.index < targets_.size()) {
+                    const std::string& tname = targets_[dv.index]->get_name();
+                    if (tname == mapping.property_name || tname == mapping.variable_name) {
+                        prop_value = dv.expr->evaluate(ctx);
+                        if (ctx.has_exception()) return false;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Handle nested array-in-object: {x: [a, b]} encoded as __nested_array:a,b
         if (mapping.variable_name.length() > 15 && mapping.variable_name.substr(0, 15) == "__nested_array:") {
             std::string vars_str = mapping.variable_name.substr(15);
@@ -7586,8 +7600,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             Identifier* id = static_cast<Identifier*>(left_.get());
                             var_name = id->get_name();
                         } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
-                            DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
                             var_name = "__destructuring__";
+                        } else if (left_->get_type() == Type::ARRAY_LITERAL ||
+                                   left_->get_type() == Type::OBJECT_LITERAL) {
+                            var_name = "__pattern__";
+                        } else if (left_->get_type() == Type::MEMBER_EXPRESSION) {
+                            var_name = "__member__";
                         }
 
                         if (var_name.empty()) {
@@ -7640,7 +7658,26 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                                 Value value = result_obj->get_property("value");
 
-                                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                                if (left_->get_type() == Type::MEMBER_EXPRESSION) {
+                                    MemberExpression* member = static_cast<MemberExpression*>(left_.get());
+                                    Value obj_val = member->get_object()->evaluate(*loop_ctx);
+                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
+                                    std::string prop_key;
+                                    if (member->is_computed()) {
+                                        Value key_val = member->get_property()->evaluate(*loop_ctx);
+                                        if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
+                                        prop_key = key_val.to_string();
+                                    } else {
+                                        Identifier* prop_id = static_cast<Identifier*>(member->get_property());
+                                        prop_key = prop_id->get_name();
+                                    }
+                                    if (obj_val.is_object()) obj_val.as_object()->set_property(prop_key, value);
+                                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->set_property(prop_key, value);
+                                } else if (left_->get_type() == Type::ARRAY_LITERAL ||
+                                           left_->get_type() == Type::OBJECT_LITERAL) {
+                                    AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
+                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
+                                } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
 
                                     if (destructuring->get_type() == DestructuringAssignment::Type::ARRAY && value.is_object()) {
@@ -7747,8 +7784,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 var_name = id->get_name();
             } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                 var_name = "__destructuring_temp__";
+            } else if (left_->get_type() == Type::ARRAY_LITERAL ||
+                       left_->get_type() == Type::OBJECT_LITERAL) {
+                var_name = "__pattern__";
+            } else if (left_->get_type() == Type::MEMBER_EXPRESSION) {
+                var_name = "__member__";
             }
-            
+
             if (var_name.empty()) {
                 ctx.throw_exception(Value(std::string("For...of: Invalid loop variable")));
                 return Value();
@@ -7764,7 +7806,26 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 
                 Value element = obj->get_element(i);
                 
-                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                if (left_->get_type() == Type::MEMBER_EXPRESSION) {
+                    MemberExpression* member = static_cast<MemberExpression*>(left_.get());
+                    Value obj_val = member->get_object()->evaluate(*loop_ctx);
+                    if (loop_ctx->has_exception()) return Value();
+                    std::string prop_key;
+                    if (member->is_computed()) {
+                        Value key_val = member->get_property()->evaluate(*loop_ctx);
+                        if (loop_ctx->has_exception()) return Value();
+                        prop_key = key_val.to_string();
+                    } else {
+                        Identifier* prop_id = static_cast<Identifier*>(member->get_property());
+                        prop_key = prop_id->get_name();
+                    }
+                    if (obj_val.is_object()) obj_val.as_object()->set_property(prop_key, element);
+                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->set_property(prop_key, element);
+                } else if (left_->get_type() == Type::ARRAY_LITERAL ||
+                           left_->get_type() == Type::OBJECT_LITERAL) {
+                    AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), element);
+                    if (loop_ctx->has_exception()) return Value();
+                } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
 
                     std::unique_ptr<ASTNode> temp_literal;
@@ -8272,7 +8333,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                     std::unique_ptr<Function> instance_method;
-                    if (method_is_gen) {
+                    if (method_is_gen && method_is_async) {
+                        std::vector<std::string> gen_params;
+                        for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
+                        instance_method = std::make_unique<AsyncGeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else if (method_is_gen) {
                         std::vector<std::string> gen_params;
                         for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
                         instance_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
@@ -8414,7 +8479,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                     std::unique_ptr<Function> static_method;
-                    if (static_is_gen) {
+                    if (static_is_gen && static_is_async) {
+                        std::vector<std::string> gen_params;
+                        for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
+                        static_method = std::make_unique<AsyncGeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                    } else if (static_is_gen) {
                         std::vector<std::string> gen_params;
                         for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
                         static_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
@@ -8699,7 +8768,11 @@ Value FunctionExpression::evaluate(Context& ctx) {
     }
 
     std::unique_ptr<Function> function;
-    if (is_generator_) {
+    if (is_async_ && is_generator_) {
+        std::vector<std::string> gen_param_names;
+        for (const auto& p : params_) gen_param_names.push_back(p->get_name()->get_name());
+        function = std::make_unique<AsyncGeneratorFunction>(name, gen_param_names, body_->clone(), &ctx);
+    } else if (is_generator_) {
         std::vector<std::string> gen_param_names;
         for (const auto& p : params_) gen_param_names.push_back(p->get_name()->get_name());
         function = std::make_unique<GeneratorFunction>(name, gen_param_names, body_->clone(), &ctx);
