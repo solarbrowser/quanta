@@ -1850,6 +1850,16 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         return right_value;
     }
 
+    if (operator_ == Operator::ASSIGN &&
+        left_->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+        right_value = right_->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        auto* destr = static_cast<DestructuringAssignment*>(left_.get());
+        destr->evaluate_with_value(ctx, right_value);
+        if (ctx.has_exception()) return Value();
+        return right_value;
+    }
+
     ctx.throw_exception(Value(std::string("Invalid assignment target")));
     return Value();
 }
@@ -8126,17 +8136,15 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     
     std::unique_ptr<Function> function_obj;
     if (is_async_ && is_generator_) {
-        std::vector<std::string> param_names;
-        for (const auto& param : param_clones) {
-            param_names.push_back(param->get_name()->get_name());
-        }
-        function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, param_names, body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> gen_params;
+        for (const auto& p : param_clones)
+            gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        function_obj = std::make_unique<AsyncGeneratorFunction>(function_name, std::move(gen_params), body_->clone(), &ctx);
     } else if (is_generator_) {
-        std::vector<std::string> param_names;
-        for (const auto& param : param_clones) {
-            param_names.push_back(param->get_name()->get_name());
-        }
-        function_obj = std::make_unique<GeneratorFunction>(function_name, param_names, body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> gen_params;
+        for (const auto& p : param_clones)
+            gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        function_obj = std::make_unique<GeneratorFunction>(function_name, std::move(gen_params), body_->clone(), &ctx);
     } else if (is_async_) {
         std::vector<std::string> param_names;
         for (const auto& param : param_clones) {
@@ -8334,13 +8342,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                     std::unique_ptr<Function> instance_method;
                     if (method_is_gen && method_is_async) {
-                        std::vector<std::string> gen_params;
-                        for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
-                        instance_method = std::make_unique<AsyncGeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> gen_params;
+                        for (const auto& p : method_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        instance_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (method_is_gen) {
-                        std::vector<std::string> gen_params;
-                        for (const auto& p : method_params) gen_params.push_back(p->get_name()->get_name());
-                        instance_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> gen_params;
+                        for (const auto& p : method_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        instance_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (method_is_async) {
                         std::vector<std::string> async_params;
                         for (const auto& p : method_params) async_params.push_back(p->get_name()->get_name());
@@ -8480,13 +8488,13 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                     std::unique_ptr<Function> static_method;
                     if (static_is_gen && static_is_async) {
-                        std::vector<std::string> gen_params;
-                        for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
-                        static_method = std::make_unique<AsyncGeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> gen_params;
+                        for (const auto& p : static_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        static_method = std::make_unique<AsyncGeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (static_is_gen) {
-                        std::vector<std::string> gen_params;
-                        for (const auto& p : static_params) gen_params.push_back(p->get_name()->get_name());
-                        static_method = std::make_unique<GeneratorFunction>(method_name, gen_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> gen_params;
+                        for (const auto& p : static_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        static_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (static_is_async) {
                         std::vector<std::string> async_params;
                         for (const auto& p : static_params) async_params.push_back(p->get_name()->get_name());
@@ -8769,13 +8777,13 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
     std::unique_ptr<Function> function;
     if (is_async_ && is_generator_) {
-        std::vector<std::string> gen_param_names;
-        for (const auto& p : params_) gen_param_names.push_back(p->get_name()->get_name());
-        function = std::make_unique<AsyncGeneratorFunction>(name, gen_param_names, body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> gen_params;
+        for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        function = std::make_unique<AsyncGeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
     } else if (is_generator_) {
-        std::vector<std::string> gen_param_names;
-        for (const auto& p : params_) gen_param_names.push_back(p->get_name()->get_name());
-        function = std::make_unique<GeneratorFunction>(name, gen_param_names, body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> gen_params;
+        for (const auto& p : params_) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        function = std::make_unique<GeneratorFunction>(name, std::move(gen_params), body_->clone(), &ctx);
     } else {
         function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
     }

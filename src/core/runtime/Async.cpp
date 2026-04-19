@@ -875,6 +875,12 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                Context* closure_context)
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {}
 
+AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
+                                               std::vector<std::unique_ptr<Parameter>> params,
+                                               std::unique_ptr<ASTNode> body,
+                                               Context* closure_context)
+    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {}
+
 Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
 
@@ -900,10 +906,52 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     }
 
     // Bind parameters
-    const auto& params = get_parameters();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg = i < args.size() ? args[i] : Value();
-        gen_ctx->create_binding(params[i], arg);
+    const auto& param_objs = get_parameter_objects();
+    if (!param_objs.empty()) {
+        size_t regular_count = 0;
+        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        gen_ctx->set_in_param_eval(true);
+        for (size_t i = 0; i < param_objs.size(); ++i) {
+            const auto& param = param_objs[i];
+            if (param->is_rest()) {
+                auto rest_arr = ObjectFactory::create_array(0);
+                for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
+                gen_ctx->create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+            } else {
+                Value arg_val;
+                if (i < args.size() && !args[i].is_undefined()) {
+                    arg_val = args[i];
+                } else if (param->has_default()) {
+                    arg_val = param->get_default_value()->evaluate(*gen_ctx);
+                    if (gen_ctx->has_exception()) {
+                        gen_ctx->set_in_param_eval(false);
+                        ctx.throw_exception(gen_ctx->get_exception());
+                        return Value();
+                    }
+                }
+                if (param->has_destructuring()) {
+                    auto* pat = param->get_destructuring_pattern();
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(pat);
+                    if (destr) {
+                        destr->evaluate_with_value(*gen_ctx, arg_val);
+                        if (gen_ctx->has_exception()) {
+                            gen_ctx->set_in_param_eval(false);
+                            ctx.throw_exception(gen_ctx->get_exception());
+                            return Value();
+                        }
+                    }
+                } else {
+                    gen_ctx->create_binding(param->get_name()->get_name(), arg_val, true);
+                }
+            }
+        }
+        gen_ctx->set_in_param_eval(false);
+    } else {
+        const auto& params = get_parameters();
+        for (size_t i = 0; i < params.size(); ++i) {
+            Value arg = i < args.size() ? args[i] : Value();
+            gen_ctx->create_binding(params[i], arg);
+        }
     }
 
     // arguments object

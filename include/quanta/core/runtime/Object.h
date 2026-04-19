@@ -407,6 +407,7 @@ public:
     const std::string& get_name() const { return name_; }
     void set_name(const std::string& name);
     const std::vector<std::string>& get_parameters() const { return parameters_; }
+    const std::vector<std::unique_ptr<class Parameter>>& get_parameter_objects() const { return parameter_objects_; }
     size_t get_arity() const { return parameters_.size(); }
     bool is_native() const { return is_native_; }
     bool is_constructor() const { return is_constructor_; }

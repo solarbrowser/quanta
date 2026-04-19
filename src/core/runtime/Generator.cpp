@@ -420,6 +420,22 @@ void Generator::reset_yield_counter() {
 
 
 GeneratorFunction::GeneratorFunction(const std::string& name,
+                                   std::vector<std::unique_ptr<Parameter>> params,
+                                   std::unique_ptr<ASTNode> body,
+                                   Context* closure_context)
+    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    if (Generator::s_generator_prototype_) {
+        auto fn_proto = ObjectFactory::create_object();
+        fn_proto->set_prototype(Generator::s_generator_prototype_);
+        fn_proto->set_property("constructor", Value(static_cast<Function*>(this)));
+        this->set_property("prototype", Value(fn_proto.release()));
+        if (Generator::s_generator_function_prototype_) {
+            this->set_prototype(Generator::s_generator_function_prototype_);
+        }
+    }
+}
+
+GeneratorFunction::GeneratorFunction(const std::string& name,
                                    const std::vector<std::string>& params,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
@@ -470,10 +486,52 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     }
 
     // Bind parameters
-    const auto& params = get_parameters();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg = i < args.size() ? args[i] : Value();
-        gen_context.create_binding(params[i], arg);
+    const auto& param_objs = get_parameter_objects();
+    if (!param_objs.empty()) {
+        size_t regular_count = 0;
+        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        gen_context.set_in_param_eval(true);
+        for (size_t i = 0; i < param_objs.size(); ++i) {
+            const auto& param = param_objs[i];
+            if (param->is_rest()) {
+                auto rest_arr = ObjectFactory::create_array(0);
+                for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
+                gen_context.create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+            } else {
+                Value arg_val;
+                if (i < args.size() && !args[i].is_undefined()) {
+                    arg_val = args[i];
+                } else if (param->has_default()) {
+                    arg_val = param->get_default_value()->evaluate(gen_context);
+                    if (gen_context.has_exception()) {
+                        gen_context.set_in_param_eval(false);
+                        ctx.throw_exception(gen_context.get_exception());
+                        return nullptr;
+                    }
+                }
+                if (param->has_destructuring()) {
+                    auto* pat = param->get_destructuring_pattern();
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(pat);
+                    if (destr) {
+                        destr->evaluate_with_value(gen_context, arg_val);
+                        if (gen_context.has_exception()) {
+                            gen_context.set_in_param_eval(false);
+                            ctx.throw_exception(gen_context.get_exception());
+                            return nullptr;
+                        }
+                    }
+                } else {
+                    gen_context.create_binding(param->get_name()->get_name(), arg_val, true);
+                }
+            }
+        }
+        gen_context.set_in_param_eval(false);
+    } else {
+        const auto& params = get_parameters();
+        for (size_t i = 0; i < params.size(); ++i) {
+            Value arg = i < args.size() ? args[i] : Value();
+            gen_context.create_binding(params[i], arg);
+        }
     }
 
     // arguments object
