@@ -750,6 +750,18 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 Position end = get_current_position();
                 expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end, true);
             } else {
+                if (match(TokenType::HASH)) {
+                    auto private_field = parse_private_field();
+                    if (!private_field) {
+                        add_error("Invalid private field after '?.'");
+                        return expr;
+                    }
+                    auto property = std::unique_ptr<Identifier>(static_cast<Identifier*>(private_field.release()));
+                    Position end = property->get_end();
+                    expr = std::make_unique<OptionalChainingExpression>(
+                        std::move(expr), std::move(property), false, start, end
+                    );
+                } else {
                 if (!match(TokenType::IDENTIFIER) && current_token().get_type() != TokenType::FOR &&
                     current_token().get_type() != TokenType::FROM && current_token().get_type() != TokenType::OF &&
                     current_token().get_type() != TokenType::DELETE) {
@@ -763,11 +775,12 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 Position prop_end = token.get_end();
                 advance();
                 auto property = std::make_unique<Identifier>(name, prop_start, prop_end);
-                
+
                 Position end = property->get_end();
                 expr = std::make_unique<OptionalChainingExpression>(
                     std::move(expr), std::move(property), false, start, end
                 );
+                }
             }
         } else if (match(TokenType::LEFT_PAREN)) {
             advance();
@@ -2471,6 +2484,26 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     std::vector<std::unique_ptr<ASTNode>> statements;
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
+        if (current_token().get_type() == TokenType::SEMICOLON) {
+            advance();
+            continue;
+        }
+        // static { } block
+        if (current_token().get_type() == TokenType::STATIC) {
+            Position sstart = get_current_position();
+            size_t saved = current_token_index_;
+            advance();
+            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                auto block = parse_block_statement();
+                if (block) {
+                    statements.push_back(std::make_unique<ClassStaticBlock>(
+                        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(block.release())),
+                        sstart, get_current_position()));
+                }
+                continue;
+            }
+            current_token_index_ = saved;
+        }
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
@@ -2556,6 +2589,26 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     std::vector<std::unique_ptr<ASTNode>> statements;
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
+        if (current_token().get_type() == TokenType::SEMICOLON) {
+            advance();
+            continue;
+        }
+        // static { } block
+        if (current_token().get_type() == TokenType::STATIC) {
+            Position sstart2 = get_current_position();
+            size_t saved2 = current_token_index_;
+            advance();
+            if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                auto sblock = parse_block_statement();
+                if (sblock) {
+                    statements.push_back(std::make_unique<ClassStaticBlock>(
+                        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(sblock.release())),
+                        sstart2, get_current_position()));
+                }
+                continue;
+            }
+            current_token_index_ = saved2;
+        }
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
@@ -2733,44 +2786,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             advance();
         }
 
-        if (init) {
-            auto this_id = std::make_unique<Identifier>("this", start, start);
-
-            auto member_expr = std::make_unique<MemberExpression>(
-                std::move(this_id),
-                std::move(key),
-                computed,
-                start,
-                get_current_position()
-            );
-
-            auto assignment = std::make_unique<AssignmentExpression>(
-                std::move(member_expr),
-                AssignmentExpression::Operator::ASSIGN,
-                std::move(init),
-                start,
-                get_current_position()
-            );
-            return std::make_unique<ExpressionStatement>(std::move(assignment), start, get_current_position());
-        } else {
-            auto this_id = std::make_unique<Identifier>("this", start, start);
-            auto member_expr = std::make_unique<MemberExpression>(
-                std::move(this_id),
-                std::move(key),
-                computed,
-                start,
-                get_current_position()
-            );
-            auto undefined_val = std::make_unique<Identifier>("undefined", start, start);
-            auto assignment = std::make_unique<AssignmentExpression>(
-                std::move(member_expr),
-                AssignmentExpression::Operator::ASSIGN,
-                std::move(undefined_val),
-                start,
-                get_current_position()
-            );
-            return std::make_unique<ExpressionStatement>(std::move(assignment), start, get_current_position());
-        }
+        return std::make_unique<ClassField>(std::move(key), std::move(init), is_static, computed, start, get_current_position());
     }
 
     MethodDefinition::Kind kind = method_kind;

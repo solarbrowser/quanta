@@ -592,9 +592,26 @@ Value BinaryExpression::evaluate(Context& ctx) {
         return Value();
     }
     
+    if (operator_ == Operator::IN && left_->get_type() == ASTNode::Type::IDENTIFIER) {
+        Identifier* id = static_cast<Identifier*>(left_.get());
+        const std::string& iname = id->get_name();
+        if (!iname.empty() && iname[0] == '#') {
+            Value right_value = right_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            if (!right_value.is_object() && !right_value.is_function()) {
+                ctx.throw_type_error("Cannot use 'in' operator to search for '" + iname + "' in non-object");
+                return Value();
+            }
+            Object* obj = right_value.is_function()
+                ? static_cast<Object*>(right_value.as_function())
+                : right_value.as_object();
+            return Value(obj->has_own_property(iname));
+        }
+    }
+
     Value left_value = left_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
-    
+
     if (operator_ == Operator::LOGICAL_AND) {
         if (!left_value.to_boolean()) {
             return left_value;
@@ -5284,6 +5301,9 @@ Value MemberExpression::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
     
     if (object_value.is_null() || object_value.is_undefined()) {
+        if (object_->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+            return Value();
+        }
         ctx.throw_type_error("Cannot read property of null or undefined");
         return Value();
     }
@@ -8186,9 +8206,24 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::unique_ptr<ASTNode> constructor_body = nullptr;
     std::vector<std::string> constructor_params;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
+    std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
 
     if (body_) {
         for (const auto& stmt : body_->get_statements()) {
+            if (stmt->get_type() == Type::CLASS_FIELD) {
+                ClassField* cf = static_cast<ClassField*>(stmt.get());
+                if (cf->is_static()) {
+                    static_field_initializers.push_back(stmt->clone());
+                } else {
+                    field_initializers.push_back(stmt->clone());
+                }
+                continue;
+            }
+            if (stmt->get_type() == Type::CLASS_STATIC_BLOCK) {
+                static_field_initializers.push_back(stmt->clone());
+                continue;
+            }
+
             if (stmt->get_type() == Type::EXPRESSION_STATEMENT) {
                 field_initializers.push_back(stmt->clone());
                 continue;
@@ -8254,7 +8289,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         // Get/set accessor properties
                         PropertyDescriptor existing = prototype->get_property_descriptor(method_name);
                         PropertyDescriptor desc;
-                        if (existing.has_value()) {
+                        if (existing.is_accessor_descriptor() || existing.has_getter() || existing.has_setter()) {
                             desc = existing;
                         }
                         if (method->get_kind() == MethodDefinition::GETTER) {
@@ -8289,7 +8324,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         std::vector<std::unique_ptr<ASTNode>> new_statements;
 
         for (auto& field_init : field_initializers) {
-            new_statements.push_back(std::move(field_init));
+            if (field_init->get_type() == Type::CLASS_FIELD) {
+                ClassField* cf = static_cast<ClassField*>(field_init.get());
+                Position fstart = cf->get_start();
+                auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
+                auto member_expr = std::make_unique<MemberExpression>(
+                    std::move(this_id), cf->get_key()->clone(), cf->is_computed(), fstart, fstart);
+                std::unique_ptr<ASTNode> init_val;
+                if (cf->get_value()) {
+                    init_val = cf->get_value()->clone();
+                } else {
+                    init_val = std::make_unique<Identifier>("undefined", fstart, fstart);
+                }
+                auto assign = std::make_unique<AssignmentExpression>(
+                    std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
+                    std::move(init_val), fstart, fstart);
+                new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
+            } else {
+                new_statements.push_back(std::move(field_init));
+            }
         }
 
         for (auto& stmt : body_block->get_statements()) {
@@ -8377,7 +8430,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);
                         PropertyDescriptor desc;
-                        if (existing.has_value()) {
+                        if (existing.is_accessor_descriptor() || existing.has_getter() || existing.has_setter()) {
                             desc = existing;
                         }
                         if (method->get_kind() == MethodDefinition::GETTER) {
@@ -8492,6 +8545,37 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     ctx.create_binding(class_name, Value(constructor_fn.get()));
 
+    // Execute static field initializers and static blocks on the constructor
+    if (!static_field_initializers.empty()) {
+        for (auto& sfi : static_field_initializers) {
+            if (sfi->get_type() == Type::CLASS_STATIC_BLOCK) {
+                ClassStaticBlock* blk = static_cast<ClassStaticBlock*>(sfi.get());
+                auto static_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, constructor_fn.get());
+                static_ctx->create_binding("this", Value(constructor_fn.get()), true);
+                if (blk->get_body()) blk->get_body()->evaluate(*static_ctx);
+            } else if (sfi->get_type() == Type::CLASS_FIELD) {
+                ClassField* cf = static_cast<ClassField*>(sfi.get());
+                std::string key_name;
+                if (cf->is_computed()) {
+                    Value kv = cf->get_key()->evaluate(ctx);
+                    if (ctx.has_exception()) break;
+                    key_name = kv.to_string();
+                } else if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
+                    key_name = kid->get_name();
+                } else if (StringLiteral* ks = dynamic_cast<StringLiteral*>(cf->get_key())) {
+                    key_name = ks->get_value();
+                }
+                Value val;
+                if (cf->get_value()) {
+                    val = cf->get_value()->evaluate(ctx);
+                    if (ctx.has_exception()) break;
+                }
+                PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
+                constructor_fn->set_property_descriptor(key_name, fdesc);
+            }
+        }
+    }
+
     Function* constructor_ptr = constructor_fn.get();
 
     constructor_fn.release();
@@ -8533,6 +8617,31 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
     }
 }
 
+
+Value ClassField::evaluate(Context& ctx) {
+    return Value();
+}
+
+std::unique_ptr<ASTNode> ClassField::clone() const {
+    return std::make_unique<ClassField>(
+        key_->clone(),
+        value_ ? value_->clone() : nullptr,
+        is_static_, computed_,
+        start_, end_
+    );
+}
+
+Value ClassStaticBlock::evaluate(Context& ctx) {
+    if (body_) body_->evaluate(ctx);
+    return Value();
+}
+
+std::unique_ptr<ASTNode> ClassStaticBlock::clone() const {
+    return std::make_unique<ClassStaticBlock>(
+        std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
+        start_, end_
+    );
+}
 
 Value MethodDefinition::evaluate(Context& ctx) {
     if (value_) {

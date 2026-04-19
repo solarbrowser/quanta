@@ -8743,14 +8743,16 @@ void Context::initialize_built_ins() {
         PropertyAttributes::BuiltinFunction);
     regexp_prototype->set_property_descriptor("constructor", regexp_constructor_desc);
 
-    // ES6: RegExp.prototype flag data properties (false by default, shadowed by instance props)
+    // ES2022: RegExp.prototype flag data properties (false by default, shadowed by instance props)
+    regexp_prototype->set_property("hasIndices", Value(false));
     regexp_prototype->set_property("global", Value(false));
     regexp_prototype->set_property("ignoreCase", Value(false));
     regexp_prototype->set_property("multiline", Value(false));
+    regexp_prototype->set_property("dotAll", Value(false));
     regexp_prototype->set_property("unicode", Value(false));
     regexp_prototype->set_property("sticky", Value(false));
 
-    // ES6: RegExp.prototype.flags accessor (reads flag props via get_property for Proxy support)
+    // ES2022: RegExp.prototype.flags accessor (reads flag props via get_property for Proxy support)
     {
         auto flags_getter_fn = ObjectFactory::create_native_function("get flags",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -8760,11 +8762,13 @@ void Context::initialize_built_ins() {
                     ctx.throw_type_error("RegExp.prototype.flags getter called on incompatible receiver");
                     return Value();
                 }
-                // Check flags in canonical order: g, i, m, u, y (matching prototype properties)
+                // Check flags in ES2022 canonical order: d, g, i, m, s, u, y
                 std::string result;
+                if (this_obj->get_property("hasIndices").to_boolean()) result += "d";
                 if (this_obj->get_property("global").to_boolean()) result += "g";
                 if (this_obj->get_property("ignoreCase").to_boolean()) result += "i";
                 if (this_obj->get_property("multiline").to_boolean()) result += "m";
+                if (this_obj->get_property("dotAll").to_boolean()) result += "s";
                 if (this_obj->get_property("unicode").to_boolean()) result += "u";
                 if (this_obj->get_property("sticky").to_boolean()) result += "y";
                 return Value(result);
