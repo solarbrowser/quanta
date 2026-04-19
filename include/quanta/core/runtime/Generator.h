@@ -118,15 +118,20 @@ private:
 class GeneratorFunction : public Function {
 private:
     std::unique_ptr<ASTNode> body_;
-    
+
 public:
-    GeneratorFunction(const std::string& name, 
+    GeneratorFunction(const std::string& name,
                      const std::vector<std::string>& params,
                      std::unique_ptr<ASTNode> body,
                      Context* closure_context);
-    
+
+    GeneratorFunction(const std::string& name,
+                     std::vector<std::unique_ptr<class Parameter>> params,
+                     std::unique_ptr<ASTNode> body,
+                     Context* closure_context);
+
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
-    
+
     std::unique_ptr<Generator> create_generator(Context& ctx, const std::vector<Value>& args, Value this_value = Value());
 };
 
