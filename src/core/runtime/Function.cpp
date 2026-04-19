@@ -675,16 +675,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
 Value Function::get_property(const std::string& key) const {
     if (key == "name") {
-        // Check if a "name" property was explicitly overridden (e.g. static name() in class)
         if (descriptors_) {
             auto it = descriptors_->find("name");
-            if (it != descriptors_->end()) {
-                if (it->second.is_data_descriptor()) {
-                    Value desc_val = it->second.get_value();
-                    if (desc_val.is_function()) {
-                        return desc_val;
-                    }
-                }
+            if (it != descriptors_->end() && it->second.is_data_descriptor()) {
+                return it->second.get_value();
             }
         }
         return Value(name_);

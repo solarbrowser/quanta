@@ -69,6 +69,8 @@ public:
         FUNCTION_DECLARATION,
         CLASS_DECLARATION,
         METHOD_DEFINITION,
+        CLASS_FIELD,
+        CLASS_STATIC_BLOCK,
         RETURN_STATEMENT,
         BREAK_STATEMENT,
         CONTINUE_STATEMENT,
@@ -1004,6 +1006,41 @@ public:
     
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+class ClassField : public ASTNode {
+private:
+    std::unique_ptr<ASTNode> key_;
+    std::unique_ptr<ASTNode> value_;
+    bool is_static_;
+    bool computed_;
+public:
+    ClassField(std::unique_ptr<ASTNode> key, std::unique_ptr<ASTNode> value,
+               bool is_static, bool computed,
+               const Position& start, const Position& end)
+        : ASTNode(Type::CLASS_FIELD, start, end),
+          key_(std::move(key)), value_(std::move(value)),
+          is_static_(is_static), computed_(computed) {}
+    ASTNode* get_key() const { return key_.get(); }
+    ASTNode* get_value() const { return value_.get(); }
+    bool is_static() const { return is_static_; }
+    bool is_computed() const { return computed_; }
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override { return "[ClassField]"; }
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+class ClassStaticBlock : public ASTNode {
+private:
+    std::unique_ptr<BlockStatement> body_;
+public:
+    ClassStaticBlock(std::unique_ptr<BlockStatement> body,
+                     const Position& start, const Position& end)
+        : ASTNode(Type::CLASS_STATIC_BLOCK, start, end), body_(std::move(body)) {}
+    BlockStatement* get_body() const { return body_.get(); }
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override { return "[ClassStaticBlock]"; }
     std::unique_ptr<ASTNode> clone() const override;
 };
 
