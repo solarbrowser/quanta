@@ -2769,7 +2769,9 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     if (current_token().get_type() == TokenType::ASSIGN ||
         current_token().get_type() == TokenType::SEMICOLON ||
-        current_token().get_type() == TokenType::RIGHT_BRACE) {
+        current_token().get_type() == TokenType::RIGHT_BRACE ||
+        (!is_generator && !is_async && method_kind == MethodDefinition::METHOD &&
+         current_token().get_type() != TokenType::LEFT_PAREN)) {
 
         std::unique_ptr<ASTNode> init = nullptr;
 
@@ -3961,6 +3963,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                         if (match(TokenType::COMMA)) {
                             advance();
+                        } else {
+                            break;
                         }
                         continue;
                     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
@@ -4014,7 +4018,18 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
             
             std::unique_ptr<ASTNode> method_value;
-            if (is_async) {
+            if (is_async && is_generator) {
+                auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
+                method_value = std::make_unique<FunctionExpression>(
+                    nullptr,
+                    std::move(params),
+                    std::move(block_body),
+                    key->get_start(),
+                    get_current_position(),
+                    true,  // is_generator
+                    true   // is_async
+                );
+            } else if (is_async) {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
                 method_value = std::make_unique<AsyncFunctionExpression>(
                     nullptr,
@@ -4982,6 +4997,17 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         }
                         property_mappings.emplace_back(original_property_name, proper_pattern);
 
+                        if (match(TokenType::ASSIGN)) {
+                            advance();
+                            auto default_expr = parse_assignment_expression();
+                            if (!default_expr) {
+                                add_error("Expected expression after '=' in object destructuring default");
+                                return nullptr;
+                            }
+                            size_t target_index = targets.size() - 1;
+                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
+                        }
+
                     } else if (match(TokenType::LEFT_BRACKET)) {
                         auto nested = parse_destructuring_pattern(depth + 1);
                         if (!nested) {
@@ -5003,6 +5029,17 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         targets.push_back(std::move(nested_id));
 
                         property_mappings.emplace_back(original_property_name, "__nested_array:" + nested_vars);
+
+                        if (match(TokenType::ASSIGN)) {
+                            advance();
+                            auto default_expr = parse_assignment_expression();
+                            if (!default_expr) {
+                                add_error("Expected expression after '=' in object destructuring default");
+                                return nullptr;
+                            }
+                            size_t target_index = targets.size() - 1;
+                            obj_default_exprs.emplace_back(target_index, std::move(default_expr));
+                        }
                     } else if (match(TokenType::IDENTIFIER)) {
                         std::string new_name = current_token().get_value();
                         Position new_pos = current_token().get_start();

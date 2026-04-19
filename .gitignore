@@ -42,6 +42,7 @@ tests/
 neo/
 /logs/
 conformance/
+results/
 
 # other
 .eshostrc

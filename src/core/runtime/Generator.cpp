@@ -462,13 +462,9 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
             std::string var_name = key.substr(10);
             Value closure_value = this->get_property(key);
             if (var_name != "arguments" && var_name != "this") {
-                if (ctx.has_binding(var_name)) {
-                    Value parent_val = ctx.get_binding(var_name);
-                    if (!parent_val.is_undefined() && !parent_val.is_function()) {
-                        closure_value = parent_val;
-                    }
+                if (!ctx.has_binding(var_name)) {
+                    gen_context.create_binding(var_name, closure_value, true);
                 }
-                gen_context.create_binding(var_name, closure_value, true);
             }
         }
     }
@@ -479,6 +475,15 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         Value arg = i < args.size() ? args[i] : Value();
         gen_context.create_binding(params[i], arg);
     }
+
+    // arguments object
+    auto arguments_obj = ObjectFactory::create_array(args.size());
+    for (size_t i = 0; i < args.size(); ++i) {
+        arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+    }
+    arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+    arguments_obj->set_type(Object::ObjectType::Arguments);
+    gen_context.create_binding("arguments", Value(arguments_obj.release()), false);
 
     std::unique_ptr<ASTNode> body_clone;
     if (body_) {
