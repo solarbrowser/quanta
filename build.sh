@@ -49,6 +49,11 @@ setup_pcre2() {
         git submodule update --init --recursive third_party/pcre2 || fail "Failed to initialize PCRE2 submodule"
     fi
 
+    if [[ ! -f "third_party/utf8proc/utf8proc.c" ]]; then
+        print_info "Initializing utf8proc submodule..."
+        git submodule update --init --recursive third_party/utf8proc || fail "Failed to initialize utf8proc submodule"
+    fi
+
     if [[ ! -f "$pcre2_src/config.h" ]]; then
         cp "$pcre2_configs/config.h" "$pcre2_src/config.h"
         print_success "Installed config.h from pcre2_configs"
