@@ -245,13 +245,16 @@ private:
     std::string name_;
     mutable Value cached_value_;
     mutable bool cache_valid_ = false;
-    mutable class Environment* cached_env_ = nullptr;  // Environment pointer for cache validation
+    mutable class Environment* cached_env_ = nullptr;
+    bool has_escaped_keyword_ = false;
 
 public:
     Identifier(const std::string& name, const Position& start, const Position& end)
         : ASTNode(Type::IDENTIFIER, start, end), name_(name) {}
 
     const std::string& get_name() const { return name_; }
+    bool has_escaped_keyword() const { return has_escaped_keyword_; }
+    void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

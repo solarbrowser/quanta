@@ -20,19 +20,19 @@ std::string Position::to_string() const {
 }
 
 
-Token::Token() : type_(TokenType::EOF_TOKEN), numeric_value_(0), has_numeric_value_(false) {
+Token::Token() : type_(TokenType::EOF_TOKEN), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
 }
 
-Token::Token(TokenType type, const Position& pos) 
-    : type_(type), start_(pos), end_(pos), numeric_value_(0), has_numeric_value_(false) {
+Token::Token(TokenType type, const Position& pos)
+    : type_(type), start_(pos), end_(pos), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
 }
 
 Token::Token(TokenType type, const std::string& value, const Position& start, const Position& end)
-    : type_(type), value_(value), start_(start), end_(end), numeric_value_(0), has_numeric_value_(false) {
+    : type_(type), value_(value), start_(start), end_(end), numeric_value_(0), has_numeric_value_(false), has_escaped_keyword_(false) {
 }
 
 Token::Token(TokenType type, double numeric_value, const Position& start, const Position& end)
-    : type_(type), start_(start), end_(end), numeric_value_(numeric_value), has_numeric_value_(true) {
+    : type_(type), start_(start), end_(end), numeric_value_(numeric_value), has_numeric_value_(true), has_escaped_keyword_(false) {
     std::ostringstream oss;
     oss << numeric_value;
     value_ = oss.str();

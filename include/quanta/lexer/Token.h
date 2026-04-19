@@ -173,6 +173,7 @@ private:
     Position end_;
     double numeric_value_;
     bool has_numeric_value_;
+    bool has_escaped_keyword_;
 
 public:
     Token();
@@ -187,7 +188,9 @@ public:
     
     double get_numeric_value() const { return numeric_value_; }
     bool has_numeric_value() const { return has_numeric_value_; }
-    
+    bool has_escaped_keyword() const { return has_escaped_keyword_; }
+    void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
+
     bool is_keyword() const;
     bool is_operator() const;
     bool is_literal() const;
