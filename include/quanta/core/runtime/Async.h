@@ -113,11 +113,12 @@ public:
 private:
     std::unique_ptr<Context> context_owned_;
     Context* generator_context_;
+    Context* outer_context_;
     std::unique_ptr<ASTNode> body_;
     State state_;
 
 public:
-    AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body);
+    AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
     virtual ~AsyncGenerator() = default;
 
     AsyncGeneratorResult next(const Value& value = Value());
