@@ -1704,16 +1704,51 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
     return std::make_unique<VariableDeclaration>(std::move(declarations), kind, start, end);
 }
 
-std::unique_ptr<ASTNode> Parser::parse_block_statement() {
+static std::string find_block_lexical_duplicate(const std::vector<std::unique_ptr<ASTNode>>& stmts) {
+    std::vector<std::string> lexical;
+    std::vector<std::string> vars;
+
+    for (const auto& stmt : stmts) {
+        if (!stmt) continue;
+        if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+            auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+            if (fn->get_id()) lexical.push_back(fn->get_id()->get_name());
+        } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+            auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+            if (cls->get_id()) lexical.push_back(cls->get_id()->get_name());
+        } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+            bool is_var = vd->get_kind() == VariableDeclarator::Kind::VAR;
+            for (const auto& decl : vd->get_declarations()) {
+                if (decl->get_id()) {
+                    if (is_var) vars.push_back(decl->get_id()->get_name());
+                    else lexical.push_back(decl->get_id()->get_name());
+                }
+            }
+        }
+    }
+
+    for (size_t i = 0; i < lexical.size(); i++)
+        for (size_t j = i + 1; j < lexical.size(); j++)
+            if (lexical[i] == lexical[j]) return lexical[i];
+
+    for (const auto& l : lexical)
+        for (const auto& v : vars)
+            if (l == v) return l;
+
+    return "";
+}
+
+std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::LEFT_BRACE)) {
         add_error("Expected '{'");
         return nullptr;
     }
-    
+
     std::vector<std::unique_ptr<ASTNode>> statements;
-    
+
     while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
         auto stmt = parse_statement();
         if (stmt) {
@@ -1722,12 +1757,20 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement() {
             advance();
         }
     }
-    
+
     if (!consume(TokenType::RIGHT_BRACE)) {
         add_error("Expected '}'");
         return nullptr;
     }
-    
+
+    if (!is_function_body) {
+        std::string dup = find_block_lexical_duplicate(statements);
+        if (!dup.empty()) {
+            add_error("Identifier '" + dup + "' has already been declared");
+            return nullptr;
+        }
+    }
+
     Position end = get_current_position();
     return std::make_unique<BlockStatement>(std::move(statements), start, end);
 }
@@ -2392,7 +2435,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
     
-    auto body = parse_block_statement();
+    auto body = parse_block_statement(true);
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -2519,7 +2562,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             size_t saved = current_token_index_;
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                auto block = parse_block_statement();
+                auto block = parse_block_statement(true);
                 if (block) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(block.release())),
@@ -2624,7 +2667,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             size_t saved2 = current_token_index_;
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
-                auto sblock = parse_block_statement();
+                auto sblock = parse_block_statement(true);
                 if (sblock) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(sblock.release())),
@@ -2937,7 +2980,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         return nullptr;
     }
     
-    auto body = parse_block_statement();
+    auto body = parse_block_statement(true);
     if (!body) {
         add_error("Expected method body");
         return nullptr;
@@ -3103,7 +3146,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         return nullptr;
     }
     
-    auto body = parse_block_statement();
+    auto body = parse_block_statement(true);
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3335,7 +3378,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         return nullptr;
     }
     
-    auto body = parse_block_statement();
+    auto body = parse_block_statement(true);
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
@@ -3504,7 +3547,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         return nullptr;
     }
     
-    auto body = parse_block_statement();
+    auto body = parse_block_statement(true);
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
@@ -3612,7 +3655,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     
     std::unique_ptr<ASTNode> body;
     if (match(TokenType::LEFT_BRACE)) {
-        body = parse_block_statement();
+        body = parse_block_statement(true);
     } else {
         body = parse_assignment_expression();
     }
@@ -4043,7 +4086,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 return nullptr;
             }
             
-            auto body = parse_block_statement();
+            auto body = parse_block_statement(true);
             if (!body) {
                 add_error("Expected method body");
                 return nullptr;
@@ -4186,7 +4229,25 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         add_error("Expected '}' to close object literal");
         return nullptr;
     }
-    
+
+    // Early error: duplicate __proto__ property (non-computed, non-method, non-getter/setter)
+    int proto_count = 0;
+    for (const auto& prop : properties) {
+        if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
+            && prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+            auto* id = static_cast<Identifier*>(prop->key.get());
+            if (id->get_name() == "__proto__") proto_count++;
+        } else if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
+            && prop->key && prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
+            auto* sl = static_cast<StringLiteral*>(prop->key.get());
+            if (sl->get_value() == "__proto__") proto_count++;
+        }
+    }
+    if (proto_count > 1) {
+        add_error("Duplicate __proto__ fields are not allowed in object literals");
+        return nullptr;
+    }
+
     Position end = get_current_position();
     return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
 }
@@ -4467,7 +4528,22 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
         add_error("Expected '}' to close switch statement");
         return nullptr;
     }
-    
+
+    // SwitchStatement early error: LexicallyDeclaredNames across all cases must be unique
+    {
+        std::vector<std::unique_ptr<ASTNode>> all_stmts;
+        for (const auto& c : cases) {
+            auto* cc = static_cast<CaseClause*>(c.get());
+            for (const auto& s : cc->get_consequent())
+                all_stmts.push_back(s ? s->clone() : nullptr);
+        }
+        std::string dup = find_block_lexical_duplicate(all_stmts);
+        if (!dup.empty()) {
+            add_error("Identifier '" + dup + "' has already been declared");
+            return nullptr;
+        }
+    }
+
     Position end = get_current_position();
     return std::make_unique<SwitchStatement>(
         std::move(discriminant), std::move(cases), start, end
@@ -5480,7 +5556,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
     std::unique_ptr<ASTNode> body = nullptr;
     if (match(TokenType::LEFT_BRACE)) {
-        body = parse_block_statement();
+        body = parse_block_statement(true);
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {
@@ -5535,7 +5611,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
 
     std::unique_ptr<ASTNode> body = nullptr;
     if (match(TokenType::LEFT_BRACE)) {
-        body = parse_block_statement();
+        body = parse_block_statement(true);
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {

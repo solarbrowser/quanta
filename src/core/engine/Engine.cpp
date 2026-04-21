@@ -424,6 +424,8 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (lexer.has_errors()) {
             const auto& errors = lexer.get_errors();
             std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
+            if (error_msg.find("SyntaxError") == std::string::npos)
+                error_msg = "SyntaxError: " + error_msg;
             return Result(error_msg);
         }
         
@@ -434,7 +436,9 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
             std::string error_msg = errors.empty() ? "Parse error" : errors[0].message;
-            return Result("SyntaxError: " + error_msg);
+            if (error_msg.find("SyntaxError") == std::string::npos)
+                error_msg = "SyntaxError: " + error_msg;
+            return Result(error_msg);
         }
         
         if (!program) {

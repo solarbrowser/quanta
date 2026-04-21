@@ -58,7 +58,7 @@ public:
     
     std::unique_ptr<ASTNode> parse_variable_declaration();
     std::unique_ptr<ASTNode> parse_variable_declaration(bool consume_semicolon);
-    std::unique_ptr<ASTNode> parse_block_statement();
+    std::unique_ptr<ASTNode> parse_block_statement(bool is_function_body = false);
     std::unique_ptr<ASTNode> parse_if_statement();
     std::unique_ptr<ASTNode> parse_for_statement();
     std::unique_ptr<ASTNode> parse_while_statement();

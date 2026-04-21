@@ -337,9 +337,10 @@ std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Co
 
 Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
 
-AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body)
+AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
     : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
       generator_context_(context_owned_.get()),
+      outer_context_(outer_ctx),
       body_(std::move(body)), state_(State::SuspendedStart) {
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
@@ -350,7 +351,8 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     (void)value;
 
     auto make_promise = [this]() -> std::unique_ptr<Promise> {
-        auto obj = ObjectFactory::create_promise(generator_context_);
+        Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+        auto obj = ObjectFactory::create_promise(promise_ctx);
         return std::unique_ptr<Promise>(static_cast<Promise*>(obj.release()));
     };
 
@@ -963,8 +965,9 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     arguments_obj->set_type(Object::ObjectType::Arguments);
     gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
 
+    Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
     std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
-    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), std::move(body_clone));
+    auto async_gen = std::make_unique<AsyncGenerator>(std::move(gen_ctx), std::move(body_clone), outer_ctx);
     return Value(async_gen.release());
 }
 
