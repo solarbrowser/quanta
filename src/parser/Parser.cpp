@@ -1437,7 +1437,8 @@ bool Parser::is_reserved_word_as_property_name() {
            type == TokenType::FROM ||
            type == TokenType::ASYNC ||
            type == TokenType::AWAIT ||
-           type == TokenType::YIELD;
+           type == TokenType::YIELD ||
+           type == TokenType::ENUM;
 }
 
 bool Parser::at_end() const {
@@ -1565,6 +1566,7 @@ bool Parser::is_keyword_token(TokenType type) const {
            type == TokenType::FROM ||
            type == TokenType::OF ||
            type == TokenType::STATIC ||
+           type == TokenType::ENUM ||
            type == TokenType::UNDEFINED ||
            type == TokenType::NULL_LITERAL ||
            type == TokenType::BOOLEAN;
@@ -1659,6 +1661,11 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         
         if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier in variable declaration");
+            return nullptr;
+        }
+
+        if (current_token().has_escaped_keyword()) {
+            add_error("Keywords cannot be used as identifiers via unicode escape sequences");
             return nullptr;
         }
 

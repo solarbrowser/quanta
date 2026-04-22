@@ -57,7 +57,8 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"true", TokenType::BOOLEAN},
     {"false", TokenType::BOOLEAN},
     {"null", TokenType::NULL_LITERAL},
-    {"undefined", TokenType::UNDEFINED}
+    {"undefined", TokenType::UNDEFINED},
+    {"enum", TokenType::ENUM}
 };
 
 const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
@@ -306,6 +307,10 @@ Token Lexer::create_token(TokenType type, double numeric_value, const Position& 
     return Token(type, numeric_value, start, current_position_);
 }
 
+static bool is_unicode_id_start(uint32_t cp);
+static bool is_invalid_id_start_cp(uint32_t cp);
+static bool is_invalid_id_continue_cp(uint32_t cp);
+
 Token Lexer::read_identifier() {
     Position start = current_position_;
     std::string value;
@@ -347,6 +352,10 @@ Token Lexer::read_identifier() {
             else if (hex_digits == "6F") value += 'o';
             else {
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (is_invalid_id_start_cp((uint32_t)codepoint)) {
+                    add_error("Invalid unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -384,6 +393,10 @@ Token Lexer::read_identifier() {
             else if (hex_digits == "0065") value += 'e';
             else {
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (is_invalid_id_start_cp((uint32_t)codepoint)) {
+                    add_error("Invalid unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -429,6 +442,10 @@ Token Lexer::read_identifier() {
                 advance();
                 
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (is_invalid_id_continue_cp((uint32_t)codepoint)) {
+                    add_error("Invalid unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -458,8 +475,12 @@ Token Lexer::read_identifier() {
                         return create_token(TokenType::INVALID, value, start);
                     }
                 }
-                
+
                 unsigned long codepoint = std::strtoul(hex_digits.c_str(), nullptr, 16);
+                if (is_invalid_id_continue_cp((uint32_t)codepoint)) {
+                    add_error("Invalid unicode escape sequence in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
                 if (codepoint <= 0x7F) {
                     value += static_cast<char>(codepoint);
                 } else if (codepoint <= 0x7FF) {
@@ -938,6 +959,21 @@ static bool is_unicode_id_start(uint32_t cp) {
     return true;
 }
 
+static bool is_invalid_id_start_cp(uint32_t cp) {
+    if (cp == 0x0A || cp == 0x0D || cp == 0x2028 || cp == 0x2029) return true;
+    if (cp == 0x200C || cp == 0x200D) return true;
+    if (cp == 0x2E2F) return true;
+    if (cp < 0x80) return !(std::isalpha((int)cp) || cp == '_' || cp == '$');
+    return false;
+}
+
+static bool is_invalid_id_continue_cp(uint32_t cp) {
+    if (cp == 0x0A || cp == 0x0D || cp == 0x2028 || cp == 0x2029) return true;
+    if (cp == 0x2E2F) return true;
+    if (cp < 0x80) return !(std::isalnum((int)cp) || cp == '_' || cp == '$');
+    return false;
+}
+
 bool Lexer::is_identifier_start(char ch) const {
     unsigned char uch = static_cast<unsigned char>(ch);
     if (std::isalpha(ch) || ch == '_' || ch == '$' || ch == '\\') {
@@ -1193,15 +1229,20 @@ double Lexer::parse_legacy_octal_literal() {
 
 std::string Lexer::parse_string_literal(char quote) {
     std::string value;
-    
+
     while (!at_end() && current_char() != quote) {
-        if (current_char() == '\\') {
+        char ch = current_char();
+        if (ch == '\n' || ch == '\r') {
+            add_error("SyntaxError: Unterminated string literal");
+            return value;
+        }
+        if (ch == '\\') {
             value += parse_escape_sequence();
         } else {
             value += advance();
         }
     }
-    
+
     return value;
 }
 
