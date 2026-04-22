@@ -57,7 +57,8 @@ enum class TokenType {
     WHILE,
     WITH,
     YIELD,
-    
+    ENUM,
+
     ASYNC,
     AWAIT,
     FROM,
