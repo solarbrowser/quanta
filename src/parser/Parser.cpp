@@ -505,8 +505,25 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
         // ES5: delete on identifier is SyntaxError in strict mode
         if (options_.strict_mode && op == UnaryExpression::Operator::DELETE &&
             operand->get_type() == ASTNode::Type::IDENTIFIER) {
-            add_error("Delete of an unqualified identifier in strict mode");
-            return nullptr;
+            auto* id = static_cast<Identifier*>(operand.get());
+            if (id->get_name() != "this") {
+                add_error("SyntaxError: Delete of an unqualified identifier in strict mode");
+                return nullptr;
+            }
+        }
+
+        // delete of private name is always SyntaxError (class bodies are always strict)
+        if (op == UnaryExpression::Operator::DELETE &&
+            operand->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+            auto* mem = static_cast<MemberExpression*>(operand.get());
+            if (!mem->is_computed() && mem->get_property() &&
+                mem->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                auto* prop = static_cast<Identifier*>(mem->get_property());
+                if (!prop->get_name().empty() && prop->get_name()[0] == '#') {
+                    add_error("SyntaxError: Cannot delete a private member");
+                    return nullptr;
+                }
+            }
         }
 
         return std::make_unique<UnaryExpression>(op, std::move(operand), true, start, end);
@@ -1596,8 +1613,11 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
     if (!node) return false;
 
     switch (node->get_type()) {
-        case ASTNode::Type::IDENTIFIER:
+        case ASTNode::Type::IDENTIFIER: {
+            auto* id = static_cast<const Identifier*>(node);
+            if (id->get_name() == "this") return false;
             return true;
+        }
         case ASTNode::Type::MEMBER_EXPRESSION:
             return true;
         case ASTNode::Type::CALL_EXPRESSION:
@@ -3718,17 +3738,30 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                     advance();
                 }
                 continue;
+            } else if (current_token().get_type() == TokenType::ELLIPSIS) {
+                has_non_simple_params = true;
+                advance();
+                // rest param name follows
+                if (current_token().get_type() == TokenType::IDENTIFIER) {
+                    Position rp_start = get_current_position();
+                    auto rp_name = std::make_unique<Identifier>(current_token().get_value(),
+                        current_token().get_start(), current_token().get_end());
+                    advance();
+                    auto rp = std::make_unique<Parameter>(std::move(rp_name), nullptr, true, rp_start, get_current_position());
+                    params.push_back(std::move(rp));
+                }
+                break;
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
             } else {
                 advance();
                 continue;
             }
-            
+
             Position param_start = get_current_position();
             auto param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                           current_token().get_start(), current_token().get_end());
             advance();
-            
+
             std::unique_ptr<ASTNode> default_value = nullptr;
             if (match(TokenType::ASSIGN)) {
                 has_non_simple_params = true;
@@ -3758,23 +3791,38 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         }
     }
     
+    // Arrow functions always use UniqueFormalParameters — duplicates are always SyntaxError
+    {
+        std::unordered_set<std::string> seen_params;
+        for (const auto& p : params) {
+            if (!p->get_name()) continue;
+            const std::string& pname = p->get_name()->get_name();
+            if (!pname.empty() && pname[0] != '_') { // skip synthetic names
+                if (!seen_params.insert(pname).second) {
+                    add_error("SyntaxError: Duplicate parameter name '" + pname + "' in arrow function");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     if (!consume(TokenType::ARROW)) {
         add_error("Expected '=>' in arrow function");
         return nullptr;
     }
-    
+
     std::unique_ptr<ASTNode> body;
     if (match(TokenType::LEFT_BRACE)) {
         body = parse_block_statement(true);
     } else {
         body = parse_assignment_expression();
     }
-    
+
     if (!body) {
         add_error("Expected arrow function body");
         return nullptr;
     }
-    
+
     if (has_non_simple_params && body) {
         if (auto block = dynamic_cast<BlockStatement*>(body.get())) {
             if (!block->get_statements().empty()) {
