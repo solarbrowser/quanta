@@ -150,6 +150,7 @@ public:
     bool is_reserved_word_as_property_name();
     void check_for_use_strict_directive();
     bool is_strict_mode() const { return options_.strict_mode; }
+    bool check_substatement_restrictions(bool is_loop_body = true);
     
     void add_error(const std::string& message);
     void add_error(const std::string& message, const Position& position);
