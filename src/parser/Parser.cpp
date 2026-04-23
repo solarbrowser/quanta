@@ -199,11 +199,31 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     
     auto left = parse_conditional_expression();
     if (!left) return nullptr;
-    
+
+    if (left->get_type() == ASTNode::Type::OBJECT_LITERAL &&
+        current_token().get_type() != TokenType::ASSIGN) {
+        auto* obj = static_cast<ObjectLiteral*>(left.get());
+        for (const auto& prop : obj->get_properties()) {
+            if (prop->shorthand && prop->value &&
+                prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                add_error("SyntaxError: CoverInitializedName not allowed in object literal");
+                return nullptr;
+            }
+        }
+    }
+
     if (is_assignment_operator(current_token().get_type())) {
         if (!is_valid_assignment_target(left.get())) {
             add_error("Invalid left-hand side in assignment");
             return nullptr;
+        }
+
+        if (options_.strict_mode && left->get_type() == ASTNode::Type::IDENTIFIER) {
+            auto* id = static_cast<Identifier*>(left.get());
+            if (id->get_name() == "eval" || id->get_name() == "arguments") {
+                add_error("'" + id->get_name() + "' cannot be used as assignment target in strict mode");
+                return nullptr;
+            }
         }
 
         if (current_token().get_type() == TokenType::ASSIGN &&
@@ -1782,6 +1802,67 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     return std::make_unique<BlockStatement>(std::move(statements), start, end);
 }
 
+bool Parser::check_substatement_restrictions(bool is_loop_body) {
+    TokenType t = current_token().get_type();
+
+    if (t == TokenType::CLASS) {
+        add_error("SyntaxError: Class declarations are not allowed in single-statement context");
+        return false;
+    }
+
+    if (t == TokenType::FUNCTION) {
+        // peek past whitespace to find next real token
+        size_t i = current_token_index_ + 1;
+        while (i < tokens_.size() &&
+               (tokens_[i].get_type() == TokenType::NEWLINE ||
+                tokens_[i].get_type() == TokenType::WHITESPACE ||
+                tokens_[i].get_type() == TokenType::COMMENT)) {
+            i++;
+        }
+        TokenType next = i < tokens_.size() ? tokens_[i].get_type() : TokenType::EOF_TOKEN;
+        if (next == TokenType::MULTIPLY) {
+            add_error("SyntaxError: Generator declarations are not allowed in single-statement context");
+            return false;
+        }
+        if (is_loop_body || options_.strict_mode) {
+            add_error("SyntaxError: Function declarations are not allowed in single-statement context");
+            return false;
+        }
+    }
+
+    if (t == TokenType::ASYNC) {
+        size_t async_end_line = current_token().get_end().line;
+        if (peek_token().get_type() == TokenType::FUNCTION &&
+            peek_token().get_start().line == async_end_line) {
+            add_error("SyntaxError: Async function declarations are not allowed in single-statement context");
+            return false;
+        }
+    }
+
+    if (t == TokenType::CONST) {
+        add_error("SyntaxError: Lexical declarations are not allowed in single-statement context");
+        return false;
+    }
+
+    if (t == TokenType::LET) {
+        // peek past whitespace/newlines
+        size_t i = current_token_index_ + 1;
+        while (i < tokens_.size() &&
+               (tokens_[i].get_type() == TokenType::NEWLINE ||
+                tokens_[i].get_type() == TokenType::WHITESPACE ||
+                tokens_[i].get_type() == TokenType::COMMENT)) {
+            i++;
+        }
+        TokenType next = i < tokens_.size() ? tokens_[i].get_type() : TokenType::EOF_TOKEN;
+        if (next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET || next == TokenType::LEFT_BRACE) {
+            add_error("SyntaxError: Lexical declarations are not allowed in single-statement context");
+            return false;
+        }
+    }
+
+    return true;
+}
+
 std::unique_ptr<ASTNode> Parser::parse_if_statement() {
     Position start = get_current_position();
     
@@ -1806,22 +1887,16 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
         return nullptr;
     }
     
-    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
-        add_error("Lexical declaration cannot appear in a single-statement context");
-        return nullptr;
-    }
+    if (!check_substatement_restrictions(false)) return nullptr;
     auto consequent = parse_statement();
     if (!consequent) {
         add_error("Expected statement after if condition");
         return nullptr;
     }
-    
+
     std::unique_ptr<ASTNode> alternate = nullptr;
     if (consume_if_match(TokenType::ELSE)) {
-        if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
-            add_error("Lexical declaration cannot appear in a single-statement context");
-            return nullptr;
-        }
+        if (!check_substatement_restrictions(false)) return nullptr;
         alternate = parse_statement();
         if (!alternate) {
             add_error("Expected statement after 'else'");
@@ -1987,10 +2062,12 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
 
     if (current_token().get_type() == TokenType::IN) {
-        if (options_.strict_mode && init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
-            if (vd->get_kind() == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
-                if (vd->get_declarations()[0]->get_init()) {
+            if (vd->declaration_count() > 0 && vd->get_declarations()[0]->get_init()) {
+                bool is_lexical = vd->get_kind() == VariableDeclarator::Kind::LET ||
+                                  vd->get_kind() == VariableDeclarator::Kind::CONST;
+                if (is_lexical || options_.strict_mode) {
                     add_error("SyntaxError: for-in loop variable declaration may not have an initializer");
                     return nullptr;
                 }
@@ -2019,13 +2096,13 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             add_error("Expected statement after for...in");
             return nullptr;
         }
-        
+        if (!check_substatement_restrictions()) return nullptr;
         auto body = parse_statement();
         if (!body) {
             add_error("Failed to parse for...in body");
             return nullptr;
         }
-        
+
         Position end = get_current_position();
         return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end);
     }
@@ -2055,7 +2132,7 @@ check_for_of:
             add_error("Expected statement after for...in");
             return nullptr;
         }
-
+        if (!check_substatement_restrictions()) return nullptr;
         auto body = parse_statement();
         if (!body) {
             add_error("Failed to parse for...in body");
@@ -2090,7 +2167,7 @@ check_for_of:
             add_error("Expected statement after for...of");
             return nullptr;
         }
-        
+        if (!check_substatement_restrictions()) return nullptr;
         auto body = parse_statement();
         if (!body) {
             add_error("Failed to parse for...of body");
@@ -2133,7 +2210,7 @@ check_for_of:
         add_error("Expected ')' after for loop");
         return nullptr;
     }
-    
+    if (!check_substatement_restrictions()) return nullptr;
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for for loop body");
@@ -2169,10 +2246,7 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
         return nullptr;
     }
     
-    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
-        add_error("Lexical declaration cannot appear in a single-statement context");
-        return nullptr;
-    }
+    if (!check_substatement_restrictions()) return nullptr;
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for while loop body");
@@ -2191,10 +2265,7 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
         return nullptr;
     }
 
-    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
-        add_error("Lexical declaration cannot appear in a single-statement context");
-        return nullptr;
-    }
+    if (!check_substatement_restrictions()) return nullptr;
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for do-while loop body");
@@ -2319,10 +2390,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
     
-    auto id = std::make_unique<Identifier>(current_token().get_value(), 
+    std::string fn_name = current_token().get_value();
+    auto id = std::make_unique<Identifier>(fn_name,
                                          current_token().get_start(), current_token().get_end());
     advance();
-    
+
+    if (options_.strict_mode && (fn_name == "eval" || fn_name == "arguments")) {
+        add_error("'" + fn_name + "' cannot be used as function name in strict mode");
+        return nullptr;
+    }
+
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after function name");
         return nullptr;
@@ -2534,10 +2611,14 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
         add_error("Expected class name");
         return nullptr;
     }
-    
+    if (current_token().has_escaped_keyword()) {
+        add_error("SyntaxError: Keywords cannot be used as class name via unicode escape sequences");
+        return nullptr;
+    }
+
     auto id = parse_identifier();
     if (!id) return nullptr;
-    
+
     std::unique_ptr<ASTNode> superclass = nullptr;
     if (match(TokenType::EXTENDS)) {
         advance();
@@ -2639,6 +2720,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     std::unique_ptr<ASTNode> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
+        if (current_token().has_escaped_keyword()) {
+            add_error("SyntaxError: Keywords cannot be used as class name via unicode escape sequences");
+            return nullptr;
+        }
         id = parse_identifier();
         if (!id) return nullptr;
     }
@@ -2756,7 +2841,14 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     Position start = get_current_position();
     
     bool is_static = false;
-    if (current_token().get_value() == "static") {
+    if (current_token().get_value() == "static" && current_token().get_type() != TokenType::STATIC) {
+        if (current_token().has_escaped_keyword()) {
+            add_error("SyntaxError: `static` cannot contain unicode escape sequences");
+            return nullptr;
+        }
+        is_static = true;
+        advance();
+    } else if (current_token().get_type() == TokenType::STATIC) {
         is_static = true;
         advance();
     }
@@ -2765,6 +2857,17 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     if (current_token().get_type() == TokenType::ASYNC) {
         is_async = true;
         advance();
+    } else if (current_token().get_type() == TokenType::IDENTIFIER &&
+               current_token().get_value() == "async" &&
+               current_token().has_escaped_keyword()) {
+        size_t async_end_line = current_token().get_end().line;
+        TokenType next = peek_token().get_type();
+        if (next == TokenType::MULTIPLY || next == TokenType::IDENTIFIER ||
+            next == TokenType::LEFT_BRACKET || next == TokenType::HASH ||
+            next == TokenType::STRING || next == TokenType::NUMBER) {
+            add_error("SyntaxError: `async` cannot contain unicode escape sequences");
+            return nullptr;
+        }
     }
 
     bool is_generator = false;
@@ -5473,7 +5576,7 @@ void Parser::check_for_use_strict_directive() {
     while (!at_end() && current_token().get_type() == TokenType::STRING) {
         std::string str_value = current_token().get_value();
         
-        if (str_value == "\"use strict\"" || str_value == "'use strict'") {
+        if (str_value == "use strict") {
             options_.strict_mode = true;
             advance();
             

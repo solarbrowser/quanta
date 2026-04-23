@@ -573,6 +573,9 @@ Token Lexer::read_number() {
                 return create_token(TokenType::INVALID, start);
             }
             value = parse_legacy_octal_literal();
+        } else if (next == '_') {
+            add_error("SyntaxError: Numeric separator cannot appear after leading zero");
+            return create_token(TokenType::INVALID, start);
         } else {
             value = parse_decimal_literal();
         }
@@ -584,9 +587,27 @@ Token Lexer::read_number() {
         advance();
         size_t length = position_ - start_pos - 1;
         std::string bigint_str = source_.substr(start_pos, length);
+        // BigInt cannot have exponent or decimal point
+        if (bigint_str.find('e') != std::string::npos ||
+            bigint_str.find('E') != std::string::npos ||
+            bigint_str.find('.') != std::string::npos) {
+            add_error("SyntaxError: Invalid BigInt literal");
+            return create_token(TokenType::INVALID, start);
+        }
+        // BigInt cannot have legacy octal prefix (0<digit>)
+        if (bigint_str.size() >= 2 && bigint_str[0] == '0' && std::isdigit((unsigned char)bigint_str[1])) {
+            add_error("SyntaxError: Invalid BigInt literal");
+            return create_token(TokenType::INVALID, start);
+        }
         return create_token(TokenType::BIGINT_LITERAL, bigint_str, start);
     }
-    
+
+    // Numeric literal must not be immediately followed by an identifier start
+    if (!at_end() && (std::isdigit((unsigned char)current_char()) || is_identifier_start(current_char()))) {
+        add_error("SyntaxError: Numeric literal must not be immediately followed by a decimal digit or identifier start");
+        return create_token(TokenType::INVALID, start);
+    }
+
     return create_token(TokenType::NUMBER, value, start);
 }
 
@@ -1119,26 +1140,38 @@ bool Lexer::is_line_terminator(char ch) const {
 
 double Lexer::parse_decimal_literal() {
     std::string number_str;
-    
+
     while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
             advance();
+            if (at_end() || !is_digit(current_char())) {
+                add_error("SyntaxError: Invalid numeric separator");
+                return 0.0;
+            }
         } else {
             number_str += advance();
         }
     }
-    
+
     if (!at_end() && current_char() == '.') {
         number_str += advance();
+        if (!at_end() && current_char() == '_') {
+            add_error("SyntaxError: Invalid numeric separator");
+            return 0.0;
+        }
         while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
             if (current_char() == '_') {
                 advance();
+                if (at_end() || !is_digit(current_char())) {
+                    add_error("SyntaxError: Invalid numeric separator");
+                    return 0.0;
+                }
             } else {
                 number_str += advance();
             }
         }
     }
-    
+
     if (!at_end() && (current_char() == 'e' || current_char() == 'E')) {
         number_str += advance();
         if (!at_end() && (current_char() == '+' || current_char() == '-')) {
@@ -1147,12 +1180,16 @@ double Lexer::parse_decimal_literal() {
         while (!at_end() && (is_digit(current_char()) || current_char() == '_')) {
             if (current_char() == '_') {
                 advance();
+                if (at_end() || !is_digit(current_char())) {
+                    add_error("SyntaxError: Invalid numeric separator");
+                    return 0.0;
+                }
             } else {
                 number_str += advance();
             }
         }
     }
-    
+
     return std::strtod(number_str.c_str(), nullptr);
 }
 
@@ -1161,9 +1198,12 @@ double Lexer::parse_hex_literal() {
     while (!at_end() && (is_hex_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
             advance();
+            if (at_end() || !is_hex_digit(current_char())) {
+                add_error("SyntaxError: Invalid numeric separator");
+                return 0.0;
+            }
             continue;
         }
-
         char ch = advance();
         int digit_value;
         if (is_digit(ch)) {
@@ -1183,6 +1223,10 @@ double Lexer::parse_binary_literal() {
     while (!at_end()) {
         if (current_char() == '_') {
             advance();
+            if (at_end() || !is_binary_digit(current_char())) {
+                add_error("SyntaxError: Invalid numeric separator");
+                return 0.0;
+            }
             continue;
         } else if (is_binary_digit(current_char())) {
             char ch = advance();
@@ -1202,9 +1246,12 @@ double Lexer::parse_octal_literal() {
     while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
         if (current_char() == '_') {
             advance();
+            if (at_end() || !is_octal_digit(current_char())) {
+                add_error("SyntaxError: Invalid numeric separator");
+                return 0.0;
+            }
             continue;
         }
-
         char ch = advance();
         value = value * 8 + (ch - '0');
     }
@@ -1214,13 +1261,8 @@ double Lexer::parse_octal_literal() {
 double Lexer::parse_legacy_octal_literal() {
     double value = 0.0;
     advance();
-    
-    while (!at_end() && (is_octal_digit(current_char()) || current_char() == '_')) {
-        if (current_char() == '_') {
-            advance();
-            continue;
-        }
 
+    while (!at_end() && is_octal_digit(current_char())) {
         char ch = advance();
         value = value * 8 + (ch - '0');
     }
