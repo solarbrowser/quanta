@@ -24,6 +24,8 @@ public:
         bool allow_await_outside_async = false;
         bool strict_mode = false;
         bool source_type_module = false;
+        bool in_async_body = false;
+        bool in_generator_body = false;
     };
 
     struct ParseError {
