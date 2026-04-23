@@ -226,6 +226,20 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             }
         }
 
+        if (options_.strict_mode && left->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+            auto* arr = static_cast<ArrayLiteral*>(left.get());
+            for (const auto& elem : arr->get_elements()) {
+                if (!elem) continue;
+                if (elem->get_type() == ASTNode::Type::IDENTIFIER) {
+                    auto* eid = static_cast<Identifier*>(elem.get());
+                    if (eid->get_name() == "eval" || eid->get_name() == "arguments") {
+                        add_error("SyntaxError: '" + eid->get_name() + "' cannot be destructuring target in strict mode");
+                        return nullptr;
+                    }
+                }
+            }
+        }
+
         if (current_token().get_type() == TokenType::ASSIGN &&
             left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
             auto* obj = static_cast<ObjectLiteral*>(left.get());
@@ -1286,6 +1300,15 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
     bool escaped_kw = token.has_escaped_keyword();
     Position start = token.get_start();
     Position end = token.get_end();
+
+    if (escaped_kw) {
+        if ((name == "await" && options_.in_async_body) ||
+            (name == "yield" && options_.in_generator_body)) {
+            add_error("SyntaxError: '" + name + "' cannot contain unicode escape sequences in this context");
+            return nullptr;
+        }
+    }
+
     advance();
     auto id = std::make_unique<Identifier>(name, start, end);
     if (escaped_kw) id->set_escaped_keyword(true);
@@ -1616,6 +1639,7 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
         case ASTNode::Type::IDENTIFIER: {
             auto* id = static_cast<const Identifier*>(node);
             if (id->get_name() == "this") return false;
+            if (id->has_escaped_keyword()) return false;
             return true;
         }
         case ASTNode::Type::MEMBER_EXPRESSION:
@@ -2343,10 +2367,7 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
         return nullptr;
     }
 
-    if (current_token().get_type() == TokenType::LET || current_token().get_type() == TokenType::CONST) {
-        add_error("Lexical declaration cannot appear in a single-statement context");
-        return nullptr;
-    }
+    if (!check_substatement_restrictions()) return nullptr;
     auto body = parse_statement();
     if (!body) {
         add_error("Expected statement for with body");
@@ -2538,13 +2559,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
-    
+
+    bool saved_gen_ctx = options_.in_generator_body;
+    if (is_generator) options_.in_generator_body = true;
     auto body = parse_block_statement(true);
+    options_.in_generator_body = saved_gen_ctx;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
     }
-    
+
     // ES5: Duplicate parameter names not allowed in strict mode
     if (options_.strict_mode) {
         for (size_t pi = 0; pi < params.size(); pi++) {
@@ -2593,16 +2617,24 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             }
         }
     }
-    if (has_non_simple_params && body) {
+    if (body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
             auto first_stmt = block->get_statements()[0].get();
-            if (auto expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
-                if (auto literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
-                    std::string value = literal->get_value();
-                    if (value == "use strict") {
-                        add_error("Illegal 'use strict' directive in function with non-simple parameter list");
-                        return nullptr;
+            if (auto* expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
+                if (auto* literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
+                    if (literal->get_value() == "use strict") {
+                        if (has_non_simple_params) {
+                            add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                            return nullptr;
+                        }
+                        if (id) {
+                            const std::string& fname = static_cast<Identifier*>(id.get())->get_name();
+                            if (fname == "eval" || fname == "arguments") {
+                                add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
+                                return nullptr;
+                            }
+                        }
                     }
                 }
             }
@@ -2702,6 +2734,48 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     if (!match(TokenType::RIGHT_BRACE)) {
         add_error("Expected '}' to close class body");
         return nullptr;
+    }
+
+    // Check duplicate private names
+    {
+        struct PrivEntry { bool is_static; MethodDefinition::Kind kind; };
+        std::unordered_map<std::string, PrivEntry> priv_seen;
+        for (const auto& stmt : statements) {
+            if (!stmt) continue;
+            ASTNode* key_node = nullptr;
+            bool is_static_m = false;
+            MethodDefinition::Kind method_kind = MethodDefinition::METHOD;
+            if (stmt->get_type() == ASTNode::Type::METHOD_DEFINITION) {
+                auto* md = static_cast<MethodDefinition*>(stmt.get());
+                key_node = md->get_key();
+                is_static_m = md->is_static();
+                method_kind = md->get_kind();
+            } else if (stmt->get_type() == ASTNode::Type::CLASS_FIELD) {
+                auto* cf = static_cast<ClassField*>(stmt.get());
+                key_node = cf->get_key();
+                is_static_m = cf->is_static();
+            } else {
+                continue;
+            }
+            if (!key_node || key_node->get_type() != ASTNode::Type::IDENTIFIER) continue;
+            const std::string& kname = static_cast<Identifier*>(key_node)->get_name();
+            if (kname.empty() || kname[0] != '#') continue;
+            auto it = priv_seen.find(kname);
+            if (it == priv_seen.end()) {
+                priv_seen[kname] = {is_static_m, method_kind};
+            } else {
+                PrivEntry& prev = it->second;
+                bool same_static = (prev.is_static == is_static_m);
+                bool accessor_pair = same_static &&
+                    ((prev.kind == MethodDefinition::GETTER && method_kind == MethodDefinition::SETTER) ||
+                     (prev.kind == MethodDefinition::SETTER && method_kind == MethodDefinition::GETTER));
+                if (!accessor_pair) {
+                    add_error("SyntaxError: Private name '" + kname + "' has already been declared");
+                    return nullptr;
+                }
+                priv_seen.erase(it);
+            }
+        }
     }
 
     advance();
@@ -2811,6 +2885,48 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     if (!match(TokenType::RIGHT_BRACE)) {
         add_error("Expected '}' to close class body");
         return nullptr;
+    }
+
+    // Check duplicate private names
+    {
+        struct PrivEntry2 { bool is_static; MethodDefinition::Kind kind; };
+        std::unordered_map<std::string, PrivEntry2> priv_seen2;
+        for (const auto& stmt : statements) {
+            if (!stmt) continue;
+            ASTNode* key_node = nullptr;
+            bool is_static_m = false;
+            MethodDefinition::Kind method_kind = MethodDefinition::METHOD;
+            if (stmt->get_type() == ASTNode::Type::METHOD_DEFINITION) {
+                auto* md = static_cast<MethodDefinition*>(stmt.get());
+                key_node = md->get_key();
+                is_static_m = md->is_static();
+                method_kind = md->get_kind();
+            } else if (stmt->get_type() == ASTNode::Type::CLASS_FIELD) {
+                auto* cf = static_cast<ClassField*>(stmt.get());
+                key_node = cf->get_key();
+                is_static_m = cf->is_static();
+            } else {
+                continue;
+            }
+            if (!key_node || key_node->get_type() != ASTNode::Type::IDENTIFIER) continue;
+            const std::string& kname = static_cast<Identifier*>(key_node)->get_name();
+            if (kname.empty() || kname[0] != '#') continue;
+            auto it = priv_seen2.find(kname);
+            if (it == priv_seen2.end()) {
+                priv_seen2[kname] = {is_static_m, method_kind};
+            } else {
+                PrivEntry2& prev = it->second;
+                bool same_static = (prev.is_static == is_static_m);
+                bool accessor_pair = same_static &&
+                    ((prev.kind == MethodDefinition::GETTER && method_kind == MethodDefinition::SETTER) ||
+                     (prev.kind == MethodDefinition::SETTER && method_kind == MethodDefinition::GETTER));
+                if (!accessor_pair) {
+                    add_error("SyntaxError: Private name '" + kname + "' has already been declared");
+                    return nullptr;
+                }
+                priv_seen2.erase(it);
+            }
+        }
     }
 
     advance();
@@ -3109,13 +3225,19 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         add_error("Expected '{' for method body");
         return nullptr;
     }
-    
+
+    bool saved_a = options_.in_async_body;
+    bool saved_g = options_.in_generator_body;
+    if (is_async) options_.in_async_body = true;
+    if (is_generator) options_.in_generator_body = true;
     auto body = parse_block_statement(true);
+    options_.in_async_body = saved_a;
+    options_.in_generator_body = saved_g;
     if (!body) {
         add_error("Expected method body");
         return nullptr;
     }
-    
+
     std::string method_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
 
     auto function_expr = std::make_unique<FunctionExpression>(
@@ -3275,13 +3397,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
-    
+
+    bool saved_gen_ctx = options_.in_generator_body;
+    if (is_generator) options_.in_generator_body = true;
     auto body = parse_block_statement(true);
+    options_.in_generator_body = saved_gen_ctx;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
     }
-    
+
     // ES5: Duplicate parameter names not allowed in strict mode
     if (options_.strict_mode) {
         for (size_t pi = 0; pi < params.size(); pi++) {
@@ -3330,16 +3455,24 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             }
         }
     }
-    if (has_non_simple_params && body) {
+    if (body) {
         BlockStatement* block = static_cast<BlockStatement*>(body.get());
         if (block && !block->get_statements().empty()) {
-            auto first_stmt = block->get_statements()[0].get();
-            if (auto expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
-                if (auto literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
-                    std::string value = literal->get_value();
-                    if (value == "use strict") {
-                        add_error("Illegal 'use strict' directive in function with non-simple parameter list");
-                        return nullptr;
+            auto* first_stmt = block->get_statements()[0].get();
+            if (auto* expr_stmt = dynamic_cast<ExpressionStatement*>(first_stmt)) {
+                if (auto* literal = dynamic_cast<StringLiteral*>(expr_stmt->get_expression())) {
+                    if (literal->get_value() == "use strict") {
+                        if (has_non_simple_params) {
+                            add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                            return nullptr;
+                        }
+                        if (id) {
+                            const std::string& fname = static_cast<Identifier*>(id.get())->get_name();
+                            if (fname == "eval" || fname == "arguments") {
+                                add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
+                                return nullptr;
+                            }
+                        }
                     }
                 }
             }
@@ -3507,13 +3640,19 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
-    
+
+    bool saved_async = options_.in_async_body;
+    bool saved_gen = options_.in_generator_body;
+    options_.in_async_body = true;
+    if (is_generator) options_.in_generator_body = true;
     auto body = parse_block_statement(true);
+    options_.in_async_body = saved_async;
+    options_.in_generator_body = saved_gen;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
     }
-    
+
     Position end = get_current_position();
     if (is_generator) {
         return std::make_unique<FunctionExpression>(
@@ -3676,13 +3815,19 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         add_error("Expected ')' after parameters");
         return nullptr;
     }
-    
+
+    bool saved_async2 = options_.in_async_body;
+    bool saved_gen2 = options_.in_generator_body;
+    options_.in_async_body = true;
+    if (is_generator) options_.in_generator_body = true;
     auto body = parse_block_statement(true);
+    options_.in_async_body = saved_async2;
+    options_.in_generator_body = saved_gen2;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
@@ -3794,13 +3939,31 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     // Arrow functions always use UniqueFormalParameters — duplicates are always SyntaxError
     {
         std::unordered_set<std::string> seen_params;
+        auto check_name = [&](const std::string& name) -> bool {
+            if (name.empty() || name[0] == '_') return true;
+            if (!seen_params.insert(name).second) {
+                add_error("SyntaxError: Duplicate parameter name '" + name + "' in arrow function");
+                return false;
+            }
+            return true;
+        };
         for (const auto& p : params) {
-            if (!p->get_name()) continue;
-            const std::string& pname = p->get_name()->get_name();
-            if (!pname.empty() && pname[0] != '_') { // skip synthetic names
-                if (!seen_params.insert(pname).second) {
-                    add_error("SyntaxError: Duplicate parameter name '" + pname + "' in arrow function");
-                    return nullptr;
+            if (p->get_name()) {
+                if (!check_name(p->get_name()->get_name())) return nullptr;
+            }
+            if (p->has_destructuring()) {
+                ASTNode* pat = p->get_destructuring_pattern();
+                if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                    auto* da = static_cast<DestructuringAssignment*>(pat);
+                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
+                        for (const auto& tgt : da->get_targets()) {
+                            if (tgt && !check_name(tgt->get_name())) return nullptr;
+                        }
+                    } else {
+                        for (const auto& pm : da->get_property_mappings()) {
+                            if (!check_name(pm.variable_name)) return nullptr;
+                        }
+                    }
                 }
             }
         }
