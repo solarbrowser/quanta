@@ -250,6 +250,11 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
                             add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
                             return nullptr;
                         }
+                        if (options_.strict_mode &&
+                            (id->get_name() == "eval" || id->get_name() == "arguments")) {
+                            add_error("SyntaxError: '" + id->get_name() + "' cannot be destructuring target in strict mode");
+                            return nullptr;
+                        }
                     }
                 }
             }
@@ -2192,13 +2197,29 @@ check_for_of:
     }
 
     if (current_token().get_type() == TokenType::OF) {
+        // for-of: declaration with initializer is always SyntaxError
+        if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(init.get());
+            if (vd->declaration_count() > 0 && vd->get_declarations()[0]->get_init()) {
+                add_error("SyntaxError: for-of loop variable declaration may not have an initializer");
+                return nullptr;
+            }
+        }
+        // for-of LHS: `this` is not a valid assignment target
+        if (init && init->get_type() == ASTNode::Type::IDENTIFIER) {
+            auto* id = static_cast<Identifier*>(init.get());
+            if (id->get_name() == "this") {
+                add_error("SyntaxError: Invalid left-hand side in for-of");
+                return nullptr;
+            }
+        }
         advance();
-        
+
         if (at_end()) {
             add_error("Unexpected end of input after 'of'");
             return nullptr;
         }
-        
+
         auto iterable = parse_expression();
         if (!iterable) {
             add_error("Expected expression after 'of' in for...of loop");
@@ -2637,6 +2658,27 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                             if (fname == "eval" || fname == "arguments") {
                                 add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
                                 return nullptr;
+                            }
+                        }
+                        // strict body: eval/arguments param names and duplicate params forbidden
+                        for (const auto& p : params) {
+                            if (!p->get_name()) continue;
+                            const std::string& pn = p->get_name()->get_name();
+                            if (pn == "eval" || pn == "arguments") {
+                                add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
+                                return nullptr;
+                            }
+                        }
+                        for (size_t pi = 0; pi < params.size(); pi++) {
+                            if (!params[pi]->get_name()) continue;
+                            const std::string& pn = params[pi]->get_name()->get_name();
+                            if (pn.empty() || pn[0] == '_') continue;
+                            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                                if (!params[pj]->get_name()) continue;
+                                if (params[pj]->get_name()->get_name() == pn) {
+                                    add_error("SyntaxError: Duplicate parameter name not allowed in strict mode");
+                                    return nullptr;
+                                }
                             }
                         }
                     }
@@ -3510,6 +3552,26 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                             if (fname == "eval" || fname == "arguments") {
                                 add_error("SyntaxError: '" + fname + "' cannot be used as function name in strict mode");
                                 return nullptr;
+                            }
+                        }
+                        for (const auto& p : params) {
+                            if (!p->get_name()) continue;
+                            const std::string& pn = p->get_name()->get_name();
+                            if (pn == "eval" || pn == "arguments") {
+                                add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
+                                return nullptr;
+                            }
+                        }
+                        for (size_t pi = 0; pi < params.size(); pi++) {
+                            if (!params[pi]->get_name()) continue;
+                            const std::string& pn = params[pi]->get_name()->get_name();
+                            if (pn.empty() || pn[0] == '_') continue;
+                            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                                if (!params[pj]->get_name()) continue;
+                                if (params[pj]->get_name()->get_name() == pn) {
+                                    add_error("SyntaxError: Duplicate parameter name not allowed in strict mode");
+                                    return nullptr;
+                                }
                             }
                         }
                     }
