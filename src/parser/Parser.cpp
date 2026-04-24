@@ -1048,6 +1048,10 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::CLASS:
             return parse_class_expression();
         case TokenType::YIELD:
+            if (options_.in_arrow_params) {
+                add_error("SyntaxError: 'yield' is not allowed in arrow function parameters");
+                return nullptr;
+            }
             return parse_yield_expression();
         case TokenType::IMPORT:
             return parse_import_expression();
@@ -2569,16 +2573,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
 
-    // ES5: Duplicate parameter names not allowed in strict mode
-    if (options_.strict_mode) {
+    // Duplicate param names: SyntaxError in strict mode OR when params are non-simple
+    if (options_.strict_mode || has_non_simple_params) {
         for (size_t pi = 0; pi < params.size(); pi++) {
             if (!params[pi]->get_name()) continue;
             const std::string& pn = params[pi]->get_name()->get_name();
-            if (pn.empty()) continue;
+            if (pn.empty() || pn[0] == '_') continue;
             for (size_t pj = pi + 1; pj < params.size(); pj++) {
                 if (!params[pj]->get_name()) continue;
                 if (params[pj]->get_name()->get_name() == pn) {
-                    add_error("Duplicate parameter name not allowed in strict mode");
+                    add_error("SyntaxError: Duplicate parameter name not allowed");
                     return nullptr;
                 }
             }
@@ -3120,19 +3124,22 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     advance();
     
     std::vector<std::unique_ptr<Parameter>> params;
+    bool method_has_non_simple_params = false;
     while (current_token().get_type() != TokenType::RIGHT_PAREN && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
-        
+
         if (match(TokenType::ELLIPSIS)) {
             is_rest = true;
+            method_has_non_simple_params = true;
             advance();
         }
-        
+
         std::unique_ptr<Identifier> param_name = nullptr;
 
         if (current_token().get_type() == TokenType::LEFT_BRACKET ||
             current_token().get_type() == TokenType::LEFT_BRACE) {
+            method_has_non_simple_params = true;
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern in arrow parameters");
@@ -3184,6 +3191,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
         std::unique_ptr<ASTNode> default_value = nullptr;
         if (!is_rest && match(TokenType::ASSIGN)) {
+            method_has_non_simple_params = true;
             advance();
             default_value = parse_assignment_expression();
             if (!default_value) {
@@ -3236,6 +3244,37 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     if (!body) {
         add_error("Expected method body");
         return nullptr;
+    }
+
+    // Class methods always strict; duplicate params forbidden when non-simple
+    if (method_has_non_simple_params || options_.strict_mode) {
+        for (size_t pi = 0; pi < params.size(); pi++) {
+            if (!params[pi]->get_name()) continue;
+            const std::string& pn = params[pi]->get_name()->get_name();
+            if (pn.empty() || pn[0] == '_') continue;
+            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                if (!params[pj]->get_name()) continue;
+                if (params[pj]->get_name()->get_name() == pn) {
+                    add_error("SyntaxError: Duplicate parameter name not allowed");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
+    if (method_has_non_simple_params && body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        if (block && !block->get_statements().empty()) {
+            auto* first = block->get_statements()[0].get();
+            if (auto* es = dynamic_cast<ExpressionStatement*>(first)) {
+                if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
+                    if (sl->get_value() == "use strict") {
+                        add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                        return nullptr;
+                    }
+                }
+            }
+        }
     }
 
     std::string method_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
@@ -3407,16 +3446,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         return nullptr;
     }
 
-    // ES5: Duplicate parameter names not allowed in strict mode
-    if (options_.strict_mode) {
+    // Duplicate param names: SyntaxError in strict mode OR when params are non-simple
+    if (options_.strict_mode || has_non_simple_params) {
         for (size_t pi = 0; pi < params.size(); pi++) {
             if (!params[pi]->get_name()) continue;
             const std::string& pn = params[pi]->get_name()->get_name();
-            if (pn.empty()) continue;
+            if (pn.empty() || pn[0] == '_') continue;
             for (size_t pj = pi + 1; pj < params.size(); pj++) {
                 if (!params[pj]->get_name()) continue;
                 if (params[pj]->get_name()->get_name() == pn) {
-                    add_error("Duplicate parameter name not allowed in strict mode");
+                    add_error("SyntaxError: Duplicate parameter name not allowed");
                     return nullptr;
                 }
             }
@@ -3852,7 +3891,10 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
         params.push_back(std::move(param));
     } else if (match(TokenType::LEFT_PAREN)) {
         advance();
-        
+
+        bool saved_arrow_params = options_.in_arrow_params;
+        options_.in_arrow_params = true;
+
         while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
             if (current_token().get_type() == TokenType::LEFT_BRACE ||
                 current_token().get_type() == TokenType::LEFT_BRACKET) {
@@ -3930,6 +3972,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             }
         }
         
+        options_.in_arrow_params = saved_arrow_params;
+
         if (!consume(TokenType::RIGHT_PAREN)) {
             add_error("Expected ')' after arrow function parameters");
             return nullptr;
@@ -3955,14 +3999,12 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 ASTNode* pat = p->get_destructuring_pattern();
                 if (pat && pat->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
                     auto* da = static_cast<DestructuringAssignment*>(pat);
-                    if (da->get_type() == DestructuringAssignment::Type::ARRAY) {
-                        for (const auto& tgt : da->get_targets()) {
-                            if (tgt && !check_name(tgt->get_name())) return nullptr;
-                        }
-                    } else {
-                        for (const auto& pm : da->get_property_mappings()) {
-                            if (!check_name(pm.variable_name)) return nullptr;
-                        }
+                    // For both ARRAY and OBJECT, get_targets() contains the binding variable names
+                    for (const auto& tgt : da->get_targets()) {
+                        if (!tgt) continue;
+                        const std::string& tname = tgt->get_name();
+                        if (tname.empty() || tname[0] == '_' || tname[0] == '.') continue;
+                        if (!check_name(tname)) return nullptr;
                     }
                 }
             }
@@ -4316,8 +4358,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
         if (match(TokenType::LEFT_PAREN)) {
             advance();
-            
+
             std::vector<std::unique_ptr<Parameter>> params;
+            bool obj_non_simple = false;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
                     Position param_start = current_token().get_start();
@@ -4325,6 +4368,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                     if (match(TokenType::ELLIPSIS)) {
                         is_rest = true;
+                        obj_non_simple = true;
                         advance();
                     }
 
@@ -4332,6 +4376,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                     if (current_token().get_type() == TokenType::LEFT_BRACKET ||
                         current_token().get_type() == TokenType::LEFT_BRACE) {
+                        obj_non_simple = true;
                         auto destructuring = parse_destructuring_pattern();
                         if (!destructuring) {
                             add_error("Invalid destructuring pattern in parameters");
@@ -4377,6 +4422,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                     std::unique_ptr<ASTNode> default_value = nullptr;
                     if (match(TokenType::ASSIGN)) {
+                        obj_non_simple = true;
                         advance();
                         default_value = parse_assignment_expression();
                         if (!default_value) {
@@ -4407,12 +4453,32 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 return nullptr;
             }
             
+            bool saved_ab = options_.in_async_body;
+            bool saved_gb = options_.in_generator_body;
+            if (is_async) options_.in_async_body = true;
+            if (is_generator) options_.in_generator_body = true;
             auto body = parse_block_statement(true);
+            options_.in_async_body = saved_ab;
+            options_.in_generator_body = saved_gb;
             if (!body) {
                 add_error("Expected method body");
                 return nullptr;
             }
-            
+            if (obj_non_simple) {
+                auto* blk = static_cast<BlockStatement*>(body.get());
+                if (blk && !blk->get_statements().empty()) {
+                    auto* fs = blk->get_statements()[0].get();
+                    if (auto* es = dynamic_cast<ExpressionStatement*>(fs)) {
+                        if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
+                            if (sl->get_value() == "use strict") {
+                                add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                                return nullptr;
+                            }
+                        }
+                    }
+                }
+            }
+
             std::unique_ptr<ASTNode> method_value;
             if (is_async && is_generator) {
                 auto block_body = std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release()));
