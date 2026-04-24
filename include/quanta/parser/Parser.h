@@ -26,6 +26,7 @@ public:
         bool source_type_module = false;
         bool in_async_body = false;
         bool in_generator_body = false;
+        bool in_arrow_params = false;
     };
 
     struct ParseError {

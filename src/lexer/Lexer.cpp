@@ -723,18 +723,19 @@ Token Lexer::read_multi_line_comment() {
     Position start = current_position_;
     advance();
     advance();
-    
+
     std::string value;
     while (!at_end()) {
         if (current_char() == '*' && peek_char() == '/') {
             advance();
             advance();
-            break;
+            return create_token(TokenType::COMMENT, value, start);
         }
         value += advance();
     }
-    
-    return create_token(TokenType::COMMENT, value, start);
+
+    add_error("SyntaxError: Unterminated block comment");
+    return create_token(TokenType::INVALID, start);
 }
 
 Token Lexer::read_operator() {
@@ -1566,17 +1567,29 @@ bool Lexer::can_be_regex_literal() const {
 Token Lexer::read_regex() {
     Position start = current_position_;
     advance();
-    
+
     std::string pattern;
-    
+    bool first_char = true;
+
     while (!at_end() && current_char() != '/') {
         char ch = current_char();
-        
+
+        if (first_char && ch == '*') {
+            add_error("SyntaxError: Invalid regular expression: first char may not be '*'");
+            return create_token(TokenType::INVALID, start);
+        }
+        first_char = false;
+
         if (ch == '\\') {
             pattern += ch;
             advance();
             if (!at_end()) {
-                pattern += current_char();
+                char next = current_char();
+                if (next == '\n' || next == '\r') {
+                    add_error("SyntaxError: Invalid regular expression: line terminator in backslash sequence");
+                    return create_token(TokenType::INVALID, start);
+                }
+                pattern += next;
                 advance();
             }
         } else if (ch == '\n' || ch == '\r') {
