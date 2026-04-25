@@ -27,6 +27,7 @@ public:
         bool in_async_body = false;
         bool in_generator_body = false;
         bool in_arrow_params = false;
+        bool in_class_field_init = false;
     };
 
     struct ParseError {

@@ -901,6 +901,15 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             }
             
             Position end = get_current_position();
+            // super() call in class field initializer is SyntaxError
+            if (options_.in_class_field_init &&
+                expr && expr->get_type() == ASTNode::Type::IDENTIFIER) {
+                auto* callee_id = static_cast<Identifier*>(expr.get());
+                if (callee_id->get_name() == "super") {
+                    add_error("SyntaxError: super() call is not valid in class field initializer");
+                    return nullptr;
+                }
+            }
             expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
         } else if (match(TokenType::TEMPLATE_LITERAL)) {
             // Tagged template literal: fn`...`
@@ -1318,6 +1327,11 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
         }
     }
 
+    if (options_.in_class_field_init && name == "arguments") {
+        add_error("SyntaxError: 'arguments' is not valid in class field initializer");
+        return nullptr;
+    }
+
     advance();
     auto id = std::make_unique<Identifier>(name, start, end);
     if (escaped_kw) id->set_escaped_keyword(true);
@@ -1326,6 +1340,7 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
 
 std::unique_ptr<ASTNode> Parser::parse_private_field() {
     Position start = get_current_position();
+    size_t hash_start_offset = current_token().get_start().offset;
 
     if (!consume(TokenType::HASH)) {
         add_error("Expected '#'");
@@ -1334,6 +1349,12 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
 
     if (!match(TokenType::IDENTIFIER)) {
         add_error("Expected identifier after '#'");
+        return nullptr;
+    }
+
+    // No whitespace allowed between # and name (single char token: end == start)
+    if (current_token().get_start().offset != hash_start_offset + 1) {
+        add_error("SyntaxError: Whitespace is not allowed between '#' and identifier");
         return nullptr;
     }
 
@@ -1654,6 +1675,8 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
         case ASTNode::Type::MEMBER_EXPRESSION:
             return true;
         case ASTNode::Type::CALL_EXPRESSION:
+            return false;
+        case ASTNode::Type::META_PROPERTY:
             return false;
         case ASTNode::Type::OBJECT_LITERAL:
             return true;
@@ -2586,9 +2609,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     }
 
     bool saved_gen_ctx = options_.in_generator_body;
+    bool saved_cfi2 = options_.in_class_field_init;
     if (is_generator) options_.in_generator_body = true;
+    options_.in_class_field_init = false;
     auto body = parse_block_statement(true);
     options_.in_generator_body = saved_gen_ctx;
+    options_.in_class_field_init = saved_cfi2;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3076,10 +3102,15 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     if (current_token().get_type() == TokenType::HASH) {
         is_private = true;
+        size_t hash_start = current_token().get_start().offset;
         advance();
 
         if (current_token().get_type() != TokenType::IDENTIFIER) {
             add_error("Expected identifier after '#' for private member");
+            return nullptr;
+        }
+        if (current_token().get_start().offset != hash_start + 1) {
+            add_error("SyntaxError: Whitespace is not allowed between '#' and identifier");
             return nullptr;
         }
 
@@ -3137,7 +3168,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
         if (current_token().get_type() == TokenType::ASSIGN) {
             advance();
+            bool saved_cfi = options_.in_class_field_init;
+            options_.in_class_field_init = true;
             init = parse_assignment_expression();
+            options_.in_class_field_init = saved_cfi;
             if (!init) {
                 add_error("Expected field initializer after '='");
                 return nullptr;
@@ -3480,9 +3514,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
 
     bool saved_gen_ctx = options_.in_generator_body;
+    bool saved_cfi2 = options_.in_class_field_init;
     if (is_generator) options_.in_generator_body = true;
+    options_.in_class_field_init = false;
     auto body = parse_block_statement(true);
     options_.in_generator_body = saved_gen_ctx;
+    options_.in_class_field_init = saved_cfi2;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3744,11 +3781,14 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
     bool saved_async = options_.in_async_body;
     bool saved_gen = options_.in_generator_body;
+    bool saved_cfi_ae = options_.in_class_field_init;
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
+    options_.in_class_field_init = false;
     auto body = parse_block_statement(true);
     options_.in_async_body = saved_async;
     options_.in_generator_body = saved_gen;
+    options_.in_class_field_init = saved_cfi_ae;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
@@ -3919,11 +3959,14 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
 
     bool saved_async2 = options_.in_async_body;
     bool saved_gen2 = options_.in_generator_body;
+    bool saved_cfi_ad = options_.in_class_field_init;
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
+    options_.in_class_field_init = false;
     auto body = parse_block_statement(true);
     options_.in_async_body = saved_async2;
     options_.in_generator_body = saved_gen2;
+    options_.in_class_field_init = saved_cfi_ad;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
