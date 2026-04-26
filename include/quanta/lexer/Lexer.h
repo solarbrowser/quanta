@@ -106,7 +106,7 @@ private:
     double parse_exponent();
     
     std::string parse_string_literal(char quote);
-    std::string parse_escape_sequence();
+    std::string parse_escape_sequence(bool in_template = false);
     std::string parse_unicode_escape();
     std::string parse_hex_escape();
     
