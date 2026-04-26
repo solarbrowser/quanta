@@ -228,26 +228,8 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 
         if (current_token().get_type() == TokenType::ASSIGN &&
             left->get_type() == ASTNode::Type::ARRAY_LITERAL) {
-            auto* arr = static_cast<ArrayLiteral*>(left.get());
-            const auto& elems = arr->get_elements();
-            for (size_t ei = 0; ei < elems.size(); ei++) {
-                const auto& elem = elems[ei];
-                if (!elem) continue;
-                // rest element must be last and cannot have default
-                if (elem->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
-                    if (ei != elems.size() - 1) {
-                        add_error("SyntaxError: Rest element must be last element in array destructuring");
-                        return nullptr;
-                    }
-                }
-                if (elem->get_type() == ASTNode::Type::IDENTIFIER && options_.strict_mode) {
-                    auto* eid = static_cast<Identifier*>(elem.get());
-                    if (eid->get_name() == "eval" || eid->get_name() == "arguments") {
-                        add_error("SyntaxError: '" + eid->get_name() + "' cannot be destructuring target in strict mode");
-                        return nullptr;
-                    }
-                }
-            }
+            if (!validate_array_destructuring(static_cast<ArrayLiteral*>(left.get())))
+                return nullptr;
         }
 
         if (current_token().get_type() == TokenType::ASSIGN &&
@@ -1917,6 +1899,69 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     return std::make_unique<BlockStatement>(std::move(statements), start, end);
 }
 
+bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
+    const auto& elems = arr->get_elements();
+    bool saw_spread = false;
+    for (size_t ei = 0; ei < elems.size(); ei++) {
+        const auto& elem = elems[ei];
+        if (!elem) continue;
+        if (saw_spread) {
+            add_error("SyntaxError: Rest element must be last in array destructuring");
+            return false;
+        }
+        if (elem->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            saw_spread = true;
+            auto* se = static_cast<SpreadElement*>(elem.get());
+            ASTNode* arg = se->get_argument();
+            // rest element cannot have initializer
+            if (arg && arg->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                add_error("SyntaxError: Rest element cannot have a default value");
+                return false;
+            }
+            // rest element must be last (check no more non-null elems)
+            for (size_t j = ei + 1; j < elems.size(); j++) {
+                if (elems[j]) {
+                    add_error("SyntaxError: Rest element must be last in array destructuring");
+                    return false;
+                }
+            }
+        }
+        // nested array
+        if (elem->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+            if (!validate_array_destructuring(static_cast<ArrayLiteral*>(elem.get())))
+                return false;
+        }
+        // object with method/getter/setter not valid destructuring target
+        if (elem->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+            auto* obj = static_cast<ObjectLiteral*>(elem.get());
+            for (const auto& prop : obj->get_properties()) {
+                if (prop->type == ObjectLiteral::PropertyType::Method ||
+                    prop->type == ObjectLiteral::PropertyType::Getter ||
+                    prop->type == ObjectLiteral::PropertyType::Setter) {
+                    add_error("SyntaxError: Invalid destructuring assignment target");
+                    return false;
+                }
+            }
+        }
+        // comma expression in array elem is invalid
+        if (elem->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+            auto* be = static_cast<BinaryExpression*>(elem.get());
+            if (be->get_operator() == BinaryExpression::Operator::COMMA) {
+                add_error("SyntaxError: Invalid destructuring assignment target");
+                return false;
+            }
+        }
+        if (options_.strict_mode && elem->get_type() == ASTNode::Type::IDENTIFIER) {
+            auto* id = static_cast<Identifier*>(elem.get());
+            if (id->get_name() == "eval" || id->get_name() == "arguments") {
+                add_error("SyntaxError: '" + id->get_name() + "' cannot be destructuring target in strict mode");
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool Parser::check_substatement_restrictions(bool is_loop_body) {
     TokenType t = current_token().get_type();
 
@@ -2493,7 +2538,49 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         advance();
         advance();
 
-        if (!check_substatement_restrictions(false)) return nullptr;
+        // Peek through all labels to find the actual statement
+        {
+            size_t peek_idx = current_token_index_;
+            while (peek_idx + 1 < tokens_.size() &&
+                   tokens_[peek_idx].get_type() == TokenType::IDENTIFIER &&
+                   tokens_[peek_idx + 1].get_type() == TokenType::COLON) {
+                peek_idx += 2;
+                // skip whitespace/newlines
+                while (peek_idx < tokens_.size() &&
+                       (tokens_[peek_idx].get_type() == TokenType::NEWLINE ||
+                        tokens_[peek_idx].get_type() == TokenType::WHITESPACE ||
+                        tokens_[peek_idx].get_type() == TokenType::COMMENT))
+                    peek_idx++;
+            }
+            if (peek_idx < tokens_.size()) {
+                TokenType inner = tokens_[peek_idx].get_type();
+                if (inner == TokenType::FUNCTION) {
+                    // labeled function: only 1 level allowed via Annex B
+                    // if more than one label → SyntaxError
+                    size_t label_count = 0;
+                    size_t ci = current_token_index_;
+                    while (ci + 1 < tokens_.size() &&
+                           tokens_[ci].get_type() == TokenType::IDENTIFIER &&
+                           tokens_[ci + 1].get_type() == TokenType::COLON) {
+                        label_count++;
+                        ci += 2;
+                        while (ci < tokens_.size() &&
+                               (tokens_[ci].get_type() == TokenType::NEWLINE ||
+                                tokens_[ci].get_type() == TokenType::WHITESPACE ||
+                                tokens_[ci].get_type() == TokenType::COMMENT))
+                            ci++;
+                    }
+                    if (label_count > 1 || options_.loop_depth > 0 || options_.strict_mode) {
+                        add_error("SyntaxError: Function declarations not allowed in this context");
+                        return nullptr;
+                    }
+                }
+                if (inner == TokenType::ASYNC || inner == TokenType::CLASS) {
+                    add_error("SyntaxError: Declaration not allowed after label");
+                    return nullptr;
+                }
+            }
+        }
         auto statement = parse_statement();
         if (!statement) {
             add_error("Expected statement after label");
