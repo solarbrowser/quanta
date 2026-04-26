@@ -226,11 +226,21 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             }
         }
 
-        if (options_.strict_mode && left->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+        if (current_token().get_type() == TokenType::ASSIGN &&
+            left->get_type() == ASTNode::Type::ARRAY_LITERAL) {
             auto* arr = static_cast<ArrayLiteral*>(left.get());
-            for (const auto& elem : arr->get_elements()) {
+            const auto& elems = arr->get_elements();
+            for (size_t ei = 0; ei < elems.size(); ei++) {
+                const auto& elem = elems[ei];
                 if (!elem) continue;
-                if (elem->get_type() == ASTNode::Type::IDENTIFIER) {
+                // rest element must be last and cannot have default
+                if (elem->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                    if (ei != elems.size() - 1) {
+                        add_error("SyntaxError: Rest element must be last element in array destructuring");
+                        return nullptr;
+                    }
+                }
+                if (elem->get_type() == ASTNode::Type::IDENTIFIER && options_.strict_mode) {
                     auto* eid = static_cast<Identifier*>(elem.get());
                     if (eid->get_name() == "eval" || eid->get_name() == "arguments") {
                         add_error("SyntaxError: '" + eid->get_name() + "' cannot be destructuring target in strict mode");
@@ -545,9 +555,24 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
             }
         }
 
+        // PREFIX ++/-- on always-invalid targets
+        if (op == UnaryExpression::Operator::PRE_INCREMENT ||
+            op == UnaryExpression::Operator::PRE_DECREMENT) {
+            ASTNode::Type et = operand->get_type();
+            bool always_invalid = (et == ASTNode::Type::META_PROPERTY);
+            if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(operand.get());
+                always_invalid = (id->get_name() == "this");
+            }
+            if (always_invalid) {
+                add_error("SyntaxError: Invalid left-hand side in prefix operation");
+                return nullptr;
+            }
+        }
+
         return std::make_unique<UnaryExpression>(op, std::move(operand), true, start, end);
     }
-    
+
     return parse_postfix_expression();
 }
 
@@ -566,6 +591,20 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
         if (expr_end.line < op_start.line) {
             // Line terminator found - apply ASI, don't parse as postfix
             break;
+        }
+
+        // META_PROPERTY (new.target) and this are always-invalid update targets
+        {
+            ASTNode::Type et = expr->get_type();
+            bool always_invalid = (et == ASTNode::Type::META_PROPERTY);
+            if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(expr.get());
+                always_invalid = (id->get_name() == "this");
+            }
+            if (always_invalid) {
+                add_error("SyntaxError: Invalid left-hand side in postfix operation");
+                return expr;
+            }
         }
 
         TokenType op_token = current_token().get_type();
@@ -2140,6 +2179,10 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     if (current_token().get_type() == TokenType::IN) {
         if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
+            if (vd->declaration_count() > 1) {
+                add_error("SyntaxError: for-in loop may only have one variable declaration");
+                return nullptr;
+            }
             if (vd->declaration_count() > 0 && vd->get_declarations()[0]->get_init()) {
                 bool is_lexical = vd->get_kind() == VariableDeclarator::Kind::LET ||
                                   vd->get_kind() == VariableDeclarator::Kind::CONST;
@@ -2173,7 +2216,9 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             return nullptr;
         }
         if (!check_substatement_restrictions()) return nullptr;
+        options_.loop_depth++;
         auto body = parse_statement();
+        options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...in body");
             return nullptr;
@@ -2209,7 +2254,9 @@ check_for_of:
             return nullptr;
         }
         if (!check_substatement_restrictions()) return nullptr;
+        options_.loop_depth++;
         auto body = parse_statement();
+        options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...in body");
             return nullptr;
@@ -2220,9 +2267,13 @@ check_for_of:
     }
 
     if (current_token().get_type() == TokenType::OF) {
-        // for-of: declaration with initializer is always SyntaxError
+        // for-of: declaration with initializer or multiple bindings is SyntaxError
         if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
+            if (vd->declaration_count() > 1) {
+                add_error("SyntaxError: for-of loop may only have one variable declaration");
+                return nullptr;
+            }
             if (vd->declaration_count() > 0 && vd->get_declarations()[0]->get_init()) {
                 add_error("SyntaxError: for-of loop variable declaration may not have an initializer");
                 return nullptr;
@@ -2243,7 +2294,7 @@ check_for_of:
             return nullptr;
         }
 
-        auto iterable = parse_expression();
+        auto iterable = parse_assignment_expression();
         if (!iterable) {
             add_error("Expected expression after 'of' in for...of loop");
             return nullptr;
@@ -2260,7 +2311,9 @@ check_for_of:
             return nullptr;
         }
         if (!check_substatement_restrictions()) return nullptr;
+        options_.loop_depth++;
         auto body = parse_statement();
+        options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...of body");
             return nullptr;
@@ -2303,7 +2356,9 @@ check_for_of:
         return nullptr;
     }
     if (!check_substatement_restrictions()) return nullptr;
+    options_.loop_depth++;
     auto body = parse_statement();
+    options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for for loop body");
         return nullptr;
@@ -2339,7 +2394,9 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
     }
     
     if (!check_substatement_restrictions()) return nullptr;
+    options_.loop_depth++;
     auto body = parse_statement();
+    options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for while loop body");
         return nullptr;
@@ -2358,7 +2415,9 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
     }
 
     if (!check_substatement_restrictions()) return nullptr;
+    options_.loop_depth++;
     auto body = parse_statement();
+    options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for do-while loop body");
         return nullptr;
@@ -2434,6 +2493,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         advance();
         advance();
 
+        if (!check_substatement_restrictions(false)) return nullptr;
         auto statement = parse_statement();
         if (!statement) {
             add_error("Expected statement after label");
@@ -2612,7 +2672,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     bool saved_cfi2 = options_.in_class_field_init;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.function_depth++;
     auto body = parse_block_statement(true);
+    options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     if (!body) {
@@ -3304,7 +3366,23 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         return nullptr;
     }
     advance();
-    
+
+    // Getter: no params. Setter: exactly one simple param.
+    if (method_kind == MethodDefinition::GETTER && !params.empty()) {
+        add_error("SyntaxError: Getter must have no formal parameters");
+        return nullptr;
+    }
+    if (method_kind == MethodDefinition::SETTER) {
+        if (params.size() != 1) {
+            add_error("SyntaxError: Setter must have exactly one formal parameter");
+            return nullptr;
+        }
+        if (method_has_non_simple_params) {
+            add_error("SyntaxError: Setter parameter must not have default value or be a rest/destructuring parameter");
+            return nullptr;
+        }
+    }
+
     if (current_token().get_type() != TokenType::LEFT_BRACE) {
         add_error("Expected '{' for method body");
         return nullptr;
@@ -3314,7 +3392,9 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     bool saved_g = options_.in_generator_body;
     if (is_async) options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
+    options_.function_depth++;
     auto body = parse_block_statement(true);
+    options_.function_depth--;
     options_.in_async_body = saved_a;
     options_.in_generator_body = saved_g;
     if (!body) {
@@ -3517,7 +3597,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     bool saved_cfi2 = options_.in_class_field_init;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.function_depth++;
     auto body = parse_block_statement(true);
+    options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     if (!body) {
@@ -3785,7 +3867,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.function_depth++;
     auto body = parse_block_statement(true);
+    options_.function_depth--;
     options_.in_async_body = saved_async;
     options_.in_generator_body = saved_gen;
     options_.in_class_field_init = saved_cfi_ae;
@@ -3963,7 +4047,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.function_depth++;
     auto body = parse_block_statement(true);
+    options_.function_depth--;
     options_.in_async_body = saved_async2;
     options_.in_generator_body = saved_gen2;
     options_.in_class_field_init = saved_cfi_ad;
@@ -3987,10 +4073,15 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     
     if (match(TokenType::IDENTIFIER)) {
         Position param_start = get_current_position();
-        auto param_name = std::make_unique<Identifier>(current_token().get_value(),
+        const std::string& pname = current_token().get_value();
+        if (options_.strict_mode && (pname == "eval" || pname == "arguments")) {
+            add_error("SyntaxError: '" + pname + "' cannot be a parameter name in strict mode");
+            return nullptr;
+        }
+        auto param_name = std::make_unique<Identifier>(pname,
                                                       current_token().get_start(), current_token().get_end());
         advance();
-        
+
         Position param_end = get_current_position();
         auto param = std::make_unique<Parameter>(std::move(param_name), nullptr, false, param_start, param_end);
         params.push_back(std::move(param));
@@ -4249,9 +4340,14 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_return_statement() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::RETURN)) {
         add_error("Expected 'return'");
+        return nullptr;
+    }
+
+    if (options_.function_depth == 0 && !options_.allow_return_outside_function) {
+        add_error("SyntaxError: Illegal return statement");
         return nullptr;
     }
     
@@ -4280,6 +4376,14 @@ std::unique_ptr<ASTNode> Parser::parse_break_statement() {
         return nullptr;
     }
 
+    // break without label requires enclosing loop or switch
+    bool has_label = (current_token().get_type() == TokenType::IDENTIFIER &&
+                      current_token().get_start().line == start.line);
+    if (!has_label && options_.loop_depth == 0 && options_.switch_depth == 0) {
+        add_error("SyntaxError: Illegal break statement");
+        return nullptr;
+    }
+
     std::string label;
     if (current_token().get_type() == TokenType::IDENTIFIER &&
         current_token().get_start().line == start.line) {
@@ -4298,6 +4402,13 @@ std::unique_ptr<ASTNode> Parser::parse_continue_statement() {
 
     if (!consume(TokenType::CONTINUE)) {
         add_error("Expected 'continue'");
+        return nullptr;
+    }
+
+    bool has_label = (current_token().get_type() == TokenType::IDENTIFIER &&
+                      current_token().get_start().line == start.line);
+    if (!has_label && options_.loop_depth == 0) {
+        add_error("SyntaxError: Illegal continue statement");
         return nullptr;
     }
 
@@ -4562,7 +4673,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             bool saved_gb = options_.in_generator_body;
             if (is_async) options_.in_async_body = true;
             if (is_generator) options_.in_generator_body = true;
+            options_.function_depth++;
             auto body = parse_block_statement(true);
+            options_.function_depth--;
             options_.in_async_body = saved_ab;
             options_.in_generator_body = saved_gb;
             if (!body) {
@@ -4949,9 +5062,10 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
         add_error("Expected '{' after switch expression");
         return nullptr;
     }
-    
+
+    options_.switch_depth++;
     std::vector<std::unique_ptr<ASTNode>> cases;
-    
+
     while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
         if (match(TokenType::CASE)) {
             Position case_start = current_token().get_start();
@@ -5036,6 +5150,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
         }
     }
 
+    options_.switch_depth--;
     Position end = get_current_position();
     return std::make_unique<SwitchStatement>(
         std::move(discriminant), std::move(cases), start, end
