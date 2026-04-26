@@ -234,30 +234,8 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 
         if (current_token().get_type() == TokenType::ASSIGN &&
             left->get_type() == ASTNode::Type::OBJECT_LITERAL) {
-            auto* obj = static_cast<ObjectLiteral*>(left.get());
-            for (const auto& prop : obj->get_properties()) {
-                if (prop->shorthand) {
-                    if (auto* id = dynamic_cast<Identifier*>(prop->key.get())) {
-                        if (id->has_escaped_keyword()) {
-                            add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
-                            return nullptr;
-                        }
-                        if (options_.strict_mode &&
-                            (id->get_name() == "eval" || id->get_name() == "arguments")) {
-                            add_error("SyntaxError: '" + id->get_name() + "' cannot be destructuring target in strict mode");
-                            return nullptr;
-                        }
-                        if (options_.in_generator_body && id->get_name() == "yield") {
-                            add_error("SyntaxError: 'yield' cannot be used as identifier in generator");
-                            return nullptr;
-                        }
-                        if (options_.in_async_body && id->get_name() == "await") {
-                            add_error("SyntaxError: 'await' cannot be used as identifier in async function");
-                            return nullptr;
-                        }
-                    }
-                }
-            }
+            if (!validate_object_destructuring(static_cast<ObjectLiteral*>(left.get())))
+                return nullptr;
         }
 
         TokenType op_token = current_token().get_type();
@@ -1943,9 +1921,13 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
                     add_error("SyntaxError: Rest element cannot have a default value");
                     return false;
                 }
-                // validate nested array in rest
+                // validate nested pattern in rest
                 if (arg->get_type() == ASTNode::Type::ARRAY_LITERAL) {
                     if (!validate_array_destructuring(static_cast<ArrayLiteral*>(arg)))
+                        return false;
+                }
+                if (arg->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+                    if (!validate_object_destructuring(static_cast<ObjectLiteral*>(arg)))
                         return false;
                 }
                 // comma expr in rest not valid
@@ -1995,6 +1977,70 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
             if (id->get_name() == "eval" || id->get_name() == "arguments") {
                 add_error("SyntaxError: '" + id->get_name() + "' cannot be destructuring target in strict mode");
                 return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
+    for (const auto& prop : obj->get_properties()) {
+        // method/getter/setter not valid as destructuring target
+        if (prop->type == ObjectLiteral::PropertyType::Method ||
+            prop->type == ObjectLiteral::PropertyType::Getter ||
+            prop->type == ObjectLiteral::PropertyType::Setter) {
+            add_error("SyntaxError: Invalid destructuring assignment target");
+            return false;
+        }
+        if (prop->shorthand) {
+            if (auto* id = dynamic_cast<Identifier*>(prop->key.get())) {
+                if (id->has_escaped_keyword()) {
+                    add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
+                    return false;
+                }
+                const std::string& nm = id->get_name();
+                if (options_.strict_mode && (nm == "eval" || nm == "arguments")) {
+                    add_error("SyntaxError: '" + nm + "' cannot be destructuring target in strict mode");
+                    return false;
+                }
+                if ((options_.strict_mode || options_.in_generator_body) && nm == "yield") {
+                    add_error("SyntaxError: 'yield' cannot be used as identifier here");
+                    return false;
+                }
+                if ((options_.strict_mode || options_.in_async_body) && nm == "await") {
+                    add_error("SyntaxError: 'await' cannot be used as identifier here");
+                    return false;
+                }
+                // strict mode future reserved words
+                if (options_.strict_mode) {
+                    static const std::unordered_set<std::string> strict_future = {
+                        "implements","interface","let","package","private",
+                        "protected","public","static"
+                    };
+                    if (strict_future.count(nm)) {
+                        add_error("SyntaxError: '" + nm + "' is a reserved word in strict mode");
+                        return false;
+                    }
+                }
+            }
+        }
+        // validate nested value patterns
+        if (prop->value) {
+            ASTNode* val = prop->value.get();
+            if (val->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+                if (!validate_array_destructuring(static_cast<ArrayLiteral*>(val)))
+                    return false;
+            }
+            if (val->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+                if (!validate_object_destructuring(static_cast<ObjectLiteral*>(val)))
+                    return false;
+            }
+            if (val->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+                auto* be = static_cast<BinaryExpression*>(val);
+                if (be->get_operator() == BinaryExpression::Operator::COMMA) {
+                    add_error("SyntaxError: Invalid destructuring assignment target");
+                    return false;
+                }
             }
         }
     }
@@ -2370,6 +2416,15 @@ check_for_of:
                 add_error("SyntaxError: Invalid left-hand side in for-of");
                 return nullptr;
             }
+        }
+        // validate array/object destructuring LHS
+        if (init && init->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+            if (!validate_array_destructuring(static_cast<ArrayLiteral*>(init.get())))
+                return nullptr;
+        }
+        if (init && init->get_type() == ASTNode::Type::OBJECT_LITERAL) {
+            if (!validate_object_destructuring(static_cast<ObjectLiteral*>(init.get())))
+                return nullptr;
         }
         advance();
 
@@ -3529,7 +3584,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     }
 
     // Class methods always strict; duplicate params forbidden when non-simple
-    if (method_has_non_simple_params || options_.strict_mode) {
+    if (method_has_non_simple_params || options_.strict_mode || is_async || is_generator) {
         for (size_t pi = 0; pi < params.size(); pi++) {
             if (!params[pi]->get_name()) continue;
             const std::string& pn = params[pi]->get_name()->get_name();
@@ -4789,12 +4844,28 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 add_error("Expected ')' after parameters");
                 return nullptr;
             }
-            
+
+            // Async/generator methods use UniqueFormaParameters
+            if (obj_non_simple || options_.strict_mode || is_async || is_generator) {
+                for (size_t pi = 0; pi < params.size(); pi++) {
+                    if (!params[pi]->get_name()) continue;
+                    const std::string& pn = params[pi]->get_name()->get_name();
+                    if (pn.empty() || pn[0] == '_') continue;
+                    for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                        if (!params[pj]->get_name()) continue;
+                        if (params[pj]->get_name()->get_name() == pn) {
+                            add_error("SyntaxError: Duplicate parameter name not allowed");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
+
             if (!match(TokenType::LEFT_BRACE)) {
                 add_error("Expected '{' for method body");
                 return nullptr;
             }
-            
+
             bool saved_ab = options_.in_async_body;
             bool saved_gb = options_.in_generator_body;
             if (is_async) options_.in_async_body = true;
