@@ -247,6 +247,14 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
                             add_error("SyntaxError: '" + id->get_name() + "' cannot be destructuring target in strict mode");
                             return nullptr;
                         }
+                        if (options_.in_generator_body && id->get_name() == "yield") {
+                            add_error("SyntaxError: 'yield' cannot be used as identifier in generator");
+                            return nullptr;
+                        }
+                        if (options_.in_async_body && id->get_name() == "await") {
+                            add_error("SyntaxError: 'await' cannot be used as identifier in async function");
+                            return nullptr;
+                        }
                     }
                 }
             }
@@ -1094,8 +1102,24 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_object_literal();
         case TokenType::LEFT_BRACKET:
             return parse_array_literal();
-        case TokenType::TEMPLATE_LITERAL:
+        case TokenType::TEMPLATE_LITERAL: {
+            // Untagged: invalid escape (\x01 sentinel in cooked) → SyntaxError
+            const std::string& tv = current_token().get_value();
+            if (tv.size() >= 4) {
+                uint32_t cooked_len = (static_cast<unsigned char>(tv[0]) << 24) |
+                                      (static_cast<unsigned char>(tv[1]) << 16) |
+                                      (static_cast<unsigned char>(tv[2]) << 8)  |
+                                       static_cast<unsigned char>(tv[3]);
+                // search for sentinel in cooked portion
+                for (size_t ci = 4; ci < 4 + cooked_len && ci < tv.size(); ci++) {
+                    if (static_cast<unsigned char>(tv[ci]) == 0x01) {
+                        add_error("SyntaxError: Invalid escape sequence in template literal");
+                        return nullptr;
+                    }
+                }
+            }
             return parse_template_literal();
+        }
         case TokenType::REGEX:
             return parse_regex_literal();
         case TokenType::LESS_THAN:
@@ -1913,12 +1937,27 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
             saw_spread = true;
             auto* se = static_cast<SpreadElement*>(elem.get());
             ASTNode* arg = se->get_argument();
-            // rest element cannot have initializer
-            if (arg && arg->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
-                add_error("SyntaxError: Rest element cannot have a default value");
-                return false;
+            if (arg) {
+                // rest element cannot have initializer
+                if (arg->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                    add_error("SyntaxError: Rest element cannot have a default value");
+                    return false;
+                }
+                // validate nested array in rest
+                if (arg->get_type() == ASTNode::Type::ARRAY_LITERAL) {
+                    if (!validate_array_destructuring(static_cast<ArrayLiteral*>(arg)))
+                        return false;
+                }
+                // comma expr in rest not valid
+                if (arg->get_type() == ASTNode::Type::BINARY_EXPRESSION) {
+                    auto* be = static_cast<BinaryExpression*>(arg);
+                    if (be->get_operator() == BinaryExpression::Operator::COMMA) {
+                        add_error("SyntaxError: Invalid destructuring assignment target");
+                        return false;
+                    }
+                }
             }
-            // rest element must be last (check no more non-null elems)
+            // rest element must be last
             for (size_t j = ei + 1; j < elems.size(); j++) {
                 if (elems[j]) {
                     add_error("SyntaxError: Rest element must be last in array destructuring");
@@ -4984,6 +5023,12 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
         if (match(TokenType::COMMA)) {
             advance();
             if (match(TokenType::RIGHT_BRACKET)) {
+                // trailing comma after spread → add sentinel for destructuring check
+                if (!elements.empty() && elements.back() &&
+                    elements.back()->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                    Position p = get_current_position();
+                    elements.push_back(std::make_unique<UndefinedLiteral>(p, p));
+                }
                 break;
             }
         } else {

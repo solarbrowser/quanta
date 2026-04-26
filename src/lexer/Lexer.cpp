@@ -661,7 +661,7 @@ Token Lexer::read_template_literal() {
         } else if (current_char() == '\\') {
             size_t raw_start = position_;
             size_t error_count_before = errors_.size();
-            std::string cooked_char = parse_escape_sequence();
+            std::string cooked_char = parse_escape_sequence(true);
             full_raw += source_.substr(raw_start, position_ - raw_start);
             if (errors_.size() > error_count_before) {
                 errors_.resize(error_count_before);
@@ -1289,7 +1289,7 @@ std::string Lexer::parse_string_literal(char quote) {
     return value;
 }
 
-std::string Lexer::parse_escape_sequence() {
+std::string Lexer::parse_escape_sequence(bool in_template) {
     advance();
 
     if (at_end()) {
@@ -1338,8 +1338,18 @@ std::string Lexer::parse_escape_sequence() {
         case '\\': return "\\";
         case '\'': return "'";
         case '"': return "\"";
-        case 'x': return parse_hex_escape();
+        case 'x': {
+            auto r = parse_hex_escape();
+            if (r.empty() && in_template) return r; // error already added
+            return r;
+        }
         case 'u': return parse_unicode_escape();
+        case '8':
+        case '9':
+            if (in_template || options_.strict_mode) {
+                add_error("SyntaxError: Non-octal decimal escape sequence is not allowed");
+            }
+            return std::string(1, ch);
         default: return std::string(1, ch);
     }
 }
