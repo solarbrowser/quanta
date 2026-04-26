@@ -159,6 +159,7 @@ public:
     bool is_strict_mode() const { return options_.strict_mode; }
     bool check_substatement_restrictions(bool is_loop_body = true);
     bool validate_array_destructuring(ArrayLiteral* arr);
+    bool validate_object_destructuring(ObjectLiteral* obj);
     
     void add_error(const std::string& message);
     void add_error(const std::string& message, const Position& position);
