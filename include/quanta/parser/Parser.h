@@ -28,6 +28,9 @@ public:
         bool in_generator_body = false;
         bool in_arrow_params = false;
         bool in_class_field_init = false;
+        int loop_depth = 0;
+        int switch_depth = 0;
+        int function_depth = 0;
     };
 
     struct ParseError {
