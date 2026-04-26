@@ -158,6 +158,7 @@ public:
     void check_for_use_strict_directive();
     bool is_strict_mode() const { return options_.strict_mode; }
     bool check_substatement_restrictions(bool is_loop_body = true);
+    bool validate_array_destructuring(ArrayLiteral* arr);
     
     void add_error(const std::string& message);
     void add_error(const std::string& message, const Position& position);
