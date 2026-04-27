@@ -31,6 +31,7 @@ public:
         int loop_depth = 0;
         int switch_depth = 0;
         int function_depth = 0;
+        bool in_binary_expr = false;
     };
 
     struct ParseError {
