@@ -1073,6 +1073,10 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 add_error("SyntaxError: 'yield' is not allowed in arrow function parameters");
                 return nullptr;
             }
+            if (options_.in_binary_expr && options_.in_generator_body) {
+                add_error("SyntaxError: 'yield' cannot be used as the right operand of a binary expression");
+                return nullptr;
+            }
             return parse_yield_expression();
         case TokenType::IMPORT:
             return parse_import_expression();
@@ -1348,6 +1352,15 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
             add_error("SyntaxError: '" + name + "' cannot contain unicode escape sequences in this context");
             return nullptr;
         }
+        // escaped `async` followed by `function` on same line = SyntaxError
+        if (name == "async") {
+            size_t async_end_line = token.get_end().line;
+            if (peek_token().get_type() == TokenType::FUNCTION &&
+                peek_token().get_start().line == async_end_line) {
+                add_error("SyntaxError: `async` cannot contain unicode escape sequences");
+                return nullptr;
+            }
+        }
     }
 
     if (options_.in_class_field_init && name == "arguments") {
@@ -1418,11 +1431,19 @@ std::unique_ptr<ASTNode> Parser::parse_binary_expression(
     if (!left) return nullptr;
     
     while (match_any(operators)) {
+        // YieldExpression cannot be left operand of binary expression
+        if (left && left->get_type() == ASTNode::Type::YIELD_EXPRESSION) {
+            add_error("SyntaxError: yield expression cannot be used as binary operand");
+            return left;
+        }
         TokenType op_token = current_token().get_type();
         Position op_start = current_token().get_start();
         advance();
-        
+
+        bool saved_bin = options_.in_binary_expr;
+        options_.in_binary_expr = true;
         auto right = parse_operand();
+        options_.in_binary_expr = saved_bin;
         if (!right) {
             add_error("Expected expression after binary operator");
             return left;
@@ -2626,6 +2647,18 @@ std::unique_ptr<ASTNode> Parser::parse_with_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     Position start = get_current_position();
+
+    // escaped `async` + function on same line = SyntaxError
+    if (current_token().get_type() == TokenType::IDENTIFIER &&
+        current_token().has_escaped_keyword() &&
+        current_token().get_value() == "async") {
+        size_t async_end_line = current_token().get_end().line;
+        if (peek_token().get_type() == TokenType::FUNCTION &&
+            peek_token().get_start().line == async_end_line) {
+            add_error("SyntaxError: `async` cannot contain unicode escape sequences");
+            return nullptr;
+        }
+    }
 
     if (current_token().get_type() == TokenType::IDENTIFIER && peek_token().get_type() == TokenType::COLON) {
         std::string label = current_token().get_value();
@@ -4469,14 +4502,19 @@ std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
         return nullptr;
     }
     
+    // [no LineTerminator here] before * or argument
+    size_t yield_end_line = previous_token().get_end().line;
+    bool same_line = (!at_end() && current_token().get_start().line == yield_end_line);
+
     bool is_delegate = false;
-    if (match(TokenType::MULTIPLY)) {
+    if (same_line && match(TokenType::MULTIPLY)) {
         is_delegate = true;
         advance();
+        same_line = (!at_end() && current_token().get_start().line == yield_end_line);
     }
-    
+
     std::unique_ptr<ASTNode> argument = nullptr;
-    if (!at_end() && current_token().get_type() != TokenType::SEMICOLON &&
+    if (same_line && !at_end() && current_token().get_type() != TokenType::SEMICOLON &&
         current_token().get_type() != TokenType::RIGHT_BRACE &&
         current_token().get_type() != TokenType::RIGHT_PAREN) {
         argument = parse_assignment_expression();
