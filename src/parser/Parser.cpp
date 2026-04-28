@@ -1158,8 +1158,15 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     const Token& token = current_token();
     Position start = token.get_start();
     Position end = token.get_end();
+
+    // super is only valid inside class methods (not regular function bodies)
+    if (!options_.in_class_method) {
+        add_error("SyntaxError: 'super' keyword unexpected here");
+        advance();
+        return nullptr;
+    }
+
     advance();
-    
     return std::make_unique<Identifier>("super", start, end);
 }
 
@@ -2895,13 +2902,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
 
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
+    bool saved_cm2 = options_.in_class_method;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.in_class_method = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
+    options_.in_class_method = saved_cm2;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3488,6 +3498,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     
     std::vector<std::unique_ptr<Parameter>> params;
     bool method_has_non_simple_params = false;
+    bool saved_arrow_params_m = options_.in_arrow_params;
+    options_.in_arrow_params = true;
     while (current_token().get_type() != TokenType::RIGHT_PAREN && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
@@ -3586,6 +3598,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
     
+    options_.in_arrow_params = saved_arrow_params_m;
+
     if (!match(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
@@ -3617,9 +3631,12 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     bool saved_g = options_.in_generator_body;
     if (is_async) options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
+    bool saved_cm = options_.in_class_method;
+    options_.in_class_method = true;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.in_class_method = saved_cm;
     options_.in_async_body = saved_a;
     options_.in_generator_body = saved_g;
     if (!body) {
@@ -3820,13 +3837,16 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
+    bool saved_cm2 = options_.in_class_method;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    options_.in_class_method = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
+    options_.in_class_method = saved_cm2;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3970,11 +3990,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
 
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
-        id = std::make_unique<Identifier>(current_token().get_value(),
-                                        current_token().get_start(), current_token().get_end());
+        const std::string& aname = current_token().get_value();
+        if (options_.strict_mode && (aname == "eval" || aname == "arguments")) {
+            add_error("SyntaxError: '" + aname + "' cannot be used as function name in strict mode");
+            return nullptr;
+        }
+        id = std::make_unique<Identifier>(aname, current_token().get_start(), current_token().get_end());
         advance();
     }
-    
+
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after async function name");
         return nullptr;
@@ -4086,18 +4110,37 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         return nullptr;
     }
 
+    // Async functions always use UniqueFormaParameters (or at least strict)
+    if (options_.strict_mode || has_non_simple_params || is_generator) {
+        for (size_t pi = 0; pi < params.size(); pi++) {
+            if (!params[pi]->get_name()) continue;
+            const std::string& pn = params[pi]->get_name()->get_name();
+            if (pn.empty() || pn[0] == '_') continue;
+            for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                if (!params[pj]->get_name()) continue;
+                if (params[pj]->get_name()->get_name() == pn) {
+                    add_error("SyntaxError: Duplicate parameter name not allowed");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     bool saved_async = options_.in_async_body;
     bool saved_gen = options_.in_generator_body;
     bool saved_cfi_ae = options_.in_class_field_init;
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    bool saved_cm_ae = options_.in_class_method;
+    options_.in_class_method = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_async_body = saved_async;
     options_.in_generator_body = saved_gen;
     options_.in_class_field_init = saved_cfi_ae;
+    options_.in_class_method = saved_cm_ae;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
@@ -4287,12 +4330,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
+    bool saved_cm_ad = options_.in_class_method;
+    options_.in_class_method = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_async_body = saved_async2;
     options_.in_generator_body = saved_gen2;
     options_.in_class_field_init = saved_cfi_ad;
+    options_.in_class_method = saved_cm_ad;
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
@@ -4845,6 +4891,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
             std::vector<std::unique_ptr<Parameter>> params;
             bool obj_non_simple = false;
+            bool saved_oap = options_.in_arrow_params;
+            options_.in_arrow_params = true;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
                     Position param_start = current_token().get_start();
@@ -4927,6 +4975,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 } while (!at_end());
             }
             
+            options_.in_arrow_params = saved_oap;
+
             if (!consume(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ')' after parameters");
                 return nullptr;
