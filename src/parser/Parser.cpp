@@ -527,7 +527,8 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
         if (op == UnaryExpression::Operator::PRE_INCREMENT ||
             op == UnaryExpression::Operator::PRE_DECREMENT) {
             ASTNode::Type et = operand->get_type();
-            bool always_invalid = (et == ASTNode::Type::META_PROPERTY);
+            bool always_invalid = (et == ASTNode::Type::META_PROPERTY ||
+                                   et == ASTNode::Type::YIELD_EXPRESSION);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(operand.get());
                 always_invalid = (id->get_name() == "this");
@@ -561,10 +562,11 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
             break;
         }
 
-        // META_PROPERTY (new.target) and this are always-invalid update targets
+        // META_PROPERTY, this, yield expression are always-invalid update targets
         {
             ASTNode::Type et = expr->get_type();
-            bool always_invalid = (et == ASTNode::Type::META_PROPERTY);
+            bool always_invalid = (et == ASTNode::Type::META_PROPERTY ||
+                                   et == ASTNode::Type::YIELD_EXPRESSION);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(expr.get());
                 always_invalid = (id->get_name() == "this");
@@ -1431,11 +1433,6 @@ std::unique_ptr<ASTNode> Parser::parse_binary_expression(
     if (!left) return nullptr;
     
     while (match_any(operators)) {
-        // YieldExpression cannot be left operand of binary expression
-        if (left && left->get_type() == ASTNode::Type::YIELD_EXPRESSION) {
-            add_error("SyntaxError: yield expression cannot be used as binary operand");
-            return left;
-        }
         TokenType op_token = current_token().get_type();
         Position op_start = current_token().get_start();
         advance();
@@ -1722,6 +1719,8 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
             return false;
         case ASTNode::Type::META_PROPERTY:
             return false;
+        case ASTNode::Type::YIELD_EXPRESSION:
+            return false;
         case ASTNode::Type::OBJECT_LITERAL:
             return true;
         case ASTNode::Type::ARRAY_LITERAL:
@@ -2005,7 +2004,19 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
 }
 
 bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
-    for (const auto& prop : obj->get_properties()) {
+    const auto& props = obj->get_properties();
+    for (size_t pi = 0; pi < props.size(); pi++) {
+        const auto& prop = props[pi];
+        // spread must be last
+        if (!prop->key && prop->value &&
+            prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+            if (pi != props.size() - 1) {
+                add_error("SyntaxError: Rest element must be last in object destructuring");
+                return false;
+            }
+        }
+    }
+    for (const auto& prop : props) {
         // method/getter/setter not valid as destructuring target
         if (prop->type == ObjectLiteral::PropertyType::Method ||
             prop->type == ObjectLiteral::PropertyType::Getter ||
@@ -4092,6 +4103,21 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         return nullptr;
     }
 
+    if (has_non_simple_params && body) {
+        auto* blk = static_cast<BlockStatement*>(body.get());
+        if (blk && !blk->get_statements().empty()) {
+            auto* fs = blk->get_statements()[0].get();
+            if (auto* es = dynamic_cast<ExpressionStatement*>(fs)) {
+                if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
+                    if (sl->get_value() == "use strict") {
+                        add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                        return nullptr;
+                    }
+                }
+            }
+        }
+    }
+
     Position end = get_current_position();
     if (is_generator) {
         return std::make_unique<FunctionExpression>(
@@ -4270,6 +4296,21 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     if (!body) {
         add_error("Expected async function body");
         return nullptr;
+    }
+
+    if (has_non_simple_params && body) {
+        auto* blk = static_cast<BlockStatement*>(body.get());
+        if (blk && !blk->get_statements().empty()) {
+            auto* fs = blk->get_statements()[0].get();
+            if (auto* es = dynamic_cast<ExpressionStatement*>(fs)) {
+                if (auto* sl = dynamic_cast<StringLiteral*>(es->get_expression())) {
+                    if (sl->get_value() == "use strict") {
+                        add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                        return nullptr;
+                    }
+                }
+            }
+        }
     }
 
     Position end = get_current_position();
@@ -4497,14 +4538,22 @@ bool Parser::try_parse_arrow_function_params() {
 std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
     Position start = get_current_position();
     
+    // Save yield token's line BEFORE consuming (advance skips whitespace)
+    size_t yield_end_line = current_token().get_end().line;
+
     if (!consume(TokenType::YIELD)) {
         add_error("Expected 'yield'");
         return nullptr;
     }
-    
+
     // [no LineTerminator here] before * or argument
-    size_t yield_end_line = previous_token().get_end().line;
     bool same_line = (!at_end() && current_token().get_start().line == yield_end_line);
+
+    // yield [LT] * is SyntaxError: * on new line cannot be delegate
+    if (!same_line && match(TokenType::MULTIPLY) && options_.in_generator_body) {
+        add_error("SyntaxError: Newline is not allowed before '*' in yield expression");
+        return nullptr;
+    }
 
     bool is_delegate = false;
     if (same_line && match(TokenType::MULTIPLY)) {
