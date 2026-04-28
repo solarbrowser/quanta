@@ -41,7 +41,7 @@
 
 namespace Quanta {
 
-// Helper: ES6 ArraySpeciesCreate — creates result using constructor's @@species
+// Helper: ES6 ArraySpeciesCreate, creates result using constructor's @@species
 static Value array_species_create(Context& ctx, Object* original_array, uint32_t length) {
     // Per spec: only consult @@species if the original is an exotic Array object
     bool is_actual_array = original_array->is_array();
