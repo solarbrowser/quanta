@@ -3059,6 +3059,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     advance();
 
     std::vector<std::unique_ptr<ASTNode>> statements;
+    bool seen_constructor = false;
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::SEMICOLON) {
@@ -3081,6 +3082,19 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             }
             current_token_index_ = saved;
         }
+        // #constructor is a reserved private name
+        if (current_token().get_type() == TokenType::HASH) {
+            size_t h_start = current_token().get_start().offset;
+            size_t save_idx = current_token_index_;
+            advance();
+            if (current_token().get_type() == TokenType::IDENTIFIER &&
+                current_token().get_start().offset == h_start + 1 &&
+                current_token().get_value() == "constructor") {
+                add_error("SyntaxError: '#constructor' is a reserved private name");
+                return nullptr;
+            }
+            current_token_index_ = save_idx;
+        }
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
@@ -3091,6 +3105,17 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
+                // Duplicate constructor check
+                if (method->get_type() == ASTNode::Type::METHOD_DEFINITION) {
+                    auto* md = static_cast<MethodDefinition*>(method.get());
+                    if (md->get_kind() == MethodDefinition::CONSTRUCTOR && !md->is_static()) {
+                        if (seen_constructor) {
+                            add_error("SyntaxError: A class may only have one constructor");
+                            return nullptr;
+                        }
+                        seen_constructor = true;
+                    }
+                }
                 statements.push_back(std::move(method));
             } else {
                 advance();
@@ -3210,6 +3235,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     advance();
 
     std::vector<std::unique_ptr<ASTNode>> statements;
+    bool seen_ctor2 = false;
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::SEMICOLON) {
@@ -3232,6 +3258,19 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             }
             current_token_index_ = saved2;
         }
+        // #constructor is reserved
+        if (current_token().get_type() == TokenType::HASH) {
+            size_t h2 = current_token().get_start().offset;
+            size_t si2 = current_token_index_;
+            advance();
+            if (current_token().get_type() == TokenType::IDENTIFIER &&
+                current_token().get_start().offset == h2 + 1 &&
+                current_token().get_value() == "constructor") {
+                add_error("SyntaxError: '#constructor' is a reserved private name");
+                return nullptr;
+            }
+            current_token_index_ = si2;
+        }
         if (current_token().get_type() == TokenType::IDENTIFIER ||
             current_token().get_type() == TokenType::STATIC ||
             current_token().get_type() == TokenType::MULTIPLY ||
@@ -3242,6 +3281,16 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
+                if (method->get_type() == ASTNode::Type::METHOD_DEFINITION) {
+                    auto* md = static_cast<MethodDefinition*>(method.get());
+                    if (md->get_kind() == MethodDefinition::CONSTRUCTOR && !md->is_static()) {
+                        if (seen_ctor2) {
+                            add_error("SyntaxError: A class may only have one constructor");
+                            return nullptr;
+                        }
+                        seen_ctor2 = true;
+                    }
+                }
                 statements.push_back(std::move(method));
             } else {
                 advance();
@@ -3477,6 +3526,17 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
         if (current_token().get_type() == TokenType::SEMICOLON) {
             advance();
+        } else {
+            // No semicolon: ASI requires line terminator before next token
+            size_t field_end_line = get_current_position().line;
+            TokenType next = current_token().get_type();
+            if (next != TokenType::RIGHT_BRACE && next != TokenType::EOF_TOKEN) {
+                size_t next_line = current_token().get_start().line;
+                if (next_line == field_end_line) {
+                    add_error("SyntaxError: Missing semicolon between class field declarations");
+                    return nullptr;
+                }
+            }
         }
 
         return std::make_unique<ClassField>(std::move(key), std::move(init), is_static, computed, start, get_current_position());
@@ -3556,7 +3616,12 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             }
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+            const std::string& apname = current_token().get_value();
+            if (options_.strict_mode && (apname == "eval" || apname == "arguments")) {
+                add_error("SyntaxError: '" + apname + "' cannot be a parameter name in strict mode");
+                return nullptr;
+            }
+            param_name = std::make_unique<Identifier>(apname,
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -4063,8 +4128,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             }
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
+            {
+                const std::string& pn2 = current_token().get_value();
+                if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
+                    add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    return nullptr;
+                }
+                param_name = std::make_unique<Identifier>(pn2,
+                                                          current_token().get_start(), current_token().get_end());
+            }
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
@@ -4277,8 +4349,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             }
             continue;
         } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
-                                                      current_token().get_start(), current_token().get_end());
+            {
+                const std::string& pn2 = current_token().get_value();
+                if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
+                    add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    return nullptr;
+                }
+                param_name = std::make_unique<Identifier>(pn2,
+                                                          current_token().get_start(), current_token().get_end());
+            }
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
