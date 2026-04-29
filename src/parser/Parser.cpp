@@ -3527,12 +3527,13 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         if (current_token().get_type() == TokenType::SEMICOLON) {
             advance();
         } else {
-            // No semicolon: ASI requires line terminator before next token
-            size_t field_end_line = get_current_position().line;
+            // ASI: no semicolon only valid if line terminator before next token
+            // Use key's end line (or init's end line) as reference
+            size_t field_end_line = init ? init->get_end().line : key->get_end().line;
             TokenType next = current_token().get_type();
             if (next != TokenType::RIGHT_BRACE && next != TokenType::EOF_TOKEN) {
                 size_t next_line = current_token().get_start().line;
-                if (next_line == field_end_line) {
+                if (next_line <= field_end_line) {
                     add_error("SyntaxError: Missing semicolon between class field declarations");
                     return nullptr;
                 }
@@ -3543,7 +3544,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     }
 
     MethodDefinition::Kind kind = method_kind;
-    if (Identifier* key_id = static_cast<Identifier*>(key.get())) {
+    if (!computed && key && key->get_type() == ASTNode::Type::IDENTIFIER) {
+        auto* key_id = static_cast<Identifier*>(key.get());
         if (key_id->get_name() == "constructor") {
             kind = MethodDefinition::CONSTRUCTOR;
         }
