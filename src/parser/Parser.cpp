@@ -910,13 +910,18 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             }
             
             Position end = get_current_position();
-            // super() call in class field initializer is SyntaxError
-            if (options_.in_class_field_init &&
-                expr && expr->get_type() == ASTNode::Type::IDENTIFIER) {
+            // super() call validation
+            if (expr && expr->get_type() == ASTNode::Type::IDENTIFIER) {
                 auto* callee_id = static_cast<Identifier*>(expr.get());
                 if (callee_id->get_name() == "super") {
-                    add_error("SyntaxError: super() call is not valid in class field initializer");
-                    return nullptr;
+                    if (options_.in_class_field_init) {
+                        add_error("SyntaxError: super() call is not valid in class field initializer");
+                        return nullptr;
+                    }
+                    if (!options_.in_constructor || !options_.class_has_heritage) {
+                        add_error("SyntaxError: super() is only valid in derived class constructor");
+                        return nullptr;
+                    }
                 }
             }
             expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
@@ -1167,6 +1172,8 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     }
 
     advance();
+    // Peek: if super() call, check it's in derived constructor
+    // (actual call check happens in parse_call_expression via in_constructor/class_has_heritage)
     return std::make_unique<Identifier>("super", start, end);
 }
 
@@ -2903,15 +2910,18 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
+    bool saved_ic_fd = options_.in_constructor;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
+    options_.in_constructor = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
+    options_.in_constructor = saved_ic_fd;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -3058,6 +3068,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     advance();
 
+    bool saved_chh = options_.class_has_heritage;
+    options_.class_has_heritage = (superclass != nullptr);
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_constructor = false;
 
@@ -3174,6 +3186,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     advance();
 
+    options_.class_has_heritage = saved_chh;
+
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
     Position end = get_current_position();
@@ -3234,6 +3248,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     advance();
 
+    bool saved_chh2 = options_.class_has_heritage;
+    options_.class_has_heritage = (superclass != nullptr);
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_ctor2 = false;
 
@@ -3348,6 +3364,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     }
 
     advance();
+
+    options_.class_has_heritage = saved_chh2;
 
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
@@ -3540,6 +3558,23 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             }
         }
 
+        // Class field restrictions
+        if (!computed && key && key->get_type() == ASTNode::Type::IDENTIFIER) {
+            const std::string& fname = static_cast<Identifier*>(key.get())->get_name();
+            if (fname == "constructor") {
+                add_error("SyntaxError: Class field cannot be named 'constructor'");
+                return nullptr;
+            }
+            if (is_static && fname == "prototype") {
+                add_error("SyntaxError: Static class field cannot be named 'prototype'");
+                return nullptr;
+            }
+            if (is_static && fname == "constructor") {
+                add_error("SyntaxError: Static class field cannot be named 'constructor'");
+                return nullptr;
+            }
+        }
+
         return std::make_unique<ClassField>(std::move(key), std::move(init), is_static, computed, start, get_current_position());
     }
 
@@ -3699,11 +3734,14 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     if (is_async) options_.in_async_body = true;
     if (is_generator) options_.in_generator_body = true;
     bool saved_cm = options_.in_class_method;
+    bool saved_ic = options_.in_constructor;
     options_.in_class_method = true;
+    options_.in_constructor = (kind == MethodDefinition::CONSTRUCTOR);
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_class_method = saved_cm;
+    options_.in_constructor = saved_ic;
     options_.in_async_body = saved_a;
     options_.in_generator_body = saved_g;
     if (!body) {
@@ -3905,15 +3943,18 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
+    bool saved_ic_fd = options_.in_constructor;
     if (is_generator) options_.in_generator_body = true;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
+    options_.in_constructor = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
+    options_.in_constructor = saved_ic_fd;
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -4208,6 +4249,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     options_.in_class_field_init = false;
     bool saved_cm_ae = options_.in_class_method;
     options_.in_class_method = false;
+    options_.in_constructor = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
@@ -4413,6 +4455,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     options_.in_class_field_init = false;
     bool saved_cm_ad = options_.in_class_method;
     options_.in_class_method = false;
+    options_.in_constructor = false;
     options_.function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;

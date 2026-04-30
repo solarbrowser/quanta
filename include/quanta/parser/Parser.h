@@ -29,6 +29,8 @@ public:
         bool in_arrow_params = false;
         bool in_class_field_init = false;
         bool in_class_method = false;
+        bool in_constructor = false;
+        bool class_has_heritage = false;
         int loop_depth = 0;
         int switch_depth = 0;
         int function_depth = 0;
