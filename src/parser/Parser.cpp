@@ -200,7 +200,8 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     auto left = parse_conditional_expression();
     if (!left) return nullptr;
 
-    if (left->get_type() == ASTNode::Type::OBJECT_LITERAL &&
+    if (!options_.in_array_element &&
+        left->get_type() == ASTNode::Type::OBJECT_LITERAL &&
         current_token().get_type() != TokenType::ASSIGN) {
         auto* obj = static_cast<ObjectLiteral*>(left.get());
         for (const auto& prop : obj->get_properties()) {
@@ -4675,7 +4676,9 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
 
     std::unique_ptr<ASTNode> body;
     if (match(TokenType::LEFT_BRACE)) {
+        options_.function_depth++;
         body = parse_block_statement(true);
+        options_.function_depth--;
     } else {
         body = parse_assignment_expression();
     }
@@ -5165,13 +5168,19 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
             bool saved_ab = options_.in_async_body;
             bool saved_gb = options_.in_generator_body;
+            bool saved_cm_ol = options_.in_class_method;
+            bool saved_ic_ol = options_.in_constructor;
             if (is_async) options_.in_async_body = true;
             if (is_generator) options_.in_generator_body = true;
+            options_.in_class_method = true;
+            options_.in_constructor = false;
             options_.function_depth++;
             auto body = parse_block_statement(true);
             options_.function_depth--;
             options_.in_async_body = saved_ab;
             options_.in_generator_body = saved_gb;
+            options_.in_class_method = saved_cm_ol;
+            options_.in_constructor = saved_ic_ol;
             if (!body) {
                 add_error("Expected method body");
                 return nullptr;
@@ -5379,7 +5388,10 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
                 }
                 elements.push_back(std::move(spread));
             } else {
+                bool saved_iae = options_.in_array_element;
+                options_.in_array_element = true;
                 auto element = parse_assignment_expression();
+                options_.in_array_element = saved_iae;
                 if (!element) {
                     add_error("Expected array element");
                     return nullptr;
@@ -6670,7 +6682,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 
     std::unique_ptr<ASTNode> body = nullptr;
     if (match(TokenType::LEFT_BRACE)) {
+        options_.function_depth++;
         body = parse_block_statement(true);
+        options_.function_depth--;
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {
@@ -6725,7 +6739,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
 
     std::unique_ptr<ASTNode> body = nullptr;
     if (match(TokenType::LEFT_BRACE)) {
+        options_.function_depth++;
         body = parse_block_statement(true);
+        options_.function_depth--;
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {
