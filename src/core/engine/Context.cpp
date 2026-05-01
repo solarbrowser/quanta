@@ -11385,6 +11385,18 @@ void Context::setup_global_bindings() {
     
     lexical_environment_->create_binding("console", Value(console_obj.release()), false);
 
+    // print()
+    auto print_fn = ObjectFactory::create_native_function("print",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            for (size_t i = 0; i < args.size(); i++) {
+                if (i > 0) std::cout << " ";
+                std::cout << args[i].to_string();
+            }
+            std::cout << std::endl;
+            return Value();
+        }, 1);
+    lexical_environment_->create_binding("print", Value(print_fn.release()), false);
+
     // GC object with stats(), collect(), heapSize() methods
     auto gc_obj = ObjectFactory::create_object();
 
