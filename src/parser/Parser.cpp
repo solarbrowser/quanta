@@ -447,8 +447,16 @@ std::unique_ptr<ASTNode> Parser::parse_multiplicative_expression() {
 std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
     auto left = parse_unary_expression();
     if (!left) return nullptr;
-    
+
     if (match(TokenType::EXPONENT)) {
+        // Spec: UnaryExpression ** ExponentiationExpression is SyntaxError
+        if (left->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
+            auto* ue = static_cast<UnaryExpression*>(left.get());
+            if (ue->is_prefix()) {
+                add_error("SyntaxError: Unary operator before ** requires parentheses");
+                return left;
+            }
+        }
         Position op_start = current_token().get_start();
         advance();
         
@@ -3059,6 +3067,20 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             add_error("Expected superclass expression after 'extends'");
             return nullptr;
         }
+        // Arrow/async-arrow function as heritage is SyntaxError
+        {
+            auto st = superclass->get_type();
+            bool is_arrow = (st == ASTNode::Type::ARROW_FUNCTION_EXPRESSION);
+            // async arrow produces AsyncFunctionExpression with no id
+            if (!is_arrow && st == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                auto* af = static_cast<AsyncFunctionExpression*>(superclass.get());
+                if (!af->get_id() || af->get_id()->get_name().empty()) is_arrow = true;
+            }
+            if (is_arrow) {
+                add_error("SyntaxError: Arrow function cannot be used as class heritage");
+                return nullptr;
+            }
+        }
     }
 
     if (!match(TokenType::LEFT_BRACE)) {
@@ -3238,6 +3260,20 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         if (!superclass) {
             add_error("Expected superclass expression after 'extends'");
             return nullptr;
+        }
+        // Arrow/async-arrow function as heritage is SyntaxError
+        {
+            auto st = superclass->get_type();
+            bool is_arrow = (st == ASTNode::Type::ARROW_FUNCTION_EXPRESSION);
+            // async arrow produces AsyncFunctionExpression with no id
+            if (!is_arrow && st == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                auto* af = static_cast<AsyncFunctionExpression*>(superclass.get());
+                if (!af->get_id() || af->get_id()->get_name().empty()) is_arrow = true;
+            }
+            if (is_arrow) {
+                add_error("SyntaxError: Arrow function cannot be used as class heritage");
+                return nullptr;
+            }
         }
     }
 
@@ -5771,6 +5807,13 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_export_statement() {
     Position start = current_token().get_start();
+
+    if (options_.function_depth > 0) {
+        add_error("SyntaxError: 'export' not allowed inside function body");
+        advance();
+        return nullptr;
+    }
+
     advance();
     
     if (match(TokenType::DEFAULT)) {
