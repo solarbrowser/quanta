@@ -25,7 +25,7 @@ If the results are outdated, use the dedicated [runner](https://github.com/atatu
 
 ### Documentation
 
-You can reach all the documentation files from [here](https://quanta.js.org/pages/docs/docs.html).
+You can reach all the documentation files from [here](https://quanta.js.org/docen/index.html).
 
 ### Build
 <details>
