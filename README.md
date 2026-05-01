@@ -25,7 +25,7 @@ Quanta is an experimental ECMAScript (or JS) engine focused on both **memory eff
 
 ## Test262
   
-You can review executed tests here: [quanta.js.org](https://quanta.js.org/pages/test262/test262.html)
+You can review executed tests here: [quanta.js.org](https://quanta.js.org/test262/test262.html)
 
 If the results are outdated, use the dedicated [runner](https://github.com/ataturkcu/quanta-test262-runner)
 
@@ -134,7 +134,9 @@ build/errors.log
 ## Roadmap
 
 - Improve **spec compliance** 
-- Implement **bytecode virtual machine (VM)**  
+- Implement **bytecode virtual machine (VM)**
+
+More [here](https://quanta.js.org/roadmap.html)
 
 ## Contributing
 
