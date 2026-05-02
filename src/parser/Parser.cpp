@@ -5309,7 +5309,10 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     return nullptr;
                 }
 
+                bool saved_iae2 = options_.in_array_element;
+                options_.in_array_element = true;
                 auto value = parse_assignment_expression();
+                options_.in_array_element = saved_iae2;
                 if (!value) {
                     add_error("Expected property value");
                     return nullptr;
@@ -6408,13 +6411,16 @@ std::unique_ptr<ASTNode> Parser::parse_spread_element() {
     }
     
     advance();
-    
+
+    bool saved_iae = options_.in_array_element;
+    options_.in_array_element = true;
     auto argument = parse_assignment_expression();
+    options_.in_array_element = saved_iae;
     if (!argument) {
         add_error("Expected expression after '...'");
         return nullptr;
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<SpreadElement>(std::move(argument), start, end);
 }
