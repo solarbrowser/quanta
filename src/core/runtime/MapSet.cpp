@@ -849,6 +849,123 @@ void Set::setup_set_prototype(Context& ctx) {
         set_prototype->set_property(iterator_symbol->to_property_key(), Value(set_iterator_fn.release()));
     }
 
+    // ES2024 Set methods
+    // Helper to get set values from any Set-like object
+    auto get_set_like = [](Context& ctx, const Value& v) -> std::vector<Value> {
+        std::vector<Value> result;
+        if (v.is_object() && v.as_object()->get_type() == Object::ObjectType::Set) {
+            return static_cast<Set*>(v.as_object())->values();
+        }
+        return result;
+    };
+
+    auto union_fn = ObjectFactory::create_native_function("union",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.union"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.union requires a Set"); return Value(); }
+            auto result = std::make_unique<Set>();
+            for (const auto& v : self->values()) result->add(v);
+            if (args[0].as_object()->get_type() == Object::ObjectType::Set) {
+                for (const auto& v : static_cast<Set*>(args[0].as_object())->values()) result->add(v);
+            }
+            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            return Value(result.release());
+        }, 1);
+    set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto intersection_fn = ObjectFactory::create_native_function("intersection",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.intersection"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.intersection requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            auto result = std::make_unique<Set>();
+            for (const auto& v : self->values()) if (other->has(v)) result->add(v);
+            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            return Value(result.release());
+        }, 1);
+    set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto difference_fn = ObjectFactory::create_native_function("difference",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.difference"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.difference requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            auto result = std::make_unique<Set>();
+            for (const auto& v : self->values()) if (!other->has(v)) result->add(v);
+            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            return Value(result.release());
+        }, 1);
+    set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto symmetricDifference_fn = ObjectFactory::create_native_function("symmetricDifference",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.symmetricDifference"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.symmetricDifference requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            auto result = std::make_unique<Set>();
+            for (const auto& v : self->values()) if (!other->has(v)) result->add(v);
+            for (const auto& v : other->values()) if (!self->has(v)) result->add(v);
+            if (Set::prototype_object) result->set_prototype(Set::prototype_object);
+            return Value(result.release());
+        }, 1);
+    set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto isSubsetOf_fn = ObjectFactory::create_native_function("isSubsetOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSubsetOf"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.isSubsetOf requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            for (const auto& v : self->values()) if (!other->has(v)) return Value(false);
+            return Value(true);
+        }, 1);
+    set_prototype->set_property("isSubsetOf", Value(isSubsetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto isSupersetOf_fn = ObjectFactory::create_native_function("isSupersetOf",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSupersetOf"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.isSupersetOf requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            for (const auto& v : other->values()) if (!self->has(v)) return Value(false);
+            return Value(true);
+        }, 1);
+    set_prototype->set_property("isSupersetOf", Value(isSupersetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto isDisjointFrom_fn = ObjectFactory::create_native_function("isDisjointFrom",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isDisjointFrom"); return Value(); }
+            Set* self = static_cast<Set*>(obj);
+            if (args.empty() || !args[0].is_object() || args[0].as_object()->get_type() != Object::ObjectType::Set) {
+                ctx.throw_type_error("Set.prototype.isDisjointFrom requires a Set"); return Value();
+            }
+            Set* other = static_cast<Set*>(args[0].as_object());
+            for (const auto& v : self->values()) if (other->has(v)) return Value(false);
+            return Value(true);
+        }, 1);
+    set_prototype->set_property("isDisjointFrom", Value(isDisjointFrom_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     PropertyDescriptor set_tag_desc(Value(std::string("Set")), PropertyAttributes::Configurable);
     set_prototype->set_property_descriptor("Symbol.toStringTag", set_tag_desc);
 
