@@ -10789,6 +10789,8 @@ void Context::setup_global_bindings() {
                 if (parser.has_errors()) {
                     auto& errors = parser.get_errors();
                     std::string msg = errors.empty() ? "SyntaxError" : errors[0].message;
+                    // Strip "SyntaxError: " prefix to avoid double-prefixing
+                    if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
                     ctx.throw_syntax_error(msg);
                     return Value();
                 }
