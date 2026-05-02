@@ -123,6 +123,7 @@ setup_pcre2
 
 mkdir -p \
     "$OBJ_DIR/core/engine" \
+    "$OBJ_DIR/core/engine/builtins" \
     "$OBJ_DIR/core/gc" \
     "$OBJ_DIR/core/modules" \
     "$OBJ_DIR/core/runtime" \
@@ -210,6 +211,7 @@ PCRE2_SOURCES=(
 )
 
 CORE_ENGINE_SOURCES=(src/core/engine/*.cpp)
+mapfile -d '' BUILTIN_SOURCES < <(find src/core/engine/builtins -name '*.cpp' -print0 2>/dev/null)
 CORE_GC_SOURCES=(src/core/gc/*.cpp)
 CORE_MODULE_SOURCES=(src/core/modules/*.cpp)
 CORE_RUNTIME_SOURCES=(src/core/runtime/*.cpp)
@@ -221,6 +223,7 @@ shopt -u nullglob
 TOTAL_FILES=$((
     ${#PCRE2_SOURCES[@]} +
     ${#CORE_ENGINE_SOURCES[@]} +
+    ${#BUILTIN_SOURCES[@]} +
     ${#CORE_GC_SOURCES[@]} +
     ${#CORE_MODULE_SOURCES[@]} +
     ${#CORE_RUNTIME_SOURCES[@]} +
@@ -233,6 +236,7 @@ FAILED_FILES=0
 PCRE2_OBJECTS=()
 UTF8PROC_OBJECTS=()
 CORE_ENGINE_OBJECTS=()
+BUILTIN_OBJECTS=()
 CORE_GC_OBJECTS=()
 CORE_MODULE_OBJECTS=()
 CORE_RUNTIME_OBJECTS=()
@@ -280,6 +284,21 @@ for src in "${CORE_ENGINE_SOURCES[@]}"; do
         fail "Compilation failed at $src"
     fi
     CORE_ENGINE_OBJECTS+=("$obj")
+    ((COMPILED_FILES++))
+done
+
+echo
+echo "[1/4] Compiling builtin modules..."
+echo "[$(date '+%H:%M:%S')] === BUILTINS ===" >> "$LOG_FILE"
+for src in "${BUILTIN_SOURCES[@]}"; do
+    obj="$OBJ_DIR/core/engine/builtins/$(basename "${src%.cpp}").o"
+    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
+    if ! compile_cpp "$src" "$obj"; then
+        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
+        ((FAILED_FILES++))
+        fail "Compilation failed at $src"
+    fi
+    BUILTIN_OBJECTS+=("$obj")
     ((COMPILED_FILES++))
 done
 
@@ -367,6 +386,7 @@ if ! clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" -DMAIN_EXECUTAB
     -o "$BIN_DIR/quanta" \
     console.cpp \
     "${CORE_ENGINE_OBJECTS[@]}" \
+    "${BUILTIN_OBJECTS[@]}" \
     "${CORE_GC_OBJECTS[@]}" \
     "${CORE_MODULE_OBJECTS[@]}" \
     "${CORE_RUNTIME_OBJECTS[@]}" \
