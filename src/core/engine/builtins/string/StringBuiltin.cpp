@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
-#include "StringBuiltin.h"
+#include "quanta/core/engine/builtins/StringBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
@@ -13,7 +13,9 @@
 #include <cmath>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
 #include "utf8proc.h"
+#include "quanta/parser/AST.h"
 
 namespace Quanta {
 
@@ -1895,6 +1897,216 @@ void register_string_builtins(Context& ctx) {
     string_constructor->set_property("fromCodePoint", Value(fromCodePoint_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.register_built_in_object("String", string_constructor.release());
+
+    Object* global_object = ctx.get_global_object();
+    Value global_string = global_object ? global_object->get_property("String") : Value();
+    if (global_string.is_function()) {
+        Object* global_string_obj = global_string.as_function();
+        Value prototype_val = global_string_obj->get_property("prototype");
+        if (prototype_val.is_object()) {
+            Object* global_prototype = prototype_val.as_object();
+
+            auto global_includes_fn = ObjectFactory::create_native_function("includes",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value this_value = ctx.get_binding("this");
+                    std::string str = this_value.to_string();
+                    if (args.empty()) return Value(false);
+                    // ES6: throw TypeError if argument is a regexp (has Symbol.match truthy)
+                    if (args[0].is_object() || args[0].is_function()) {
+                        Object* arg_obj = args[0].is_function()
+                            ? static_cast<Object*>(args[0].as_function())
+                            : args[0].as_object();
+                        Value sym_match = arg_obj->get_property("Symbol.match");
+                        if (sym_match.is_undefined()) {
+                            if (arg_obj->get_type() == Object::ObjectType::RegExp) {
+                                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                                return Value();
+                            }
+                        } else if (sym_match.to_boolean()) {
+                            ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                            return Value();
+                        }
+                    }
+                    if (args[0].is_symbol()) {
+                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
+                        return Value();
+                    }
+                    // Convert argument to string (call toString() for objects)
+                    std::string search_string;
+                    if (args[0].is_object() || args[0].is_function()) {
+                        Object* obj = args[0].is_function()
+                            ? static_cast<Object*>(args[0].as_function())
+                            : args[0].as_object();
+                        Value ts = obj->get_property("toString");
+                        if (ts.is_function()) {
+                            Value r = ts.as_function()->call(ctx, {}, args[0]);
+                            if (!ctx.has_exception() && r.is_string()) search_string = r.to_string();
+                            else search_string = args[0].to_string();
+                        } else search_string = args[0].to_string();
+                    } else search_string = args[0].to_string();
+                    size_t position = 0;
+                    if (args.size() > 1) {
+                        if (args[1].is_symbol()) {
+                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
+                            return Value();
+                        }
+                        position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
+                    }
+                    if (position >= str.length()) {
+                        return Value(search_string.empty());
+                    }
+                    size_t found = str.find(search_string, position);
+                    return Value(found != std::string::npos);
+                });
+            PropertyDescriptor global_includes_length_desc(Value(1.0), PropertyAttributes::Configurable);
+            global_includes_length_desc.set_enumerable(false);
+            global_includes_length_desc.set_writable(false);
+            global_includes_fn->set_property_descriptor("length", global_includes_length_desc);
+            global_prototype->set_property("includes", Value(global_includes_fn.release()), PropertyAttributes::BuiltinFunction);
+
+            auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    Value this_val;
+                    if (this_obj) {
+                        this_val = Value(this_obj);
+                    } else {
+                        try {
+                            this_val = ctx.get_binding("this");
+                        } catch (...) {
+                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.valueOf called on non-object")));
+                            return Value();
+                        }
+                    }
+
+                    if (this_val.is_object()) {
+                        Object* obj = this_val.as_object();
+                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
+                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
+                            return primitive_value;
+                        }
+                    }
+
+                    if (this_val.is_string()) {
+                        return this_val;
+                    }
+
+                    return Value(this_val.to_string());
+                });
+
+            PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
+            string_valueOf_length_desc.set_enumerable(false);
+            string_valueOf_length_desc.set_writable(false);
+            string_valueOf_fn->set_property_descriptor("length", string_valueOf_length_desc);
+
+            PropertyDescriptor string_valueOf_name_desc(Value(std::string("valueOf")), PropertyAttributes::None);
+            string_valueOf_name_desc.set_configurable(true);
+            string_valueOf_name_desc.set_enumerable(false);
+            string_valueOf_name_desc.set_writable(false);
+            string_valueOf_fn->set_property_descriptor("name", string_valueOf_name_desc);
+
+            global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
+
+            auto string_toString_fn = ObjectFactory::create_native_function("toString",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Object* this_obj = ctx.get_this_binding();
+                    Value this_val;
+                    if (this_obj) {
+                        this_val = Value(this_obj);
+                    } else {
+                        try {
+                            this_val = ctx.get_binding("this");
+                        } catch (...) {
+                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.toString called on non-object")));
+                            return Value();
+                        }
+                    }
+
+                    if (this_val.is_object()) {
+                        Object* obj = this_val.as_object();
+                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
+                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
+                            return primitive_value;
+                        }
+                    }
+
+                    if (this_val.is_string()) {
+                        return this_val;
+                    }
+
+                    return Value(this_val.to_string());
+                });
+
+            PropertyDescriptor string_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);
+            string_toString_length_desc.set_enumerable(false);
+            string_toString_length_desc.set_writable(false);
+            string_toString_fn->set_property_descriptor("length", string_toString_length_desc);
+
+            PropertyDescriptor string_toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
+            string_toString_name_desc.set_configurable(true);
+            string_toString_name_desc.set_enumerable(false);
+            string_toString_name_desc.set_writable(false);
+            string_toString_fn->set_property_descriptor("name", string_toString_name_desc);
+
+            global_prototype->set_property("toString", Value(string_toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
+            auto string_trim_fn = ObjectFactory::create_native_function("trim",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Value this_value = ctx.get_binding("this");
+                    std::string str = this_value.to_string();
+
+                    size_t start = 0;
+                    size_t end = str.length();
+
+                    while (start < end && std::isspace(static_cast<unsigned char>(str[start]))) {
+                        start++;
+                    }
+                    while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
+                        end--;
+                    }
+
+                    return Value(str.substr(start, end - start));
+                });
+            global_prototype->set_property("trim", Value(string_trim_fn.release()), PropertyAttributes::BuiltinFunction);
+
+            auto string_trimStart_fn = ObjectFactory::create_native_function("trimStart",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Value this_value = ctx.get_binding("this");
+                    std::string str = this_value.to_string();
+
+                    size_t start = 0;
+                    while (start < str.length() && std::isspace(static_cast<unsigned char>(str[start]))) {
+                        start++;
+                    }
+
+                    return Value(str.substr(start));
+                });
+            Function* trimStart_raw = string_trimStart_fn.get();
+            global_prototype->set_property("trimStart", Value(string_trimStart_fn.release()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimLeft", Value(trimStart_raw), PropertyAttributes::BuiltinFunction);
+
+            auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    Value this_value = ctx.get_binding("this");
+                    std::string str = this_value.to_string();
+
+                    size_t end = str.length();
+                    while (end > 0 && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
+                        end--;
+                    }
+
+                    return Value(str.substr(0, end));
+                });
+            Function* trimEnd_raw = string_trimEnd_fn.get();
+            global_prototype->set_property("trimEnd", Value(string_trimEnd_fn.release()), PropertyAttributes::BuiltinFunction);
+            global_prototype->set_property("trimRight", Value(trimEnd_raw), PropertyAttributes::BuiltinFunction);
+
+        }
+    }
+
 }
 
 } // namespace Quanta

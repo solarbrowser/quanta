@@ -3,7 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
-#include "ObjectBuiltin.h"
+#include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
@@ -12,6 +12,7 @@
 #include <cmath>
 #include <sstream>
 #include <algorithm>
+#include "quanta/parser/AST.h"
 
 namespace Quanta {
 
