@@ -129,6 +129,7 @@ mkdir -p \
     "$OBJ_DIR/core/runtime" \
     "$OBJ_DIR/lexer" \
     "$OBJ_DIR/parser" \
+    "$OBJ_DIR/parser/ast" \
     "$OBJ_DIR/pcre2" \
     "$OBJ_DIR/utf8proc"
 
@@ -217,6 +218,7 @@ CORE_MODULE_SOURCES=(src/core/modules/*.cpp)
 CORE_RUNTIME_SOURCES=(src/core/runtime/*.cpp)
 LEXER_SOURCES=(src/lexer/*.cpp)
 PARSER_SOURCES=(src/parser/*.cpp)
+mapfile -d '' AST_SOURCES < <(find src/parser/ast -name '*.cpp' -print0 2>/dev/null)
 
 shopt -u nullglob
 
@@ -228,7 +230,8 @@ TOTAL_FILES=$((
     ${#CORE_MODULE_SOURCES[@]} +
     ${#CORE_RUNTIME_SOURCES[@]} +
     ${#LEXER_SOURCES[@]} +
-    ${#PARSER_SOURCES[@]}
+    ${#PARSER_SOURCES[@]} +
+    ${#AST_SOURCES[@]}
 ))
 
 COMPILED_FILES=0
@@ -242,6 +245,7 @@ CORE_MODULE_OBJECTS=()
 CORE_RUNTIME_OBJECTS=()
 LEXER_OBJECTS=()
 PARSER_OBJECTS=()
+AST_OBJECTS=()
 
 echo
 print_header "Compilation Phase"
@@ -378,6 +382,21 @@ for src in "${PARSER_SOURCES[@]}"; do
 done
 
 echo
+echo "[4/4] Compiling parser/ast modules..."
+echo "[$(date '+%H:%M:%S')] === PARSER AST ===" >> "$LOG_FILE"
+for src in "${AST_SOURCES[@]}"; do
+    obj="$OBJ_DIR/parser/ast/$(basename "${src%.cpp}").o"
+    printf '  [%d/%d] %s\n' $((COMPILED_FILES + 1)) "$TOTAL_FILES" "$(basename "$src")"
+    if ! compile_cpp "$src" "$obj"; then
+        echo "[$(date '+%H:%M:%S')] ERROR compiling $src" >> "$LOG_FILE"
+        ((FAILED_FILES++))
+        fail "Compilation failed at $src"
+    fi
+    AST_OBJECTS+=("$obj")
+    ((COMPILED_FILES++))
+done
+
+echo
 print_header "Linking Phase"
 echo "[LINK] Creating executable with ThinLTO..."
 echo "[$(date '+%H:%M:%S')] === LINKING ===" >> "$LOG_FILE"
@@ -392,6 +411,7 @@ if ! clang++ "${CXXFLAGS[@]}" "${INCLUDES[@]}" "${LTO_FLAGS[@]}" -DMAIN_EXECUTAB
     "${CORE_RUNTIME_OBJECTS[@]}" \
     "${LEXER_OBJECTS[@]}" \
     "${PARSER_OBJECTS[@]}" \
+    "${AST_OBJECTS[@]}" \
     "${PCRE2_OBJECTS[@]}" \
     "${UTF8PROC_OBJECTS[@]}" \
     "${LIBS[@]}" \
