@@ -85,6 +85,7 @@ if not exist "build\obj\core\modules" mkdir build\obj\core\modules
 if not exist "build\obj\core\runtime" mkdir build\obj\core\runtime
 if not exist "build\obj\lexer" mkdir build\obj\lexer
 if not exist "build\obj\parser" mkdir build\obj\parser
+if not exist "build\obj\parser\ast" mkdir build\obj\parser\ast
 if not exist "build\obj\pcre2" mkdir build\obj\pcre2
 if not exist "build\obj\utf8proc" mkdir build\obj\utf8proc
 if not exist "build\bin" mkdir build\bin
@@ -140,6 +141,7 @@ echo.
 REM Count total files
 for %%f in (src\core\engine\*.cpp src\core\gc\*.cpp src\core\modules\*.cpp src\core\runtime\*.cpp src\lexer\*.cpp src\parser\*.cpp) do set /a TOTAL_FILES+=1
 for /r src\core\engine\builtins %%f in (*.cpp) do set /a TOTAL_FILES+=1
+for /r src\parser\ast %%f in (*.cpp) do set /a TOTAL_FILES+=1
 
 REM Compile core engine
 echo [1/4] Compiling core engine modules...
@@ -253,6 +255,22 @@ for %%f in (src\parser\*.cpp) do (
     echo [%time%] OK: %%f >> "%LOG_FILE%"
 )
 
+REM Compile parser/ast modules
+echo [4/4] Compiling parser/ast modules...
+echo [%time%] === PARSER AST === >> "%LOG_FILE%"
+for /r src\parser\ast %%f in (*.cpp) do (
+    set /a COMPILED_FILES+=1
+    echo   [!COMPILED_FILES!/%TOTAL_FILES%] %%~nf.cpp
+    clang++ %CXXFLAGS% %INCLUDES% -c %%f -o build\obj\parser\ast\%%~nf.o 2>> "%ERROR_LOG%"
+    if !ERRORLEVEL! NEQ 0 (
+        echo   [FAILED] %%f
+        echo [%time%] ERROR compiling %%f >> "%LOG_FILE%"
+        set /a FAILED_FILES+=1
+        goto :build_failed
+    )
+    echo [%time%] OK: %%f >> "%LOG_FILE%"
+)
+
 echo.
 echo ===============================================================
 echo   Linking Phase
@@ -261,7 +279,7 @@ echo.
 echo [LINK] Creating executable with ThinLTO...
 echo [%time%] === LINKING === >> "%LOG_FILE%"
 
-clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\engine\builtins\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o build\obj\pcre2\*.o build\obj\utf8proc\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
+clang++ %CXXFLAGS% %INCLUDES% -fuse-ld=lld -DMAIN_EXECUTABLE -o build\bin\quanta.exe console.cpp build\obj\core\engine\*.o build\obj\core\engine\builtins\*.o build\obj\core\gc\*.o build\obj\core\modules\*.o build\obj\core\runtime\*.o build\obj\lexer\*.o build\obj\parser\*.o build\obj\parser\ast\*.o build\obj\pcre2\*.o build\obj\utf8proc\*.o %LIBS% %STACK% 2>> "%ERROR_LOG%"
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] Linking failed!
