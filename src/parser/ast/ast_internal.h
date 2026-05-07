@@ -7,8 +7,12 @@
 #pragma once
 #include <string>
 #include <cstddef>
+#include <unordered_map>
 
 namespace Quanta {
+
+class Value;
+extern std::unordered_map<std::string, Value> g_object_function_map;
 
 inline size_t utf16_length(const std::string& str) {
     size_t count = 0;
