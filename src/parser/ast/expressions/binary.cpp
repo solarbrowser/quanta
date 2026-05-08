@@ -416,10 +416,14 @@ Value BinaryExpression::evaluate(Context& ctx) {
         if (!val.is_object_like() || val.is_string()) return val;
         Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
         if (!obj) return val;
-        // ES6: Check Symbol.toPrimitive
-        Value toPrim = obj->get_property("Symbol.toPrimitive");
+        // ES6: Check Symbol.toPrimitive via well-known symbol key
+        Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+        std::string toPrim_key = toPrim_sym ? toPrim_sym->to_property_key() : "Symbol.toPrimitive";
+        Value toPrim = obj->get_property(toPrim_key);
+        if (ctx.has_exception()) return Value();
         if (toPrim.is_function()) {
             Value result = toPrim.as_function()->call(ctx, {Value(hint)}, val);
+            if (ctx.has_exception()) return Value();
             if (!result.is_object_like()) return result;
             return val;
         }
@@ -455,11 +459,10 @@ Value BinaryExpression::evaluate(Context& ctx) {
 
     switch (operator_) {
         case Operator::ADD: {
-            Value left_coerced = left_value;
-            Value right_coerced = right_value;
-
-            left_coerced = toPrimitive(left_value);
-            right_coerced = toPrimitive(right_value);
+            Value left_coerced = toPrimitive(left_value);
+            if (ctx.has_exception()) return Value();
+            Value right_coerced = toPrimitive(right_value);
+            if (ctx.has_exception()) return Value();
 
             // ES6: Symbols cannot be coerced in addition
             if (left_coerced.is_symbol() || right_coerced.is_symbol()) {

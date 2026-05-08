@@ -36,6 +36,7 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
 
     this->set_property("prototype", Value(prototype_));
+    prototype_->set_property("constructor", Value(this));
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
@@ -57,8 +58,9 @@ Function::Function(const std::string& name,
     
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
-    
+
     this->set_property("prototype", Value(prototype_));
+    prototype_->set_property("constructor", Value(this));
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);

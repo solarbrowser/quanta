@@ -1,7 +1,7 @@
 @echo off
 setlocal enabledelayedexpansion
 REM =============================================================================
-REM Quanta JavaScript Engine v0.1.0 - Clang Build Script
+REM Quanta JavaScript Engine - Clang Build Script
 REM =============================================================================
 
 REM Setup logging
