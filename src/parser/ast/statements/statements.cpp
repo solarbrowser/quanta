@@ -1102,21 +1102,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         while (iteration_count < MAX_ITERATIONS) {
                             iteration_count++;
 
-                            Value result;
-                            if (iterator_obj.is_object()) {
-                                Object* iter_obj = iterator_obj.as_object();
-                                Value next_method = iter_obj->get_property("next");
-                                if (next_method.is_function()) {
-                                    Function* next_fn_obj = next_method.as_function();
-                                    result = next_fn_obj->call(ctx, {}, iterator_obj);
-                                } else {
-                                    ctx.throw_exception(Value(std::string("Iterator object has no next method")));
-                                    return Value();
-                                }
-                            } else {
-                                ctx.throw_exception(Value(std::string("Iterator is not an object")));
-                                return Value();
-                            }
+                            Value result = next_fn->call(ctx, {}, iterator_obj);
 
                             if (ctx.has_exception()) { close_iterator(); return Value(); }
 
