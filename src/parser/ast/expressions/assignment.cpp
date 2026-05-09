@@ -461,15 +461,41 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 }
                 break;
             }
-            case Operator::MINUS_ASSIGN: {
-                if (is_string_object) {
-                    ctx.throw_exception(Value(std::string("Compound assignment not supported for string objects")));
-                    return Value();
-                } else {
-                    Value current_value = obj->get_property(prop_name);
-                    obj->set_property(prop_name, Value(current_value.to_number() - right_value.to_number()));
+            case Operator::MINUS_ASSIGN:
+            case Operator::MUL_ASSIGN:
+            case Operator::DIV_ASSIGN:
+            case Operator::MOD_ASSIGN:
+            case Operator::BITWISE_AND_ASSIGN:
+            case Operator::BITWISE_OR_ASSIGN:
+            case Operator::BITWISE_XOR_ASSIGN:
+            case Operator::LEFT_SHIFT_ASSIGN:
+            case Operator::RIGHT_SHIFT_ASSIGN:
+            case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
+                if (!obj) { ctx.throw_type_error("Cannot set property of null"); return Value(); }
+                Value cur = obj->get_property(prop_name);
+                if (ctx.has_exception()) return Value();
+                double l = cur.to_number();
+                double r = right_value.to_number();
+                double result;
+                switch (operator_) {
+                    case Operator::MINUS_ASSIGN:               result = l - r; break;
+                    case Operator::MUL_ASSIGN:                 result = l * r; break;
+                    case Operator::DIV_ASSIGN:                 result = l / r; break;
+                    case Operator::MOD_ASSIGN:                 result = std::fmod(l, r); break;
+                    case Operator::BITWISE_AND_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) & static_cast<int32_t>(r)); break;
+                    case Operator::BITWISE_OR_ASSIGN:          result = static_cast<double>(static_cast<int32_t>(l) | static_cast<int32_t>(r)); break;
+                    case Operator::BITWISE_XOR_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) ^ static_cast<int32_t>(r)); break;
+                    case Operator::LEFT_SHIFT_ASSIGN:          result = static_cast<double>(static_cast<int32_t>(l) << (static_cast<uint32_t>(r) & 0x1F)); break;
+                    case Operator::RIGHT_SHIFT_ASSIGN:         result = static_cast<double>(static_cast<int32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
+                    case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:result = static_cast<double>(static_cast<uint32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
+                    default: result = l; break;
                 }
-                break;
+                bool success = obj->set_property(prop_name, Value(result));
+                if (!success && ctx.is_strict_mode()) {
+                    ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
+                    return Value();
+                }
+                return Value(result);
             }
             default:
                 ctx.throw_exception(Value(std::string("Unsupported assignment operator for member expression")));

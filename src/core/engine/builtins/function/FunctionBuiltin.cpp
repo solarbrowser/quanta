@@ -107,6 +107,21 @@ void register_function_builtins(Context& ctx) {
                     }
                     func->set_source_text(toString_src);
 
+                    // Detect "use strict" directive in function body
+                    if (func_expr->get_body() && func_expr->get_body()->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+                        BlockStatement* blk = static_cast<BlockStatement*>(func_expr->get_body());
+                        const auto& stmts = blk->get_statements();
+                        if (!stmts.empty() && stmts[0]->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+                            ExpressionStatement* es = static_cast<ExpressionStatement*>(stmts[0].get());
+                            if (es->get_expression() && es->get_expression()->get_type() == ASTNode::Type::STRING_LITERAL) {
+                                StringLiteral* sl = static_cast<StringLiteral*>(es->get_expression());
+                                if (sl->get_value() == "use strict") {
+                                    func->set_is_strict(true);
+                                }
+                            }
+                        }
+                    }
+
                     Function* raw_func = func.release();
                     Value new_target = ctx.get_new_target();
                     if (!new_target.is_undefined()) {
@@ -317,6 +332,51 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("toString", Value(function_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     function_prototype->set_property("name", Value(std::string("")), PropertyAttributes::Configurable);
+
+    // ES6: Function.prototype.caller/.arguments throw TypeError for strict/class functions.
+    {
+        auto poison_getter = ObjectFactory::create_native_function("ThrowTypeError",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_function()) {
+                    Function* fn = this_val.as_function();
+                    if (fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
+                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                        return Value();
+                    }
+                }
+                return Value();
+            });
+        auto poison_setter = ObjectFactory::create_native_function("ThrowTypeError",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_function()) {
+                    Function* fn = this_val.as_function();
+                    if (fn->is_strict() || fn->is_class_constructor()) {
+                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                        return Value();
+                    }
+                }
+                return Value();
+            });
+
+        Function* getter_raw = poison_getter.release();
+        Function* setter_raw = poison_setter.release();
+
+        PropertyDescriptor caller_desc;
+        caller_desc.set_getter(getter_raw);
+        caller_desc.set_setter(setter_raw);
+        caller_desc.set_configurable(false);
+        caller_desc.set_enumerable(false);
+        function_proto_ptr->set_property_descriptor("caller", caller_desc);
+
+        PropertyDescriptor arguments_desc;
+        arguments_desc.set_getter(getter_raw);
+        arguments_desc.set_setter(setter_raw);
+        arguments_desc.set_configurable(false);
+        arguments_desc.set_enumerable(false);
+        function_proto_ptr->set_property_descriptor("arguments", arguments_desc);
+    }
 
     // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods
     Object* object_proto = ObjectFactory::get_object_prototype();
