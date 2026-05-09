@@ -854,7 +854,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
         Context* gctx = (exec && exec->engine_) ? exec->engine_->get_current_context() : &ctx;
 
         if (!iterable.is_object()) {
-            ctx.throw_exception(Value(std::string("for-await-of: iterable must be an object")));
+            ctx.throw_type_error("for-await-of: value is not iterable");
             return Value();
         }
 
@@ -1347,7 +1347,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             return Value();
         }
     } else {
-        ctx.throw_exception(Value(std::string("For...of: Not an iterable object")));
+        ctx.throw_type_error("For...of: value is not iterable");
         return Value();
     }
 
