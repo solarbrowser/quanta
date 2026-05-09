@@ -424,6 +424,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
     : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->set_prototype(Generator::s_generator_prototype_);
@@ -440,6 +441,7 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
                                    std::unique_ptr<ASTNode> body,
                                    Context* closure_context)
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
     // Each generator function gets a unique 'prototype' object inheriting from %GeneratorPrototype%
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();

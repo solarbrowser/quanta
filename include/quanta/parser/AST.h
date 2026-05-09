@@ -1440,7 +1440,8 @@ public:
 class Program : public ASTNode {
 private:
     std::vector<std::unique_ptr<ASTNode>> statements_;
-    
+    bool is_strict_ = false;
+
     void check_use_strict_directive(Context& ctx);
     void hoist_var_declarations(Context& ctx);
     void scan_for_var_declarations(ASTNode* node, Context& ctx);
@@ -1448,6 +1449,9 @@ private:
 public:
     Program(std::vector<std::unique_ptr<ASTNode>> statements, const Position& start, const Position& end)
         : ASTNode(Type::PROGRAM, start, end), statements_(std::move(statements)) {}
+
+    void set_strict(bool v) { is_strict_ = v; }
+    bool is_strict() const { return is_strict_; }
     
     const std::vector<std::unique_ptr<ASTNode>>& get_statements() const { return statements_; }
     size_t statement_count() const { return statements_.size(); }

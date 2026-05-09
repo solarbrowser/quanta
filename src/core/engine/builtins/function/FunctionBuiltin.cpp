@@ -107,18 +107,13 @@ void register_function_builtins(Context& ctx) {
                     }
                     func->set_source_text(toString_src);
 
-                    // Detect "use strict" directive in function body
-                    if (func_expr->get_body() && func_expr->get_body()->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-                        BlockStatement* blk = static_cast<BlockStatement*>(func_expr->get_body());
-                        const auto& stmts = blk->get_statements();
-                        if (!stmts.empty() && stmts[0]->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-                            ExpressionStatement* es = static_cast<ExpressionStatement*>(stmts[0].get());
-                            if (es->get_expression() && es->get_expression()->get_type() == ASTNode::Type::STRING_LITERAL) {
-                                StringLiteral* sl = static_cast<StringLiteral*>(es->get_expression());
-                                if (sl->get_value() == "use strict") {
-                                    func->set_is_strict(true);
-                                }
-                            }
+                    // Detect "use strict" directive via body string
+                    {
+                        std::string trimmed = body;
+                        size_t s = trimmed.find_first_not_of(" \t\r\n");
+                        if (s != std::string::npos) trimmed = trimmed.substr(s);
+                        if (trimmed.find("\"use strict\"") == 0 || trimmed.find("'use strict'") == 0) {
+                            func->set_is_strict(true);
                         }
                     }
 
@@ -335,27 +330,31 @@ void register_function_builtins(Context& ctx) {
 
     // ES6: Function.prototype.caller/.arguments throw TypeError for strict/class functions.
     {
+        auto get_this_fn = [](Context& ctx) -> Function* {
+            Value this_val = ctx.get_binding("this");
+            if (this_val.is_function()) return this_val.as_function();
+            if (this_val.is_object()) {
+                Object* obj = this_val.as_object();
+                if (obj && obj->is_function()) return static_cast<Function*>(obj);
+            }
+            return nullptr;
+        };
+
         auto poison_getter = ObjectFactory::create_native_function("ThrowTypeError",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_function()) {
-                    Function* fn = this_val.as_function();
-                    if (fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
-                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                        return Value();
-                    }
+            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
+                Function* fn = get_this_fn(ctx);
+                if (fn && (fn->is_strict() || fn->is_class_constructor() || fn->is_arrow())) {
+                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                    return Value();
                 }
                 return Value();
             });
         auto poison_setter = ObjectFactory::create_native_function("ThrowTypeError",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
-                Value this_val = ctx.get_binding("this");
-                if (this_val.is_function()) {
-                    Function* fn = this_val.as_function();
-                    if (fn->is_strict() || fn->is_class_constructor()) {
-                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                        return Value();
-                    }
+            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
+                Function* fn = get_this_fn(ctx);
+                if (fn && (fn->is_strict() || fn->is_class_constructor())) {
+                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                    return Value();
                 }
                 return Value();
             });
