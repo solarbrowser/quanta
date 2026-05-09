@@ -14,6 +14,7 @@
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "../ast_internal.h"
+#include <algorithm>
 #include <sstream>
 #include <iostream>
 
