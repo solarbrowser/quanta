@@ -91,6 +91,9 @@ Value Program::evaluate(Context& ctx) {
 
     Value last_value;
 
+    if (is_strict_) {
+        ctx.set_strict_mode(true);
+    }
     check_use_strict_directive(ctx);
 
     for (const auto& statement : statements_) {
@@ -238,6 +241,17 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         if (name.empty() && declarator->get_init()) {
             Value result = declarator->get_init()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            // Destructuring pattern in variable declaration (const [{x}] = [...])
+            ASTNode* id_node = declarator->get_id();
+            ASTNode::Type id_type = id_node ? id_node->get_type() : ASTNode::Type::IDENTIFIER;
+            if (id_type == ASTNode::Type::OBJECT_LITERAL || id_type == ASTNode::Type::ARRAY_LITERAL) {
+                AssignmentExpression::destructuring_assign(ctx, id_node, result);
+                if (ctx.has_exception()) return Value();
+            } else if (id_type == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                DestructuringAssignment* da = static_cast<DestructuringAssignment*>(id_node);
+                da->evaluate_with_value(ctx, result);
+                if (ctx.has_exception()) return Value();
+            }
             continue;
         }
 
@@ -1343,7 +1357,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 return Value();
             }
         } else {
-            ctx.throw_exception(Value(std::string("For...of: Only arrays are supported")));
+            ctx.throw_type_error("object is not iterable");
             return Value();
         }
     } else {

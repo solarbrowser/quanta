@@ -67,7 +67,11 @@ std::unique_ptr<Program> Parser::parse_program() {
     }
     
     Position end = get_current_position();
-    return std::make_unique<Program>(std::move(statements), start, end);
+    auto program = std::make_unique<Program>(std::move(statements), start, end);
+    if (options_.strict_mode) {
+        program->set_strict(true);
+    }
+    return program;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_statement() {

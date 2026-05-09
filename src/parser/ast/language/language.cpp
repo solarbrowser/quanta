@@ -103,6 +103,21 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         function_obj->set_source_text(source_text_);
     }
 
+    // Detect "use strict" directive in function body
+    if (function_obj && body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        BlockStatement* blk = static_cast<BlockStatement*>(body_.get());
+        const auto& stmts = blk->get_statements();
+        if (!stmts.empty() && stmts[0]->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+            ExpressionStatement* es = static_cast<ExpressionStatement*>(stmts[0].get());
+            if (es->get_expression() && es->get_expression()->get_type() == ASTNode::Type::STRING_LITERAL) {
+                StringLiteral* sl = static_cast<StringLiteral*>(es->get_expression());
+                if (sl->get_value() == "use strict") {
+                    function_obj->set_is_strict(true);
+                }
+            }
+        }
+    }
+
     Function* func_ptr = function_obj.release();
     Value function_value(func_ptr);
 
@@ -717,6 +732,8 @@ Value FunctionExpression::evaluate(Context& ctx) {
         }
 
         if (is_strict) {
+            function->set_is_strict(true);
+
             auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
