@@ -993,6 +993,15 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     } else {
                         nested_array = array_obj->get_element(static_cast<uint32_t>(i));
                     }
+                    if (nested_array.is_undefined()) {
+                        for (const auto& dv : default_values_) {
+                            if (dv.index == i) {
+                                nested_array = dv.expr->evaluate(ctx);
+                                if (ctx.has_exception()) return Value();
+                                break;
+                            }
+                        }
+                    }
                     if (nested_array.is_object()) {
                         Object* nested_obj = nested_array.as_object();
 
@@ -1032,6 +1041,15 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         element = (i < str_cps.size()) ? Value(str_cps[i]) : Value();
                     } else {
                         element = array_obj->get_element(static_cast<uint32_t>(i));
+                    }
+                    if (element.is_undefined()) {
+                        for (const auto& dv : default_values_) {
+                            if (dv.index == i) {
+                                element = dv.expr->evaluate(ctx);
+                                if (ctx.has_exception()) return Value();
+                                break;
+                            }
+                        }
                     }
                     if (element.is_object() || element.is_function()) {
                         Object* obj = element.is_function() ?
