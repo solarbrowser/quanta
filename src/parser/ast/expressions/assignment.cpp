@@ -1002,6 +1002,10 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             }
                         }
                     }
+                    if (nested_array.is_null() || nested_array.is_undefined()) {
+                        ctx.throw_type_error(std::string("Cannot destructure ") + (nested_array.is_null() ? "null" : "undefined") + " as array");
+                        return Value();
+                    }
                     if (nested_array.is_object()) {
                         Object* nested_obj = nested_array.as_object();
 
@@ -1050,6 +1054,10 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                                 break;
                             }
                         }
+                    }
+                    if (element.is_null() || element.is_undefined()) {
+                        ctx.throw_type_error(std::string("Cannot destructure ") + (element.is_null() ? "null" : "undefined") + " as object");
+                        return Value();
                     }
                     if (element.is_object() || element.is_function()) {
                         Object* obj = element.is_function() ?
@@ -1209,6 +1217,10 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 
         // Handle nested array-in-object: {x: [a, b]} encoded as __nested_array:a,b
         if (mapping.variable_name.length() > 15 && mapping.variable_name.substr(0, 15) == "__nested_array:") {
+            if (prop_value.is_null() || prop_value.is_undefined()) {
+                ctx.throw_type_error(std::string("Cannot destructure ") + (prop_value.is_null() ? "null" : "undefined") + " as array");
+                return false;
+            }
             std::string vars_str = mapping.variable_name.substr(15);
             // Split vars by comma
             std::vector<std::string> var_names;
@@ -1247,6 +1259,11 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         if ((mapping.variable_name.length() > 9 && mapping.variable_name.substr(0, 9) == "__nested:") ||
             mapping.variable_name.find(":__nested:") != std::string::npos ||
             mapping.variable_name.find(':') != std::string::npos) {
+
+            if (prop_value.is_null() || prop_value.is_undefined()) {
+                ctx.throw_type_error(std::string("Cannot destructure ") + (prop_value.is_null() ? "null" : "undefined") + " as object");
+                return false;
+            }
 
             if (mapping.variable_name.find(":__nested:") != std::string::npos) {
 
