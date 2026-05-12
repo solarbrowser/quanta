@@ -99,6 +99,12 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
         Value result = body_->evaluate(*generator_context_);
 
         set_current_generator(nullptr);
+        if (generator_context_->has_exception()) {
+            Value exc = generator_context_->get_exception();
+            generator_context_->clear_exception();
+            complete_generator(Value());
+            return GeneratorResult::make_exception(exc);
+        }
         complete_generator(result);
         return GeneratorResult(result, true);
 
@@ -110,8 +116,7 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
     } catch (const std::exception& e) {
         set_current_generator(nullptr);
         complete_generator(Value());
-        generator_context_->throw_exception(Value(std::string(e.what())));
-        return GeneratorResult(Value(), true);
+        return GeneratorResult::make_exception(Value(std::string(e.what())));
     }
 }
 
@@ -137,6 +142,12 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
 
         set_current_generator(nullptr);
         throwing_ = false;
+        if (generator_context_->has_exception()) {
+            Value exc = generator_context_->get_exception();
+            generator_context_->clear_exception();
+            complete_generator(Value());
+            return GeneratorResult::make_exception(exc);
+        }
         complete_generator(result);
         writeback_closures();
 
@@ -152,8 +163,7 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
         set_current_generator(nullptr);
         throwing_ = false;
         complete_generator(Value());
-        generator_context_->throw_exception(Value(std::string(e.what())));
-        return GeneratorResult(Value(), true);
+        return GeneratorResult::make_exception(Value(std::string(e.what())));
     }
 }
 
@@ -236,6 +246,11 @@ Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
     Value sent_value = args.empty() ? Value() : args[0];
 
     auto result = generator->next(sent_value);
+
+    if (result.has_exception) {
+        ctx.throw_exception(result.exception);
+        return Value();
+    }
 
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("value", result.value);

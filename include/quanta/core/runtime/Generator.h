@@ -44,8 +44,16 @@ public:
     struct GeneratorResult {
         Value value;
         bool done;
-        
+        bool has_exception = false;
+        Value exception;
+
         GeneratorResult(const Value& v, bool d) : value(v), done(d) {}
+        static GeneratorResult make_exception(const Value& exc) {
+            GeneratorResult r(Value(), true);
+            r.has_exception = true;
+            r.exception = exc;
+            return r;
+        }
     };
 
 private:
