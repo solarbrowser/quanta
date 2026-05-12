@@ -1282,10 +1282,34 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
             } else if (mapping.variable_name.find(':') != std::string::npos &&
                       mapping.variable_name.find("__nested:") == std::string::npos) {
 
-                if (prop_value.is_object()) {
-                    Object* nested_obj = prop_value.as_object();
-                    handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
-                } else {
+                if (prop_value.is_object() || prop_value.is_function()) {
+                    Object* nested_obj = prop_value.is_function()
+                        ? static_cast<Object*>(prop_value.as_function())
+                        : prop_value.as_object();
+
+                    // "prefix:x,y,z" means shorthand multi-var pattern -- extract each var
+                    if (mapping.variable_name.find(',') != std::string::npos) {
+                        size_t colon = mapping.variable_name.find(':');
+                        std::string vars_part = (colon != std::string::npos)
+                            ? mapping.variable_name.substr(colon + 1)
+                            : mapping.variable_name;
+                        std::string cur;
+                        for (size_t ci = 0; ci <= vars_part.size(); ++ci) {
+                            char c = (ci < vars_part.size()) ? vars_part[ci] : ',';
+                            if (c == ',') {
+                                if (!cur.empty()) {
+                                    Value val = nested_obj->get_property(cur);
+                                    if (!ctx.has_binding(cur)) ctx.create_binding(cur, val, true);
+                                    else ctx.set_binding(cur, val);
+                                    cur.clear();
+                                }
+                            } else {
+                                cur += c;
+                            }
+                        }
+                    } else {
+                        handle_infinite_depth_destructuring(nested_obj, mapping.variable_name, ctx);
+                    }
                 }
                 continue;
             }
@@ -1479,7 +1503,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         
         bool has_mapping = false;
         for (const auto& mapping : property_mappings_) {
-            if (mapping.variable_name == prop_name) {
+            if (mapping.property_name == prop_name || mapping.variable_name == prop_name) {
                 has_mapping = true;
                 break;
             }
