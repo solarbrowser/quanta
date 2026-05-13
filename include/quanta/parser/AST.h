@@ -443,9 +443,12 @@ public:
     struct PropertyMapping {
         std::string property_name;
         std::string variable_name;
-        
+        std::shared_ptr<ASTNode> computed_key;
+
         PropertyMapping(const std::string& prop, const std::string& var)
             : property_name(prop), variable_name(var) {}
+        PropertyMapping(const std::string& prop, const std::string& var, std::shared_ptr<ASTNode> key)
+            : property_name(prop), variable_name(var), computed_key(std::move(key)) {}
     };
     
     struct DefaultValue {
@@ -479,6 +482,9 @@ public:
     void set_source(std::unique_ptr<ASTNode> source) { source_ = std::move(source); }
     void add_property_mapping(const std::string& property_name, const std::string& variable_name) {
         property_mappings_.emplace_back(property_name, variable_name);
+    }
+    void add_computed_property_mapping(const std::string& property_name, const std::string& variable_name, std::shared_ptr<ASTNode> key) {
+        property_mappings_.emplace_back(property_name, variable_name, std::move(key));
     }
     void add_default_value(size_t index, std::unique_ptr<ASTNode> expr) {
         default_values_.emplace_back(index, std::move(expr));
