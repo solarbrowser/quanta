@@ -6156,6 +6156,7 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         
         std::vector<std::unique_ptr<Identifier>> targets;
         std::vector<std::pair<std::string, std::string>> property_mappings;
+        std::vector<std::pair<std::string, std::shared_ptr<ASTNode>>> computed_key_exprs;
         std::vector<std::pair<size_t, std::unique_ptr<ASTNode>>> obj_default_exprs;
 
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
@@ -6354,10 +6355,10 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 auto var_id = std::make_unique<Identifier>(var_name, vstart, vend);
                 targets.push_back(std::move(var_id));
 
-                // Store the computed key expression as a special mapping
-                // We'll encode the expression source as the property name
+                // Store the computed key expression -- shared_ptr so clone() works
                 std::string key_str = "__computed:" + key_expr->to_string();
                 property_mappings.emplace_back(key_str, var_name);
+                computed_key_exprs.emplace_back(key_str, std::shared_ptr<ASTNode>(key_expr.release()));
 
                 if (match(TokenType::ASSIGN)) {
                     advance();
@@ -6392,7 +6393,13 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
         );
         
         for (const auto& mapping : property_mappings) {
-            destructuring->add_property_mapping(mapping.first, mapping.second);
+            auto it = std::find_if(computed_key_exprs.begin(), computed_key_exprs.end(),
+                [&](const auto& p){ return p.first == mapping.first; });
+            if (it != computed_key_exprs.end()) {
+                destructuring->add_computed_property_mapping(mapping.first, mapping.second, it->second);
+            } else {
+                destructuring->add_property_mapping(mapping.first, mapping.second);
+            }
         }
 
         for (auto& default_pair : obj_default_exprs) {

@@ -1194,10 +1194,9 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
         }
         Value prop_value;
         if (mapping.property_name.length() > 11 && mapping.property_name.substr(0, 11) == "__computed:") {
-            // Computed property key: evaluate the expression to get the key
-            std::string expr_str = mapping.property_name.substr(11);
-            Value key_val = ctx.get_binding(expr_str);
-            if (!key_val.is_undefined()) {
+            if (mapping.computed_key) {
+                Value key_val = mapping.computed_key->evaluate(ctx);
+                if (ctx.has_exception()) return false;
                 prop_value = obj->get_property(key_val.to_string());
             }
         } else {
@@ -2088,7 +2087,11 @@ std::unique_ptr<ASTNode> DestructuringAssignment::clone() const {
     );
 
     for (const auto& mapping : property_mappings_) {
-        cloned->add_property_mapping(mapping.property_name, mapping.variable_name);
+        if (mapping.computed_key) {
+            cloned->add_computed_property_mapping(mapping.property_name, mapping.variable_name, mapping.computed_key);
+        } else {
+            cloned->add_property_mapping(mapping.property_name, mapping.variable_name);
+        }
     }
 
     for (const auto& default_val : default_values_) {
