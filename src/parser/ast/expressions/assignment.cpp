@@ -852,6 +852,15 @@ std::unique_ptr<ASTNode> AssignmentExpression::clone() const {
 }
 
 
+static bool is_anonymous_function_def(const ASTNode* node) {
+    if (!node) return false;
+    auto t = node->get_type();
+    return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::CLASS_DECLARATION;
+}
+
 Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& source_value) {
     if (type_ == Type::ARRAY) {
         // ES6: Strings are iterable and can be array-destructured
@@ -1101,7 +1110,8 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             if (default_val.index == i) {
                                 element = default_val.expr->evaluate(ctx);
                                 if (ctx.has_exception()) return Value();
-                                if (element.is_function() && (element.as_function()->get_name().empty() || element.as_function()->get_name() == "<arrow>")) {
+                                if (element.is_function() && is_anonymous_function_def(default_val.expr.get()) &&
+                                    (element.as_function()->get_name().empty() || element.as_function()->get_name() == "<arrow>")) {
                                     element.as_function()->set_name(var_name);
                                 }
                                 break;
@@ -1211,7 +1221,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                     if (tname == mapping.property_name || tname == mapping.variable_name) {
                         prop_value = dv.expr->evaluate(ctx);
                         if (ctx.has_exception()) return false;
-                        if (prop_value.is_function() && (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
+                        if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
+                            (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
                             prop_value.as_function()->set_name(mapping.variable_name);
                         }
                         break;
@@ -1579,7 +1590,8 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                                 if (dv.index == ti) {
                                     prop_value = dv.expr->evaluate(ctx);
                                     if (ctx.has_exception()) return false;
-                                    if (prop_value.is_function() && (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
+                                    if (prop_value.is_function() && is_anonymous_function_def(dv.expr.get()) &&
+                                        (prop_value.as_function()->get_name().empty() || prop_value.as_function()->get_name() == "<arrow>")) {
                                         prop_value.as_function()->set_name(prop_name);
                                     }
                                     break;

@@ -416,10 +416,14 @@ Value Value::add(const Value& other) const {
         BigInt result = *as_bigint() + *other.as_bigint();
         return Value(new BigInt(result));
     }
-    if (is_bigint() || other.is_bigint()) {
-        throw std::runtime_error("Cannot mix BigInt and other types in addition");
+    // BigInt + string = string concatenation (spec-compliant)
+    if ((is_bigint() || other.is_bigint()) && (is_string() || other.is_string())) {
+        return Value(to_string() + other.to_string());
     }
-    
+    if (is_bigint() || other.is_bigint()) {
+        throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
+    }
+
     if (is_string() || other.is_string()) {
         return Value(to_string() + other.to_string());
     }
@@ -444,7 +448,7 @@ Value Value::subtract(const Value& other) const {
         return Value(new BigInt(result));
     }
     if (is_bigint() || other.is_bigint()) {
-        throw std::runtime_error("Cannot mix BigInt and other types in subtraction");
+        throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     }
     return Value(to_number() - other.to_number());
 }
@@ -466,7 +470,7 @@ Value Value::multiply(const Value& other) const {
         return Value(new BigInt(result));
     }
     if (is_bigint() || other.is_bigint()) {
-        throw std::runtime_error("Cannot mix BigInt and other types in multiplication");
+        throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     }
     double result = to_number() * other.to_number();
     if (std::isinf(result)) {
@@ -584,19 +588,21 @@ Value Value::bitwise_not() const {
 }
 
 Value Value::left_shift(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number()) & 0x1F;
     return Value(static_cast<double>(left << right));
 }
 
 Value Value::right_shift(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number()) & 0x1F;
     return Value(static_cast<double>(left >> right));
 }
 
 Value Value::unsigned_right_shift(const Value& other) const {
-    // ES1 9.6 ToUint32: unsigned right shift uses ToUint32 on left operand
+    if (is_bigint() || other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left_signed = ToInt32(to_number());
     uint32_t left = static_cast<uint32_t>(left_signed);
     int32_t right = ToInt32(other.to_number()) & 0x1F;
@@ -604,18 +610,21 @@ Value Value::unsigned_right_shift(const Value& other) const {
 }
 
 Value Value::bitwise_and(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left & right));
 }
 
 Value Value::bitwise_or(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left | right));
 }
 
 Value Value::bitwise_xor(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     int32_t left = ToInt32(to_number());
     int32_t right = ToInt32(other.to_number());
     return Value(static_cast<double>(left ^ right));

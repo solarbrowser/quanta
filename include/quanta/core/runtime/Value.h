@@ -13,6 +13,11 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
+
+struct BigIntTypeError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 #ifdef _WIN32
     #define PLATFORM_POINTER_COMPRESSION 0
