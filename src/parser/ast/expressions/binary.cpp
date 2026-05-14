@@ -654,7 +654,10 @@ Value BinaryExpression::evaluate(Context& ctx) {
         case Operator::LEFT_SHIFT:
         case Operator::RIGHT_SHIFT:
         case Operator::UNSIGNED_RIGHT_SHIFT: {
-            Value lv = left_value, rv = right_value;
+            Value lv = toPrimitive(left_value);
+            if (ctx.has_exception()) return Value();
+            Value rv = toPrimitive(right_value);
+            if (ctx.has_exception()) return Value();
             if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
             else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
             if (ctx.has_exception()) return Value();

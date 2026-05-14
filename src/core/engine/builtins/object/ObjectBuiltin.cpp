@@ -4,6 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 #include "quanta/core/engine/builtins/ObjectBuiltin.h"
+#include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/Object.h"
@@ -77,7 +78,17 @@ void register_object_builtins(Context& ctx) {
                 return Value(symbol_obj.release());
             } else if (value.is_bigint()) {
                 auto bigint_obj = ObjectFactory::create_object();
-                bigint_obj->set_property("valueOf", value);
+                Value captured_bigint = value;
+                auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
+                    [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                        return captured_bigint;
+                    }, 0);
+                bigint_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
+                auto toString_fn = ObjectFactory::create_native_function("toString",
+                    [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                        return Value(captured_bigint.as_bigint()->to_string());
+                    }, 0);
+                bigint_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
                 return Value(bigint_obj.release());
             }
             
