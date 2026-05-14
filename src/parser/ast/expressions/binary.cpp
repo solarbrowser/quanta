@@ -39,6 +39,26 @@
 
 namespace Quanta {
 
+// Coerce an object to BigInt via valueOf/toString when the other operand is BigInt.
+// Returns the coerced value, or the original if not an object.
+static Value toBigIntCoerce(Context& ctx, const Value& v) {
+    if (!v.is_object()) return v;
+    Object* obj = v.as_object();
+    Value valueOf = obj->get_property("valueOf");
+    if (valueOf.is_function()) {
+        Value result = valueOf.as_function()->call(ctx, {}, v);
+        if (!ctx.has_exception() && result.is_bigint()) return result;
+        ctx.clear_exception();
+    }
+    Value toString = obj->get_property("toString");
+    if (toString.is_function()) {
+        Value result = toString.as_function()->call(ctx, {}, v);
+        if (!ctx.has_exception() && result.is_bigint()) return result;
+        ctx.clear_exception();
+    }
+    return v;
+}
+
 Value BinaryExpression::evaluate(Context& ctx) {
     if (operator_ == Operator::ASSIGN ||
         operator_ == Operator::PLUS_ASSIGN ||
@@ -470,7 +490,18 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 return Value();
             }
 
-            return left_coerced.add(right_coerced);
+            // If one side is BigInt, coerce object operands via valueOf/toString
+            if (left_coerced.is_bigint() && right_coerced.is_object())
+                right_coerced = toBigIntCoerce(ctx, right_coerced);
+            else if (right_coerced.is_bigint() && left_coerced.is_object())
+                left_coerced = toBigIntCoerce(ctx, left_coerced);
+            if (ctx.has_exception()) return Value();
+            try {
+                return left_coerced.add(right_coerced);
+            } catch (const BigIntTypeError& e) {
+                ctx.throw_type_error(e.what());
+                return Value();
+            }
         }
         case Operator::SUBTRACT:
         case Operator::MULTIPLY: {
@@ -511,18 +542,26 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 }
             }
 
-            if (operator_ == Operator::SUBTRACT) {
-                return left_coerced.subtract(right_coerced);
-            } else {
-                return left_coerced.multiply(right_coerced);
+            try {
+                if (operator_ == Operator::SUBTRACT) {
+                    return left_coerced.subtract(right_coerced);
+                } else {
+                    return left_coerced.multiply(right_coerced);
+                }
+            } catch (const BigIntTypeError& e) {
+                ctx.throw_type_error(e.what());
+                return Value();
             }
         }
         case Operator::DIVIDE:
-            return left_value.divide(right_value);
+            try { return left_value.divide(right_value); }
+            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
         case Operator::MODULO:
-            return left_value.modulo(right_value);
+            try { return left_value.modulo(right_value); }
+            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
         case Operator::EXPONENT:
-            return left_value.power(right_value);
+            try { return left_value.power(right_value); }
+            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
             
         case Operator::EQUAL: {
             Value lp = toPrimitive(left_value, "default");
@@ -610,17 +649,24 @@ Value BinaryExpression::evaluate(Context& ctx) {
         }
         
         case Operator::BITWISE_AND:
-            return left_value.bitwise_and(right_value);
         case Operator::BITWISE_OR:
-            return left_value.bitwise_or(right_value);
         case Operator::BITWISE_XOR:
-            return left_value.bitwise_xor(right_value);
         case Operator::LEFT_SHIFT:
-            return left_value.left_shift(right_value);
         case Operator::RIGHT_SHIFT:
-            return left_value.right_shift(right_value);
-        case Operator::UNSIGNED_RIGHT_SHIFT:
-            return left_value.unsigned_right_shift(right_value);
+        case Operator::UNSIGNED_RIGHT_SHIFT: {
+            Value lv = left_value, rv = right_value;
+            if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
+            else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
+            if (ctx.has_exception()) return Value();
+            try {
+                if (operator_ == Operator::BITWISE_AND) return lv.bitwise_and(rv);
+                if (operator_ == Operator::BITWISE_OR)  return lv.bitwise_or(rv);
+                if (operator_ == Operator::BITWISE_XOR) return lv.bitwise_xor(rv);
+                if (operator_ == Operator::LEFT_SHIFT)  return lv.left_shift(rv);
+                if (operator_ == Operator::RIGHT_SHIFT) return lv.right_shift(rv);
+                return lv.unsigned_right_shift(rv);
+            } catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
+        }
             
         default:
             ctx.throw_exception(Value(std::string("Unsupported binary operator")));
