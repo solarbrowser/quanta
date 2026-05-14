@@ -1366,6 +1366,7 @@ class CatchClause : public ASTNode {
 private:
     std::string parameter_name_;
     std::unique_ptr<ASTNode> body_;
+    std::unique_ptr<ASTNode> destructuring_pattern_;
 
 public:
     CatchClause(const std::string& parameter_name,
@@ -1374,10 +1375,12 @@ public:
         : ASTNode(Type::CATCH_CLAUSE, start, end),
           parameter_name_(parameter_name),
           body_(std::move(body)) {}
-    
+
     const std::string& get_parameter_name() const { return parameter_name_; }
     ASTNode* get_body() const { return body_.get(); }
-    
+    void set_destructuring_pattern(std::unique_ptr<ASTNode> p) { destructuring_pattern_ = std::move(p); }
+    ASTNode* get_destructuring_pattern() const { return destructuring_pattern_.get(); }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
