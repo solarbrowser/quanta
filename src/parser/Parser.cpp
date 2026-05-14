@@ -3540,13 +3540,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         computed = true;
         advance();
 
-        if (current_token().get_type() == TokenType::NUMBER) {
-            key = parse_number_literal();
-        } else if (current_token().get_type() == TokenType::STRING) {
-            key = parse_string_literal();
-        } else {
-            key = parse_assignment_expression();
-        }
+        key = parse_assignment_expression();
 
         if (!key) {
             add_error("Failed to parse computed property expression");
@@ -6182,8 +6176,11 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 }
                 break;
 
-            } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-                if (current_token().has_escaped_keyword()) {
+            } else if (current_token().get_type() == TokenType::IDENTIFIER ||
+                       current_token().get_type() == TokenType::NUMBER ||
+                       current_token().get_type() == TokenType::STRING) {
+                bool is_literal_key = (current_token().get_type() != TokenType::IDENTIFIER);
+                if (!is_literal_key && current_token().has_escaped_keyword()) {
                     add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
                     return nullptr;
                 }
@@ -6315,8 +6312,8 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                         add_error("Expected identifier or nested pattern after ':'");
                         return nullptr;
                     }
-                } else if (match(TokenType::ASSIGN)) {
-                    // Handle shorthand default: {a = expr}
+                } else if (!is_literal_key && match(TokenType::ASSIGN)) {
+                    // Handle shorthand default: {a = expr}  (only valid for identifier keys)
                     advance();
                     auto default_expr = parse_assignment_expression();
                     if (!default_expr) {
@@ -6325,6 +6322,9 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                     }
                     size_t target_index = targets.size() - 1;
                     obj_default_exprs.emplace_back(target_index, std::move(default_expr));
+                } else if (is_literal_key) {
+                    add_error("Expected ':' after numeric/string key in object destructuring");
+                    return nullptr;
                 }
             } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
                 // Computed property key: { [expr]: varName }
