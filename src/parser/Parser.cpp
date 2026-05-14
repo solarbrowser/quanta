@@ -1089,6 +1089,13 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::CLASS:
             return parse_class_expression();
         case TokenType::YIELD:
+            // Outside generator bodies (non-strict), yield is a valid identifier
+            if (!options_.in_generator_body && !options_.strict_mode) {
+                auto id = std::make_unique<Identifier>("yield",
+                    current_token().get_start(), current_token().get_end());
+                advance();
+                return id;
+            }
             if (options_.in_arrow_params) {
                 add_error("SyntaxError: 'yield' is not allowed in arrow function parameters");
                 return nullptr;
@@ -1825,7 +1832,12 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             break;
         }
         
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
+        // Non-strict: yield/await can be identifiers outside generator/async bodies
+        bool is_yield_id = (current_token().get_type() == TokenType::YIELD &&
+                            !options_.strict_mode && !options_.in_generator_body);
+        bool is_await_id = (current_token().get_type() == TokenType::AWAIT &&
+                            !options_.in_async_body);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
@@ -4970,7 +4982,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 advance();
 
                 bool is_method_shorthand = match(TokenType::LEFT_PAREN);
-                bool is_getter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER));
+                bool is_getter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER) || is_keyword_token(current_token().get_type()));
                 bool is_normal_property = match(TokenType::COLON);
 
                 current_token_index_ = saved_pos;
@@ -4984,7 +4996,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 advance();
 
                 bool is_method_shorthand = match(TokenType::LEFT_PAREN);
-                bool is_setter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER));
+                bool is_setter_syntax = !is_method_shorthand && (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) || match(TokenType::STRING) || match(TokenType::NUMBER) || is_keyword_token(current_token().get_type()));
                 bool is_normal_property = match(TokenType::COLON);
 
                 current_token_index_ = saved_pos;
