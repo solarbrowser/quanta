@@ -1105,6 +1105,15 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 return nullptr;
             }
             return parse_yield_expression();
+        case TokenType::LET:
+            // Non-strict: let is a valid identifier
+            if (!options_.strict_mode) {
+                auto id = std::make_unique<Identifier>("let",
+                    current_token().get_start(), current_token().get_end());
+                advance();
+                return id;
+            }
+            break;
         case TokenType::IMPORT:
             return parse_import_expression();
         case TokenType::LEFT_BRACE:
@@ -1832,12 +1841,13 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             break;
         }
         
-        // Non-strict: yield/await can be identifiers outside generator/async bodies
+        // Non-strict: yield/await/let/static can be identifiers outside strict/generator/async
         bool is_yield_id = (current_token().get_type() == TokenType::YIELD &&
                             !options_.strict_mode && !options_.in_generator_body);
         bool is_await_id = (current_token().get_type() == TokenType::AWAIT &&
                             !options_.in_async_body);
-        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id) {
+        bool is_let_id   = (current_token().get_type() == TokenType::LET && !options_.strict_mode);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
@@ -5491,31 +5501,19 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     std::string parameter_name = "";
 
     // Optional catch binding: catch can have no parameter (ES2019+)
+    std::unique_ptr<ASTNode> catch_destr_pattern;
+
     if (match(TokenType::LEFT_PAREN)) {
         advance(); // consume '('
 
         if (match(TokenType::LEFT_BRACKET) || match(TokenType::LEFT_BRACE)) {
-            // Destructuring in catch: catch([a, b]) or catch({x, y})
-            bool is_array = match(TokenType::LEFT_BRACKET);
-            advance(); // skip [ or {
-            std::string vars;
-            TokenType close_type = is_array ? TokenType::RIGHT_BRACKET : TokenType::RIGHT_BRACE;
-            while (!match(close_type) && !at_end()) {
-                if (match(TokenType::IDENTIFIER)) {
-                    if (!vars.empty()) vars += ",";
-                    vars += current_token().get_value();
-                    advance();
-                } else if (match(TokenType::COMMA)) {
-                    advance();
-                } else {
-                    advance();
-                }
-            }
-            if (!consume(close_type)) {
-                add_error("Expected closing bracket in catch destructuring");
+            // Destructuring in catch: use full pattern parser
+            catch_destr_pattern = parse_destructuring_pattern();  // assigned to outer scope var
+            if (!catch_destr_pattern) {
+                add_error("Invalid destructuring pattern in catch clause");
                 return nullptr;
             }
-            parameter_name = is_array ? ("__destr_array:" + vars) : ("__destr_obj:" + vars);
+            parameter_name = "__destr_pattern__";
         } else if (match(TokenType::IDENTIFIER)) {
             parameter_name = current_token().get_value();
 
@@ -5544,7 +5542,11 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     }
 
     Position end = get_current_position();
-    return std::make_unique<CatchClause>(parameter_name, std::move(body), start, end);
+    auto catch_node = std::make_unique<CatchClause>(parameter_name, std::move(body), start, end);
+    if (catch_destr_pattern) {
+        catch_node->set_destructuring_pattern(std::move(catch_destr_pattern));
+    }
+    return catch_node;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_throw_statement() {

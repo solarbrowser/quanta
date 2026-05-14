@@ -1688,7 +1688,11 @@ Value TryStatement::evaluate(Context& ctx) {
         if (!catch_node->get_parameter_name().empty()) {
             std::string param_name = catch_node->get_parameter_name();
 
-            if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {
+            if (param_name == "__destr_pattern__" && catch_node->get_destructuring_pattern()) {
+                auto* destr = static_cast<DestructuringAssignment*>(catch_node->get_destructuring_pattern());
+                destr->evaluate_with_value(ctx, exception_value);
+                if (ctx.has_exception()) { ctx.clear_exception(); }
+            } else if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {
                 std::string vars_str = param_name.substr(14);
                 std::vector<std::string> var_names;
                 std::string cur;
@@ -1804,7 +1808,9 @@ std::string CatchClause::to_string() const {
 }
 
 std::unique_ptr<ASTNode> CatchClause::clone() const {
-    return std::make_unique<CatchClause>(parameter_name_, body_->clone(), start_, end_);
+    auto c = std::make_unique<CatchClause>(parameter_name_, body_->clone(), start_, end_);
+    if (destructuring_pattern_) c->set_destructuring_pattern(destructuring_pattern_->clone());
+    return c;
 }
 
 Value ThrowStatement::evaluate(Context& ctx) {
