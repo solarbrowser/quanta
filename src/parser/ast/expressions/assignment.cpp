@@ -39,6 +39,8 @@
 
 namespace Quanta {
 
+static bool is_anonymous_function_def(const ASTNode* node);
+
 Value AssignmentExpression::evaluate(Context& ctx) {
     // Declare right_value at function scope (will be evaluated at the right time)
     Value right_value;
@@ -69,6 +71,13 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         switch (operator_) {
             case Operator::ASSIGN: {
+                // SetFunctionName: x = (function(){}) -> x.name = 'x'
+                if (right_value.is_function() && is_anonymous_function_def(right_.get())) {
+                    const std::string& fname = right_value.as_function()->get_name();
+                    if (fname.empty() || fname == "<arrow>") {
+                        right_value.as_function()->set_name(name);
+                    }
+                }
                 bool has_it = ctx.has_binding(name);
                 if (!has_it) {
                     if (ctx.is_strict_mode()) {
