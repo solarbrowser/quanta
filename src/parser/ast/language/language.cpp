@@ -304,8 +304,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(field_init.get());
                 Position fstart = cf->get_start();
                 auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
+                // String/number literal keys must be computed (this["a"] not this.a)
+                bool field_computed = cf->is_computed() ||
+                    cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL ||
+                    cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL;
                 auto member_expr = std::make_unique<MemberExpression>(
-                    std::move(this_id), cf->get_key()->clone(), cf->is_computed(), fstart, fstart);
+                    std::move(this_id), cf->get_key()->clone(), field_computed, fstart, fstart);
                 std::unique_ptr<ASTNode> init_val;
                 if (cf->get_value()) {
                     init_val = cf->get_value()->clone();

@@ -554,14 +554,22 @@ Value BinaryExpression::evaluate(Context& ctx) {
             }
         }
         case Operator::DIVIDE:
-            try { return left_value.divide(right_value); }
-            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
         case Operator::MODULO:
-            try { return left_value.modulo(right_value); }
-            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
-        case Operator::EXPONENT:
-            try { return left_value.power(right_value); }
-            catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
+        case Operator::EXPONENT: {
+            Value lv = left_value, rv = right_value;
+            if (lv.is_bigint() && rv.is_object()) rv = toBigIntCoerce(ctx, rv);
+            else if (rv.is_bigint() && lv.is_object()) lv = toBigIntCoerce(ctx, lv);
+            if (ctx.has_exception()) return Value();
+            // Also apply toPrimitive so Object(1n) becomes 1n
+            if (lv.is_object()) lv = toPrimitive(lv);
+            if (rv.is_object()) rv = toPrimitive(rv);
+            if (ctx.has_exception()) return Value();
+            try {
+                if (operator_ == Operator::DIVIDE) return lv.divide(rv);
+                if (operator_ == Operator::MODULO) return lv.modulo(rv);
+                return lv.power(rv);
+            } catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
+        }
             
         case Operator::EQUAL: {
             Value lp = toPrimitive(left_value, "default");

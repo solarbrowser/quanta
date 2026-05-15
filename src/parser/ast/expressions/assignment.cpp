@@ -893,6 +893,18 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             return Value();
         }
 
+        // For arrays, verify Symbol.iterator is still callable (may have been deleted)
+        if (!is_string_source && array_obj && array_obj->is_array()) {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                Value iter_method = array_obj->get_property(iter_sym->to_property_key());
+                if (!iter_method.is_function()) {
+                    ctx.throw_type_error("Cannot destructure: object is not iterable");
+                    return Value();
+                }
+            }
+        }
+
         // ES6: Check for Symbol.iterator on non-array objects to use iterator protocol
         if (!is_string_source && array_obj && !array_obj->is_array()) {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
@@ -1036,14 +1048,26 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             nested_var_names.push_back(current_var);
                         }
 
-                        for (size_t j = 0; j < nested_var_names.size() && j < nested_obj->get_length(); j++) {
-                            Value nested_element = nested_obj->get_element(static_cast<uint32_t>(j));
+                        for (size_t j = 0; j < nested_var_names.size(); j++) {
                             const std::string& nested_var_name = nested_var_names[j];
-
-                            if (!ctx.has_binding(nested_var_name)) {
-                                ctx.create_binding(nested_var_name, nested_element, true);
-                            } else {
-                                ctx.set_binding(nested_var_name, nested_element);
+                            Value val_to_bind;
+                            if (nested_var_name.length() >= 3 && nested_var_name.substr(0, 3) == "...") {
+                                // Rest: collect all remaining elements into an array
+                                std::string rest_binding = nested_var_name.substr(3);
+                                auto rest_arr = ObjectFactory::create_array(0);
+                                uint32_t ri = 0;
+                                for (size_t rj = j; rj < nested_obj->get_length(); rj++) {
+                                    rest_arr->set_element(ri++, nested_obj->get_element(static_cast<uint32_t>(rj)));
+                                }
+                                rest_arr->set_length(ri);
+                                val_to_bind = Value(rest_arr.release());
+                                if (!ctx.has_binding(rest_binding)) ctx.create_binding(rest_binding, val_to_bind, true);
+                                else ctx.set_binding(rest_binding, val_to_bind);
+                                break;
+                            } else if (j < nested_obj->get_length()) {
+                                val_to_bind = nested_obj->get_element(static_cast<uint32_t>(j));
+                                if (!ctx.has_binding(nested_var_name)) ctx.create_binding(nested_var_name, val_to_bind, true);
+                                else ctx.set_binding(nested_var_name, val_to_bind);
                             }
                         }
                     }
@@ -1497,6 +1521,9 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
             auto keys = obj->get_own_property_keys();
             for (const auto& key : keys) {
                 if (extracted_props.find(key) == extracted_props.end()) {
+                    // Only copy enumerable own properties (spec: CopyDataProperties)
+                    PropertyDescriptor pd = obj->get_property_descriptor(key);
+                    if (pd.is_data_descriptor() && !pd.is_enumerable()) continue;
                     Value prop_value = obj->get_property(key);
                     rest_obj->set_property(key, prop_value);
                 }
