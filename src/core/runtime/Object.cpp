@@ -94,6 +94,9 @@ bool Object::has_property(const std::string& key) const {
 }
 
 bool Object::has_own_property(const std::string& key) const {
+    // Private fields (#name) are not exposed as own properties (spec: private slot semantics)
+    if (!key.empty() && key[0] == '#') return false;
+
     if (this->get_type() == ObjectType::Proxy) {
         return const_cast<Proxy*>(static_cast<const Proxy*>(this))->has_trap(make_prop_key_value(key));
     }

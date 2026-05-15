@@ -1035,6 +1035,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
         return Value();
     }
 
+    if (!iterable.is_object() && !iterable.is_string() && !iterable.is_function()) {
+        ctx.throw_type_error(std::string(iterable.to_string()) + " is not iterable");
+        return Value();
+    }
+
     if (iterable.is_object() || iterable.is_string()) {
         Object* obj = nullptr;
 
