@@ -3560,12 +3560,16 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     MethodDefinition::Kind method_kind = MethodDefinition::METHOD;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
         std::string token_value = current_token().get_value();
-        if (token_value == "get") {
-            method_kind = MethodDefinition::GETTER;
-            advance();
-        } else if (token_value == "set") {
-            method_kind = MethodDefinition::SETTER;
-            advance();
+        if (token_value == "get" || token_value == "set") {
+            // Only treat as getter/setter if next token is a valid property name (not '(' or '=' or ';')
+            TokenType next = peek_token().get_type();
+            bool is_accessor = (next == TokenType::IDENTIFIER || next == TokenType::HASH ||
+                                next == TokenType::STRING || next == TokenType::NUMBER ||
+                                next == TokenType::LEFT_BRACKET || is_keyword_token(next));
+            if (is_accessor) {
+                method_kind = (token_value == "get") ? MethodDefinition::GETTER : MethodDefinition::SETTER;
+                advance();
+            }
         }
     }
 

@@ -911,6 +911,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
         } else if (left_->get_type() == Type::IDENTIFIER) {
             Identifier* id = static_cast<Identifier*>(left_.get());
             var_name = id->get_name();
+        } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+            var_name = "__destr__";
+        } else if (left_->get_type() == Type::ARRAY_LITERAL ||
+                   left_->get_type() == Type::OBJECT_LITERAL) {
+            var_name = "__destr__";
         }
         if (var_name.empty()) {
             ctx.throw_exception(Value(std::string("for-await-of: invalid loop variable")));
@@ -1013,6 +1018,22 @@ Value ForOfStatement::evaluate(Context& ctx) {
             Value done = iter_result->get_property("done");
             if (done.to_boolean()) break;
             Value value = iter_result->get_property("value");
+
+            if (var_name == "__destr__") {
+                if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
+                    auto* d = static_cast<DestructuringAssignment*>(left_.get());
+                    d->evaluate_with_value(ctx, value);
+                } else {
+                    AssignmentExpression::destructuring_assign(ctx, left_.get(), value);
+                }
+                if (ctx.has_exception()) return Value();
+                body_->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+                if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
+                if (ctx.has_return_value()) return Value();
+                continue;
+            }
 
             bool per_iter = (var_kind == VariableDeclarator::Kind::LET || var_kind == VariableDeclarator::Kind::CONST);
             if (per_iter) {
