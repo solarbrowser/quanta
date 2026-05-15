@@ -110,7 +110,7 @@ public:
     bool has_prototype(Object* prototype) const;
     
     virtual bool has_property(const std::string& key) const;
-    bool has_own_property(const std::string& key) const;
+    virtual bool has_own_property(const std::string& key) const;
 
     virtual Value get_property(const std::string& key) const;
     Value get_property(const Value& key) const;
@@ -434,6 +434,10 @@ public:
     
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    bool has_own_property(const std::string& key) const {
+        if (key == "prototype" && prototype_ != nullptr) return true;
+        return Object::has_own_property(key);
+    }
 
     Object* get_function_prototype() const { return prototype_; }
     void set_function_prototype(Object* proto) { prototype_ = proto; }
