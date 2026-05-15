@@ -483,6 +483,7 @@ Value Value::multiply(const Value& other) const {
 }
 
 Value Value::divide(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     if (is_number() && other.is_number()) {
         double a = as_number();
         double b = other.as_number();
@@ -514,6 +515,7 @@ Value Value::divide(const Value& other) const {
 }
 
 Value Value::modulo(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     if (is_number() && other.is_number()) {
         double a = as_number();
         double b = other.as_number();
@@ -524,6 +526,7 @@ Value Value::modulo(const Value& other) const {
 }
 
 Value Value::power(const Value& other) const {
+    if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
     if (is_number() && other.is_number()) {
         return Value(std::pow(as_number(), other.as_number()));
     }

@@ -1152,29 +1152,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
                                 } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
-
-                                    if (destructuring->get_type() == DestructuringAssignment::Type::ARRAY && value.is_object()) {
-                                        Object* array_obj = value.as_object();
-                                        const auto& targets = destructuring->get_targets();
-
-                                        for (size_t i = 0; i < targets.size(); ++i) {
-                                            const std::string& var_name = targets[i]->get_name();
-                                            Value element_value;
-
-                                            if (array_obj->has_property(std::to_string(i))) {
-                                                element_value = array_obj->get_property(std::to_string(i));
-                                            } else {
-                                                element_value = Value();
-                                            }
-
-                                            bool is_mutable = (var_kind != VariableDeclarator::Kind::CONST);
-                                            if (loop_ctx->has_binding(var_name)) {
-                                                loop_ctx->set_binding(var_name, element_value);
-                                            } else {
-                                                loop_ctx->create_binding(var_name, element_value, is_mutable);
-                                            }
-                                        }
-                                    }
+                                    destructuring->evaluate_with_value(*loop_ctx, value);
+                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
                                 } else {
                                     bool forof_per_iter = (var_kind == VariableDeclarator::Kind::LET ||
                                                           var_kind == VariableDeclarator::Kind::CONST);

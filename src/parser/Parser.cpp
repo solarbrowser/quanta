@@ -79,8 +79,18 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
     
     switch (current_type) {
         case TokenType::VAR:
-        case TokenType::LET:
         case TokenType::CONST:
+            return parse_variable_declaration();
+        case TokenType::LET:
+            // Non-strict: "let" followed by "=", "[0]", "(", ";", etc. is an identifier expression
+            // Only treat as declaration if followed by identifier, "[", or "{"
+            if (!options_.strict_mode) {
+                TokenType next = peek_token().get_type();
+                if (next != TokenType::IDENTIFIER && next != TokenType::LEFT_BRACKET &&
+                    next != TokenType::LEFT_BRACE) {
+                    return parse_expression_statement();
+                }
+            }
             return parse_variable_declaration();
             
         case TokenType::LEFT_BRACE:
@@ -206,7 +216,9 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
 
     if (!options_.in_array_element &&
         left->get_type() == ASTNode::Type::OBJECT_LITERAL &&
-        current_token().get_type() != TokenType::ASSIGN) {
+        current_token().get_type() != TokenType::ASSIGN &&
+        current_token().get_type() != TokenType::OF &&
+        current_token().get_type() != TokenType::IN) {
         auto* obj = static_cast<ObjectLiteral*>(left.get());
         for (const auto& prop : obj->get_properties()) {
             if (prop->shorthand && prop->value &&
@@ -292,6 +304,30 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             case TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN:
                 assign_op = AssignmentExpression::Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN;
                 break;
+            case TokenType::EXPONENT_ASSIGN: {
+                // Desugar: a **= b -> a = a ** b
+                std::unique_ptr<ASTNode> bin_expr = std::make_unique<BinaryExpression>(
+                    left->clone(), BinaryExpression::Operator::EXPONENT,
+                    std::move(right), left->get_start(), right ? right->get_end() : op_start);
+                return std::make_unique<AssignmentExpression>(std::move(left), AssignmentExpression::Operator::ASSIGN, std::move(bin_expr), op_start, get_current_position());
+            }
+            case TokenType::LOGICAL_OR_ASSIGN:
+            case TokenType::LOGICAL_AND_ASSIGN:
+            case TokenType::NULLISH_ASSIGN: {
+                // Desugar: x ||= y -> x = x || y,  x &&= y -> x = x && y,  x ??= y -> x = x ?? y
+                // NOTE: advance() and right parse already done above
+                std::unique_ptr<ASTNode> bin_expr;
+                Position bstart = left->get_start(), bend = right->get_end();
+                if (op_token == TokenType::NULLISH_ASSIGN) {
+                    bin_expr = std::make_unique<NullishCoalescingExpression>(left->clone(), std::move(right), bstart, bend);
+                } else {
+                    BinaryExpression::Operator bin_op = (op_token == TokenType::LOGICAL_OR_ASSIGN)
+                        ? BinaryExpression::Operator::LOGICAL_OR
+                        : BinaryExpression::Operator::LOGICAL_AND;
+                    bin_expr = std::make_unique<BinaryExpression>(left->clone(), bin_op, std::move(right), bstart, bend);
+                }
+                return std::make_unique<AssignmentExpression>(std::move(left), AssignmentExpression::Operator::ASSIGN, std::move(bin_expr), op_start, bend);
+            }
             default:
                 add_error("Unknown assignment operator");
                 return left;
@@ -1121,7 +1157,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::LEFT_BRACKET:
             return parse_array_literal();
         case TokenType::TEMPLATE_LITERAL: {
-            // Untagged: invalid escape (\x01 sentinel in cooked) → SyntaxError
+            // Untagged: invalid escape (\x01 sentinel in cooked) -> SyntaxError
             const std::string& tv = current_token().get_value();
             if (tv.size() >= 4) {
                 uint32_t cooked_len = (static_cast<unsigned char>(tv[0]) << 24) |
@@ -1660,7 +1696,11 @@ bool Parser::is_assignment_operator(TokenType type) const {
            type == TokenType::BITWISE_XOR_ASSIGN ||
            type == TokenType::LEFT_SHIFT_ASSIGN ||
            type == TokenType::RIGHT_SHIFT_ASSIGN ||
-           type == TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN;
+           type == TokenType::UNSIGNED_RIGHT_SHIFT_ASSIGN ||
+           type == TokenType::LOGICAL_OR_ASSIGN ||
+           type == TokenType::LOGICAL_AND_ASSIGN ||
+           type == TokenType::NULLISH_ASSIGN ||
+           type == TokenType::EXPONENT_ASSIGN;
 }
 
 bool Parser::is_binary_operator(TokenType type) const {
@@ -2257,10 +2297,16 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
-        if (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST)) {
-            
+        // Non-strict: "let" followed by "=", ";", etc. is an identifier, not a declaration
+        bool let_as_id = (!options_.strict_mode &&
+                          match(TokenType::LET) &&
+                          peek_token().get_type() != TokenType::IDENTIFIER &&
+                          peek_token().get_type() != TokenType::LEFT_BRACKET &&
+                          peek_token().get_type() != TokenType::LEFT_BRACE);
+        if (!let_as_id && (match(TokenType::VAR) || match(TokenType::LET) || match(TokenType::CONST))) {
+
             Position decl_start = get_current_position();
-            
+
             TokenType kind_token = current_token().get_type();
             VariableDeclarator::Kind kind;
             switch (kind_token) {
@@ -2743,7 +2789,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                 TokenType inner = tokens_[peek_idx].get_type();
                 if (inner == TokenType::FUNCTION) {
                     // labeled function: only 1 level allowed via Annex B
-                    // if more than one label → SyntaxError
+                    // if more than one label -> SyntaxError
                     size_t label_count = 0;
                     size_t ci = current_token_index_;
                     while (ci + 1 < tokens_.size() &&
@@ -2946,7 +2992,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
     bool saved_ic_fd = options_.in_constructor;
-    if (is_generator) options_.in_generator_body = true;
+    options_.in_generator_body = is_generator;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
     options_.in_constructor = false;
@@ -3789,7 +3835,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     bool saved_a = options_.in_async_body;
     bool saved_g = options_.in_generator_body;
     if (is_async) options_.in_async_body = true;
-    if (is_generator) options_.in_generator_body = true;
+    options_.in_generator_body = is_generator;
     bool saved_cm = options_.in_class_method;
     bool saved_ic = options_.in_constructor;
     options_.in_class_method = true;
@@ -4001,7 +4047,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
     bool saved_ic_fd = options_.in_constructor;
-    if (is_generator) options_.in_generator_body = true;
+    options_.in_generator_body = is_generator;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
     options_.in_constructor = false;
@@ -4302,7 +4348,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     bool saved_gen = options_.in_generator_body;
     bool saved_cfi_ae = options_.in_class_field_init;
     options_.in_async_body = true;
-    if (is_generator) options_.in_generator_body = true;
+    options_.in_generator_body = is_generator;
     options_.in_class_field_init = false;
     bool saved_cm_ae = options_.in_class_method;
     options_.in_class_method = false;
@@ -4508,7 +4554,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     bool saved_gen2 = options_.in_generator_body;
     bool saved_cfi_ad = options_.in_class_field_init;
     options_.in_async_body = true;
-    if (is_generator) options_.in_generator_body = true;
+    options_.in_generator_body = is_generator;
     options_.in_class_field_init = false;
     bool saved_cm_ad = options_.in_class_method;
     options_.in_class_method = false;
@@ -5191,7 +5237,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             bool saved_cm_ol = options_.in_class_method;
             bool saved_ic_ol = options_.in_constructor;
             if (is_async) options_.in_async_body = true;
-            if (is_generator) options_.in_generator_body = true;
+            options_.in_generator_body = is_generator;
             options_.in_class_method = true;
             options_.in_constructor = false;
             options_.function_depth++;
@@ -5426,7 +5472,7 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
         if (match(TokenType::COMMA)) {
             advance();
             if (match(TokenType::RIGHT_BRACKET)) {
-                // trailing comma after spread → add sentinel for destructuring check
+                // trailing comma after spread -> add sentinel for destructuring check
                 if (!elements.empty() && elements.back() &&
                     elements.back()->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
                     Position p = get_current_position();
@@ -6036,7 +6082,15 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 
                 std::string nested_vars = "";
                 while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
-                    if (current_token().get_type() == TokenType::IDENTIFIER) {
+                    if (current_token().get_type() == TokenType::ELLIPSIS) {
+                        advance();
+                        if (current_token().get_type() == TokenType::IDENTIFIER) {
+                            if (!nested_vars.empty()) nested_vars += ",";
+                            nested_vars += "..." + current_token().get_value();
+                            advance();
+                        }
+                        break; // rest must be last
+                    } else if (current_token().get_type() == TokenType::IDENTIFIER) {
                         if (!nested_vars.empty()) nested_vars += ",";
                         nested_vars += current_token().get_value();
                         advance();
