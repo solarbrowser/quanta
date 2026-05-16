@@ -387,32 +387,71 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
-    return parse_binary_expression(
-        [this]() { return parse_nullish_coalescing_expression(); },
-        {TokenType::LOGICAL_OR}
-    );
+    auto left = parse_nullish_coalescing_expression();
+    if (!left) return nullptr;
+
+    while (match(TokenType::LOGICAL_OR)) {
+        // ?? cannot appear as the left operand of || without parentheses
+        if (left->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION) {
+            add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
+            return nullptr;
+        }
+        Position op_start = current_token().get_start();
+        advance();
+        auto right = parse_nullish_coalescing_expression();
+        if (!right) {
+            add_error("Expected expression after '||'");
+            return left;
+        }
+        if (right->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION) {
+            add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
+            return nullptr;
+        }
+        Position end = right->get_end();
+        left = std::make_unique<BinaryExpression>(
+            std::move(left), BinaryExpression::Operator::LOGICAL_OR, std::move(right), op_start, end);
+    }
+    return left;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
     auto left = parse_logical_and_expression();
     if (!left) return nullptr;
-    
+
+    if (!match(TokenType::NULLISH_COALESCING)) return left;
+
+    // Per spec: ?? cannot mix with || or && without parentheses
+    auto is_logical_binop = [](ASTNode* n) -> bool {
+        if (!n || n->get_type() != ASTNode::Type::BINARY_EXPRESSION) return false;
+        auto op = static_cast<BinaryExpression*>(n)->get_operator();
+        return op == BinaryExpression::Operator::LOGICAL_AND ||
+               op == BinaryExpression::Operator::LOGICAL_OR;
+    };
+    if (is_logical_binop(left.get())) {
+        add_error("SyntaxError: Nullish coalescing operator cannot be mixed with && or || operators");
+        return nullptr;
+    }
+
     while (match(TokenType::NULLISH_COALESCING)) {
         Position start = left->get_start();
         advance();
-        
+
         auto right = parse_logical_and_expression();
         if (!right) {
             add_error("Expected expression after '??'");
             return left;
         }
-        
+        if (is_logical_binop(right.get())) {
+            add_error("SyntaxError: Nullish coalescing operator cannot be mixed with && or || operators");
+            return nullptr;
+        }
+
         Position end = right->get_end();
         left = std::make_unique<NullishCoalescingExpression>(
             std::move(left), std::move(right), start, end
         );
     }
-    
+
     return left;
 }
 
@@ -577,7 +616,10 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
             op == UnaryExpression::Operator::PRE_DECREMENT) {
             ASTNode::Type et = operand->get_type();
             bool always_invalid = (et == ASTNode::Type::META_PROPERTY ||
-                                   et == ASTNode::Type::YIELD_EXPRESSION);
+                                   et == ASTNode::Type::YIELD_EXPRESSION ||
+                                   et == ASTNode::Type::CALL_EXPRESSION ||
+                                   et == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(operand.get());
                 always_invalid = (id->get_name() == "this");
@@ -611,11 +653,14 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
             break;
         }
 
-        // META_PROPERTY, this, yield expression are always-invalid update targets
+        // CallExpression, arrow, optional-chaining etc. are always-invalid update targets
         {
             ASTNode::Type et = expr->get_type();
             bool always_invalid = (et == ASTNode::Type::META_PROPERTY ||
-                                   et == ASTNode::Type::YIELD_EXPRESSION);
+                                   et == ASTNode::Type::YIELD_EXPRESSION ||
+                                   et == ASTNode::Type::CALL_EXPRESSION ||
+                                   et == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(expr.get());
                 always_invalid = (id->get_name() == "this");
@@ -2771,6 +2816,21 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
 
     if (current_token().get_type() == TokenType::IDENTIFIER && peek_token().get_type() == TokenType::COLON) {
         std::string label = current_token().get_value();
+        // Escaped reserved words as label identifiers are SyntaxErrors
+        if (current_token().has_escaped_keyword()) {
+            if ((options_.in_async_body && label == "await") ||
+                (options_.in_generator_body && label == "yield") ||
+                options_.strict_mode) {
+                add_error("SyntaxError: '" + label + "' cannot be used as a label identifier here");
+                return nullptr;
+            }
+        }
+        // await/yield as labels are reserved in async/generator context
+        if ((options_.in_async_body && label == "await") ||
+            (options_.in_generator_body && label == "yield")) {
+            add_error("SyntaxError: '" + label + "' cannot be used as a label identifier here");
+            return nullptr;
+        }
         advance();
         advance();
 
@@ -3668,30 +3728,55 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             }
         }
 
-        // Class field restrictions
-        if (!computed && key && key->get_type() == ASTNode::Type::IDENTIFIER) {
-            const std::string& fname = static_cast<Identifier*>(key.get())->get_name();
-            if (fname == "constructor") {
-                add_error("SyntaxError: Class field cannot be named 'constructor'");
-                return nullptr;
-            }
-            if (is_static && fname == "prototype") {
-                add_error("SyntaxError: Static class field cannot be named 'prototype'");
-                return nullptr;
-            }
-            if (is_static && fname == "constructor") {
-                add_error("SyntaxError: Static class field cannot be named 'constructor'");
-                return nullptr;
+        // Class field restrictions (covers both Identifier and String literal keys)
+        if (!computed && key) {
+            std::string fname;
+            if (key->get_type() == ASTNode::Type::IDENTIFIER)
+                fname = static_cast<Identifier*>(key.get())->get_name();
+            else if (key->get_type() == ASTNode::Type::STRING_LITERAL)
+                fname = static_cast<StringLiteral*>(key.get())->get_value();
+            if (!fname.empty()) {
+                if (!is_static && fname == "constructor") {
+                    add_error("SyntaxError: Class field cannot be named 'constructor'");
+                    return nullptr;
+                }
+                if (is_static && (fname == "prototype" || fname == "constructor")) {
+                    add_error("SyntaxError: Static class field cannot be named 'prototype' or 'constructor'");
+                    return nullptr;
+                }
             }
         }
 
         return std::make_unique<ClassField>(std::move(key), std::move(init), is_static, computed, start, get_current_position());
     }
 
+    // Method name validation
+    if (!computed && key) {
+        std::string key_name;
+        if (key->get_type() == ASTNode::Type::IDENTIFIER)
+            key_name = static_cast<Identifier*>(key.get())->get_name();
+        else if (key->get_type() == ASTNode::Type::STRING_LITERAL)
+            key_name = static_cast<StringLiteral*>(key.get())->get_value();
+
+        if (!is_static && key_name == "constructor") {
+            if (is_generator || is_async ||
+                method_kind == MethodDefinition::GETTER || method_kind == MethodDefinition::SETTER) {
+                add_error("SyntaxError: Class constructor may not be a generator, async method, getter, or setter");
+                return nullptr;
+            }
+        }
+        if (is_static && key_name == "prototype") {
+            add_error("SyntaxError: Class may not have a static property named 'prototype'");
+            return nullptr;
+        }
+    }
+
     MethodDefinition::Kind kind = method_kind;
     if (!computed && key && key->get_type() == ASTNode::Type::IDENTIFIER) {
         auto* key_id = static_cast<Identifier*>(key.get());
-        if (key_id->get_name() == "constructor") {
+        if (key_id->get_name() == "constructor" && !is_static &&
+            !is_generator && !is_async &&
+            method_kind != MethodDefinition::GETTER && method_kind != MethodDefinition::SETTER) {
             kind = MethodDefinition::CONSTRUCTOR;
         }
     }
@@ -5156,7 +5241,10 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                         param_name = std::make_unique<Identifier>(synthetic_name, param_pos, param_pos);
 
                         std::unique_ptr<ASTNode> default_value = nullptr;
-                        if (match(TokenType::ASSIGN)) {
+                        if (is_rest && match(TokenType::ASSIGN)) {
+                            add_error("SyntaxError: Rest parameter cannot have a default value");
+                            return nullptr;
+                        } else if (!is_rest && match(TokenType::ASSIGN)) {
                             advance();
                             default_value = parse_assignment_expression();
                             if (!default_value) {
@@ -5189,7 +5277,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     }
 
                     std::unique_ptr<ASTNode> default_value = nullptr;
-                    if (match(TokenType::ASSIGN)) {
+                    if (!is_rest && match(TokenType::ASSIGN)) {
                         obj_non_simple = true;
                         advance();
                         default_value = parse_assignment_expression();
@@ -5197,6 +5285,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                             add_error("Expected expression after '=' in parameter default");
                             return nullptr;
                         }
+                    } else if (is_rest && match(TokenType::ASSIGN)) {
+                        add_error("SyntaxError: Rest parameter cannot have a default value");
+                        return nullptr;
                     }
 
                     Position param_end = get_current_position();
@@ -5210,7 +5301,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     }
                 } while (!at_end());
             }
-            
+
             options_.in_arrow_params = saved_oap;
 
             if (!consume(TokenType::RIGHT_PAREN)) {
