@@ -4962,11 +4962,16 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         if (current_token().get_type() == TokenType::IDENTIFIER) {
             const std::string& prop = current_token().get_value();
             if (prop == "meta") {
+                // import.meta only valid in module context
+                if (!options_.source_type_module) {
+                    add_error("SyntaxError: import.meta is only valid in module code");
+                    return nullptr;
+                }
                 Position end = current_token().get_end();
                 advance();
                 return std::make_unique<MetaProperty>("import", "meta", start, end);
             }
-            // import.source, import.defer, import.anything -- SyntaxError (unsupported or invalid)
+            // import.source, import.defer, import.anything -- SyntaxError
             add_error("SyntaxError: import." + prop + " is not supported");
             return nullptr;
         }
@@ -5397,8 +5402,9 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     add_error("SyntaxError: Setter must have exactly one formal parameter");
                     return nullptr;
                 }
-                if (params[0]->is_rest() || params[0]->has_default()) {
-                    add_error("SyntaxError: Setter parameter must not have default value or be a rest parameter");
+                // Setters may have default values and destructuring, but not rest
+                if (params[0]->is_rest()) {
+                    add_error("SyntaxError: Setter parameter may not be a rest parameter");
                     return nullptr;
                 }
             }
@@ -5408,8 +5414,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 if (!params[pi]->get_name()) continue;
                 const std::string& pn = params[pi]->get_name()->get_name();
                 if (pn.empty() || pn[0] == '_') continue;
-                // eval/arguments forbidden in async/generator methods
-                if (is_async || is_generator || obj_non_simple || options_.strict_mode) {
+                // eval/arguments forbidden in async/generator/strict contexts only
+                if (is_async || is_generator || options_.strict_mode) {
                     if (pn == "eval" || pn == "arguments") {
                         add_error("SyntaxError: '" + pn + "' cannot be a parameter name in this context");
                         return nullptr;
