@@ -99,7 +99,6 @@ AsyncFunction::AsyncFunction(const std::string& name,
 }
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
-    // Create the outer promise returned to caller
     auto promise_obj = ObjectFactory::create_promise(&ctx);
     Promise* promise_raw = static_cast<Promise*>(promise_obj.get());
     Value promise_value(promise_obj.release());
