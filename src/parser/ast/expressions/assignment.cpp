@@ -715,23 +715,34 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                 auto temp = ObjectFactory::create_array(0);
                                 uint32_t cnt = 0;
                                 bool iter_done = false;
+                                Context* prev_oc = Object::current_context_;
+                                Object::current_context_ = &ctx;
                                 if (has_rest) {
                                     for (uint32_t ii = 0; ii < 100000; ii++) {
                                         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) return;
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
                                         if (!res.is_object()) { iter_done = true; break; }
-                                        if (res.as_object()->get_property("done").to_boolean()) { iter_done = true; break; }
-                                        temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                        Value done_v = res.as_object()->get_property("done");
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (done_v.to_boolean()) { iter_done = true; break; }
+                                        Value val_v = res.as_object()->get_property("value");
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        temp->set_element(cnt++, val_v);
                                     }
                                 } else {
                                     for (uint32_t ii = 0; ii < needed; ii++) {
                                         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) return;
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
                                         if (!res.is_object()) { iter_done = true; break; }
-                                        if (res.as_object()->get_property("done").to_boolean()) { iter_done = true; break; }
-                                        temp->set_element(cnt++, res.as_object()->get_property("value"));
+                                        Value done_v = res.as_object()->get_property("done");
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (done_v.to_boolean()) { iter_done = true; break; }
+                                        Value val_v = res.as_object()->get_property("value");
+                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        temp->set_element(cnt++, val_v);
                                     }
                                 }
+                                Object::current_context_ = prev_oc;
                                 // ES6: Iterator closing
                                 if (!iter_done) {
                                     Value return_method = iter_obj.as_object()->get_property("return");
@@ -939,25 +950,36 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                             auto temp_arr = ObjectFactory::create_array(0);
                             uint32_t count = 0;
                             bool iterator_done = false;
+                            Context* prev_oc2 = Object::current_context_;
+                            Object::current_context_ = &ctx;
                             if (has_rest) {
                                 // Rest: collect all elements
                                 for (uint32_t iter_i = 0; iter_i < 100000; iter_i++) {
                                     Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (ctx.has_exception()) return Value();
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
                                     if (!result.is_object()) { iterator_done = true; break; }
-                                    if (result.as_object()->get_property("done").to_boolean()) { iterator_done = true; break; }
-                                    temp_arr->set_element(count++, result.as_object()->get_property("value"));
+                                    Value dv2 = result.as_object()->get_property("done");
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
+                                    if (dv2.to_boolean()) { iterator_done = true; break; }
+                                    Value vv2 = result.as_object()->get_property("value");
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
+                                    temp_arr->set_element(count++, vv2);
                                 }
                             } else {
                                 // No rest: collect only needed elements
                                 for (uint32_t iter_i = 0; iter_i < needed; iter_i++) {
                                     Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (ctx.has_exception()) return Value();
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
                                     if (!result.is_object()) { iterator_done = true; break; }
-                                    if (result.as_object()->get_property("done").to_boolean()) { iterator_done = true; break; }
-                                    temp_arr->set_element(count++, result.as_object()->get_property("value"));
+                                    Value dv3 = result.as_object()->get_property("done");
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
+                                    if (dv3.to_boolean()) { iterator_done = true; break; }
+                                    Value vv3 = result.as_object()->get_property("value");
+                                    if (ctx.has_exception()) { Object::current_context_ = prev_oc2; return Value(); }
+                                    temp_arr->set_element(count++, vv3);
                                 }
                             }
+                            Object::current_context_ = prev_oc2;
                             // ES6: Iterator closing - call return() if not exhausted
                             if (!iterator_done) {
                                 Value return_method = iterator->get_property("return");
