@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/Generator.h"
 #include "quanta/parser/AST.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
@@ -335,6 +336,7 @@ std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Co
 
 
 Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
+thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
     : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
@@ -370,27 +372,59 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 
     Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
     auto task = [this, promise_ptr = promise.get()]() {
+        auto* prev_async_gen = AsyncGenerator::get_current();
+        AsyncGenerator::set_current(this);
         try {
             if (body_) {
                 Value result = body_->evaluate(*generator_context_);
 
+                // Check for JS exceptions (e.g. from yield* throwing iterators)
+                if (generator_context_->has_exception()) {
+                    Value exc = generator_context_->get_exception();
+                    generator_context_->clear_exception();
+                    state_ = State::Completed;
+                    promise_ptr->reject(exc);
+                    return;
+                }
+
+                // Check if generator completed (YieldException not thrown means body ran to end)
+                if (generator_context_->has_return_value()) {
+                    Value ret = generator_context_->get_return_value();
+                    generator_context_->clear_return_value();
+                    state_ = State::Completed;
+                    auto result_obj = ObjectFactory::create_object();
+                    result_obj->set_property("value", ret);
+                    result_obj->set_property("done", Value(true));
+                    promise_ptr->fulfill(Value(result_obj.release()));
+                    return;
+                }
+
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", result);
                 result_obj->set_property("done", Value(false));
-
                 promise_ptr->fulfill(Value(result_obj.release()));
             } else {
                 state_ = State::Completed;
-
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", Value());
                 result_obj->set_property("done", Value(true));
-
                 promise_ptr->fulfill(Value(result_obj.release()));
             }
+        } catch (const YieldException& yield_ex) {
+            // yield/yield* produced a value -- fulfill with {value, done:false}
+            AsyncGenerator::set_current(prev_async_gen);
+            auto result_obj = ObjectFactory::create_object();
+            result_obj->set_property("value", yield_ex.yielded_value);
+            result_obj->set_property("done", Value(false));
+            promise_ptr->fulfill(Value(result_obj.release()));
+            return;
         } catch (const std::exception& e) {
-            promise_ptr->reject(Value(e.what()));
+            state_ = State::Completed;
+            AsyncGenerator::set_current(prev_async_gen);
+            promise_ptr->reject(Value(std::string(e.what())));
+            return;
         }
+        AsyncGenerator::set_current(prev_async_gen);
     };
     if (queue_ctx) {
         queue_ctx->queue_microtask(std::move(task));

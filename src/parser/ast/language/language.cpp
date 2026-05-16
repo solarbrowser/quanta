@@ -1170,7 +1170,113 @@ Value YieldExpression::evaluate(Context& ctx) {
         Value iterable = argument_ ? argument_->evaluate(ctx) : Value();
         if (ctx.has_exception()) return Value();
 
-        if (!current_gen) return Value();
+        // In async generator context: iterate and throw/yield each value
+        if (!current_gen) {
+            AsyncGenerator* async_gen = AsyncGenerator::get_current();
+            if (!async_gen) return Value();
+
+            // Resolve the iterable -- get iterator
+            Object* iterable_obj = nullptr;
+            if (iterable.is_object()) iterable_obj = iterable.as_object();
+            else if (iterable.is_function()) iterable_obj = iterable.as_function();
+
+            if (!iterable_obj) { ctx.throw_type_error("yield* requires iterable"); return Value(); }
+
+            // Set current_context_ so getters use the right context for exceptions
+            Context* prev_ctx = Object::current_context_;
+            Object::current_context_ = &ctx;
+
+            // Try Symbol.asyncIterator first, then Symbol.iterator
+            // Getter access itself may throw (abrupt completion on GetIterator)
+            Value iter_val;
+            Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
+            if (async_iter_sym) {
+                Value iter_fn = iterable_obj->get_property(async_iter_sym->to_property_key());
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                bool async_iter_defined = false;
+                if (!iter_fn.is_undefined() && !iter_fn.is_null()) {
+                    async_iter_defined = true;
+                    if (!iter_fn.is_function()) {
+                        Object::current_context_ = prev_ctx;
+                        ctx.throw_type_error("[Symbol.asyncIterator] is not callable");
+                        return Value();
+                    }
+                    iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    // If asyncIterator() returned non-object, throw TypeError immediately (don't fall back)
+                    if (!iter_val.is_undefined() && !iter_val.is_object() && !iter_val.is_function()) {
+                        Object::current_context_ = prev_ctx;
+                        ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object");
+                        return Value();
+                    }
+                    if (iter_val.is_undefined()) {
+                        Object::current_context_ = prev_ctx;
+                        ctx.throw_type_error("[Symbol.asyncIterator]() returned undefined");
+                        return Value();
+                    }
+                }
+            }
+            if (iter_val.is_undefined() && !ctx.has_exception()) {
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_fn = iterable_obj->get_property(iter_sym->to_property_key());
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    if (iter_fn.is_function()) {
+                        iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                    }
+                }
+            }
+            Object::current_context_ = prev_ctx;
+            if (iter_val.is_undefined()) {
+                ctx.throw_type_error("yield* requires iterable with [Symbol.asyncIterator]");
+                return Value();
+            }
+            // Iterator result must be an object
+            if (!iter_val.is_object() && !iter_val.is_function()) {
+                ctx.throw_type_error("[Symbol.asyncIterator]() returned a non-object iterator");
+                return Value();
+            }
+
+            Object* iter_obj = iter_val.is_object() ? iter_val.as_object() : iter_val.as_function();
+            if (!iter_obj) { ctx.throw_type_error("iterator is not an object"); return Value(); }
+
+            // Getting "next" may throw via getter
+            Context* prev_ctx3 = Object::current_context_;
+            Object::current_context_ = &ctx;
+            Value next_fn_val = iter_obj->get_property("next");
+            Object::current_context_ = prev_ctx3;
+            if (ctx.has_exception()) return Value(); // getter threw
+            if (!next_fn_val.is_function()) { ctx.throw_type_error("iterator missing next()"); return Value(); }
+
+            // Call next() -- this may throw
+            Value next_result = next_fn_val.as_function()->call(ctx, {}, iter_val);
+            if (ctx.has_exception()) return Value(); // exception propagates out
+
+            // Unwrap promise if needed
+            if (next_result.is_object() && next_result.as_object()->get_type() == Object::ObjectType::Promise) {
+                Promise* p = static_cast<Promise*>(next_result.as_object());
+                if (p->get_state() == PromiseState::FULFILLED) {
+                    next_result = p->get_value();
+                } else if (p->get_state() == PromiseState::REJECTED) {
+                    ctx.throw_exception(p->get_value(), true);
+                    return Value();
+                }
+            }
+
+            if (!next_result.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
+            // Access done/value with ctx set correctly for getter exceptions
+            Context* prev_ctx2 = Object::current_context_;
+            Object::current_context_ = &ctx;
+            Value done = next_result.as_object()->get_property("done");
+            if (ctx.has_exception()) { Object::current_context_ = prev_ctx2; return Value(); }
+            Value val = next_result.as_object()->get_property("value");
+            Object::current_context_ = prev_ctx2;
+            if (ctx.has_exception()) return Value();
+            if (done.to_boolean()) return val; // generator done, return final value
+            // yield the value
+            throw YieldException(val);
+        }
 
         size_t delegate_start = Generator::increment_yield_counter();
 
@@ -1398,6 +1504,10 @@ Value YieldExpression::evaluate(Context& ctx) {
     }
 
     if (!current_gen) {
+        // In async generator context: throw YieldException to yield the value
+        if (AsyncGenerator::get_current()) {
+            throw YieldException(yield_value);
+        }
         return yield_value;
     }
 
