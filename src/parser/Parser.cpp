@@ -151,7 +151,8 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             }
 
         case TokenType::IMPORT:
-            if (peek_token().get_type() == TokenType::LEFT_PAREN) {
+            if (peek_token().get_type() == TokenType::LEFT_PAREN ||
+                peek_token().get_type() == TokenType::DOT) {
                 return parse_expression_statement();
             } else {
                 return parse_import_statement();
@@ -577,13 +578,16 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
         TokenType op_token = current_token().get_type();
         Position start = current_token().get_start();
         advance();
-        
+
+        bool saved_unary = options_.in_unary_operand;
+        options_.in_unary_operand = true;
         auto operand = parse_unary_expression();
+        options_.in_unary_operand = saved_unary;
         if (!operand) {
             add_error("Expected expression after unary operator");
             return nullptr;
         }
-        
+
         UnaryExpression::Operator op = token_to_unary_operator(op_token);
         Position end = operand->get_end();
 
@@ -1181,8 +1185,8 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 add_error("SyntaxError: 'yield' is not allowed in arrow function parameters");
                 return nullptr;
             }
-            if (options_.in_binary_expr && options_.in_generator_body) {
-                add_error("SyntaxError: 'yield' cannot be used as the right operand of a binary expression");
+            if ((options_.in_binary_expr || options_.in_unary_operand) && options_.in_generator_body) {
+                add_error("SyntaxError: 'yield' cannot be used in this expression context in a generator");
                 return nullptr;
             }
             return parse_yield_expression();
@@ -1533,18 +1537,22 @@ std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
         add_error("Expected '('");
         return nullptr;
     }
-    
+
+    // Parentheses allow AssignmentExpression (e.g. yield/await are valid inside)
+    bool saved_unary = options_.in_unary_operand;
+    options_.in_unary_operand = false;
     auto expr = parse_expression();
+    options_.in_unary_operand = saved_unary;
     if (!expr) {
         add_error("Expected expression inside parentheses");
         return nullptr;
     }
-    
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after expression");
         return expr;
     }
-    
+
     return expr;
 }
 
@@ -4948,8 +4956,26 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         return nullptr;
     }
 
+    // import.X -- handle meta-properties and reject unsupported proposals
+    if (match(TokenType::DOT)) {
+        advance(); // consume .
+        if (current_token().get_type() == TokenType::IDENTIFIER) {
+            const std::string& prop = current_token().get_value();
+            if (prop == "meta") {
+                Position end = current_token().get_end();
+                advance();
+                return std::make_unique<MetaProperty>("import", "meta", start, end);
+            }
+            // import.source, import.defer, import.anything -- SyntaxError (unsupported or invalid)
+            add_error("SyntaxError: import." + prop + " is not supported");
+            return nullptr;
+        }
+        add_error("SyntaxError: Invalid import meta-property");
+        return nullptr;
+    }
+
     if (!consume(TokenType::LEFT_PAREN)) {
-        add_error("Expected '(' after 'import'");
+        add_error("SyntaxError: Expected '(' after 'import'");
         return nullptr;
     }
 
@@ -5126,6 +5152,20 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
         if (match(TokenType::IDENTIFIER)) {
             if (current_token().get_value() == "get") {
+                if (current_token().has_escaped_keyword()) {
+                    // get etc. -- escaped get keyword is SyntaxError
+                    size_t saved_pos = current_token_index_;
+                    advance();
+                    bool is_getter_syntax = !match(TokenType::LEFT_PAREN) &&
+                        (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) ||
+                         match(TokenType::STRING) || match(TokenType::NUMBER) || is_keyword_token(current_token().get_type())) &&
+                        !match(TokenType::COLON);
+                    current_token_index_ = saved_pos;
+                    if (is_getter_syntax) {
+                        add_error("SyntaxError: `get` cannot contain unicode escape sequences");
+                        return nullptr;
+                    }
+                }
                 size_t saved_pos = current_token_index_;
                 advance();
 
@@ -5140,6 +5180,19 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     advance();
                 }
             } else if (current_token().get_value() == "set") {
+                if (current_token().has_escaped_keyword()) {
+                    size_t saved_pos = current_token_index_;
+                    advance();
+                    bool is_setter_syntax = !match(TokenType::LEFT_PAREN) &&
+                        (match(TokenType::LEFT_BRACKET) || match(TokenType::IDENTIFIER) ||
+                         match(TokenType::STRING) || match(TokenType::NUMBER) || is_keyword_token(current_token().get_type())) &&
+                        !match(TokenType::COLON);
+                    current_token_index_ = saved_pos;
+                    if (is_setter_syntax) {
+                        add_error("SyntaxError: `set` cannot contain unicode escape sequences");
+                        return nullptr;
+                    }
+                }
                 size_t saved_pos = current_token_index_;
                 advance();
 
@@ -5154,6 +5207,31 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     advance();
                 }
             } else if (current_token().get_value() == "async") {
+                if (current_token().has_escaped_keyword()) {
+                    add_error("SyntaxError: `async` cannot contain unicode escape sequences");
+                    return nullptr;
+                }
+                size_t async_line = current_token().get_end().line;
+                // Peek at next significant token to check for line terminator
+                size_t peek_idx = current_token_index_ + 1;
+                while (peek_idx < tokens_.size() &&
+                       (tokens_[peek_idx].get_type() == TokenType::NEWLINE ||
+                        tokens_[peek_idx].get_type() == TokenType::WHITESPACE ||
+                        tokens_[peek_idx].get_type() == TokenType::COMMENT)) {
+                    peek_idx++;
+                }
+                bool has_lt = (peek_idx < tokens_.size() &&
+                               tokens_[peek_idx].get_start().line > async_line);
+                // Check if there's a method after (not just a value property)
+                bool next_is_method = (peek_idx + 1 < tokens_.size() &&
+                    (tokens_[peek_idx].get_type() == TokenType::IDENTIFIER ||
+                     tokens_[peek_idx].get_type() == TokenType::LEFT_BRACKET ||
+                     is_keyword_token(tokens_[peek_idx].get_type())) &&
+                    tokens_[peek_idx + 1].get_type() == TokenType::LEFT_PAREN);
+                if (has_lt && next_is_method) {
+                    add_error("SyntaxError: Line terminator not allowed between async and method name");
+                    return nullptr;
+                }
                 is_async = true;
                 advance();
             }
@@ -5309,18 +5387,39 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 return nullptr;
             }
 
-            // Async/generator methods use UniqueFormaParameters
-            if (obj_non_simple || options_.strict_mode || is_async || is_generator) {
-                for (size_t pi = 0; pi < params.size(); pi++) {
-                    if (!params[pi]->get_name()) continue;
-                    const std::string& pn = params[pi]->get_name()->get_name();
-                    if (pn.empty() || pn[0] == '_') continue;
-                    for (size_t pj = pi + 1; pj < params.size(); pj++) {
-                        if (!params[pj]->get_name()) continue;
-                        if (params[pj]->get_name()->get_name() == pn) {
-                            add_error("SyntaxError: Duplicate parameter name not allowed");
-                            return nullptr;
-                        }
+            // Getter: no params. Setter: exactly one simple param.
+            if (property_type == ObjectLiteral::PropertyType::Getter && !params.empty()) {
+                add_error("SyntaxError: Getter must have no formal parameters");
+                return nullptr;
+            }
+            if (property_type == ObjectLiteral::PropertyType::Setter) {
+                if (params.size() != 1) {
+                    add_error("SyntaxError: Setter must have exactly one formal parameter");
+                    return nullptr;
+                }
+                if (params[0]->is_rest() || params[0]->has_default()) {
+                    add_error("SyntaxError: Setter parameter must not have default value or be a rest parameter");
+                    return nullptr;
+                }
+            }
+
+            // All methods use UniqueFormalParameters (per spec MethodDefinition grammar)
+            for (size_t pi = 0; pi < params.size(); pi++) {
+                if (!params[pi]->get_name()) continue;
+                const std::string& pn = params[pi]->get_name()->get_name();
+                if (pn.empty() || pn[0] == '_') continue;
+                // eval/arguments forbidden in async/generator methods
+                if (is_async || is_generator || obj_non_simple || options_.strict_mode) {
+                    if (pn == "eval" || pn == "arguments") {
+                        add_error("SyntaxError: '" + pn + "' cannot be a parameter name in this context");
+                        return nullptr;
+                    }
+                }
+                for (size_t pj = pi + 1; pj < params.size(); pj++) {
+                    if (!params[pj]->get_name()) continue;
+                    if (params[pj]->get_name()->get_name() == pn) {
+                        add_error("SyntaxError: Duplicate parameter name not allowed in method");
+                        return nullptr;
                     }
                 }
             }

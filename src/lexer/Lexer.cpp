@@ -502,10 +502,24 @@ Token Lexer::read_identifier() {
     
     TokenType type = lookup_keyword(value);
 
-    if (contains_unicode_escapes && type != TokenType::IDENTIFIER) {
-        Token tok = create_token(TokenType::IDENTIFIER, value, start);
-        tok.set_escaped_keyword(true);
-        return tok;
+    if (contains_unicode_escapes) {
+        if (type != TokenType::IDENTIFIER) {
+            // Escaped reserved keyword (e.g. if = if) -> IDENTIFIER with escape flag
+            Token tok = create_token(TokenType::IDENTIFIER, value, start);
+            tok.set_escaped_keyword(true);
+            return tok;
+        }
+        // Also flag contextual keywords (get, set, async, static, from, of, let, etc.)
+        // when they contain unicode escapes -- needed for early error detection
+        static const std::unordered_set<std::string> contextual = {
+            "get", "set", "async", "static", "from", "of", "let", "target",
+            "meta", "as", "new", "yield", "await"
+        };
+        if (contextual.count(value)) {
+            Token tok = create_token(type, value, start);
+            tok.set_escaped_keyword(true);
+            return tok;
+        }
     }
 
     if (options_.strict_mode && type == TokenType::IDENTIFIER && is_reserved_word(value)) {
