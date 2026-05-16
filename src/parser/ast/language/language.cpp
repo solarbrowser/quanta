@@ -125,10 +125,14 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         ctx.get_lexical_environment() != ctx.get_variable_environment();
     if (use_lexical) {
         if (!ctx.create_lexical_binding(function_name, function_value, true)) {
-            ctx.set_binding(function_name, function_value);
+            ctx.create_lexical_binding_force(function_name, function_value);
         }
-    } else if (!ctx.create_binding(function_name, function_value, true)) {
-        ctx.set_binding(function_name, function_value);
+    } else {
+        // Try the variable environment first; if it fails (already exists from closure capture),
+        // use the lexical environment so the write-back won't propagate to the outer scope
+        if (!ctx.create_binding(function_name, function_value, true)) {
+            ctx.create_lexical_binding_force(function_name, function_value);
+        }
     }
 
 

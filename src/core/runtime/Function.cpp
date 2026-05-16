@@ -663,13 +663,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         if (function_context.has_return_value()) {
             return function_context.get_return_value();
         }
-        
+
         if (function_context.has_exception()) {
             ctx.throw_exception(function_context.get_exception());
             return Value();
         }
-        
-        return result.is_undefined() ? Value() : result;
+
+        // Functions without explicit return always return undefined
+        return Value();
     }
     
     return Value();

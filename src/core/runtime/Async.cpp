@@ -368,30 +368,36 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 
     auto promise = make_promise();
 
-    EventLoop::instance().schedule_microtask([this, promise_ptr = promise.get()]() {
+    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto task = [this, promise_ptr = promise.get()]() {
         try {
             if (body_) {
                 Value result = body_->evaluate(*generator_context_);
-                
+
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", result);
                 result_obj->set_property("done", Value(false));
-                
+
                 promise_ptr->fulfill(Value(result_obj.release()));
             } else {
                 state_ = State::Completed;
-                
+
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", Value());
                 result_obj->set_property("done", Value(true));
-                
+
                 promise_ptr->fulfill(Value(result_obj.release()));
             }
         } catch (const std::exception& e) {
             promise_ptr->reject(Value(e.what()));
         }
-    });
-    
+    };
+    if (queue_ctx) {
+        queue_ctx->queue_microtask(std::move(task));
+    } else {
+        EventLoop::instance().schedule_microtask(std::move(task));
+    }
+
     return AsyncGeneratorResult(std::move(promise));
 }
 

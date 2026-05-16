@@ -31,6 +31,46 @@ static Context* get_exec_ctx(Engine* engine, Context* fallback) {
 void Promise::fulfill(const Value& value) {
     if (state_ != PromiseState::PENDING) return;
 
+    // Promise Resolution Procedure: if value is a Promise, adopt its state
+    if (value.is_object() && value.as_object()->get_type() == ObjectType::Promise) {
+        Promise* inner = static_cast<Promise*>(value.as_object());
+        if (inner == this) {
+            state_ = PromiseState::REJECTED;
+            value_ = Value(std::string("TypeError: Promise resolved with itself"));
+            execute_handlers();
+            return;
+        }
+        if (inner->get_state() == PromiseState::FULFILLED) {
+            state_ = PromiseState::FULFILLED;
+            value_ = inner->get_value();
+            execute_handlers();
+        } else if (inner->get_state() == PromiseState::REJECTED) {
+            state_ = PromiseState::REJECTED;
+            value_ = inner->get_value();
+            execute_handlers();
+        } else {
+            // Inner promise is pending -- chain callbacks
+            Promise* self = this;
+            auto res_fn = ObjectFactory::create_native_function("",
+                [self](Context&, const std::vector<Value>& args) -> Value {
+                    self->fulfill(args.empty() ? Value() : args[0]);
+                    return Value();
+                });
+            auto rej_fn = ObjectFactory::create_native_function("",
+                [self](Context&, const std::vector<Value>& args) -> Value {
+                    self->reject(args.empty() ? Value() : args[0]);
+                    return Value();
+                });
+            Function* rf = res_fn.get();
+            Function* rj = rej_fn.get();
+            // Store on inner to keep callbacks alive
+            inner->set_property("__prp_res__", Value(res_fn.release()));
+            inner->set_property("__prp_rej__", Value(rej_fn.release()));
+            inner->then(rf, rj);
+        }
+        return;
+    }
+
     state_ = PromiseState::FULFILLED;
     value_ = value;
     execute_handlers();
