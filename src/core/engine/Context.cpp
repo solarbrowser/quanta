@@ -129,6 +129,18 @@ bool Context::create_binding(const std::string& name, const Value& value, bool m
     return false;
 }
 
+void Context::create_binding_force(const std::string& name, const Value& value) {
+    if (variable_environment_) {
+        variable_environment_->force_set_binding(name, value);
+    }
+}
+
+void Context::create_lexical_binding_force(const std::string& name, const Value& value) {
+    if (lexical_environment_) {
+        lexical_environment_->force_set_binding(name, value);
+    }
+}
+
 bool Context::create_var_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (variable_environment_) {
         // ES1: Variables declared with 'var' have DontDelete attribute (not deletable)
@@ -689,6 +701,16 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
     }
     
     return false;
+}
+
+void Environment::force_set_binding(const std::string& name, const Value& value) {
+    if (type_ == Type::Object && binding_object_) {
+        binding_object_->set_property(name, value);
+    } else {
+        bindings_[name] = value;
+        mutable_flags_[name] = true;
+        initialized_flags_[name] = true;
+    }
 }
 
 bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
