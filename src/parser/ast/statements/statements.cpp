@@ -1554,12 +1554,27 @@ Value WithStatement::evaluate(Context& ctx) {
     Value obj_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 
-    if (!obj_value.is_object() && !obj_value.is_function()) {
-        ctx.throw_type_error("with statement requires an object");
+    // ToObject: null/undefined throw TypeError, primitives get wrapper objects
+    if (obj_value.is_null() || obj_value.is_undefined()) {
+        ctx.throw_type_error("Cannot convert undefined or null to object in with statement");
         return Value();
     }
 
-    Object* obj = obj_value.is_function() ? obj_value.as_function() : obj_value.as_object();
+    Object* obj = nullptr;
+    if (obj_value.is_object()) {
+        obj = obj_value.as_object();
+    } else if (obj_value.is_function()) {
+        obj = obj_value.as_function();
+    } else {
+        // Number, String, Boolean, Symbol primitives -- create a wrapper object
+        // The wrapper has no own properties so with(primitive) essentially adds nothing to scope
+        auto wrapper = ObjectFactory::create_object();
+        obj = wrapper.release();
+    }
+    if (!obj) {
+        ctx.throw_type_error("with statement: failed to create object");
+        return Value();
+    }
 
     ctx.push_with_scope(obj);
 

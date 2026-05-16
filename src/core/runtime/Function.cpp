@@ -669,6 +669,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             return Value();
         }
 
+        // For class constructors: if super() updated this to a new object, return it
+        // so Function::construct() can use the correct object
+        if (is_class_constructor_) {
+            Object* final_this = function_context.get_this_binding();
+            if (final_this && actual_this.is_object() && final_this != actual_this.as_object()) {
+                return Value(final_this);
+            }
+        }
+
         // Functions without explicit return always return undefined
         return Value();
     }
@@ -805,26 +814,47 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ctx.set_in_constructor_call(false);
     ctx.set_new_target(Value());
 
-    // Auto-call super if the constructor didn't explicitly call super()
-    // This handles classes with no explicit constructor (default constructor)
-    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        Function* super_constructor = super_constructor_prop.as_function();
-        ctx.set_in_constructor_call(true);
-        ctx.set_new_target(Value(static_cast<Object*>(this)));
-        Value super_result = super_constructor->call(ctx, args, this_value);
-        ctx.set_in_constructor_call(false);
-        ctx.set_new_target(Value());
+    // If super() updated `this` to a different object (e.g. native Error/Array constructors),
+    // use that object as the result when the constructor returns normally (undefined result)
+    if (result.is_undefined() && super_was_called) {
+        // Check if this_value was updated by the super() call in call.cpp
+    }
 
-        if (!super_result.is_undefined()) {
-            result = super_result;
+    // If super wasn't called and this is a derived class
+    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        // Use has_own_property to avoid inheriting __default_ctor__ from parent class
+        bool is_default_ctor = has_own_property("__default_ctor__");
+        if (is_default_ctor) {
+            // Default synthesized constructor: auto-call super(...args)
+            Function* super_constructor = super_constructor_prop.as_function();
+            ctx.set_in_constructor_call(true);
+            ctx.set_new_target(Value(static_cast<Object*>(this)));
+            Value super_result = super_constructor->call(ctx, args, this_value);
+            ctx.set_in_constructor_call(false);
+            ctx.set_new_target(Value());
+            if (!super_result.is_undefined()) result = super_result;
+        } else {
+            // Explicit constructor that didn't call super() -- ReferenceError
+            ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+            return Value();
         }
+    }
+
+    // In derived class constructors, returning a primitive throws TypeError
+    bool is_derived = !super_constructor_prop.is_undefined();
+    if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {
+        ctx.throw_type_error("Derived constructors may only return object or undefined");
+        return Value();
     }
 
     // If constructor explicitly returned an object or function, use that
     if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
-        // Set constructor's prototype on returned object if it has none yet
         Object* ret_obj = result.as_object();
-        if (!ret_obj->get_prototype() && constructor_prototype.is_object()) {
+        // For derived classes: always set prototype to this class's prototype
+        // so `new Derived() instanceof Derived` works even when super is a built-in
+        if (is_derived && constructor_prototype.is_object()) {
+            ret_obj->set_prototype(constructor_prototype.as_object());
+        } else if (!ret_obj->get_prototype() && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
         return result;

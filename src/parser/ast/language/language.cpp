@@ -184,6 +184,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::vector<std::string> constructor_params;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
+    bool has_explicit_constructor = false;
 
     if (body_) {
         for (const auto& stmt : body_->get_statements()) {
@@ -224,6 +225,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 }
 
                 if (method->is_constructor()) {
+                    has_explicit_constructor = true;
                     constructor_body = method->get_value()->get_body()->clone();
                     if (method->get_value()->get_type() == Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* func_expr = static_cast<FunctionExpression*>(method->get_value());
@@ -353,6 +355,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         proto_ptr->set_property("constructor", Value(constructor_fn.get()));
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
+        if (!has_explicit_constructor) {
+            constructor_fn->set_property("__default_ctor__", Value(true));
+        }
         if (!source_text_.empty()) {
             constructor_fn->set_source_text(source_text_);
         }
@@ -445,8 +450,29 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (proto_ptr) {
                 proto_ptr->set_prototype(nullptr);
             }
+        } else if (!super_constructor.is_object_like()) {
+            // extends non-object (number, string, boolean, etc.) -> TypeError
+            ctx.throw_type_error("Class extends value " + super_constructor.to_string() + " is not a constructor or null");
+            return Value();
         } else if (super_constructor.is_object_like() && super_constructor.as_object()) {
             Object* super_obj = super_constructor.as_object();
+            // Must be a constructor
+            if (!super_obj->is_function()) {
+                ctx.throw_type_error("Class extends value is not a constructor or null");
+                return Value();
+            }
+            Function* super_fn_check = static_cast<Function*>(super_obj);
+            if (!super_fn_check->is_constructor()) {
+                ctx.throw_type_error("Class extends value is not a constructor or null");
+                return Value();
+            }
+            // super.prototype must be null or an object (if present)
+            Value super_proto_check = super_obj->get_property("prototype");
+            if (!super_proto_check.is_undefined() && !super_proto_check.is_null() &&
+                !super_proto_check.is_object() && !super_proto_check.is_function()) {
+                ctx.throw_type_error("Class extends value has invalid prototype property");
+                return Value();
+            }
             Function* super_fn = nullptr;
             if (super_obj->is_function()) {
                 super_fn = static_cast<Function*>(super_obj);
