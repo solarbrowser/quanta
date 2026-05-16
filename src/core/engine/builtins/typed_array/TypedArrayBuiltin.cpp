@@ -1625,15 +1625,6 @@ void register_typed_array_builtins(Context& ctx) {
 
     ctx.register_built_in_object("DataView", dataview_constructor.release());
 
-    auto done_function = ObjectFactory::create_native_function("$DONE",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (!args.empty() && !args[0].is_undefined()) {
-                std::string error_msg = args[0].to_string();
-                ctx.throw_exception(Value("Test failed: " + error_msg));
-            }
-            return Value();
-        });
-    ctx.get_global_object()->set_property("$DONE", Value(done_function.release()));
 
 
     Value function_ctor_value = ctx.get_global_object()->get_property("Function");

@@ -49,6 +49,7 @@ public:
     size_t target_await_index_;
     std::vector<Value> await_results_;
     std::vector<bool> await_is_throw_;
+    std::vector<Value> pinned_values_; // keeps thenable-wrapped promises alive across suspensions
     Promise* outer_promise_;       // raw ptr — Promise is kept alive by JS value chain
     std::unique_ptr<Context> exec_context_owned_;
     Context* exec_context_;        // raw ptr into exec_context_owned_

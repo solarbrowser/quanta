@@ -989,6 +989,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
             return Value();
         }
 
+        Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+
         if (!argument_) {
             exec->await_results_.push_back(Value());
             exec->await_is_throw_.push_back(false);
@@ -999,8 +1001,6 @@ Value AwaitExpression::evaluate(Context& ctx) {
         Value expr_val = argument_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
-        Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
-
         Promise* awaited_promise = nullptr;
         Value resolved_value;
         bool is_throw = false;
@@ -1008,6 +1008,46 @@ Value AwaitExpression::evaluate(Context& ctx) {
 
         if (AsyncUtils::is_promise(expr_val)) {
             awaited_promise = static_cast<Promise*>(expr_val.as_object());
+            if (awaited_promise->get_state() == PromiseState::FULFILLED) {
+                resolved_value = awaited_promise->get_value();
+            } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
+                resolved_value = awaited_promise->get_value();
+                is_throw = true;
+            } else {
+                is_pending = true;
+            }
+        } else if (AsyncUtils::is_thenable(expr_val)) {
+            // Per spec: await thenable => Promise.resolve(thenable), which calls thenable.then()
+            auto wrapped_obj = ObjectFactory::create_promise(gctx);
+            Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+
+            auto res_fn = ObjectFactory::create_native_function("",
+                [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                    wrapped_raw->fulfill(args.empty() ? Value() : args[0]);
+                    return Value();
+                });
+            auto rej_fn = ObjectFactory::create_native_function("",
+                [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                    wrapped_raw->reject(args.empty() ? Value() : args[0]);
+                    return Value();
+                });
+            // Store callbacks on the wrapped promise to keep them alive
+            wrapped_raw->set_property("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+
+            Object* thenable_obj = expr_val.as_object();
+            Value then_val = thenable_obj->get_property("then");
+            if (then_val.is_function()) {
+                Value r = wrapped_raw->get_property("__tr_");
+                Value j = wrapped_raw->get_property("__tj_");
+                then_val.as_function()->call(ctx, {r, j}, expr_val);
+                ctx.clear_exception(); // thenable.then errors are suppressed per spec
+            }
+
+            // Pin the wrapped promise so it survives across the suspension
+            exec->pinned_values_.push_back(Value(wrapped_obj.release()));
+            awaited_promise = wrapped_raw;
+
             if (awaited_promise->get_state() == PromiseState::FULFILLED) {
                 resolved_value = awaited_promise->get_value();
             } else if (awaited_promise->get_state() == PromiseState::REJECTED) {

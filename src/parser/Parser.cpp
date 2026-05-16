@@ -2424,8 +2424,11 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
         } else {
-            // ES1: for loop init can be an assignment expression
+            // Parse init without consuming 'in' (reserved for for-in detection)
+            bool prev_no_in = no_in_mode_;
+            no_in_mode_ = true;
             init = parse_expression();
+            no_in_mode_ = prev_no_in;
             if (!init) {
                 add_error("Expected initialization in for loop");
                 return nullptr;
