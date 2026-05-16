@@ -36,6 +36,7 @@ public:
         int switch_depth = 0;
         int function_depth = 0;
         bool in_binary_expr = false;
+        bool in_unary_operand = false; // operand of void/typeof/!/~/+/-
     };
 
     struct ParseError {
