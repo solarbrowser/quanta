@@ -104,7 +104,7 @@ bool Object::has_private_slot(const std::string& key) const {
         return true;
     }
     if (overflow_properties_) {
-        return overflow_properties_->find(key) != overflow_properties_->end();
+        if (overflow_properties_->find(key) != overflow_properties_->end()) return true;
     }
     return false;
 }

@@ -188,6 +188,8 @@ public:
     size_t memory_usage() const;
     
     Shape* get_shape() const { return header_.shape; }
+    const std::unordered_map<std::string, PropertyDescriptor>* get_descriptors() const { return descriptors_.get(); }
+    const std::unordered_map<std::string, Value>* get_overflow_properties() const { return overflow_properties_.get(); }
     void transition_shape(const std::string& key, PropertyAttributes attrs);
 
     inline Value get_property_by_offset_unchecked(uint32_t offset) const {
