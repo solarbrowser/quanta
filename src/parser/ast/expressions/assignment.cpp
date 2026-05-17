@@ -687,10 +687,25 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 pos += cl;
             }
             source_len = static_cast<uint32_t>(str_codepoints.size());
+        } else if (source_value.is_number() || source_value.is_boolean() || source_value.is_symbol()) {
+            // Primitives (number/boolean/symbol) are not iterable -- throw TypeError
+            ctx.throw_type_error("Cannot destructure a non-iterable value");
+            return;
         } else if (source_value.is_object() || source_value.is_function()) {
             source_arr = source_value.is_function()
                 ? static_cast<Object*>(source_value.as_function())
                 : source_value.as_object();
+            // For arrays: verify Symbol.iterator is callable (deleted iterator -> TypeError)
+            if (source_arr && source_arr->is_array()) {
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_method = source_arr->get_property(iter_sym->to_property_key());
+                    if (!iter_method.is_function()) {
+                        ctx.throw_type_error("Cannot destructure: Symbol.iterator is not callable");
+                        return;
+                    }
+                }
+            }
             // ES6: Check for Symbol.iterator on non-array objects
             if (source_arr && !source_arr->is_array()) {
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
@@ -825,7 +840,11 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
         std::string name = static_cast<Identifier*>(target)->get_name();
         if (ctx.has_binding(name)) {
-            ctx.set_binding(name, value);
+            bool ok = ctx.set_binding(name, value);
+            if (!ok) {
+                // Binding exists but immutable (const) -- TypeError
+                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+            }
         } else {
             ctx.create_binding(name, value, true);
         }

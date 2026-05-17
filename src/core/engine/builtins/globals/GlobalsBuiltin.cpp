@@ -18,6 +18,9 @@
 #include <algorithm>
 #include <cctype>
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/Promise.h"
+#include "quanta/core/modules/ModuleLoader.h"
+#include <filesystem>
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
 
@@ -793,6 +796,64 @@ void register_global_builtins(Context& ctx) {
     console_obj->set_property("warn", Value(console_warn_fn.release()), PropertyAttributes::BuiltinFunction);
     
     ctx.get_lexical_environment()->create_binding("console", Value(console_obj.release()), false);
+
+    // Dynamic import() -- module loading with ES module namespace object
+    auto import_fn = ObjectFactory::create_native_function("import",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            auto* promise = dynamic_cast<Quanta::Promise*>(promise_obj.get());
+            if (!promise) return Value(promise_obj.release());
+
+            std::string specifier = args.empty() ? "" : args[0].to_string();
+            if (specifier.empty()) {
+                promise->reject(Value(std::string("TypeError: import() requires a specifier")));
+                return Value(promise_obj.release());
+            }
+
+            // Resolve path relative to current file
+            std::string current_file = ctx.get_current_filename();
+            std::string resolved;
+            if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
+                (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {
+                namespace fs = std::filesystem;
+                std::string base = fs::path(current_file).parent_path().string();
+                if (base.empty()) base = ".";
+                resolved = fs::weakly_canonical(fs::path(base) / specifier).string();
+            } else {
+                resolved = specifier;
+            }
+
+            // Try to load the module file
+            Engine* engine = ctx.get_engine();
+            if (engine && engine->get_module_loader()) {
+                Module* mod = engine->get_module_loader()->load_module(resolved, current_file);
+                if (mod) {
+                    // Create ES module namespace object with all exports
+                    auto ns = ObjectFactory::create_object();
+                    for (const auto& name : mod->get_export_names()) {
+                        ns->set_property(name, mod->get_export(name));
+                    }
+                    // Add default export if not present but module has a 'default'
+                    promise->fulfill(Value(ns.release()));
+                    return Value(promise_obj.release());
+                }
+            }
+
+            // Try reading and executing the file directly
+            if (engine) {
+                auto result = engine->execute_file(resolved);
+                if (result.success) {
+                    auto ns = ObjectFactory::create_object();
+                    ns->set_property("default", result.value);
+                    promise->fulfill(Value(ns.release()));
+                    return Value(promise_obj.release());
+                }
+            }
+
+            promise->reject(Value(std::string("Error: Cannot find module '" + specifier + "'")));
+            return Value(promise_obj.release());
+        }, 1);
+    ctx.get_global_object()->set_property("import", Value(import_fn.release()));
 
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
