@@ -387,6 +387,23 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
         function_context.set_in_param_eval(false);
+
+        // After parameter binding (which may have mutated outer variables via generators/setters),
+        // refresh closure variables from the parent scope to pick up any updates
+        if (parent_var_env) {
+            for (const auto& key : prop_keys) {
+                if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+                    std::string var_name = key.substr(10);
+                    if (var_name == "this" || var_name == "arguments") continue;
+                    if (parent_var_names.count(var_name)) {
+                        Value fresh_val = parent_var_env->get_binding(var_name);
+                        if (!fresh_val.is_undefined() && !fresh_val.is_function()) {
+                            function_context.set_binding(var_name, fresh_val);
+                        }
+                    }
+                }
+            }
+        }
     } else {
         for (size_t i = 0; i < parameters_.size(); ++i) {
             Value arg_value = (i < args.size()) ? args[i] : Value();

@@ -560,6 +560,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     Value kv = cf->get_key()->evaluate(ctx);
                     if (ctx.has_exception()) break;
                     key_name = kv.to_string();
+                    // Static computed field named "prototype" or "constructor" -> TypeError
+                    if (key_name == "prototype" || key_name == "constructor") {
+                        ctx.throw_type_error("Class static field cannot be named '" + key_name + "'");
+                        break;
+                    }
                 } else if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
                     key_name = kid->get_name();
                 } else if (StringLiteral* ks = dynamic_cast<StringLiteral*>(cf->get_key())) {

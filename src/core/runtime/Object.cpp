@@ -93,6 +93,22 @@ bool Object::has_property(const std::string& key) const {
     return false;
 }
 
+bool Object::has_private_slot(const std::string& key) const {
+    // Check if object has a private field/method without the # filter
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end()) return true;
+    }
+    if (header_.shape && header_.shape->has_property(key)) {
+        if (deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0) return false;
+        return true;
+    }
+    if (overflow_properties_) {
+        return overflow_properties_->find(key) != overflow_properties_->end();
+    }
+    return false;
+}
+
 bool Object::has_own_property(const std::string& key) const {
     // Private fields (#name) are not exposed as own properties (spec: private slot semantics)
     if (!key.empty() && key[0] == '#') return false;

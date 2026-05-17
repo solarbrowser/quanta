@@ -192,6 +192,15 @@ Generator::GeneratorResult Generator::execute_until_yield_return(const Value& va
         return GeneratorResult(value, true);
     }
 
+    // If the generator is already suspended after yielding, completing it via return()
+    // should NOT re-run the body (the replay mechanism would re-execute pre-yield code).
+    // Per spec, return() causes a return completion at the current suspension point.
+    if (state_ == State::SuspendedYield && target_yield_index_ > 0) {
+        complete_generator(value);
+        writeback_closures();
+        return GeneratorResult(value, true);
+    }
+
     try {
         returning_ = true;
         return_argument_ = value;
