@@ -743,12 +743,17 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                     }
                                 }
                                 Object::current_context_ = prev_oc;
-                                // ES6: Iterator closing
+                                // ES6: Iterator closing -- return() must return Object
                                 if (!iter_done) {
                                     Value return_method = iter_obj.as_object()->get_property("return");
                                     if (return_method.is_function()) {
-                                        return_method.as_function()->call(ctx, {}, iter_obj);
+                                        Value ret_val = return_method.as_function()->call(ctx, {}, iter_obj);
+                                        if (!ctx.has_exception() && !ret_val.is_object() && !ret_val.is_function()) {
+                                            ctx.throw_type_error("Iterator return() returned a non-object value");
+                                            return;
+                                        }
                                     }
+                                    if (ctx.has_exception()) return;
                                 }
                                 temp->set_length(cnt);
                                 source_arr = temp.release();
@@ -974,12 +979,20 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                                 }
                             }
                             Object::current_context_ = prev_oc2;
-                            // ES6: Iterator closing - call return() if not exhausted
+                            // ES6: Iterator closing -- if not exhausted, call return()
+                            // Per spec, return() must return an Object or throw TypeError
                             if (!iterator_done) {
+                                Object::current_context_ = &ctx;
                                 Value return_method = iterator->get_property("return");
+                                Object::current_context_ = prev_oc2;
                                 if (return_method.is_function()) {
-                                    return_method.as_function()->call(ctx, {}, iterator_obj);
+                                    Value ret_val = return_method.as_function()->call(ctx, {}, iterator_obj);
+                                    if (!ctx.has_exception() && !ret_val.is_object() && !ret_val.is_function()) {
+                                        ctx.throw_type_error("Iterator return() returned a non-object value");
+                                        return Value();
+                                    }
                                 }
+                                if (ctx.has_exception()) { return Value(); }
                             }
                             temp_arr->set_length(count);
                             array_obj = temp_arr.release();

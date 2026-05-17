@@ -2381,6 +2381,24 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     return nullptr;
                 }
 
+                // For const/let: check for duplicate binding names
+                if (kind == VariableDeclarator::Kind::CONST || kind == VariableDeclarator::Kind::LET) {
+                    auto* da = dynamic_cast<DestructuringAssignment*>(destructuring.get());
+                    if (da) {
+                        std::unordered_set<std::string> seen;
+                        for (const auto& t : da->get_targets()) {
+                            if (!t) continue;
+                            std::string nm = t->get_name();
+                            if (nm.empty() || nm[0] == '_') continue;
+                            if (nm.length() >= 3 && nm.substr(0,3) == "...") nm = nm.substr(3);
+                            if (!nm.empty() && !seen.insert(nm).second) {
+                                add_error("SyntaxError: Identifier '" + nm + "' has already been declared");
+                                return nullptr;
+                            }
+                        }
+                    }
+                }
+
                 if (current_token().get_type() == TokenType::ASSIGN) {
                     advance();
                     auto initializer = parse_assignment_expression();
