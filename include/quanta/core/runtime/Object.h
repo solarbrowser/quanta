@@ -111,6 +111,7 @@ public:
     
     virtual bool has_property(const std::string& key) const;
     virtual bool has_own_property(const std::string& key) const;
+    bool has_private_slot(const std::string& key) const;
 
     virtual Value get_property(const std::string& key) const;
     Value get_property(const Value& key) const;
