@@ -273,9 +273,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_this_binding(this_obj);
     }
 
-    try {
-        function_context.create_binding("this", actual_this, true);
-    } catch (...) {
+    if (!function_context.create_binding("this", actual_this, true)) {
+        // Binding already exists (e.g. set from __closure_this) -- force update
         function_context.set_binding("this", actual_this);
     }
 
@@ -695,8 +694,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
 
-        // Functions without explicit return always return undefined
-        return Value();
+        // Concise arrow functions (`() => expr`) have non-block bodies -- return the expression result.
+        // Functions with block bodies return undefined unless they have explicit `return`.
+        if (body_ && body_->get_type() != ASTNode::Type::BLOCK_STATEMENT) {
+            return result;  // concise arrow body
+        }
+        return Value();  // block body without explicit return
     }
     
     return Value();
