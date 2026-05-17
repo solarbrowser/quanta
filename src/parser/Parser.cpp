@@ -4971,9 +4971,11 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                 advance();
                 return std::make_unique<MetaProperty>("import", "meta", start, end);
             }
-            // import.source, import.defer, import.anything -- SyntaxError
-            add_error("SyntaxError: import." + prop + " is not supported");
-            return nullptr;
+            // import.source, import.defer etc -- parse as MetaProperty, will fail at runtime
+            // if not in supported module context
+            Position end = current_token().get_end();
+            advance();
+            return std::make_unique<MetaProperty>("import", prop, start, end);
         }
         add_error("SyntaxError: Invalid import meta-property");
         return nullptr;

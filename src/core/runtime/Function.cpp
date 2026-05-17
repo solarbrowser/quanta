@@ -387,8 +387,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
         function_context.set_in_param_eval(false);
 
-        // After parameter binding (which may have mutated outer variables via generators/setters),
-        // refresh closure variables from the parent scope to pick up any updates
+        // After parameter binding (which may have mutated outer variables via generators),
+        // refresh closure variables from the parent scope -- but only if the variable
+        // was NOT already updated in this context (e.g. by iterator close callbacks).
         if (parent_var_env) {
             for (const auto& key : prop_keys) {
                 if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
@@ -396,7 +397,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     if (var_name == "this" || var_name == "arguments") continue;
                     if (parent_var_names.count(var_name)) {
                         Value fresh_val = parent_var_env->get_binding(var_name);
-                        if (!fresh_val.is_undefined() && !fresh_val.is_function()) {
+                        Value captured_val = this->get_property(key); // original captured value
+                        Value current_val = function_context.get_binding(var_name);
+                        // Only refresh if the function context still has the old captured value
+                        // (i.e., inner code hasn't already updated it via write-back)
+                        if (!fresh_val.is_undefined() && !fresh_val.is_function() &&
+                            current_val.strict_equals(captured_val)) {
                             function_context.set_binding(var_name, fresh_val);
                         }
                     }

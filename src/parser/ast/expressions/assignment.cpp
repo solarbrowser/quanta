@@ -913,23 +913,17 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             return Value();
         }
 
-        // For arrays, verify Symbol.iterator is still callable (may have been deleted)
-        if (!is_string_source && array_obj && array_obj->is_array()) {
+        // ES6: Check for Symbol.iterator -- use iterator protocol for all iterable objects.
+        // For arrays: Symbol.iterator MUST be callable (throw TypeError if deleted).
+        // For non-arrays: only use iterator if Symbol.iterator is present.
+        if (!is_string_source && array_obj) {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
             if (iter_sym) {
                 Value iter_method = array_obj->get_property(iter_sym->to_property_key());
-                if (!iter_method.is_function()) {
+                if (array_obj->is_array() && !iter_method.is_function()) {
                     ctx.throw_type_error("Cannot destructure: object is not iterable");
                     return Value();
                 }
-            }
-        }
-
-        // ES6: Check for Symbol.iterator on non-array objects to use iterator protocol
-        if (!is_string_source && array_obj && !array_obj->is_array()) {
-            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-            if (iter_sym) {
-                Value iter_method = array_obj->get_property(iter_sym->to_property_key());
                 if (iter_method.is_function()) {
                     Value iterator_obj = iter_method.as_function()->call(ctx, {}, source_value);
                     if (ctx.has_exception()) return Value();
