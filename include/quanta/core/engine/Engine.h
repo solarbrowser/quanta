@@ -24,10 +24,6 @@ namespace Quanta {
 
 class ASTNode;
 
-/**
- * Main JavaScript engine interface
- * High-performance, production-ready JavaScript execution engine
- */
 class Engine {
 public:
     struct Config {
@@ -42,15 +38,18 @@ public:
 
     struct Result {
         Value value;
+        Value exception_value; 
         bool success;
         std::string error_message;
         uint32_t line_number;
         uint32_t column_number;
-        
+
         Result() : success(false), line_number(0), column_number(0) {}
         Result(const Value& v) : value(v), success(true), line_number(0), column_number(0) {}
-        Result(const std::string& error, uint32_t line = 0, uint32_t col = 0) 
+        Result(const std::string& error, uint32_t line = 0, uint32_t col = 0)
             : success(false), error_message(error), line_number(line), column_number(col) {}
+        Result(const std::string& error, const Value& exc, uint32_t line = 0, uint32_t col = 0)
+            : exception_value(exc), success(false), error_message(error), line_number(line), column_number(col) {}
     };
 
 private:
