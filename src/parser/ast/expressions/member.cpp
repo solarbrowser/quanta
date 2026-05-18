@@ -150,6 +150,22 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(static_cast<double>(obj->get_length()));
             }
 
+            // Private field brand check: throw if not found on obj or prototype chain
+            if (!prop_name.empty() && prop_name[0] == '#') {
+                bool found = obj->has_private_slot(prop_name);
+                if (!found) {
+                    Object* proto = obj->get_prototype();
+                    while (proto && !found) {
+                        if (proto->has_private_slot(prop_name)) found = true;
+                        proto = proto->get_prototype();
+                    }
+                }
+                if (!found) {
+                    ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
+                    return Value();
+                }
+            }
+
             Shape* shape = obj->get_shape();
 
 
