@@ -157,6 +157,10 @@ Value ModuleLoader::import_from_module(const std::string& module_id, const std::
     }
 
     Value result = module->get_export(import_name);
+    // Module is partially loaded (circular/self-import): fall back to context bindings
+    if (result.is_undefined() && module->is_loading() && module->get_context()) {
+        result = module->get_context()->get_binding(import_name);
+    }
     return result;
 }
 
@@ -171,8 +175,19 @@ Value ModuleLoader::import_namespace_from_module(const std::string& module_id, c
     }
     
     auto exports_obj = std::make_shared<Object>();
-    for (const auto& name : module->get_export_names()) {
-        exports_obj->set_property(name, module->get_export(name));
+    if (module->is_loading() && module->get_context()) {
+        // Partially loaded (circular/self-import): read from the in-progress exports object
+        Value partial_exports = module->get_context()->get_binding("exports");
+        if (partial_exports.is_object()) {
+            Object* pe = partial_exports.as_object();
+            for (const auto& name : pe->get_own_property_keys()) {
+                exports_obj->set_property(name, pe->get_property(name));
+            }
+        }
+    } else {
+        for (const auto& name : module->get_export_names()) {
+            exports_obj->set_property(name, module->get_export(name));
+        }
     }
     return Value(exports_obj.get());
 }

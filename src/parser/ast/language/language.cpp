@@ -213,7 +213,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 if (method->is_computed()) {
                     Value key_val = method->get_key()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    method_name = key_val.to_string();
+                    method_name = key_val.to_property_key();
                 } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                     method_name = id->get_name();
                 } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
@@ -377,7 +377,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (method->is_computed()) {
                         Value key_val = method->get_key()->evaluate(ctx);
                         if (ctx.has_exception()) return Value();
-                        method_name = key_val.to_string();
+                        method_name = key_val.to_property_key();
                     } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                         method_name = id->get_name();
                     } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {

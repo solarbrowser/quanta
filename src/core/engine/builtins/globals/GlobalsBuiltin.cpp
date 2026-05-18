@@ -804,7 +804,29 @@ void register_global_builtins(Context& ctx) {
             auto* promise = dynamic_cast<Quanta::Promise*>(promise_obj.get());
             if (!promise) return Value(promise_obj.release());
 
-            std::string specifier = args.empty() ? "" : args[0].to_string();
+            // Coerce specifier with ToString() -- handles objects with custom toString()
+            std::string specifier;
+            if (!args.empty()) {
+                Value sv = args[0];
+                if (sv.is_object() || sv.is_function()) {
+                    Object* obj = sv.is_object() ? sv.as_object() : static_cast<Object*>(sv.as_function());
+                    Value ts = obj->get_property("toString");
+                    if (ts.is_function()) {
+                        Value res = ts.as_function()->call(ctx, {}, sv);
+                        if (ctx.has_exception()) {
+                            Value exc = ctx.get_exception();
+                            ctx.clear_exception();
+                            promise->reject(exc);
+                            return Value(promise_obj.release());
+                        }
+                        specifier = res.to_string();
+                    } else {
+                        specifier = sv.to_string();
+                    }
+                } else {
+                    specifier = sv.to_string();
+                }
+            }
             if (specifier.empty()) {
                 promise->reject(Value(std::string("TypeError: import() requires a specifier")));
                 return Value(promise_obj.release());
