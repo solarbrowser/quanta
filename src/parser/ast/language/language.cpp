@@ -219,7 +219,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
                     method_name = str->get_value();
                 } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
-                    method_name = num->to_string();
+                    method_name = num->evaluate(ctx).to_property_key();
                 } else {
                     method_name = "[unknown]";
                 }
@@ -522,16 +522,17 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         auto proto_keys = proto_ptr->get_own_property_keys();
         for (const auto& key : proto_keys) {
             if (key == "constructor") continue;
-            Value method_val = proto_ptr->get_property(key);
-            if (method_val.is_function()) {
-                method_val.as_function()->set_property(closure_key, ctor_val);
-            }
             PropertyDescriptor desc = proto_ptr->get_property_descriptor(key);
             if (desc.has_getter() && desc.get_getter()) {
                 static_cast<Function*>(desc.get_getter())->set_property(closure_key, ctor_val);
-            }
-            if (desc.has_setter() && desc.get_setter()) {
+            } else if (desc.has_setter() && desc.get_setter()) {
                 static_cast<Function*>(desc.get_setter())->set_property(closure_key, ctor_val);
+            } else {
+                // Only call get_property for non-accessor properties to avoid invoking getters
+                Value method_val = proto_ptr->get_property(key);
+                if (method_val.is_function()) {
+                    method_val.as_function()->set_property(closure_key, ctor_val);
+                }
             }
         }
     }

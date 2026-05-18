@@ -340,7 +340,13 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Object* obj = right_value.is_function()
                 ? static_cast<Object*>(right_value.as_function())
                 : right_value.as_object();
-            return Value(obj->has_own_property(iname));
+            if (obj->has_private_slot(iname)) return Value(true);
+            Object* proto = obj->get_prototype();
+            while (proto) {
+                if (proto->has_private_slot(iname)) return Value(true);
+                proto = proto->get_prototype();
+            }
+            return Value(false);
         }
     }
 
