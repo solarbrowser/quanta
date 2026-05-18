@@ -5010,6 +5010,15 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         return nullptr;
     }
 
+    // Optional second argument: import attributes { assert: {...} } -- parse and ignore
+    if (match(TokenType::COMMA)) {
+        advance();
+        if (!match(TokenType::RIGHT_PAREN)) {
+            parse_assignment_expression(); // consume and discard options argument
+        }
+        if (match(TokenType::COMMA)) advance(); 
+    }
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after import specifier");
         return nullptr;
