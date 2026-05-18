@@ -1652,6 +1652,8 @@ Value ImportStatement::evaluate(Context& ctx) {
     }
 
     try {
+        // Use the current module's filename so relative imports resolve correctly
+        std::string from_path = ctx.get_current_filename();
 
         if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
             for (const auto& specifier : specifiers_) {
@@ -1659,30 +1661,24 @@ Value ImportStatement::evaluate(Context& ctx) {
                 std::string local_name = specifier->get_local_name();
 
                 Value imported_value = module_loader->import_from_module(
-                    module_source_, imported_name, ""
+                    module_source_, imported_name, from_path
                 );
 
-                bool binding_success = ctx.create_binding(local_name, imported_value);
+                ctx.create_binding(local_name, imported_value);
             }
         }
 
         if (is_namespace_import_) {
             Value namespace_obj = module_loader->import_namespace_from_module(
-                module_source_, ""
+                module_source_, from_path
             );
             ctx.create_binding(namespace_alias_, namespace_obj);
         }
 
         if (is_default_import_) {
-            Value default_value;
-
-            try {
-                default_value = module_loader->import_default_from_module(
-                    module_source_, ""
-                );
-            } catch (...) {
-                default_value = Value();
-            }
+            Value default_value = module_loader->import_default_from_module(
+                module_source_, from_path
+            );
 
             if (default_value.is_undefined()) {
                 if (engine->has_default_export(module_source_)) {
@@ -1824,7 +1820,7 @@ Value ExportStatement::evaluate(Context& ctx) {
                 if (module_loader) {
                     try {
                         export_value = module_loader->import_from_module(
-                            source_module_, local_name, ""
+                            source_module_, local_name, ctx.get_current_filename()
                         );
                     } catch (...) {
                         export_value = Value();

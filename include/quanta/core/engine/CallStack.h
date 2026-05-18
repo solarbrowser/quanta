@@ -17,9 +17,6 @@ namespace Quanta {
 class Function;
 class ASTNode;
 
-/**
- * Represents a single frame in the call stack
- */
 struct CallStackFrame {
     std::string function_name;
     std::string filename;

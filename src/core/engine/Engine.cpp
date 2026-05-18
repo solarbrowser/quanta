@@ -464,7 +464,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
-                return Result(exception.to_string());
+                return Result(exception.to_string(), exception);
             }
 
             return Result(result);

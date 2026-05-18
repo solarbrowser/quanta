@@ -20,9 +20,7 @@ class Engine;
 class Context;
 class ASTNode;
 
-/**
- * Represents a loaded module with its exports and metadata
- */
+
 class Module {
 private:
     std::string id_;
@@ -31,6 +29,7 @@ private:
     std::unique_ptr<Context> module_context_;
     bool loaded_;
     bool loading_;
+    Value thrown_exception_; 
 
 public:
     Module(const std::string& id, const std::string& filename);
@@ -51,6 +50,9 @@ public:
 
     void set_loaded(bool loaded) { loaded_ = loaded; }
     void set_loading(bool loading) { loading_ = loading; }
+    void set_thrown_exception(const Value& v) { thrown_exception_ = v; }
+    const Value& get_thrown_exception() const { return thrown_exception_; }
+    bool has_thrown_exception() const { return !thrown_exception_.is_undefined(); }
 };
 
 /**
@@ -62,6 +64,7 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Module>> modules_;
     std::unordered_set<std::string> loading_modules_;
     std::vector<std::string> module_search_paths_;
+    Value last_module_exception_;
 
 public:
     explicit ModuleLoader(Engine* engine);
@@ -70,6 +73,8 @@ public:
     Module* load_module(const std::string& module_id, const std::string& from_path = "");
     Module* get_module(const std::string& module_id);
     bool is_module_loaded(const std::string& module_id) const;
+    const Value& get_last_module_exception() const { return last_module_exception_; }
+    bool has_last_module_exception() const { return !last_module_exception_.is_undefined(); }
 
     std::string resolve_module_path(const std::string& module_id, const std::string& from_path = "");
     void add_search_path(const std::string& path);

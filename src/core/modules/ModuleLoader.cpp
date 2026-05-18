@@ -55,6 +55,7 @@ ModuleLoader::ModuleLoader(Engine* engine) : engine_(engine) {
 }
 
 Module* ModuleLoader::load_module(const std::string& module_id, const std::string& from_path) {
+    last_module_exception_ = Value();
     std::string resolved_path = resolve_module_path(module_id, from_path);
     std::string normalized_id = normalize_module_id(module_id, from_path);
     
@@ -78,7 +79,7 @@ Module* ModuleLoader::load_module(const std::string& module_id, const std::strin
     
     loading_modules_.insert(normalized_id);
     module_ptr->set_loading(true);
-    
+
     if (!execute_module_file(module_ptr, resolved_path)) {
         loading_modules_.erase(normalized_id);
         modules_.erase(normalized_id);
@@ -171,14 +172,8 @@ Value ModuleLoader::import_namespace_from_module(const std::string& module_id, c
     
     auto exports_obj = std::make_shared<Object>();
     for (const auto& name : module->get_export_names()) {
-        Value export_value = module->get_export(name);
-        std::cout << "Namespace import: Adding '" << name << "' (type: " << (export_value.is_function() ? "function" : "other") << ")" << std::endl;
-        exports_obj->set_property(name, export_value);
-        
-        Value retrieved_value = exports_obj->get_property(name);
-        std::cout << "Namespace import: Retrieved '" << name << "' (type: " << (retrieved_value.is_function() ? "function" : "other") << ")" << std::endl;
+        exports_obj->set_property(name, module->get_export(name));
     }
-    
     return Value(exports_obj.get());
 }
 
@@ -219,9 +214,15 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         }
         
         module->set_context(std::move(module_context));
-        
+        module->get_context()->set_current_filename(filename);
+
         ast->evaluate(*module->get_context());
-        
+
+        if (module->get_context()->has_exception()) {
+            module->set_thrown_exception(module->get_context()->get_exception());
+            module->get_context()->clear_exception();
+        }
+
         Value exports_value = module->get_context()->get_binding("exports");
         if (exports_value.is_object()) {
             auto exports_obj = exports_value.as_object();

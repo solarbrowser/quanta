@@ -823,29 +823,24 @@ void register_global_builtins(Context& ctx) {
                 resolved = specifier;
             }
 
-            // Try to load the module file
             Engine* engine = ctx.get_engine();
             if (engine && engine->get_module_loader()) {
-                Module* mod = engine->get_module_loader()->load_module(resolved, current_file);
+                auto* loader = engine->get_module_loader();
+                Module* mod = loader->load_module(resolved, current_file);
                 if (mod) {
-                    // Create ES module namespace object with all exports
+                    if (mod->has_thrown_exception()) {
+                        promise->reject(mod->get_thrown_exception());
+                        return Value(promise_obj.release());
+                    }
                     auto ns = ObjectFactory::create_object();
                     for (const auto& name : mod->get_export_names()) {
                         ns->set_property(name, mod->get_export(name));
                     }
-                    // Add default export if not present but module has a 'default'
                     promise->fulfill(Value(ns.release()));
                     return Value(promise_obj.release());
                 }
-            }
-
-            // Try reading and executing the file directly
-            if (engine) {
-                auto result = engine->execute_file(resolved);
-                if (result.success) {
-                    auto ns = ObjectFactory::create_object();
-                    ns->set_property("default", result.value);
-                    promise->fulfill(Value(ns.release()));
+                if (loader->has_last_module_exception()) {
+                    promise->reject(loader->get_last_module_exception());
                     return Value(promise_obj.release());
                 }
             }

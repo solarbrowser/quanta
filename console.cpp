@@ -90,6 +90,13 @@ public:
 
             Module* module = module_loader->load_module(filename, "");
             if (module) {
+                if (module->has_thrown_exception()) {
+                    Value exc = module->get_thrown_exception();
+                    if (!silent) {
+                        std::cerr << exc.to_string() << std::endl;
+                    }
+                    return false;
+                }
                 if (!silent) {
                     std::cout << GREEN << "Module loaded successfully!" << RESET << std::endl;
                 }

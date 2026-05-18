@@ -25,10 +25,6 @@ class Environment;
 class Error;
 class GarbageCollector;
 
-/**
- * JavaScript execution context
- * Manages scope, variable bindings, and execution state
- */
 class Context {
 public:
     enum class Type {
