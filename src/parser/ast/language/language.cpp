@@ -1529,6 +1529,22 @@ Value YieldExpression::evaluate(Context& ctx) {
     size_t yield_index = Generator::increment_yield_counter();
 
     if (yield_index < current_gen->target_yield_index_) {
+        // Restore outer scope closure variables to their state at this yield
+        // yield_index is 1-based (from increment_yield_counter), yield_states_ is 0-based
+        size_t state_idx = yield_index - 1;
+        if (state_idx < current_gen->yield_states_.size() &&
+            !current_gen->yield_states_[state_idx].empty()) {
+            Context* gen_ctx = current_gen->get_context();
+            for (const auto& pair : current_gen->yield_states_[state_idx]) {
+                // Try outer context first (for global/outer scope vars), then gen context
+                Context* outer = current_gen->outer_context_;
+                if (outer && outer->has_binding(pair.first)) {
+                    outer->set_binding(pair.first, pair.second);
+                } else {
+                    gen_ctx->set_binding(pair.first, pair.second);
+                }
+            }
+        }
         if (yield_index < current_gen->sent_values_.size()) {
             return current_gen->sent_values_[yield_index];
         }

@@ -122,6 +122,30 @@ bool Context::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
+std::unordered_map<std::string, Value> Context::snapshot_bindings() const {
+    std::unordered_map<std::string, Value> snap;
+    Environment* env = lexical_environment_;
+    while (env) {
+        for (const auto& name : env->get_binding_names()) {
+            if (snap.find(name) == snap.end()) {
+                Value v = env->get_binding(name);
+                if (!v.is_undefined()) snap[name] = v;
+            }
+        }
+        env = env->get_outer();
+    }
+    return snap;
+}
+
+void Context::restore_bindings(const std::unordered_map<std::string, Value>& snapshot) {
+    for (const auto& pair : snapshot) {
+        // Use set_binding which walks the chain to find and update the binding
+        if (lexical_environment_ && lexical_environment_->has_binding(pair.first)) {
+            lexical_environment_->set_binding(pair.first, pair.second);
+        }
+    }
+}
+
 bool Context::is_lexical_const(const std::string& name) const {
     Environment* env = lexical_environment_;
     while (env) {

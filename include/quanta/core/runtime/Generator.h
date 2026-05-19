@@ -71,7 +71,7 @@ private:
     static thread_local size_t current_yield_counter_;
     
 public:
-    Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body);
+    Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
     virtual ~Generator() = default;
     
     GeneratorResult next(const Value& value = Value());
@@ -83,7 +83,9 @@ public:
     
     size_t target_yield_index_;
     Value last_value_;
-    std::vector<Value> sent_values_; // History of values sent to each yield index
+    std::vector<Value> sent_values_;
+    std::vector<std::unordered_map<std::string, Value>> yield_states_;
+    Context* outer_context_ = nullptr;  // context from which the generator was created
     bool throwing_ = false;
     Value throw_value_;
     bool returning_ = false;
