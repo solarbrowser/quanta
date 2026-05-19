@@ -1435,28 +1435,73 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
     std::string flags = (closing_slash < regex_str.length() - 1) ?
                         regex_str.substr(closing_slash + 1) : "";
 
+    // Validate flags: only valid flag chars, no duplicates, no unicode escapes
+    {
+        static const std::string valid_flags = "gimsuyv";
+        std::unordered_set<char> seen_flags;
+        for (char fc : flags) {
+            if (valid_flags.find(fc) == std::string::npos) {
+                add_error("SyntaxError: Invalid regular expression flag: " + std::string(1, fc));
+                return nullptr;
+            }
+            if (!seen_flags.insert(fc).second) {
+                add_error("SyntaxError: Duplicate regular expression flag: " + std::string(1, fc));
+                return nullptr;
+            }
+        }
+        // u and v flags are mutually exclusive
+        if (seen_flags.count('u') && seen_flags.count('v')) {
+            add_error("SyntaxError: Regex flags 'u' and 'v' are mutually exclusive");
+            return nullptr;
+        }
+    }
+
     // Validate named group backreferences: \k<name> must reference an existing (?<name>...)
     {
         std::unordered_set<std::string> named_groups;
         std::vector<std::string> backrefs;
+        bool has_unicode_flag = flags.find('u') != std::string::npos || flags.find('v') != std::string::npos;
         const std::string& p = pattern;
         for (size_t i = 0; i < p.size(); i++) {
+            // Detect invalid group syntax: (?x where x is not :, =, !, <
+            // e.g. (?i:...) modifiers proposal -- not valid in standard ES
+            if (p[i] == '(' && i + 1 < p.size() && p[i+1] == '?') {
+                if (i + 2 < p.size()) {
+                    char c3 = p[i+2];
+                    if (c3 != ':' && c3 != '=' && c3 != '!' && c3 != '<') {
+                        add_error("SyntaxError: Invalid group syntax in regular expression");
+                        return nullptr;
+                    }
+                }
+            }
             if (p[i] == '(' && i + 2 < p.size() && p[i+1] == '?' && p[i+2] == '<') {
                 size_t end_pos = p.find('>', i + 3);
                 if (end_pos != std::string::npos) {
                     std::string name = p.substr(i + 3, end_pos - (i + 3));
-                    if (!name.empty() && name[0] != '=' && name[0] != '!') {
+                    if (name.empty()) {
+                        add_error("SyntaxError: Empty named capture group name");
+                        return nullptr;
+                    } else if (name[0] != '=' && name[0] != '!') {
+                        if (named_groups.count(name)) {
+                            add_error("SyntaxError: Duplicate named capture group: " + name);
+                            return nullptr;
+                        }
                         named_groups.insert(name);
                     }
                 }
-            } else if (p[i] == '\\' && i + 2 < p.size() && p[i+1] == 'k' && p[i+2] == '<') {
-                size_t end_pos = p.find('>', i + 3);
-                if (end_pos != std::string::npos) {
-                    backrefs.push_back(p.substr(i + 3, end_pos - (i + 3)));
-                    i = end_pos;
-                } else {
-                    i += 2;
+            } else if (p[i] == '\\' && i + 1 < p.size() && p[i+1] == 'k') {
+                if (i + 2 >= p.size() || p[i+2] != '<') {
+                    // \k not followed by < → SyntaxError
+                    add_error("SyntaxError: Invalid named backreference \\k in regular expression");
+                    return nullptr;
                 }
+                size_t end_pos = p.find('>', i + 3);
+                if (end_pos == std::string::npos) {
+                    add_error("SyntaxError: Unterminated named backreference \\k< in regular expression");
+                    return nullptr;
+                }
+                backrefs.push_back(p.substr(i + 3, end_pos - (i + 3)));
+                i = end_pos;
             } else if (p[i] == '\\' && i + 1 < p.size()) {
                 i++;
             }
@@ -1465,6 +1510,37 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
             if (named_groups.find(ref) == named_groups.end()) {
                 add_error("SyntaxError: Invalid named capture group reference: \\k<" + ref + ">");
                 return nullptr;
+            }
+        }
+
+        // Quantifier at start of pattern or after assertion
+        auto is_quantifier_start = [](const std::string& s, size_t pos) -> bool {
+            char c = s[pos];
+            if (c == '?' || c == '*' || c == '+') return true;
+            if (c == '{') {
+                size_t j = pos + 1;
+                while (j < s.size() && std::isdigit(s[j])) j++;
+                if (j > pos + 1 && j < s.size() && (s[j] == '}' || s[j] == ',')) return true;
+            }
+            return false;
+        };
+        if (!p.empty() && is_quantifier_start(p, 0)) {
+            add_error("SyntaxError: Quantifier without preceding atom in regular expression");
+            return nullptr;
+        }
+        // Quantifier after lookbehind assertion (?<=...) or (?<!...)
+        for (size_t i = 0; i + 5 < p.size(); i++) {
+            if (p[i] == '(' && p[i+1] == '?' && p[i+2] == '<' && (p[i+3] == '=' || p[i+3] == '!')) {
+                size_t depth = 1, j = i + 1;
+                while (j < p.size() && depth > 0) {
+                    if (p[j] == '(' && (j == 0 || p[j-1] != '\\')) depth++;
+                    else if (p[j] == ')' && (j == 0 || p[j-1] != '\\')) depth--;
+                    j++;
+                }
+                if (j < p.size() && is_quantifier_start(p, j)) {
+                    add_error("SyntaxError: Quantifier cannot follow a lookbehind assertion");
+                    return nullptr;
+                }
             }
         }
     }
@@ -2936,10 +3012,31 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                         return nullptr;
                     }
                 }
-                if (inner == TokenType::ASYNC || inner == TokenType::CLASS ||
-                    inner == TokenType::LET || inner == TokenType::CONST) {
+                if (inner == TokenType::ASYNC || inner == TokenType::CLASS) {
                     add_error("SyntaxError: Declaration not allowed after label");
                     return nullptr;
+                }
+                if (inner == TokenType::LET || inner == TokenType::CONST) {
+                    size_t let_idx = peek_idx;
+                    size_t next_idx = let_idx + 1;
+                    while (next_idx < tokens_.size() &&
+                           (tokens_[next_idx].get_type() == TokenType::WHITESPACE ||
+                            tokens_[next_idx].get_type() == TokenType::NEWLINE ||
+                            tokens_[next_idx].get_type() == TokenType::COMMENT))
+                        next_idx++;
+                    if (next_idx < tokens_.size()) {
+                        TokenType after_let = tokens_[next_idx].get_type();
+                        bool same_line = tokens_[next_idx].get_start().line == tokens_[let_idx].get_end().line;
+                        // `let [` always starts a LexicalDeclaration (spec: `let [` lookahead restriction)
+                        bool always_decl = after_let == TokenType::LEFT_BRACKET;
+                        // `let identifier` / `let {` only a declaration when on same line
+                        bool same_line_decl = same_line && (after_let == TokenType::IDENTIFIER ||
+                                                            after_let == TokenType::LEFT_BRACE);
+                        if (always_decl || same_line_decl) {
+                            add_error("SyntaxError: Declaration not allowed after label");
+                            return nullptr;
+                        }
+                    }
                 }
             }
         }
@@ -4077,7 +4174,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 
     std::unique_ptr<Identifier> id = nullptr;
     if (current_token().get_type() == TokenType::IDENTIFIER) {
-        id = std::make_unique<Identifier>(current_token().get_value(),
+        const std::string& fe_name = current_token().get_value();
+        if (options_.strict_mode && (fe_name == "eval" || fe_name == "arguments")) {
+            add_error("SyntaxError: '" + fe_name + "' cannot be used as function name in strict mode");
+            return nullptr;
+        }
+        id = std::make_unique<Identifier>(fe_name,
                                         current_token().get_start(), current_token().get_end());
         advance();
     }
@@ -4586,9 +4688,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         return nullptr;
     }
     
-    auto id = std::make_unique<Identifier>(current_token().get_value(),
+    std::string af_name = current_token().get_value();
+    auto id = std::make_unique<Identifier>(af_name,
                                         current_token().get_start(), current_token().get_end());
     advance();
+
+    if (options_.strict_mode && (af_name == "eval" || af_name == "arguments")) {
+        add_error("SyntaxError: '" + af_name + "' cannot be used as function name in strict mode");
+        return nullptr;
+    }
 
     if (!consume(TokenType::LEFT_PAREN)) {
         add_error("Expected '(' after async function name");
@@ -4706,6 +4814,24 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    // Duplicate params always forbidden in async functions (and strict mode)
+    {
+        std::unordered_set<std::string> seen_params;
+        for (const auto& p : params) {
+            if (p->get_name() && !p->get_name()->get_name().empty()) {
+                const std::string& pn = p->get_name()->get_name();
+                if (!seen_params.insert(pn).second) {
+                    add_error("SyntaxError: Duplicate parameter name '" + pn + "' not allowed");
+                    return nullptr;
+                }
+                if (options_.strict_mode && (pn == "eval" || pn == "arguments")) {
+                    add_error("SyntaxError: '" + pn + "' cannot be parameter name in strict mode");
+                    return nullptr;
+                }
+            }
+        }
     }
 
     bool saved_async2 = options_.in_async_body;
