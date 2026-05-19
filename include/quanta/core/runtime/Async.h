@@ -141,6 +141,9 @@ public:
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }
 
+    size_t target_yield_index_;
+    std::vector<Value> sent_values_;
+
 private:
     static thread_local AsyncGenerator* current_;
 };

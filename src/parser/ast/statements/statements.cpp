@@ -924,14 +924,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
         const uint32_t MAX_ITER = 1000000;
         for (uint32_t i = 0; i < MAX_ITER; i++) {
-            Value next_method_val = iterator_obj->get_property("next");
-            if (!next_method_val.is_function()) {
-                ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
-                return Value();
-            }
-            Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
-            if (ctx.has_exception()) return Value();
-
             Value awaited;
             if (exec) {
                 size_t await_index = exec->next_await_index_++;
@@ -942,6 +934,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     awaited = (await_index < exec->await_results_.size()) ? exec->await_results_[await_index] : Value();
                 } else {
+                    Value next_method_val = iterator_obj->get_property("next");
+                    if (!next_method_val.is_function()) {
+                        ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
+                        return Value();
+                    }
+                    Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+                    if (ctx.has_exception()) return Value();
                     bool is_throw = false;
                     bool is_pending = false;
                     Promise* prom = nullptr;
@@ -994,8 +993,15 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                 }
             } else {
-                if (AsyncUtils::is_promise(next_result)) {
-                    Promise* p = static_cast<Promise*>(next_result.as_object());
+                Value next_method_val2 = iterator_obj->get_property("next");
+                if (!next_method_val2.is_function()) {
+                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
+                    return Value();
+                }
+                Value next_result2 = next_method_val2.as_function()->call(ctx, {}, iterator_val);
+                if (ctx.has_exception()) return Value();
+                if (AsyncUtils::is_promise(next_result2)) {
+                    Promise* p = static_cast<Promise*>(next_result2.as_object());
                     if (p->get_state() == PromiseState::FULFILLED) {
                         awaited = p->get_value();
                     } else if (p->get_state() == PromiseState::REJECTED) {
@@ -1006,7 +1012,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         return Value();
                     }
                 } else {
-                    awaited = next_result;
+                    awaited = next_result2;
                 }
             }
 
@@ -1019,7 +1025,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
             if (done.to_boolean()) break;
             Value value = iter_result->get_property("value");
 
+            // On replay: skip body for already-processed iterations (only run body for new ones)
+            bool skip_body = exec && ((exec->next_await_index_ - 1) < (exec->target_await_index_ - 1));
+
             if (var_name == "__destr__") {
+                if (!skip_body) {
                 if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                     auto* d = static_cast<DestructuringAssignment*>(left_.get());
                     d->evaluate_with_value(ctx, value);
@@ -1031,6 +1041,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (ctx.has_break()) { ctx.clear_break_continue(); break; }
                 if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
+                }
                 if (ctx.has_return_value()) return Value();
                 continue;
             }
@@ -1045,13 +1056,17 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 ctx.create_binding(var_name, value, true);
             }
 
-            body_->evaluate(ctx);
+            if (!skip_body) {
+                body_->evaluate(ctx);
+            }
 
             if (per_iter) ctx.pop_block_scope();
-            if (ctx.has_exception()) return Value();
-            if (ctx.has_break()) { ctx.clear_break_continue(); break; }
-            if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-            if (ctx.has_return_value()) return Value();
+            if (!skip_body) {
+                if (ctx.has_exception()) return Value();
+                if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+                if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
+                if (ctx.has_return_value()) return Value();
+            }
         }
         return Value();
     }

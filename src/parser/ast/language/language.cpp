@@ -1247,41 +1247,43 @@ Value YieldExpression::evaluate(Context& ctx) {
             Object* iter_obj = iter_val.is_object() ? iter_val.as_object() : iter_val.as_function();
             if (!iter_obj) { ctx.throw_type_error("iterator is not an object"); return Value(); }
 
-            // Getting "next" may throw via getter
-            Context* prev_ctx3 = Object::current_context_;
             Object::current_context_ = &ctx;
             Value next_fn_val = iter_obj->get_property("next");
-            Object::current_context_ = prev_ctx3;
-            if (ctx.has_exception()) return Value(); // getter threw
+            Object::current_context_ = prev_ctx;
+            if (ctx.has_exception()) return Value();
             if (!next_fn_val.is_function()) { ctx.throw_type_error("iterator missing next()"); return Value(); }
 
-            // Call next() -- this may throw
-            Value next_result = next_fn_val.as_function()->call(ctx, {}, iter_val);
-            if (ctx.has_exception()) return Value(); // exception propagates out
+            // Use yield counter to seek to the right delegate position on replay
+            size_t delegate_start = Generator::increment_yield_counter();
+            size_t needed = (async_gen->target_yield_index_ > delegate_start)
+                ? (async_gen->target_yield_index_ - delegate_start) : 0;
 
-            // Unwrap promise if needed
-            if (next_result.is_object() && next_result.as_object()->get_type() == Object::ObjectType::Promise) {
-                Promise* p = static_cast<Promise*>(next_result.as_object());
-                if (p->get_state() == PromiseState::FULFILLED) {
-                    next_result = p->get_value();
-                } else if (p->get_state() == PromiseState::REJECTED) {
-                    ctx.throw_exception(p->get_value(), true);
-                    return Value();
+            Value last_val;
+            bool delegate_done = false;
+            for (size_t j = 0; j <= needed; j++) {
+                Value nr = next_fn_val.as_function()->call(ctx, {}, iter_val);
+                if (ctx.has_exception()) return Value();
+                if (nr.is_object() && nr.as_object()->get_type() == Object::ObjectType::Promise) {
+                    Promise* p = static_cast<Promise*>(nr.as_object());
+                    if (p->get_state() == PromiseState::FULFILLED) nr = p->get_value();
+                    else if (p->get_state() == PromiseState::REJECTED) { ctx.throw_exception(p->get_value(), true); return Value(); }
                 }
+                if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
+                Object::current_context_ = &ctx;
+                Value done_val = nr.as_object()->get_property("done");
+                last_val = nr.as_object()->get_property("value");
+                Object::current_context_ = prev_ctx;
+                if (ctx.has_exception()) return Value();
+                if (done_val.to_boolean()) { delegate_done = true; break; }
             }
 
-            if (!next_result.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
-            // Access done/value with ctx set correctly for getter exceptions
-            Context* prev_ctx2 = Object::current_context_;
-            Object::current_context_ = &ctx;
-            Value done = next_result.as_object()->get_property("done");
-            if (ctx.has_exception()) { Object::current_context_ = prev_ctx2; return Value(); }
-            Value val = next_result.as_object()->get_property("value");
-            Object::current_context_ = prev_ctx2;
-            if (ctx.has_exception()) return Value();
-            if (done.to_boolean()) return val; // generator done, return final value
-            // yield the value
-            throw YieldException(val);
+            if (delegate_done) return last_val;
+
+            size_t yield_index = delegate_start + needed;
+            if (yield_index < async_gen->target_yield_index_) {
+                return async_gen->sent_values_.size() > yield_index ? async_gen->sent_values_[yield_index] : Value();
+            }
+            throw YieldException(last_val);
         }
 
         size_t delegate_start = Generator::increment_yield_counter();
@@ -1510,8 +1512,15 @@ Value YieldExpression::evaluate(Context& ctx) {
     }
 
     if (!current_gen) {
-        // In async generator context: throw YieldException to yield the value
         if (AsyncGenerator::get_current()) {
+            AsyncGenerator* async_gen = AsyncGenerator::get_current();
+            size_t yield_index = Generator::increment_yield_counter();
+            if (yield_index < async_gen->target_yield_index_) {
+                if (yield_index < async_gen->sent_values_.size()) {
+                    return async_gen->sent_values_[yield_index];
+                }
+                return Value();
+            }
             throw YieldException(yield_value);
         }
         return yield_value;
