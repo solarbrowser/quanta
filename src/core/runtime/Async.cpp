@@ -342,7 +342,8 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
     : Object(ObjectType::Custom), context_owned_(std::move(ctx)),
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
-      body_(std::move(body)), state_(State::SuspendedStart) {
+      body_(std::move(body)), state_(State::SuspendedStart),
+      target_yield_index_(0) {
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }
@@ -370,10 +371,16 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 
     auto promise = make_promise();
 
+    size_t target = target_yield_index_++;
+    size_t store_idx = target;
+    if (store_idx >= sent_values_.size()) sent_values_.resize(store_idx + 1);
+    sent_values_[store_idx] = value;
+
     Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto task = [this, promise_ptr = promise.get()]() {
+    auto task = [this, promise_ptr = promise.get(), target]() {
         auto* prev_async_gen = AsyncGenerator::get_current();
         AsyncGenerator::set_current(this);
+        Generator::reset_yield_counter();
         try {
             if (body_) {
                 Value result = body_->evaluate(*generator_context_);
@@ -399,9 +406,10 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
                     return;
                 }
 
+                state_ = State::Completed;
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", result);
-                result_obj->set_property("done", Value(false));
+                result_obj->set_property("done", Value(true));
                 promise_ptr->fulfill(Value(result_obj.release()));
             } else {
                 state_ = State::Completed;
