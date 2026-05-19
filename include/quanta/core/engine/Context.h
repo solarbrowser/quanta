@@ -139,6 +139,8 @@ public:
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);
+    std::unordered_map<std::string, Value> snapshot_bindings() const;
+    void restore_bindings(const std::unordered_map<std::string, Value>& snapshot);
     bool is_lexical_const(const std::string& name) const;
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     void create_binding_force(const std::string& name, const Value& value);

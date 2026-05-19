@@ -20,10 +20,10 @@ thread_local size_t Generator::current_yield_counter_ = 0;
 Object* Generator::s_generator_prototype_ = nullptr;
 Object* Generator::s_generator_function_prototype_ = nullptr;
 
-Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body)
+Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
       body_(std::move(body)), state_(State::SuspendedStart), pc_(0),
-      current_yield_count_(0), target_yield_index_(0) {
+      current_yield_count_(0), target_yield_index_(0), outer_context_(outer_ctx) {
 
     // Set prototype from generatorFn.prototype (which inherits from %GeneratorPrototype%)
     if (gen_func) {
@@ -81,11 +81,18 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
         return GeneratorResult(Value(), true);
     }
 
+    // Save outer state BEFORE body runs to compute diff at yield time
+    std::unordered_map<std::string, Value> pre_body_state;
+    if (outer_context_) {
+        auto keys = outer_context_->snapshot_bindings();
+        for (const auto& p : keys) {
+            if (!p.second.is_function()) pre_body_state[p.first] = p.second;
+        }
+    }
+
     try {
         last_value_ = sent_value;
 
-        // Store this sent_value at the current target index (before incrementing).
-        // When replaying, yield at index T returns sent_values_[T].
         size_t store_idx = target_yield_index_;
         if (store_idx >= sent_values_.size()) {
             sent_values_.resize(store_idx + 1);
@@ -111,6 +118,23 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
     } catch (const YieldException& yield_ex) {
         set_current_generator(nullptr);
         state_ = State::SuspendedYield;
+        // Save OUTER closure variable state at this yield point
+        size_t yi = target_yield_index_ - 1;
+        if (yi >= yield_states_.size()) yield_states_.resize(yi + 1);
+        auto& snap = yield_states_[yi];
+        // Capture closure variables from outer scope via generator function's __closure_* props
+        // Save ONLY variables that the generator body MODIFIED (diff from pre-body state)
+        if (outer_context_ && !pre_body_state.empty()) {
+            auto post_snap = outer_context_->snapshot_bindings();
+            for (const auto& pair : post_snap) {
+                if (pair.second.is_function()) continue;
+                auto it = pre_body_state.find(pair.first);
+                if (it != pre_body_state.end() && !it->second.strict_equals(pair.second)) {
+                    // This var was changed by the generator body
+                    snap[pair.first] = pair.second;
+                }
+            }
+        }
         return GeneratorResult(yield_ex.yielded_value, false);
 
     } catch (const std::exception& e) {
@@ -583,7 +607,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         body_clone = body_->clone();
     }
 
-    return std::make_unique<Generator>(this, gen_context_ptr.release(), std::move(body_clone));
+    return std::make_unique<Generator>(this, gen_context_ptr.release(), std::move(body_clone), &ctx);
 }
 
 

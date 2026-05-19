@@ -167,17 +167,19 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
 
-        // For member expressions, evaluate object first, then right side
+        // Spec: evaluate base, then key expression, then RHS, then ToPropertyKey
         Value object_value = member->get_object()->evaluate(ctx);
-        if (ctx.has_exception()) {
-            return Value();
+        if (ctx.has_exception()) return Value();
+
+        // Evaluate key expression (but defer ToString/ToPropertyKey until after RHS)
+        Value computed_key_value;
+        if (member->is_computed()) {
+            computed_key_value = member->get_property()->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
         }
 
-        // Now evaluate right side
         right_value = right_->evaluate(ctx);
-        if (ctx.has_exception()) {
-            return Value();
-        }
+        if (ctx.has_exception()) return Value();
         
         std::string str_value = object_value.is_string() ? object_value.to_string() : "";
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
@@ -302,8 +304,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         std::string prop_name;
         if (member->is_computed()) {
-            Value prop_value = member->get_property()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
+            // Use pre-evaluated key value (evaluated before RHS per spec)
+            Value prop_value = computed_key_value;
             if (prop_value.is_symbol()) {
                 prop_name = prop_value.as_symbol()->to_property_key();
             } else if (prop_value.is_object() || prop_value.is_function()) {
