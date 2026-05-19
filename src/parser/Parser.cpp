@@ -713,6 +713,11 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
 
         advance();
 
+        if (current_token().get_type() == TokenType::IMPORT) {
+            add_error("SyntaxError: 'import' cannot be used with 'new'");
+            return nullptr;
+        }
+
         auto constructor = parse_primary_expression();
         if (!constructor) {
             add_error("Expected constructor expression after 'new'");
@@ -1427,9 +1432,43 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
     }
     
     std::string pattern = regex_str.substr(1, closing_slash - 1);
-    std::string flags = (closing_slash < regex_str.length() - 1) ? 
+    std::string flags = (closing_slash < regex_str.length() - 1) ?
                         regex_str.substr(closing_slash + 1) : "";
-    
+
+    // Validate named group backreferences: \k<name> must reference an existing (?<name>...)
+    {
+        std::unordered_set<std::string> named_groups;
+        std::vector<std::string> backrefs;
+        const std::string& p = pattern;
+        for (size_t i = 0; i < p.size(); i++) {
+            if (p[i] == '(' && i + 2 < p.size() && p[i+1] == '?' && p[i+2] == '<') {
+                size_t end_pos = p.find('>', i + 3);
+                if (end_pos != std::string::npos) {
+                    std::string name = p.substr(i + 3, end_pos - (i + 3));
+                    if (!name.empty() && name[0] != '=' && name[0] != '!') {
+                        named_groups.insert(name);
+                    }
+                }
+            } else if (p[i] == '\\' && i + 2 < p.size() && p[i+1] == 'k' && p[i+2] == '<') {
+                size_t end_pos = p.find('>', i + 3);
+                if (end_pos != std::string::npos) {
+                    backrefs.push_back(p.substr(i + 3, end_pos - (i + 3)));
+                    i = end_pos;
+                } else {
+                    i += 2;
+                }
+            } else if (p[i] == '\\' && i + 1 < p.size()) {
+                i++;
+            }
+        }
+        for (const auto& ref : backrefs) {
+            if (named_groups.find(ref) == named_groups.end()) {
+                add_error("SyntaxError: Invalid named capture group reference: \\k<" + ref + ">");
+                return nullptr;
+            }
+        }
+    }
+
     return std::make_unique<RegexLiteral>(pattern, flags, start, end);
 }
 
@@ -2897,7 +2936,8 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                         return nullptr;
                     }
                 }
-                if (inner == TokenType::ASYNC || inner == TokenType::CLASS) {
+                if (inner == TokenType::ASYNC || inner == TokenType::CLASS ||
+                    inner == TokenType::LET || inner == TokenType::CONST) {
                     add_error("SyntaxError: Declaration not allowed after label");
                     return nullptr;
                 }
@@ -4781,6 +4821,20 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                 }
                 break;
             } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+                if (options_.strict_mode) {
+                    const std::string& pn = current_token().get_value();
+                    if (pn == "eval" || pn == "arguments") {
+                        add_error("SyntaxError: '" + pn + "' cannot be used as parameter name in strict mode");
+                        return nullptr;
+                    }
+                    if (pn == "yield") {
+                        add_error("SyntaxError: 'yield' cannot be used as parameter name in strict mode");
+                        return nullptr;
+                    }
+                }
+            } else if (current_token().get_type() == TokenType::YIELD && options_.strict_mode) {
+                add_error("SyntaxError: 'yield' cannot be used as parameter name in strict mode");
+                return nullptr;
             } else {
                 advance();
                 continue;
