@@ -12,6 +12,8 @@
 #include "quanta/lexer/Lexer.h"
 #include <memory>
 #include <vector>
+#include <unordered_set>
+#include <string>
 #include <string>
 #include <functional>
 
@@ -36,7 +38,8 @@ public:
         int switch_depth = 0;
         int function_depth = 0;
         bool in_binary_expr = false;
-        bool in_unary_operand = false; // operand of void/typeof/!/~/+/-
+        bool in_unary_operand = false;
+        std::unordered_set<std::string> active_labels;
     };
 
     struct ParseError {

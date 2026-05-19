@@ -139,6 +139,7 @@ public:
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
     bool set_binding(const std::string& name, const Value& value);
+    bool is_lexical_const(const std::string& name) const;
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     void create_binding_force(const std::string& name, const Value& value);
     void create_lexical_binding_force(const std::string& name, const Value& value);
@@ -332,6 +333,7 @@ public:
     bool delete_binding(const std::string& name);
 
     bool is_mutable_binding(const std::string& name) const;
+    bool has_mutable_flag(const std::string& name) const;
     bool is_initialized_binding(const std::string& name) const;
     void initialize_binding(const std::string& name, const Value& value);
 

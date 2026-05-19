@@ -122,6 +122,17 @@ bool Context::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
+bool Context::is_lexical_const(const std::string& name) const {
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->get_type() != Environment::Type::Object && env->has_mutable_flag(name)) {
+            return !env->is_mutable_binding(name);
+        }
+        env = env->get_outer();
+    }
+    return false;
+}
+
 bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
     if (variable_environment_) {
         return variable_environment_->create_binding(name, value, mutable_binding, deletable);
@@ -765,6 +776,10 @@ bool Environment::delete_binding(const std::string& name) {
 bool Environment::is_mutable_binding(const std::string& name) const {
     auto it = mutable_flags_.find(name);
     return (it != mutable_flags_.end()) ? it->second : true;
+}
+
+bool Environment::has_mutable_flag(const std::string& name) const {
+    return mutable_flags_.find(name) != mutable_flags_.end();
 }
 
 bool Environment::is_initialized_binding(const std::string& name) const {

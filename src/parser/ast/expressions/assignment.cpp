@@ -89,9 +89,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 } else {
                     bool success = ctx.set_binding(name, right_value);
-                    if (!success && ctx.is_strict_mode()) {
-                        ctx.throw_type_error("Cannot assign to read only variable '" + name + "'");
-                        return Value();
+                    if (!success) {
+                        if (ctx.is_strict_mode() || ctx.is_lexical_const(name)) {
+                            ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                            return Value();
+                        }
                     }
                 }
                 return right_value;
@@ -1093,35 +1095,80 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         std::string current_var = "";
                         for (char c : vars_string) {
                             if (c == ',') {
-                                if (!current_var.empty()) {
-                                    nested_var_names.push_back(current_var);
-                                    current_var = "";
-                                }
+                                // Always push (even empty = elision sentinel)
+                                nested_var_names.push_back(current_var);
+                                current_var = "";
                             } else {
                                 current_var += c;
                             }
                         }
-                        if (!current_var.empty()) {
+                        // Push last entry only if non-empty or sentinel
+                        if (!current_var.empty() || (!vars_string.empty() && vars_string.back() == ','))
                             nested_var_names.push_back(current_var);
-                        }
 
+                        // Use iterator protocol if available (e.g. generators), else direct access
+                        std::vector<Value> nested_elements;
+                        Symbol* nest_iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                        bool used_iterator = false;
+                        if (nest_iter_sym && !nested_obj->is_array()) {
+                            Value nest_iter_method = nested_obj->get_property(nest_iter_sym->to_property_key());
+                            if (nest_iter_method.is_function()) {
+                                Value nest_iter_obj = nest_iter_method.as_function()->call(ctx, {}, nested_array);
+                                if (!ctx.has_exception() && nest_iter_obj.is_object()) {
+                                    Value nest_next = nest_iter_obj.as_object()->get_property("next");
+                                    if (nest_next.is_function()) {
+                                        used_iterator = true;
+                                        for (size_t ni = 0; ni < nested_var_names.size(); ni++) {
+                                            if (nested_var_names[ni].length() >= 3 && nested_var_names[ni].substr(0,3) == "...") {
+                                                auto rest_a = ObjectFactory::create_array(0); uint32_t ri2 = 0;
+                                                for (;;) {
+                                                    Value nr = nest_next.as_function()->call(ctx, {}, nest_iter_obj);
+                                                    if (ctx.has_exception()) return Value();
+                                                    if (!nr.is_object()) break;
+                                                    if (nr.as_object()->get_property("done").to_boolean()) break;
+                                                    rest_a->set_element(ri2++, nr.as_object()->get_property("value"));
+                                                }
+                                                rest_a->set_length(ri2);
+                                                nested_elements.push_back(Value(rest_a.release()));
+                                            } else {
+                                                Value nr = nest_next.as_function()->call(ctx, {}, nest_iter_obj);
+                                                if (ctx.has_exception()) return Value();
+                                                if (!nr.is_object() || nr.as_object()->get_property("done").to_boolean())
+                                                    nested_elements.push_back(Value());
+                                                else
+                                                    nested_elements.push_back(nr.as_object()->get_property("value"));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         for (size_t j = 0; j < nested_var_names.size(); j++) {
                             const std::string& nested_var_name = nested_var_names[j];
                             Value val_to_bind;
                             if (nested_var_name.length() >= 3 && nested_var_name.substr(0, 3) == "...") {
-                                // Rest: collect all remaining elements into an array
                                 std::string rest_binding = nested_var_name.substr(3);
-                                auto rest_arr = ObjectFactory::create_array(0);
-                                uint32_t ri = 0;
-                                for (size_t rj = j; rj < nested_obj->get_length(); rj++) {
-                                    rest_arr->set_element(ri++, nested_obj->get_element(static_cast<uint32_t>(rj)));
+                                if (used_iterator && j < nested_elements.size()) {
+                                    val_to_bind = nested_elements[j];
+                                } else {
+                                    auto rest_arr = ObjectFactory::create_array(0);
+                                    uint32_t ri = 0;
+                                    for (size_t rj = j; rj < nested_obj->get_length(); rj++) {
+                                        rest_arr->set_element(ri++, nested_obj->get_element(static_cast<uint32_t>(rj)));
+                                    }
+                                    rest_arr->set_length(ri);
+                                    val_to_bind = Value(rest_arr.release());
                                 }
-                                rest_arr->set_length(ri);
-                                val_to_bind = Value(rest_arr.release());
                                 if (!ctx.has_binding(rest_binding)) ctx.create_binding(rest_binding, val_to_bind, true);
                                 else ctx.set_binding(rest_binding, val_to_bind);
                                 break;
-                            } else if (j < nested_obj->get_length()) {
+                            } else if (nested_var_name.empty() || nested_var_name == "\x01") {
+                                // Elision or empty -- skip binding but value was consumed from iterator
+                            } else if (used_iterator && j < nested_elements.size()) {
+                                val_to_bind = nested_elements[j];
+                                if (!ctx.has_binding(nested_var_name)) ctx.create_binding(nested_var_name, val_to_bind, true);
+                                else ctx.set_binding(nested_var_name, val_to_bind);
+                            } else if (!used_iterator && j < nested_obj->get_length()) {
                                 val_to_bind = nested_obj->get_element(static_cast<uint32_t>(j));
                                 if (!ctx.has_binding(nested_var_name)) ctx.create_binding(nested_var_name, val_to_bind, true);
                                 else ctx.set_binding(nested_var_name, val_to_bind);
