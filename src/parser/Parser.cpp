@@ -66,6 +66,36 @@ std::unique_ptr<Program> Parser::parse_program() {
         }
     }
     
+    if (options_.source_type_module || options_.strict_mode) {
+        auto dup_check = [&]() -> std::string {
+            std::vector<std::string> lexical;
+            for (const auto& stmt : statements) {
+                if (!stmt) continue;
+                if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                    auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+                    if (fn->get_id()) lexical.push_back(fn->get_id()->get_name());
+                } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                    auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+                    if (cls->get_id()) lexical.push_back(cls->get_id()->get_name());
+                } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                    auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+                    if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                        for (const auto& d : vd->get_declarations())
+                            if (d->get_id()) lexical.push_back(d->get_id()->get_name());
+                    }
+                }
+            }
+            for (size_t i = 0; i < lexical.size(); i++)
+                for (size_t j = i+1; j < lexical.size(); j++)
+                    if (lexical[i] == lexical[j]) return lexical[i];
+            return "";
+        };
+        std::string dup = dup_check();
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' has already been declared");
+        }
+    }
+
     Position end = get_current_position();
     auto program = std::make_unique<Program>(std::move(statements), start, end);
     if (options_.strict_mode) {
@@ -2966,14 +2996,18 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                 return nullptr;
             }
         }
-        // await/yield as labels are reserved in async/generator context
         if ((options_.in_async_body && label == "await") ||
             (options_.in_generator_body && label == "yield")) {
             add_error("SyntaxError: '" + label + "' cannot be used as a label identifier here");
             return nullptr;
         }
+        if (options_.active_labels.count(label)) {
+            add_error("SyntaxError: Duplicate label '" + label + "'");
+            return nullptr;
+        }
         advance();
         advance();
+        options_.active_labels.insert(label);
 
         // Peek through all labels to find the actual statement
         {
@@ -3046,6 +3080,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
             return nullptr;
         }
 
+        options_.active_labels.erase(label);
         Position end = statement->get_end();
         return std::make_unique<LabeledStatement>(label, std::move(statement), start, end);
     }
@@ -6145,6 +6180,12 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     Position start = current_token().get_start();
+    // import declarations are only valid at module top level
+    if (options_.function_depth > 0 || options_.loop_depth > 0) {
+        add_error("SyntaxError: Import declarations may not appear in function or loop bodies");
+        advance();
+        return nullptr;
+    }
     advance();
     
     if (match(TokenType::MULTIPLY)) {
@@ -6493,20 +6534,32 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 advance();
                 
                 std::string nested_vars = "";
+                size_t elem_pos = 0;
+                bool last_was_elem = false; // true after identifier, false after comma/start
                 while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
                     if (current_token().get_type() == TokenType::ELLIPSIS) {
                         advance();
                         if (current_token().get_type() == TokenType::IDENTIFIER) {
-                            if (!nested_vars.empty()) nested_vars += ",";
+                            if (elem_pos > 0) nested_vars += ",";
                             nested_vars += "..." + current_token().get_value();
                             advance();
                         }
-                        break; // rest must be last
+                        break;
                     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-                        if (!nested_vars.empty()) nested_vars += ",";
+                        if (elem_pos > 0) nested_vars += ",";
                         nested_vars += current_token().get_value();
                         advance();
+                        elem_pos++;
+                        last_was_elem = true;
                     } else if (current_token().get_type() == TokenType::COMMA) {
+                        if (!last_was_elem) {
+                            // Elision: comma without preceding element
+                            if (elem_pos > 0) nested_vars += ",";
+                            nested_vars += "\x01";
+                            elem_pos++;
+                        }
+                        // else: separator after element, just advance
+                        last_was_elem = false;
                         advance();
                     } else {
                         advance();

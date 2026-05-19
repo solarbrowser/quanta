@@ -342,7 +342,16 @@ void Generator::setup_generator_prototype(Context& ctx) {
     auto throw_fn = ObjectFactory::create_native_function("throw", generator_throw);
     gen_prototype->set_property("throw", Value(throw_fn.release()));
 
-    // Note: [Symbol.iterator] is NOT on %GeneratorPrototype% - it's on %IteratorPrototype%
+    // Generators are both iterators and iterables: [Symbol.iterator]() returns this
+    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+    if (iter_sym) {
+        auto iter_fn = ObjectFactory::create_native_function("@@iterator",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                return ctx.get_binding("this");
+            });
+        gen_prototype->set_property(iter_sym->to_property_key(), Value(iter_fn.release()));
+    }
 
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (tag_sym) {
