@@ -17,7 +17,7 @@ C_CYAN = \033[96m
 
 # Compiler and optimization flags (Clang-optimized)
 CXX = clang++
-CXXFLAGS = -std=c++17 -Wall -O3 -fPIC -march=native -mtune=native
+CXXFLAGS = -std=c++20 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.1.0"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC
 

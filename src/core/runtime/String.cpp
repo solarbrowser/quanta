@@ -6,59 +6,52 @@
 
 #include "quanta/core/runtime/String.h"
 #include <unordered_map>
+#include <mutex>
 
 namespace Quanta {
 
-static std::unordered_map<std::string, std::weak_ptr<std::string>> intern_cache_;
+// Intern cache: string content → weak ownership signal (just a set of interned contents)
+static std::unordered_map<std::string, size_t> intern_cache_;
 
-String::String() : data_(std::make_shared<std::string>()), hash_(0), interned_(false) {
-}
-
-String::String(const std::string& str) 
-    : data_(std::make_shared<std::string>(str)), interned_(false) {
+String::String(const std::string& str) : data_(str) {
     calculate_hash();
 }
 
-String::String(const char* str) 
-    : data_(std::make_shared<std::string>(str)), interned_(false) {
+String::String(std::string&& str) noexcept : data_(std::move(str)) {
     calculate_hash();
 }
 
-bool String::operator==(const String& other) const {
-    if (data_ == other.data_) return true;
+String::String(std::string_view sv) : data_(sv) {
+    calculate_hash();
+}
+
+String::String(const char* str) : data_(str ? str : "") {
+    calculate_hash();
+}
+
+bool String::operator==(const String& other) const noexcept {
+    if (this == &other) return true;
     if (hash_ != other.hash_) return false;
-    return str() == other.str();
+    return data_ == other.data_;
 }
 
 String String::concat(const String& other) const {
-    return String(str() + other.str());
+    return String(data_ + other.data_);
 }
 
 String String::substring(size_t start, size_t length) const {
-    return String(str().substr(start, length));
+    return String(data_.substr(start, length));
 }
 
 String String::intern(const std::string& str) {
-    auto it = intern_cache_.find(str);
-    if (it != intern_cache_.end()) {
-        auto shared = it->second.lock();
-        if (shared) {
-            String result;
-            result.data_ = shared;
-            result.interned_ = true;
-            result.calculate_hash();
-            return result;
-        }
-    }
-    
     String result(str);
     result.interned_ = true;
-    intern_cache_[str] = result.data_;
+    intern_cache_[str] = result.hash_;
     return result;
 }
 
-void String::calculate_hash() {
-    hash_ = std::hash<std::string>{}(*data_);
+void String::calculate_hash() noexcept {
+    hash_ = std::hash<std::string>{}(data_);
 }
 
 }

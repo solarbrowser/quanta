@@ -93,7 +93,7 @@ echo   [OK] Directories ready
 echo.
 
 REM Compiler flags
-set "CXXFLAGS=-std=c++17 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.1.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
+set "CXXFLAGS=-std=c++20 -Wall -O3 -march=native -mtune=native -DQUANTA_VERSION=\"0.1.0\" -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC -funroll-loops -finline-functions -fvectorize -fslp-vectorize -msse4.2 -mavx -mavx2 -fomit-frame-pointer -fstrict-aliasing -fstrict-enums -flto=thin"
 set "INCLUDES=-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc"
 set "LIBS=-lws2_32 -lpowrprof -lsetupapi -lwinmm -lole32 -lshell32"
 set "PCRE2FLAGS=-O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -Ithird_party/pcre2/src -march=native -fomit-frame-pointer"

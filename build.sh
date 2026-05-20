@@ -134,7 +134,7 @@ mkdir -p \
     "$OBJ_DIR/utf8proc"
 
 CXXFLAGS=(
-    -std=c++17
+    -std=c++20
     -Wall
     -O3
     -march=native
