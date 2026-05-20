@@ -11,6 +11,8 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <unordered_map>
+#include <ucontext.h>
 
 namespace Quanta {
 
@@ -21,12 +23,15 @@ class Function;
 class YieldException : public std::exception {
 public:
     Value yielded_value;
-    
     YieldException(const Value& value) : yielded_value(value) {}
-    
-    const char* what() const noexcept override {
-        return "Generator yield";
-    }
+    const char* what() const noexcept override { return "Generator yield"; }
+};
+
+class GeneratorReturnException : public std::exception {
+public:
+    Value return_value;
+    GeneratorReturnException(const Value& v) : return_value(v) {}
+    const char* what() const noexcept override { return "Generator return"; }
 };
 
 /**
@@ -61,35 +66,46 @@ private:
     Context* generator_context_;
     std::unique_ptr<ASTNode> body_;
     State state_;
-    
-    size_t pc_;
-    std::vector<Value> yield_stack_;
-    
-    size_t current_yield_count_;
-    
+
+    // Fiber-based (stackful coroutine) implementation
+    static constexpr size_t STACK_SIZE = 512 * 1024;
+public:
+    ucontext_t fiber_ctx_;
+    ucontext_t caller_ctx_;
+private:
+    std::vector<char> fiber_stack_;
+
     static thread_local Generator* current_generator_;
     static thread_local size_t current_yield_counter_;
-    
+
+    static void fiber_entry(uint32_t lo, uint32_t hi);
+    void run_body();
+
 public:
+    // Accessible from YieldExpression
+    Value yielded_value_;
+    Value sent_value_;
+    Value throw_value_;
+    Value return_argument_;
+    bool throwing_ = false;
+    bool returning_ = false;
     Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
     virtual ~Generator() = default;
-    
+
     GeneratorResult next(const Value& value = Value());
     GeneratorResult return_value(const Value& value);
     GeneratorResult throw_exception(const Value& exception);
-    
+
     State get_state() const { return state_; }
+    void set_state(State s) { state_ = s; }
     bool is_done() const { return state_ == State::Completed; }
-    
-    size_t target_yield_index_;
+
+    Context* outer_context_ = nullptr;
+    // Legacy fields needed by YieldExpression (kept for compatibility, fiber supersedes replay)
+    size_t target_yield_index_ = 0;
     Value last_value_;
     std::vector<Value> sent_values_;
     std::vector<std::unordered_map<std::string, Value>> yield_states_;
-    Context* outer_context_ = nullptr;  // context from which the generator was created
-    bool throwing_ = false;
-    Value throw_value_;
-    bool returning_ = false;
-    Value return_argument_;
 
     Context* get_context() const { return generator_context_; }
 

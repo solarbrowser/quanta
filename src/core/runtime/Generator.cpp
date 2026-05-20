@@ -20,12 +20,31 @@ thread_local size_t Generator::current_yield_counter_ = 0;
 Object* Generator::s_generator_prototype_ = nullptr;
 Object* Generator::s_generator_function_prototype_ = nullptr;
 
+void Generator::fiber_entry(uint32_t lo, uint32_t hi) {
+    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
+    Generator* gen = reinterpret_cast<Generator*>(ptr);
+    gen->run_body();
+}
+
+void Generator::run_body() {
+    try {
+        if (body_) {
+            body_->evaluate(*generator_context_);
+        }
+    } catch (const GeneratorReturnException&) {
+        // return() called -- generator terminated cleanly
+    } catch (const std::exception&) {
+        // Other exceptions -- propagated via generator_context_
+    } catch (...) {}
+    state_ = State::Completed;
+    swapcontext(&fiber_ctx_, &caller_ctx_);
+}
+
 Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
     : Object(ObjectType::Custom), generator_function_(gen_func), generator_context_(ctx),
-      body_(std::move(body)), state_(State::SuspendedStart), pc_(0),
-      current_yield_count_(0), target_yield_index_(0), outer_context_(outer_ctx) {
+      body_(std::move(body)), state_(State::SuspendedStart),
+      fiber_stack_(STACK_SIZE), outer_context_(outer_ctx) {
 
-    // Set prototype from generatorFn.prototype (which inherits from %GeneratorPrototype%)
     if (gen_func) {
         Value fn_proto = gen_func->get_property("prototype");
         if (fn_proto.is_object()) {
@@ -34,31 +53,65 @@ Generator::Generator(Function* gen_func, Context* ctx, std::unique_ptr<ASTNode> 
             set_prototype(s_generator_prototype_);
         }
     }
+
+    // Set up fiber context
+    getcontext(&fiber_ctx_);
+    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
+    fiber_ctx_.uc_link = nullptr;
+    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
+    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+                (uint32_t)(ptr & 0xFFFFFFFF), (uint32_t)(ptr >> 32));
 }
 
 Generator::GeneratorResult Generator::next(const Value& value) {
     if (state_ == State::Completed) {
         return GeneratorResult(Value(), true);
     }
+    sent_value_ = value;
+    throwing_ = false;
+    returning_ = false;
 
-    if (state_ == State::SuspendedStart) {
-        state_ = State::SuspendedYield;
-        return execute_until_yield(Value());
+    Generator* prev = current_generator_;
+    current_generator_ = this;
+    swapcontext(&caller_ctx_, &fiber_ctx_);
+    current_generator_ = prev;
+
+    if (state_ == State::Completed) {
+        if (generator_context_->has_exception()) {
+            Value exc = generator_context_->get_exception();
+            generator_context_->clear_exception();
+            return GeneratorResult::make_exception(exc);
+        }
+        Value ret_val;
+        if (generator_context_->has_return_value()) {
+            ret_val = generator_context_->get_return_value();
+            generator_context_->clear_return_value();
+        }
+        return GeneratorResult(ret_val, true);
     }
-
-    return execute_until_yield(value);
+    if (generator_context_->has_exception()) {
+        Value exc = generator_context_->get_exception();
+        generator_context_->clear_exception();
+        return GeneratorResult::make_exception(exc);
+    }
+    return GeneratorResult(yielded_value_, false);
 }
 
 Generator::GeneratorResult Generator::return_value(const Value& value) {
-    if (state_ == State::Completed) {
+    if (state_ == State::Completed || state_ == State::SuspendedStart) {
+        state_ = State::Completed;
         return GeneratorResult(value, true);
     }
+    returning_ = true;
+    return_argument_ = value;
+    sent_value_ = Value();
 
-    if (state_ == State::SuspendedYield) {
-        return execute_until_yield_return(value);
-    }
+    Generator* prev = current_generator_;
+    current_generator_ = this;
+    swapcontext(&caller_ctx_, &fiber_ctx_);
+    current_generator_ = prev;
 
-    complete_generator(value);
     return GeneratorResult(value, true);
 }
 
@@ -67,8 +120,29 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
         generator_context_->throw_exception(exception, true);
         return GeneratorResult(Value(), true);
     }
+    throwing_ = true;
+    throw_value_ = exception;
+    sent_value_ = Value();
 
-    return execute_until_yield_throw(exception);
+    Generator* prev = current_generator_;
+    current_generator_ = this;
+    swapcontext(&caller_ctx_, &fiber_ctx_);
+    current_generator_ = prev;
+
+    if (state_ == State::Completed) {
+        if (generator_context_->has_exception()) {
+            Value exc = generator_context_->get_exception();
+            generator_context_->clear_exception();
+            return GeneratorResult::make_exception(exc);
+        }
+        return GeneratorResult(Value(), true);
+    }
+    if (generator_context_->has_exception()) {
+        Value exc = generator_context_->get_exception();
+        generator_context_->clear_exception();
+        return GeneratorResult::make_exception(exc);
+    }
+    return GeneratorResult(yielded_value_, false);
 }
 
 Value Generator::get_iterator() {

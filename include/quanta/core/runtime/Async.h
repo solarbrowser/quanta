@@ -115,6 +115,9 @@ private:
     std::unique_ptr<Context> context_owned_;
     Context* generator_context_;
     Context* outer_context_;
+public:
+    Context* get_generator_context() const { return generator_context_; }
+    Context* get_outer_context() const { return outer_context_; }
     std::unique_ptr<ASTNode> body_;
     State state_;
 
@@ -143,6 +146,7 @@ public:
 
     size_t target_yield_index_;
     std::vector<Value> sent_values_;
+    std::vector<std::unordered_map<std::string, Value>> yield_states_;
 
 private:
     static thread_local AsyncGenerator* current_;

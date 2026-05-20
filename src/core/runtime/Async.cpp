@@ -381,6 +381,16 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
         auto* prev_async_gen = AsyncGenerator::get_current();
         AsyncGenerator::set_current(this);
         Generator::reset_yield_counter();
+
+        // Pre-body snapshot for diff-based state restoration at yield
+        std::unordered_map<std::string, Value> pre_body_state;
+        if (outer_context_) {
+            auto keys = outer_context_->snapshot_bindings();
+            for (const auto& p : keys) {
+                if (!p.second.is_function()) pre_body_state[p.first] = p.second;
+            }
+        }
+
         try {
             if (body_) {
                 Value result = body_->evaluate(*generator_context_);
@@ -419,8 +429,20 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
                 promise_ptr->fulfill(Value(result_obj.release()));
             }
         } catch (const YieldException& yield_ex) {
-            // yield/yield* produced a value -- fulfill with {value, done:false}
             AsyncGenerator::set_current(prev_async_gen);
+            // Save diff of outer vars changed by generator body
+            size_t yi = target_yield_index_ - 1;
+            if (yi >= yield_states_.size()) yield_states_.resize(yi + 1);
+            if (outer_context_ && !pre_body_state.empty()) {
+                auto post_snap = outer_context_->snapshot_bindings();
+                for (const auto& pair : post_snap) {
+                    if (pair.second.is_function()) continue;
+                    auto it = pre_body_state.find(pair.first);
+                    if (it != pre_body_state.end() && !it->second.strict_equals(pair.second)) {
+                        yield_states_[yi][pair.first] = pair.second;
+                    }
+                }
+            }
             auto result_obj = ObjectFactory::create_object();
             result_obj->set_property("value", yield_ex.yielded_value);
             result_obj->set_property("done", Value(false));

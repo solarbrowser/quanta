@@ -1286,6 +1286,73 @@ Value YieldExpression::evaluate(Context& ctx) {
             throw YieldException(last_val);
         }
 
+        // Fiber-based generators: yield* directly swaps context for each element
+        // (target_yield_index_ stays 0 since fiber doesn't use replay)
+        if (current_gen->fiber_ctx_.uc_stack.ss_size > 0) {
+            // Get iterator from iterable
+            Value iter_val;
+            if (iterable.is_string()) {
+                // Box string to call Symbol.iterator
+                auto boxed = ObjectFactory::create_object();
+                boxed->set_property("length", Value(0.0));
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value str_ctor = ctx.get_binding("String");
+                    if (str_ctor.is_function()) {
+                        Value proto = str_ctor.as_function()->get_property("prototype");
+                        if (proto.is_object()) {
+                            Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
+                            if (iter_fn.is_function()) {
+                                iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                            }
+                        }
+                    }
+                }
+            } else if (iterable.is_object() || iterable.is_function()) {
+                Object* itbl = iterable.is_object() ? iterable.as_object() : iterable.as_function();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_fn = itbl->get_property(iter_sym->to_property_key());
+                    if (iter_fn.is_function()) {
+                        iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (iter_val.is_undefined() || iter_val.is_null()) iter_val = iterable;
+            } else {
+                iter_val = iterable;
+            }
+            Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
+                : (iter_val.is_function() ? iter_val.as_function() : nullptr);
+            if (!iter_obj) { ctx.throw_type_error("yield* requires iterable"); return Value(); }
+
+            Value next_fn = iter_obj->get_property("next");
+            if (!next_fn.is_function()) { ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
+
+            Value final_val;
+            while (true) {
+                Value result = next_fn.as_function()->call(ctx, {}, iter_val);
+                if (ctx.has_exception()) return Value();
+                if (!result.is_object()) break;
+                Value done = result.as_object()->get_property("done");
+                Value val  = result.as_object()->get_property("value");
+                if (ctx.has_exception()) return Value();
+                if (done.to_boolean()) { final_val = val; break; }
+                // Yield this element via swapcontext
+                current_gen->yielded_value_ = val;
+                current_gen->set_state(Generator::State::SuspendedYield);
+                swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                // Resumed
+                if (current_gen->returning_) { current_gen->returning_ = false; return Value(); }
+                if (current_gen->throwing_) {
+                    current_gen->throwing_ = false;
+                    ctx.throw_exception(current_gen->throw_value_, true);
+                    return Value();
+                }
+            }
+            return final_val;
+        }
+
         size_t delegate_start = Generator::increment_yield_counter();
 
         size_t needed_idx = current_gen->target_yield_index_ >= delegate_start
@@ -1516,6 +1583,19 @@ Value YieldExpression::evaluate(Context& ctx) {
             AsyncGenerator* async_gen = AsyncGenerator::get_current();
             size_t yield_index = Generator::increment_yield_counter();
             if (yield_index < async_gen->target_yield_index_) {
+                // Restore outer scope vars changed by generator body at this yield
+                size_t state_idx = yield_index - 1;
+                if (state_idx < async_gen->yield_states_.size() &&
+                    !async_gen->yield_states_[state_idx].empty()) {
+                    Context* outer = async_gen->get_outer_context();
+                    Context* gen_ctx = async_gen->get_generator_context();
+                    for (const auto& pair : async_gen->yield_states_[state_idx]) {
+                        if (outer && outer->has_binding(pair.first))
+                            outer->set_binding(pair.first, pair.second);
+                        else if (gen_ctx)
+                            gen_ctx->set_binding(pair.first, pair.second);
+                    }
+                }
                 if (yield_index < async_gen->sent_values_.size()) {
                     return async_gen->sent_values_[yield_index];
                 }
@@ -1526,46 +1606,22 @@ Value YieldExpression::evaluate(Context& ctx) {
         return yield_value;
     }
 
-    size_t yield_index = Generator::increment_yield_counter();
+    // Fiber-based yield: actually suspend and switch back to caller
+    current_gen->yielded_value_ = yield_value;
+    current_gen->set_state(Generator::State::SuspendedYield);
+    swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
 
-    if (yield_index < current_gen->target_yield_index_) {
-        // Restore outer scope closure variables to their state at this yield
-        // yield_index is 1-based (from increment_yield_counter), yield_states_ is 0-based
-        size_t state_idx = yield_index - 1;
-        if (state_idx < current_gen->yield_states_.size() &&
-            !current_gen->yield_states_[state_idx].empty()) {
-            Context* gen_ctx = current_gen->get_context();
-            for (const auto& pair : current_gen->yield_states_[state_idx]) {
-                // Try outer context first (for global/outer scope vars), then gen context
-                Context* outer = current_gen->outer_context_;
-                if (outer && outer->has_binding(pair.first)) {
-                    outer->set_binding(pair.first, pair.second);
-                } else {
-                    gen_ctx->set_binding(pair.first, pair.second);
-                }
-            }
-        }
-        if (yield_index < current_gen->sent_values_.size()) {
-            return current_gen->sent_values_[yield_index];
-        }
-        return current_gen->last_value_;
-    }
-
+    // Resumed by next()/throw()/return()
     if (current_gen->returning_) {
-        return Value();
+        current_gen->returning_ = false;
+        throw GeneratorReturnException(current_gen->return_argument_);
     }
-
     if (current_gen->throwing_) {
         current_gen->throwing_ = false;
         ctx.throw_exception(current_gen->throw_value_, true);
         return Value();
     }
-
-    if (yield_index > current_gen->target_yield_index_) {
-        current_gen->target_yield_index_ = yield_index;
-    }
-
-    throw YieldException(yield_value);
+    return current_gen->sent_value_;
 }
 
 std::string YieldExpression::to_string() const {
