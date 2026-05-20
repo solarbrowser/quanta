@@ -883,19 +883,19 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
-            auto idx = std::make_shared<uint32_t>(0);
-            uint32_t len = ta->byte_length() / ta->bytes_per_element();
+            struct TAIterState { Object* obj; uint32_t idx = 0; uint32_t len; };
+            auto state = std::make_shared<TAIterState>(TAIterState{this_obj, 0, static_cast<uint32_t>(ta->byte_length() / ta->bytes_per_element())});
             auto next = ObjectFactory::create_native_function("next",
-                [this_obj, idx, len](Context& ctx, const std::vector<Value>& args) -> Value {
+                [state](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; (void)args;
                     auto res = ObjectFactory::create_object();
-                    if (*idx >= len) {
+                    if (state->idx >= state->len) {
                         res->set_property("done", Value(true));
                         res->set_property("value", Value());
                     } else {
                         res->set_property("done", Value(false));
-                        res->set_property("value", this_obj->get_element(*idx));
-                        (*idx)++;
+                        res->set_property("value", state->obj->get_element(state->idx));
+                        state->idx++;
                     }
                     return Value(res.release());
                 }, 0);

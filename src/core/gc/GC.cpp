@@ -8,7 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include <iostream>
 #include <algorithm>
-#include <string.h>
+#include <cstring>
 #include <atomic>
 
 namespace Quanta {

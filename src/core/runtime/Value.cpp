@@ -17,7 +17,7 @@
 #include <limits>
 #include <iostream>
 #include <cstdio>
-#include <string.h>
+#include <cstring>
 
 namespace Quanta {
 
@@ -84,8 +84,7 @@ std::string Value::to_string() const {
     if (is_number()) {
         double num = as_number();
 
-        uint64_t bits;
-        memcpy(&bits, &num, sizeof(double));
+        uint64_t bits = std::bit_cast<uint64_t>(num);
 
         uint64_t exponent = (bits >> 52) & 0x7FF;
         uint64_t mantissa = bits & 0xFFFFFFFFFFFFFULL;
