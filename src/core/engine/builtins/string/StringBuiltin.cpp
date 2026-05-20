@@ -446,34 +446,37 @@ void register_string_builtins(Context& ctx) {
                 return Value();
             }
 
-            auto shared_str = std::make_shared<std::string>(str);
-            auto shared_regex = std::make_shared<Value>(regex_val);
-            auto done_flag = std::make_shared<bool>(false);
+            struct MatchAllState {
+                std::string str;
+                Value regex;
+                bool done = false;
+            };
+            auto state = std::make_shared<MatchAllState>(MatchAllState{str, regex_val, false});
 
             auto iterator = ObjectFactory::create_object();
             Object* iter_ptr = iterator.get();
 
             auto next_fn = ObjectFactory::create_native_function("next",
-                [shared_str, shared_regex, done_flag](Context& ctx, const std::vector<Value>& args) -> Value {
+                [state](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
                     auto result = ObjectFactory::create_object();
-                    if (*done_flag) {
+                    if (state->done) {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                         return Value(result.release());
                     }
-                    Object* rx = shared_regex->as_object();
+                    Object* rx = state->regex.as_object();
                     Value exec_method = rx->get_property("exec");
                     if (!exec_method.is_function()) {
-                        *done_flag = true;
+                        state->done = true;
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                         return Value(result.release());
                     }
-                    Value match = exec_method.as_function()->call(ctx, {Value(*shared_str)}, *shared_regex);
+                    Value match = exec_method.as_function()->call(ctx, {Value(state->str)}, state->regex);
                     if (ctx.has_exception()) return Value();
                     if (match.is_null() || match.is_undefined()) {
-                        *done_flag = true;
+                        state->done = true;
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                     } else {
@@ -1777,27 +1780,26 @@ void register_string_builtins(Context& ctx) {
             if (Iterator::s_string_iterator_prototype_) {
                 iterator->set_prototype(Iterator::s_string_iterator_prototype_);
             }
-            auto index = std::make_shared<size_t>(0);
-            auto str_copy = std::make_shared<std::string>(str);
+            struct StringIterState { std::string str; size_t index = 0; };
+            auto state = std::make_shared<StringIterState>(StringIterState{str, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
-                [str_copy, index](Context& ctx, const std::vector<Value>& args) -> Value {
+                [state](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; (void)args;
                     auto result = ObjectFactory::create_object();
-                    if (*index >= str_copy->length()) {
+                    if (state->index >= state->str.length()) {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                     } else {
-                        // UTF-8 codepoint-aware: read full multi-byte character
-                        unsigned char ch = static_cast<unsigned char>((*str_copy)[*index]);
+                        unsigned char ch = static_cast<unsigned char>(state->str[state->index]);
                         size_t char_len = 1;
                         if (ch >= 0xF0) char_len = 4;
                         else if (ch >= 0xE0) char_len = 3;
                         else if (ch >= 0xC0) char_len = 2;
-                        if (*index + char_len > str_copy->length()) char_len = 1;
-                        std::string codepoint = str_copy->substr(*index, char_len);
+                        if (state->index + char_len > state->str.length()) char_len = 1;
+                        std::string codepoint = state->str.substr(state->index, char_len);
                         result->set_property("done", Value(false));
                         result->set_property("value", Value(codepoint));
-                        *index += char_len;
+                        state->index += char_len;
                     }
                     return Value(result.release());
                 }, 0);

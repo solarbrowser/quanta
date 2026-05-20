@@ -1995,21 +1995,20 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             auto iterator = ObjectFactory::create_object();
-            auto index = std::make_shared<uint32_t>(0);
-            Object* arr_ptr = this_obj;
+            struct ArrIterState { Object* arr; uint32_t index = 0; };
+            auto state = std::make_shared<ArrIterState>(ArrIterState{this_obj, 0});
             auto next_fn = ObjectFactory::create_native_function("next",
-                [arr_ptr, index](Context& ctx, const std::vector<Value>& args) -> Value {
+                [state](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx; (void)args;
-                    // Read length dynamically to handle arrays modified during iteration
-                    uint32_t length = arr_ptr->get_length();
+                    uint32_t length = state->arr->get_length();
                     auto result = ObjectFactory::create_object();
-                    if (*index >= length) {
+                    if (state->index >= length) {
                         result->set_property("done", Value(true));
                         result->set_property("value", Value());
                     } else {
                         result->set_property("done", Value(false));
-                        result->set_property("value", arr_ptr->get_element(*index));
-                        (*index)++;
+                        result->set_property("value", state->arr->get_element(state->index));
+                        state->index++;
                     }
                     return Value(result.release());
                 }, 0);
