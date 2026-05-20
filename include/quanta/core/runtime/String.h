@@ -8,52 +8,47 @@
 #define QUANTA_STRING_H
 
 #include <string>
-#include <memory>
+#include <string_view>
 
 namespace Quanta {
 
-/**
- * JavaScript string implementation
- * Features:
- * - String interning for common strings
- * - Copy-on-write semantics
- * - UTF-8 support
- */
 class String {
 private:
-    std::shared_ptr<std::string> data_;
-    size_t hash_;
-    bool interned_;
+    std::string data_;
+    size_t hash_ = 0;
+    bool interned_ = false;
 
 public:
-    String();
+    String() = default;
     explicit String(const std::string& str);
+    explicit String(std::string&& str) noexcept;
+    explicit String(std::string_view sv);
     explicit String(const char* str);
-    String(const String& other) = default;
-    String(String&& other) noexcept = default;
-    
-    String& operator=(const String& other) = default;
-    String& operator=(String&& other) noexcept = default;
-    
-    const std::string& str() const { return *data_; }
-    const char* c_str() const { return data_->c_str(); }
-    size_t length() const { return data_->length(); }
-    size_t size() const { return data_->size(); }
-    bool empty() const { return data_->empty(); }
-    
-    size_t hash() const { return hash_; }
-    
-    bool operator==(const String& other) const;
-    bool operator!=(const String& other) const { return !(*this == other); }
-    bool operator<(const String& other) const { return str() < other.str(); }
-    
-    String concat(const String& other) const;
-    String substring(size_t start, size_t length = std::string::npos) const;
-    
+    String(const String&) = default;
+    String(String&&) noexcept = default;
+
+    String& operator=(const String&) = default;
+    String& operator=(String&&) noexcept = default;
+
+    [[nodiscard]] const std::string& str()    const noexcept { return data_; }
+    [[nodiscard]] const char*        c_str()  const noexcept { return data_.c_str(); }
+    [[nodiscard]] size_t             length() const noexcept { return data_.length(); }
+    [[nodiscard]] size_t             size()   const noexcept { return data_.size(); }
+    [[nodiscard]] bool               empty()  const noexcept { return data_.empty(); }
+    [[nodiscard]] size_t             hash()   const noexcept { return hash_; }
+    [[nodiscard]] bool               interned() const noexcept { return interned_; }
+
+    bool operator==(const String& other) const noexcept;
+    bool operator!=(const String& other) const noexcept { return !(*this == other); }
+    bool operator< (const String& other) const noexcept { return data_ < other.data_; }
+
+    [[nodiscard]] String concat(const String& other) const;
+    [[nodiscard]] String substring(size_t start, size_t length = std::string::npos) const;
+
     static String intern(const std::string& str);
 
 private:
-    void calculate_hash();
+    void calculate_hash() noexcept;
 };
 
 }

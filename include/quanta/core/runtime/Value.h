@@ -14,6 +14,8 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <span>
+#include <vector>
 
 struct BigIntTypeError : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -29,6 +31,7 @@ namespace Quanta {
     class OptimizedArray;
 }
 #include <iostream>
+#include <bit>
 
 namespace Quanta {
 
@@ -104,10 +107,14 @@ private:
     static constexpr uint64_t TAG_NEG_INF   = 0x000A000000000000ULL;
     static constexpr uint64_t TAG_POS_INF   = 0x000B000000000000ULL;
 
-    union {
-        uint64_t bits_;
-        double number_;
-    };
+    uint64_t bits_;
+
+    static constexpr uint64_t double_to_bits(double d) noexcept {
+        return std::bit_cast<uint64_t>(d);
+    }
+    static constexpr double bits_to_double(uint64_t b) noexcept {
+        return std::bit_cast<double>(b);
+    }
 
 public:
     Value() : bits_(QUIET_NAN | TAG_UNDEFINED) {}
@@ -142,32 +149,22 @@ public:
     explicit Value(const char* str) : Value(std::string(str)) {}
 
     explicit Value(double d) {
-        // NOTE: std::isnan and std::isinf are broken in this build environment
-        // First store as number, then check bit pattern
-        number_ = d;
-
-        // Check if it's NaN or Infinity by examining the bit pattern
+        bits_ = double_to_bits(d);
         uint64_t exponent = (bits_ >> 52) & 0x7FF;
         uint64_t mantissa = bits_ & 0xFFFFFFFFFFFFFULL;
-
-        if (exponent == 0x7FF) {  // NaN or Infinity
+        if (exponent == 0x7FF) {
             if (mantissa != 0) {
-                // NaN
                 bits_ = QUIET_NAN | TAG_NAN;
             } else {
-                // Infinity (check sign bit)
-                if (bits_ & 0x8000000000000000ULL) {
-                    bits_ = QUIET_NAN | TAG_NEG_INF;
-                } else {
-                    bits_ = QUIET_NAN | TAG_POS_INF;
-                }
+                bits_ = (bits_ & 0x8000000000000000ULL)
+                    ? (QUIET_NAN | TAG_NEG_INF)
+                    : (QUIET_NAN | TAG_POS_INF);
             }
         }
-        // else: normal number, already stored in number_
     }
-    explicit Value(int32_t i) : number_(static_cast<double>(i)) {}
-    explicit Value(uint32_t i) : number_(static_cast<double>(i)) {}
-    explicit Value(int64_t i) : number_(static_cast<double>(i)) {}
+    explicit Value(int32_t i) : bits_(double_to_bits(static_cast<double>(i))) {}
+    explicit Value(uint32_t i) : bits_(double_to_bits(static_cast<double>(i))) {}
+    explicit Value(int64_t i) : bits_(double_to_bits(static_cast<double>(i))) {}
     
     explicit Value(String* str) {
         #if PLATFORM_POINTER_COMPRESSION
@@ -213,28 +210,28 @@ public:
     Value& operator=(const Value& other) = default;
     Value& operator=(Value&& other) noexcept = default;
 
-    inline bool is_undefined() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_UNDEFINED); }
-    inline bool is_null() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NULL); }
-    inline bool is_boolean() const { 
+    [[nodiscard]] inline bool is_undefined() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_UNDEFINED); }
+    [[nodiscard]] inline bool is_null() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NULL); }
+    [[nodiscard]] inline bool is_boolean() const noexcept {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_FALSE) ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
-    inline bool is_number() const { 
+    [[nodiscard]] inline bool is_number() const noexcept {
         return (bits_ & EXPONENT_MASK) != EXPONENT_MASK ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN) ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF) ||
                (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF);
     }
-    inline bool is_nan() const {
+    [[nodiscard]] inline bool is_nan() const noexcept {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NAN);
     }
-    inline bool is_positive_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF); }
-    inline bool is_negative_infinity() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF); }
-    inline bool is_string() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }
-    inline bool is_symbol() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_SYMBOL); }
-    inline bool is_bigint() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_BIGINT); }
-    inline bool is_object() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_OBJECT); }
-    inline bool is_function() const { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_FUNCTION); }
+    [[nodiscard]] inline bool is_positive_infinity() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_POS_INF); }
+    [[nodiscard]] inline bool is_negative_infinity() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_NEG_INF); }
+    [[nodiscard]] inline bool is_string() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_STRING); }
+    [[nodiscard]] inline bool is_symbol() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_SYMBOL); }
+    [[nodiscard]] inline bool is_bigint() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_BIGINT); }
+    [[nodiscard]] inline bool is_object() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_OBJECT); }
+    [[nodiscard]] inline bool is_function() const noexcept { return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_FUNCTION); }
     
     inline bool is_primitive() const { 
         return is_undefined() || is_null() || is_boolean() || is_number() || is_string() || is_symbol() || is_bigint();
@@ -249,11 +246,11 @@ public:
     inline bool as_boolean() const {
         return (bits_ & (QUIET_NAN | TAG_MASK)) == (QUIET_NAN | TAG_TRUE);
     }
-    inline double as_number() const { 
+    [[nodiscard]] inline double as_number() const noexcept {
         if (is_nan()) return std::numeric_limits<double>::quiet_NaN();
         if (is_positive_infinity()) return std::numeric_limits<double>::infinity();
         if (is_negative_infinity()) return -std::numeric_limits<double>::infinity();
-        return number_; 
+        return bits_to_double(bits_);
     }
     inline String* as_string() const { 
         #if PLATFORM_POINTER_COMPRESSION
@@ -395,6 +392,11 @@ namespace std {
             return v.hash();
         }
     };
+}
+
+namespace Quanta {
+    // C++20: span-based args view type (zero-copy, future migration target)
+    using NativeArgs = std::span<const Value>;
 }
 
 #endif
