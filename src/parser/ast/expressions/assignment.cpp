@@ -633,6 +633,12 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             assigned_keys.push_back(prop_name);
 
             Value prop_value = source_obj->get_property(prop_name);
+            // Getter may throw into Object::current_context_ rather than ctx
+            if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                    && Object::current_context_->has_exception()) {
+                ctx.throw_exception(Object::current_context_->get_exception(), true);
+                Object::current_context_->clear_exception();
+            }
             if (ctx.has_exception()) return;
 
             // Determine assignment target
@@ -1366,7 +1372,18 @@ Value DestructuringAssignment::evaluate(Context& ctx) {
 }
 
 bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, Context& ctx) {
-    
+    // Helper: property getters run in Object::current_context_ which may differ from ctx.
+    // After each get_property call, propagate any exception from current_context_ to ctx.
+    auto check_getter_exc = [&]() -> bool {
+        if (ctx.has_exception()) return true;
+        Context* cur = Object::current_context_;
+        if (cur && cur != &ctx && cur->has_exception()) {
+            ctx.throw_exception(cur->get_exception(), true);
+            cur->clear_exception();
+            return true;
+        }
+        return false;
+    };
 
     for (const auto& mapping : property_mappings_) {
 
@@ -1379,10 +1396,11 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 Value key_val = mapping.computed_key->evaluate(ctx);
                 if (ctx.has_exception()) return false;
                 prop_value = obj->get_property(key_val.to_string());
+                if (check_getter_exc()) return false;
             }
         } else {
             prop_value = obj->get_property(mapping.property_name);
-            if (ctx.has_exception()) return false;
+            if (check_getter_exc()) return false;
         }
 
         // Apply default if property is undefined (for nested patterns too)
@@ -1756,6 +1774,11 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 }
             } else {
                 Value prop_value = obj->get_property(prop_name);
+                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                        && Object::current_context_->has_exception()) {
+                    ctx.throw_exception(Object::current_context_->get_exception(), true);
+                    Object::current_context_->clear_exception();
+                }
                 if (ctx.has_exception()) return false;
 
                 // Apply default value if property is undefined: {a = expr}
