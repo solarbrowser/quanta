@@ -638,8 +638,21 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     Value old_value = this->get_property(key);
                     this->set_property(key, current_value);
 
-                    if (parent_var_names.count(var_name) && !current_value.strict_equals(old_value)) {
-                        parent_var_env->set_binding(var_name, current_value);
+                    if (!current_value.strict_equals(old_value)) {
+                        if (parent_var_names.count(var_name)) {
+                            // Variable is in the direct caller's scope -- write there.
+                            parent_var_env->set_binding(var_name, current_value);
+                        } else if (closure_context_) {
+                            // Variable not in caller's scope.  Walk to the lexical scope
+                            // where this function was defined and write there if the var
+                            // is explicitly declared (has_own_binding).  This propagates
+                            // mutations like `nextCount++` back to the global scope even
+                            // when the function is called from a nested wrapper.
+                            auto* cve = closure_context_->get_variable_environment();
+                            if (cve && cve->has_own_binding(var_name)) {
+                                cve->set_binding(var_name, current_value);
+                            }
+                        }
                     }
 
                     if (!current_value.strict_equals(old_value)) {
