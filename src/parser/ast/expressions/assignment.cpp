@@ -633,6 +633,7 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             assigned_keys.push_back(prop_name);
 
             Value prop_value = source_obj->get_property(prop_name);
+            if (ctx.has_exception()) return;
 
             // Determine assignment target
             ASTNode* target = prop->shorthand ? prop->key.get() : prop->value.get();
@@ -1381,6 +1382,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
             }
         } else {
             prop_value = obj->get_property(mapping.property_name);
+            if (ctx.has_exception()) return false;
         }
 
         // Apply default if property is undefined (for nested patterns too)
@@ -1754,6 +1756,7 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
                 }
             } else {
                 Value prop_value = obj->get_property(prop_name);
+                if (ctx.has_exception()) return false;
 
                 // Apply default value if property is undefined: {a = expr}
                 if (prop_value.is_undefined()) {
