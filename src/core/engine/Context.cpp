@@ -919,9 +919,10 @@ void Context::push_block_scope() {
 
 void Context::pop_block_scope() {
     if (lexical_environment_ && lexical_environment_->get_outer()) {
-        Environment* old_env = lexical_environment_;
+        // Don't delete -- child contexts (e.g. async function fibers) may hold
+        // a pointer to this block scope as their outer_environment_.  The env
+        // leaks with the context, which is acceptable given Context also leaks.
         lexical_environment_ = lexical_environment_->get_outer();
-        delete old_env;
     }
 }
 

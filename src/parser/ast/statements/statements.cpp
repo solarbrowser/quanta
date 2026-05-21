@@ -356,13 +356,18 @@ Value BlockStatement::evaluate(Context& ctx) {
     Environment* block_env_ptr = block_env.release();
     ctx.set_lexical_environment(block_env_ptr);
 
+    // Note: block_env_ptr is intentionally NOT deleted here. Child contexts
+    // created inside the block (e.g. async function fibers) store this env as
+    // their outer_environment_. Deleting it would cause use-after-free when
+    // those fibers resume after the block exits.  Environments are already
+    // leaked by Context::~Context(), so leaking here is consistent.
+
     try {
         for (const auto& statement : statements_) {
             if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
                 last_value = statement->evaluate(ctx);
                 if (ctx.has_exception()) {
                     ctx.set_lexical_environment(old_lexical_env);
-                    delete block_env_ptr;
                     return Value();
                 }
             }
@@ -373,30 +378,24 @@ Value BlockStatement::evaluate(Context& ctx) {
                 last_value = statement->evaluate(ctx);
                 if (ctx.has_exception()) {
                     ctx.set_lexical_environment(old_lexical_env);
-                    delete block_env_ptr;
                     return Value();
                 }
                 if (ctx.has_return_value()) {
                     ctx.set_lexical_environment(old_lexical_env);
-                    delete block_env_ptr;
                     return ctx.get_return_value();
                 }
                 if (ctx.has_break() || ctx.has_continue()) {
                     ctx.set_lexical_environment(old_lexical_env);
-                    delete block_env_ptr;
                     return Value();
                 }
             }
         }
     } catch (...) {
         ctx.set_lexical_environment(old_lexical_env);
-        delete block_env_ptr;
         throw;
     }
 
     ctx.set_lexical_environment(old_lexical_env);
-    delete block_env_ptr;
-
     return last_value;
 }
 
@@ -978,6 +977,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
                 }
 
+                exec->await_result_ = next_result;  // pin promise as GC root during suspension
                 swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
 
                 if (exec->await_is_throw_) {

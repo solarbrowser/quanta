@@ -384,14 +384,16 @@ void GarbageCollector::mark_from_context(Context* ctx) {
 
 void GarbageCollector::mark_from_object(Object* obj) {
     if (!obj) return;
-    
+
     mark_object(obj);
-    
-    std::vector<std::string> keys = obj->get_enumerable_keys();
+
+    std::vector<std::string> keys = obj->get_own_property_keys();
     for (const std::string& key : keys) {
         Value prop = obj->get_property(key);
         if (prop.is_object()) {
             mark_object(prop.as_object());
+        } else if (prop.is_function()) {
+            mark_object(prop.as_function());
         }
     }
 }
@@ -795,11 +797,13 @@ void GarbageCollector::mark_object_ultra_fast(Object* obj) {
         managed->is_marked = true;
         managed->access_count += 2;
         
-        std::vector<std::string> keys = obj->get_enumerable_keys();
+        std::vector<std::string> keys = obj->get_own_property_keys();
         for (const std::string& key : keys) {
             Value prop = obj->get_property(key);
             if (prop.is_object()) {
                 mark_object_ultra_fast(prop.as_object());
+            } else if (prop.is_function()) {
+                mark_object_ultra_fast(prop.as_function());
             }
         }
     }

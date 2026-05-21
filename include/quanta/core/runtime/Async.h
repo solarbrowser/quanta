@@ -50,7 +50,7 @@ public:
     Engine*  engine_;
 
     // Fiber infrastructure
-    static constexpr size_t STACK_SIZE = 512 * 1024;
+    static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     ucontext_t fiber_ctx_;
     ucontext_t caller_ctx_;
     std::vector<char> fiber_stack_;
@@ -123,7 +123,7 @@ public:
     State state_;
 
     // Fiber infrastructure
-    static constexpr size_t STACK_SIZE = 512 * 1024;
+    static constexpr size_t STACK_SIZE = 2 * 1024 * 1024;
     ucontext_t fiber_ctx_;
     ucontext_t caller_ctx_;
     std::vector<char> fiber_stack_;
