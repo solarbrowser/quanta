@@ -17,76 +17,87 @@
 
 namespace Quanta {
 
-// AsyncExecutor
-
 thread_local AsyncExecutor* AsyncExecutor::current_ = nullptr;
 
 AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
                               std::unique_ptr<Context> exec_ctx,
                               Promise* outer_promise,
                               Engine* engine)
-    : next_await_index_(0), target_await_index_(0),
-      outer_promise_(outer_promise),
+    : outer_promise_(outer_promise),
       exec_context_owned_(std::move(exec_ctx)),
       exec_context_(exec_context_owned_.get()),
       engine_(engine),
-      initial_lex_env_(exec_context_ ? exec_context_->get_lexical_environment() : nullptr),
-      body_(std::move(body)) {}
+      fiber_stack_(STACK_SIZE),
+      body_(std::move(body)) {
+    getcontext(&fiber_ctx_);
+    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
+    fiber_ctx_.uc_link = nullptr;
+    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
+    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+                (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
+}
 
 AsyncExecutor::~AsyncExecutor() = default;
+
+void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
+    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
+    auto* self = reinterpret_cast<AsyncExecutor*>(ptr);
+
+    Context* ctx = self->exec_context_;
+    Value result;
+    try {
+        if (self->body_) {
+            result = self->body_->evaluate(*ctx);
+        }
+    } catch (const std::exception& e) {
+        if (!ctx->has_exception()) {
+            ctx->throw_exception(Value(std::string(e.what())));
+        }
+    } catch (...) {
+        if (!ctx->has_exception()) {
+            ctx->throw_exception(Value(std::string("Unknown error in async function")));
+        }
+    }
+
+    if (ctx->has_exception()) {
+        Value exc = ctx->get_exception();
+        ctx->clear_exception();
+        self->outer_promise_->reject(exc);
+    } else if (ctx->has_return_value()) {
+        Value ret = ctx->get_return_value();
+        ctx->clear_return_value();
+        if (AsyncUtils::is_promise(ret)) {
+            Promise* p = static_cast<Promise*>(ret.as_object());
+            if (p->get_state() == PromiseState::FULFILLED) {
+                self->outer_promise_->fulfill(p->get_value());
+            } else if (p->get_state() == PromiseState::REJECTED) {
+                self->outer_promise_->reject(p->get_value());
+            } else {
+                self->outer_promise_->fulfill(ret);
+            }
+        } else {
+            self->outer_promise_->fulfill(ret);
+        }
+    } else {
+        self->outer_promise_->fulfill(result);
+    }
+
+    // Return control to whoever called run()/resume()
+    swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
+}
 
 void AsyncExecutor::run() {
     auto* prev = current_;
     current_ = this;
-    next_await_index_ = 0;
+    swapcontext(&caller_ctx_, &fiber_ctx_);  // enter or re-enter fiber
+    current_ = prev;
+}
 
-    // Restore the lexical env to the initial state (as it was after parameter binding)
-    // to prevent block scope accumulation across replayed runs.
-    if (initial_lex_env_ && exec_context_) {
-        exec_context_->set_lexical_environment(initial_lex_env_);
-    }
-
-    // Clear state from previous execution pass
-    exec_context_->clear_exception();
-    exec_context_->clear_return_value();
-
-    try {
-        Value result;
-        if (body_) {
-            result = body_->evaluate(*exec_context_);
-        }
-        current_ = prev;
-
-        // Body ran to completion
-        if (exec_context_->has_exception()) {
-            Value exc = exec_context_->get_exception();
-            exec_context_->clear_exception();
-            outer_promise_->reject(exc);
-        } else if (exec_context_->has_return_value()) {
-            Value ret = exec_context_->get_return_value();
-            exec_context_->clear_return_value();
-            if (AsyncUtils::is_promise(ret)) {
-                Promise* p = static_cast<Promise*>(ret.as_object());
-                if (p->get_state() == PromiseState::FULFILLED) {
-                    outer_promise_->fulfill(p->get_value());
-                } else if (p->get_state() == PromiseState::REJECTED) {
-                    outer_promise_->reject(p->get_value());
-                } else {
-                    outer_promise_->fulfill(ret);
-                }
-            } else {
-                outer_promise_->fulfill(ret);
-            }
-        } else {
-            outer_promise_->fulfill(result);
-        }
-    } catch (const AwaitSuspendException&) {
-        // Suspended at an await — callbacks capture shared_ptr keeping us alive
-        current_ = prev;
-    } catch (...) {
-        current_ = prev;
-        outer_promise_->reject(Value(std::string("Async execution error")));
-    }
+void AsyncExecutor::resume(Value result, bool is_throw) {
+    await_result_   = std::move(result);
+    await_is_throw_ = is_throw;
+    run();
 }
 
 // AsyncFunction
@@ -131,74 +142,6 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     return promise_value;
 }
 
-std::unique_ptr<Promise> AsyncFunction::execute_async(Context& ctx, const std::vector<Value>& args) {
-
-    // Use create_promise so the returned promise has Promise.prototype in its chain,
-    // which is required for `p instanceof Promise` to return true.
-    auto promise_obj = ObjectFactory::create_promise(&ctx);
-    std::unique_ptr<Promise> promise(static_cast<Promise*>(promise_obj.release()));
-
-    const auto& params = get_parameters();
-    std::vector<std::pair<std::string, Value>> old_bindings;
-
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg = i < args.size() ? args[i] : Value();
-
-        try {
-            Value old_value = ctx.get_binding(params[i]);
-            old_bindings.push_back({params[i], old_value});
-        } catch (...) {
-            old_bindings.push_back({params[i], Value()});
-        }
-
-        ctx.create_binding(params[i], arg);
-    }
-
-    try {
-        if (body_) {
-            Value result = body_->evaluate(ctx);
-            // Capture and clear return value to prevent it from bleeding into the
-            // caller's context and causing the caller to exit early.
-            if (ctx.has_return_value()) {
-                result = ctx.get_return_value();
-                ctx.clear_return_value();
-            }
-            if (ctx.has_exception()) {
-                Value exc = ctx.get_exception();
-                ctx.clear_exception();
-                promise->reject(exc);
-            } else {
-                promise->fulfill(result);
-            }
-        } else {
-            promise->fulfill(Value());
-        }
-    } catch (const std::exception& e) {
-        ctx.clear_return_value();
-        promise->reject(Value(e.what()));
-    }
-
-    for (const auto& binding : old_bindings) {
-        if (!binding.second.is_undefined()) {
-            ctx.create_binding(binding.first, binding.second);
-        }
-    }
-
-    return promise;
-}
-
-void AsyncFunction::execute_async_body(Context& ctx, Promise* promise) {
-    try {
-        if (body_) {
-            Value result = body_->evaluate(ctx);
-            promise->fulfill(result);
-        } else {
-            promise->fulfill(Value());
-        }
-    } catch (const std::exception& e) {
-        promise->reject(Value(e.what()));
-    }
-}
 
 
 AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
@@ -208,107 +151,83 @@ AsyncAwaitExpression::AsyncAwaitExpression(std::unique_ptr<ASTNode> expression)
 Value AsyncAwaitExpression::evaluate(Context& ctx) {
     AsyncExecutor* exec = AsyncExecutor::get_current();
 
-    if (exec) {
-        // Replay-based path 
-        size_t await_index = exec->next_await_index_++;
+    if (exec && !exec->fiber_stack_.empty()) {
+        // Fiber-based path: no replay, just suspend/resume
 
-        if (await_index < exec->target_await_index_) {
-            // REPLAY: return stored result without re-evaluating the expression
-            if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
-                ctx.throw_exception(exec->await_results_[await_index], true);
-                return Value();
-            }
-            if (await_index < exec->await_results_.size()) {
-                return exec->await_results_[await_index];
-            }
-            return Value();
-        }
-
-        // NEW AWAIT: evaluate the expression for the first time
-        if (!expression_) {
-            exec->await_results_.push_back(Value());
-            exec->await_is_throw_.push_back(false);
-            exec->target_await_index_++;
-            auto self = exec->shared_from_this();
-            Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
-            if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-            throw AwaitSuspendException{};
-        }
-
-        Value expr_val = expression_->evaluate(ctx);
+        Value expr_val = expression_ ? expression_->evaluate(ctx) : Value();
         if (ctx.has_exception()) return Value();
 
-        // Get global context for the microtask queue
         Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
 
-        // Determine the state of the awaited value
-        Promise* awaited_promise = nullptr;
-        Value resolved_value;
-        bool is_throw = false;
+        // Resolve awaited value to a settled state or register pending callbacks
+        Value settled_val;
+        bool settled_throw = false;
         bool is_pending = false;
 
         if (AsyncUtils::is_promise(expr_val)) {
-            awaited_promise = static_cast<Promise*>(expr_val.as_object());
-            if (awaited_promise->get_state() == PromiseState::FULFILLED) {
-                resolved_value = awaited_promise->get_value();
-            } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
-                resolved_value = awaited_promise->get_value();
-                is_throw = true;
+            Promise* p = static_cast<Promise*>(expr_val.as_object());
+            if (p->get_state() == PromiseState::FULFILLED) {
+                settled_val = p->get_value();
+            } else if (p->get_state() == PromiseState::REJECTED) {
+                settled_val = p->get_value();
+                settled_throw = true;
             } else {
                 is_pending = true;
+                auto self = exec->shared_from_this();
+
+                auto on_fulfill = ObjectFactory::create_native_function("",
+                    [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        Value val = args.empty() ? Value() : args[0];
+                        if (gctx) gctx->queue_microtask([self, val]() mutable {
+                            self->resume(val, false);
+                        });
+                        return Value();
+                    });
+                auto on_reject = ObjectFactory::create_native_function("",
+                    [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        Value reason = args.empty() ? Value() : args[0];
+                        if (gctx) gctx->queue_microtask([self, reason]() mutable {
+                            self->resume(reason, true);
+                        });
+                        return Value();
+                    });
+
+                std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
+                Function* ff_tmp = on_fulfill.get(); Function* fr_tmp = on_reject.get();
+                p->set_property("__af_" + key, Value(on_fulfill.release()));
+                p->set_property("__ar_" + key, Value(on_reject.release()));
+                p->then(ff_tmp, fr_tmp);
             }
         } else {
-            resolved_value = expr_val;
+            settled_val = expr_val;
         }
 
-        if (is_pending) {
-            // Register callbacks on the pending Promise to resume when it settles
+        if (!is_pending) {
+            // Per spec, even already-settled await goes through microtask queue
             auto self = exec->shared_from_this();
-            size_t target_idx = exec->target_await_index_;
-
-            auto on_fulfill_fn = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                    Value val = args.empty() ? Value() : args[0];
-                    self->await_results_.push_back(val);
-                    self->await_is_throw_.push_back(false);
-                    self->target_await_index_++;
-                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-                    return Value();
-                });
-
-            auto on_reject_fn = ObjectFactory::create_native_function("",
-                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                    Value reason = args.empty() ? Value() : args[0];
-                    self->await_results_.push_back(reason);
-                    self->await_is_throw_.push_back(true);
-                    self->target_await_index_++;
-                    if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-                    return Value();
-                });
-
-            Function* fulfill_raw = on_fulfill_fn.get();
-            Function* reject_raw = on_reject_fn.get();
-
-            // Store on the awaited Promise to keep native functions alive
-            std::string suffix = std::to_string(target_idx);
-            awaited_promise->set_property("__af__" + suffix, Value(on_fulfill_fn.release()));
-            awaited_promise->set_property("__ar__" + suffix, Value(on_reject_fn.release()));
-
-            awaited_promise->then(fulfill_raw, reject_raw);
-
-            throw AwaitSuspendException{};
+            Value val = settled_val;
+            bool thr = settled_throw;
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable {
+                self->resume(val, thr);
+            });
         }
 
-        // Already settled: store result and queue re-run as microtask
-        exec->await_results_.push_back(resolved_value);
-        exec->await_is_throw_.push_back(is_throw);
-        exec->target_await_index_++;
-        auto self = exec->shared_from_this();
-        if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-        throw AwaitSuspendException{};
+        // Suspend fiber — return control to the microtask runner
+        swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+
+        // Resumed by resume() after promise settled
+        if (exec->await_is_throw_) {
+            ctx.throw_exception(exec->await_result_, true);
+            exec->await_is_throw_ = false;
+            exec->await_result_ = Value();
+            return Value();
+        }
+        Value result = exec->await_result_;
+        exec->await_result_ = Value();
+        return result;
     }
 
-    //  Fallback path (no executor active) 
+    // Fallback: no executor (e.g., top-level await outside async fn)
     if (!expression_) return Value();
     Value awaited_value = expression_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
@@ -343,119 +262,128 @@ AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<AST
       generator_context_(context_owned_.get()),
       outer_context_(outer_ctx),
       body_(std::move(body)), state_(State::SuspendedStart),
-      target_yield_index_(0) {
+      fiber_stack_(STACK_SIZE) {
+    getcontext(&fiber_ctx_);
+    fiber_ctx_.uc_stack.ss_sp   = fiber_stack_.data();
+    fiber_ctx_.uc_stack.ss_size = STACK_SIZE;
+    fiber_ctx_.uc_link = nullptr;
+    uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
+    makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
+                (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
     if (s_async_generator_prototype_) {
         set_prototype(s_async_generator_prototype_);
     }
 }
 
-AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
-    (void)value;
+void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
+    uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
+    auto* self = reinterpret_cast<AsyncGenerator*>(ptr);
 
-    auto make_promise = [this]() -> std::unique_ptr<Promise> {
-        Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
-        auto obj = ObjectFactory::create_promise(promise_ctx);
-        return std::unique_ptr<Promise>(static_cast<Promise*>(obj.release()));
-    };
+    Context* ctx = self->generator_context_;
+    Value result;
+    try {
+        if (self->body_) {
+            result = self->body_->evaluate(*ctx);
+        }
+    } catch (const GeneratorReturnException& ret_ex) {
+        if (!ctx->has_return_value()) {
+            ctx->set_return_value(ret_ex.return_value);
+        }
+    } catch (const std::exception& e) {
+        if (!ctx->has_exception()) {
+            ctx->throw_exception(Value(std::string(e.what())));
+        }
+    } catch (...) {
+        if (!ctx->has_exception()) {
+            ctx->throw_exception(Value(std::string("Unknown error in async generator")));
+        }
+    }
+
+    // Body ran to completion (or threw via ctx exception)
+    self->state_ = State::Completed;
+    self->suspend_reason_ = SuspendReason::Done;
+
+    if (ctx->has_exception()) {
+        self->has_exception_ = true;
+        self->exception_value_ = ctx->get_exception();
+        ctx->clear_exception();
+    } else if (ctx->has_return_value()) {
+        self->return_value_ = ctx->get_return_value();
+        ctx->clear_return_value();
+    } else {
+        self->return_value_ = result;
+    }
+
+    swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
+}
+
+void AsyncGenerator::enter_fiber() {
+    auto* prev = current_;
+    current_ = this;
+    swapcontext(&caller_ctx_, &fiber_ctx_);
+    current_ = prev;
+    handle_suspension();
+}
+
+void AsyncGenerator::handle_suspension() {
+    if (!pending_promise_) return;
+
+    switch (suspend_reason_) {
+        case SuspendReason::Yield: {
+            state_ = State::SuspendedYield;
+            auto result_obj = ObjectFactory::create_object();
+            result_obj->set_property("value", yield_value_);
+            result_obj->set_property("done", Value(false));
+            pending_promise_->fulfill(Value(result_obj.release()));
+            pending_promise_ = nullptr;
+            break;
+        }
+        case SuspendReason::Await:
+            // Internal suspension — pending_promise_ stays; fiber will resume via resume_from_await()
+            break;
+        case SuspendReason::Done: {
+            if (has_exception_) {
+                has_exception_ = false;
+                pending_promise_->reject(exception_value_);
+            } else {
+                auto result_obj = ObjectFactory::create_object();
+                result_obj->set_property("value", return_value_);
+                result_obj->set_property("done", Value(true));
+                pending_promise_->fulfill(Value(result_obj.release()));
+            }
+            pending_promise_ = nullptr;
+            break;
+        }
+    }
+}
+
+void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
+    await_result_   = std::move(result);
+    await_is_throw_ = is_throw;
+    enter_fiber();
+}
+
+AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
+    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto promise_obj = ObjectFactory::create_promise(promise_ctx);
+    auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
 
     if (state_ == State::Completed) {
-        auto promise = make_promise();
-
         auto result_obj = ObjectFactory::create_object();
         result_obj->set_property("value", Value());
         result_obj->set_property("done", Value(true));
-
         promise->fulfill(Value(result_obj.release()));
         return AsyncGeneratorResult(std::move(promise));
     }
 
-    auto promise = make_promise();
-
-    size_t target = target_yield_index_++;
-    size_t store_idx = target;
-    if (store_idx >= sent_values_.size()) sent_values_.resize(store_idx + 1);
-    sent_values_[store_idx] = value;
+    pending_promise_ = promise.get();
+    sent_value_ = value;
+    throwing_ = false;
+    returning_ = false;
 
     Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto task = [this, promise_ptr = promise.get(), target]() {
-        auto* prev_async_gen = AsyncGenerator::get_current();
-        AsyncGenerator::set_current(this);
-        Generator::reset_yield_counter();
-
-        // Pre-body snapshot for diff-based state restoration at yield
-        std::unordered_map<std::string, Value> pre_body_state;
-        if (outer_context_) {
-            auto keys = outer_context_->snapshot_bindings();
-            for (const auto& p : keys) {
-                if (!p.second.is_function()) pre_body_state[p.first] = p.second;
-            }
-        }
-
-        try {
-            if (body_) {
-                Value result = body_->evaluate(*generator_context_);
-
-                // Check for JS exceptions (e.g. from yield* throwing iterators)
-                if (generator_context_->has_exception()) {
-                    Value exc = generator_context_->get_exception();
-                    generator_context_->clear_exception();
-                    state_ = State::Completed;
-                    promise_ptr->reject(exc);
-                    return;
-                }
-
-                // Check if generator completed (YieldException not thrown means body ran to end)
-                if (generator_context_->has_return_value()) {
-                    Value ret = generator_context_->get_return_value();
-                    generator_context_->clear_return_value();
-                    state_ = State::Completed;
-                    auto result_obj = ObjectFactory::create_object();
-                    result_obj->set_property("value", ret);
-                    result_obj->set_property("done", Value(true));
-                    promise_ptr->fulfill(Value(result_obj.release()));
-                    return;
-                }
-
-                state_ = State::Completed;
-                auto result_obj = ObjectFactory::create_object();
-                result_obj->set_property("value", result);
-                result_obj->set_property("done", Value(true));
-                promise_ptr->fulfill(Value(result_obj.release()));
-            } else {
-                state_ = State::Completed;
-                auto result_obj = ObjectFactory::create_object();
-                result_obj->set_property("value", Value());
-                result_obj->set_property("done", Value(true));
-                promise_ptr->fulfill(Value(result_obj.release()));
-            }
-        } catch (const YieldException& yield_ex) {
-            AsyncGenerator::set_current(prev_async_gen);
-            // Save diff of outer vars changed by generator body
-            size_t yi = target_yield_index_ - 1;
-            if (yi >= yield_states_.size()) yield_states_.resize(yi + 1);
-            if (outer_context_ && !pre_body_state.empty()) {
-                auto post_snap = outer_context_->snapshot_bindings();
-                for (const auto& pair : post_snap) {
-                    if (pair.second.is_function()) continue;
-                    auto it = pre_body_state.find(pair.first);
-                    if (it != pre_body_state.end() && !it->second.strict_equals(pair.second)) {
-                        yield_states_[yi][pair.first] = pair.second;
-                    }
-                }
-            }
-            auto result_obj = ObjectFactory::create_object();
-            result_obj->set_property("value", yield_ex.yielded_value);
-            result_obj->set_property("done", Value(false));
-            promise_ptr->fulfill(Value(result_obj.release()));
-            return;
-        } catch (const std::exception& e) {
-            state_ = State::Completed;
-            AsyncGenerator::set_current(prev_async_gen);
-            promise_ptr->reject(Value(std::string(e.what())));
-            return;
-        }
-        AsyncGenerator::set_current(prev_async_gen);
-    };
+    auto self = this;
+    auto task = [self]() { self->enter_fiber(); };
     if (queue_ctx) {
         queue_ctx->queue_microtask(std::move(task));
     } else {
@@ -466,25 +394,56 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& value) {
-    state_ = State::Completed;
-
-    auto promise_obj = ObjectFactory::create_promise(generator_context_);
+    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
 
-    auto result_obj = ObjectFactory::create_object();
-    result_obj->set_property("value", value);
-    result_obj->set_property("done", Value(true));
+    if (state_ == State::Completed) {
+        auto result_obj = ObjectFactory::create_object();
+        result_obj->set_property("value", value);
+        result_obj->set_property("done", Value(true));
+        promise->fulfill(Value(result_obj.release()));
+        return AsyncGeneratorResult(std::move(promise));
+    }
 
-    promise->fulfill(Value(result_obj.release()));
+    pending_promise_ = promise.get();
+    return_arg_ = value;
+    returning_ = true;
+
+    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto self = this;
+    auto task = [self]() { self->enter_fiber(); };
+    if (queue_ctx) {
+        queue_ctx->queue_microtask(std::move(task));
+    } else {
+        EventLoop::instance().schedule_microtask(std::move(task));
+    }
+
     return AsyncGeneratorResult(std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value& exception) {
-    state_ = State::Completed;
-
-    auto promise_obj = ObjectFactory::create_promise(generator_context_);
+    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
-    promise->reject(exception);
+
+    if (state_ == State::Completed) {
+        promise->reject(exception);
+        return AsyncGeneratorResult(std::move(promise));
+    }
+
+    pending_promise_ = promise.get();
+    sent_value_ = exception;
+    throwing_ = true;
+
+    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto self = this;
+    auto task = [self]() { self->enter_fiber(); };
+    if (queue_ctx) {
+        queue_ctx->queue_microtask(std::move(task));
+    } else {
+        EventLoop::instance().schedule_microtask(std::move(task));
+    }
 
     return AsyncGeneratorResult(std::move(promise));
 }
