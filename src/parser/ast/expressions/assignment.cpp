@@ -731,51 +731,91 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         break;
                                     }
                                 }
-                                auto temp = ObjectFactory::create_array(0);
-                                uint32_t cnt = 0;
-                                bool iter_done = false;
-                                Context* prev_oc = Object::current_context_;
-                                Object::current_context_ = &ctx;
+                                // IteratorClose per spec 7.4.6:
+                                // - If there was a pending exception (throw completion): call return(),
+                                //   discard its result, restore original exception
+                                // - If no pending exception (normal completion): call return(),
+                                //   propagate its errors, TypeError if result is not Object
+                                auto close_iter = [&]() {
+                                    bool had_exception = ctx.has_exception();
+                                    Value saved_exc = ctx.get_exception();
+                                    ctx.clear_exception();
+                                    Value ret_m = iter_obj.as_object()->get_property("return");
+                                    if (!ret_m.is_function()) {
+                                        if (had_exception) ctx.throw_exception(saved_exc, true);
+                                        return;
+                                    }
+                                    Value inner = ret_m.as_function()->call(ctx, {}, iter_obj);
+                                    if (had_exception) {
+                                        ctx.clear_exception();
+                                        ctx.throw_exception(saved_exc, true);
+                                    } else if (!ctx.has_exception() && !inner.is_object()) {
+                                        ctx.throw_type_error("Iterator return() must return an Object");
+                                    }
+                                };
+
                                 if (has_rest) {
+                                    // Rest: collect all remaining into temp array
+                                    auto temp = ObjectFactory::create_array(0);
+                                    uint32_t cnt = 0;
+                                    bool iter_done = false;
                                     for (uint32_t ii = 0; ii < 100000; ii++) {
                                         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         temp->set_element(cnt++, val_v);
                                     }
+                                    if (!iter_done) { close_iter(); }
+                                    temp->set_length(cnt);
+                                    source_arr = temp.release();
                                 } else {
-                                    for (uint32_t ii = 0; ii < needed; ii++) {
+                                    // Spec: for each non-rest element, evaluate target ref FIRST,
+                                    // then call next(). This allows member expression key errors
+                                    // to occur before iterator.next() is called.
+                                    auto temp = ObjectFactory::create_array(0);
+                                    uint32_t cnt = 0;
+                                    bool iter_done = false;
+                                    const auto& elems_c = arr_lit_check->get_elements();
+
+                                    for (size_t ei = 0; ei < needed && !iter_done; ei++) {
+                                        const auto& elem_c = elems_c[ei];
+                                        // Get actual target (skip elisions)
+                                        ASTNode* tgt = elem_c ? elem_c.get() : nullptr;
+                                        // Unwrap default
+                                        if (tgt && tgt->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                                            tgt = static_cast<AssignmentExpression*>(tgt)->left_.get();
+                                        }
+                                        // If target is MemberExpression: evaluate base+key NOW (before next())
+                                        // so that errors in key evaluation prevent next() from being called
+                                        if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                                            auto* mem = static_cast<MemberExpression*>(tgt);
+                                            mem->get_object()->evaluate(ctx);
+                                            if (ctx.has_exception()) { close_iter(); return; }
+                                            if (mem->is_computed()) {
+                                                mem->get_property()->evaluate(ctx);
+                                                if (ctx.has_exception()) { close_iter(); return; }
+                                            }
+                                        }
+                                        // Now call next()
                                         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
-                                        if (ctx.has_exception()) { Object::current_context_ = prev_oc; return; }
+                                        if (ctx.has_exception()) { close_iter(); return; }
                                         temp->set_element(cnt++, val_v);
                                     }
+                                    if (!iter_done) { close_iter(); }
+                                    temp->set_length(cnt);
+                                    source_arr = temp.release();
                                 }
-                                Object::current_context_ = prev_oc;
-                                // ES6: Iterator closing -- return() must return Object
-                                if (!iter_done) {
-                                    Value return_method = iter_obj.as_object()->get_property("return");
-                                    if (return_method.is_function()) {
-                                        Value ret_val = return_method.as_function()->call(ctx, {}, iter_obj);
-                                        if (!ctx.has_exception() && !ret_val.is_object() && !ret_val.is_function()) {
-                                            ctx.throw_type_error("Iterator return() returned a non-object value");
-                                            return;
-                                        }
-                                    }
-                                    if (ctx.has_exception()) return;
-                                }
-                                temp->set_length(cnt);
-                                source_arr = temp.release();
                             }
                         }
                     }

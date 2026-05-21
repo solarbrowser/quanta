@@ -344,7 +344,6 @@ public:
 
     void mark_references() const;
 
-private:
     bool has_own_binding(const std::string& name) const;
 };
 

@@ -11,9 +11,8 @@
 #include "quanta/core/runtime/Promise.h"
 #include <memory>
 #include <functional>
-#include <future>
-#include <thread>
 #include <vector>
+#include <ucontext.h>
 
 namespace Quanta {
 
@@ -23,15 +22,11 @@ class Function;
 class Engine;
 class Environment;
 
-// Thrown by AsyncAwaitExpression to suspend the async body (like YieldException for generators)
-class AwaitSuspendException : public std::exception {
-public:
-    const char* what() const noexcept override { return "Await suspended"; }
-};
-
-// Manages replay-based async function execution (similar to Generator's replay mechanism).
-// When `await pendingPromise` is hit, body exits via AwaitSuspendException.
-// When the promise resolves, run() is called again and replays past awaits.
+// Fiber-based async executor (ucontext_t). The body runs exactly once on a
+// dedicated stack. `await expr` suspends via swapcontext; promise callbacks
+// call resume() to swap back in.
+// When `await expr` is hit, the fiber suspends via swapcontext.
+// When the awaited Promise settles, resume() swaps back into the fiber.
 class AsyncExecutor : public std::enable_shared_from_this<AsyncExecutor> {
 public:
     AsyncExecutor(std::unique_ptr<ASTNode> body,
@@ -40,26 +35,30 @@ public:
                   Engine* engine);
     ~AsyncExecutor();
 
-    void run();
+    void run();                                       // start or resume fiber (from microtask)
+    void resume(Value result, bool is_throw = false); // called by promise callbacks
 
     static AsyncExecutor* get_current() { return current_; }
 
-    // Public for AsyncAwaitExpression access
-    size_t next_await_index_;
-    size_t target_await_index_;
-    std::vector<Value> await_results_;
-    std::vector<bool> await_is_throw_;
-    std::vector<Value> pinned_values_; // keeps thenable-wrapped promises alive across suspensions
-    Promise* outer_promise_;       // raw ptr — Promise is kept alive by JS value chain
+    // Await-suspension state (written before suspend, read after resume)
+    Value await_result_;
+    bool  await_is_throw_ = false;
+
+    Promise* outer_promise_;
     std::unique_ptr<Context> exec_context_owned_;
-    Context* exec_context_;        // raw ptr into exec_context_owned_
-    Engine* engine_;               // for global context / microtask queue access
-    Environment* initial_lex_env_; // saved lex env at executor creation; restored before each run
+    Context* exec_context_;
+    Engine*  engine_;
+
+    // Fiber infrastructure
+    static constexpr size_t STACK_SIZE = 512 * 1024;
+    ucontext_t fiber_ctx_;
+    ucontext_t caller_ctx_;
+    std::vector<char> fiber_stack_;
 
 private:
     std::unique_ptr<ASTNode> body_;
-
     static thread_local AsyncExecutor* current_;
+    static void fiber_entry(uint32_t lo, uint32_t hi);
 };
 
 
@@ -75,10 +74,7 @@ public:
     
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
     
-    std::unique_ptr<Promise> execute_async(Context& ctx, const std::vector<Value>& args);
-    
 private:
-    void execute_async_body(Context& ctx, Promise* promise);
 };
 
 
@@ -107,19 +103,50 @@ public:
 
     struct AsyncGeneratorResult {
         std::unique_ptr<Promise> promise;
-
         AsyncGeneratorResult(std::unique_ptr<Promise> p) : promise(std::move(p)) {}
     };
+
+    // Two reasons the fiber can suspend:
+    // Yield  → body yielded a value; fulfill the pending promise
+    // Await  → body hit an `await`; wait for the awaited promise to settle
+    enum class SuspendReason { Yield, Await, Done };
 
 private:
     std::unique_ptr<Context> context_owned_;
     Context* generator_context_;
     Context* outer_context_;
+
 public:
     Context* get_generator_context() const { return generator_context_; }
     Context* get_outer_context() const { return outer_context_; }
     std::unique_ptr<ASTNode> body_;
     State state_;
+
+    // Fiber infrastructure
+    static constexpr size_t STACK_SIZE = 512 * 1024;
+    ucontext_t fiber_ctx_;
+    ucontext_t caller_ctx_;
+    std::vector<char> fiber_stack_;
+
+    // Yield protocol (written by fiber, read by caller after suspend)
+    SuspendReason suspend_reason_ = SuspendReason::Done;
+    Value yield_value_;        // value from `yield expr`
+    Value return_value_;       // final return value
+    bool  has_exception_ = false;
+    Value exception_value_;
+
+    // next()/throw()/return() input (written by caller, read by fiber after resume)
+    Value sent_value_;
+    bool  throwing_    = false;  // throw the sent_value_ into generator
+    bool  returning_   = false;  // return(sent_value_) — close generator
+    Value return_arg_;
+
+    // Await protocol (internal — fiber suspends/resumes transparently)
+    Value await_result_;
+    bool  await_is_throw_ = false;
+
+    // The promise belonging to the currently-in-flight next()/return()/throw() call
+    Promise* pending_promise_ = nullptr;
 
 public:
     AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
@@ -128,6 +155,9 @@ public:
     AsyncGeneratorResult next(const Value& value = Value());
     AsyncGeneratorResult return_value(const Value& value);
     AsyncGeneratorResult throw_exception(const Value& exception);
+
+    // Resume fiber after an `await` inside the generator settled
+    void resume_from_await(Value result, bool is_throw = false);
 
     Value get_async_iterator();
 
@@ -144,12 +174,14 @@ public:
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }
 
-    size_t target_yield_index_;
-    std::vector<Value> sent_values_;
-    std::vector<std::unordered_map<std::string, Value>> yield_states_;
-
 private:
+    // Enter/re-enter the fiber; after swapcontext returns, handle the suspend reason.
+    void enter_fiber();
+    // Called after fiber suspends; fulfills/rejects pending_promise_ when appropriate.
+    void handle_suspension();
+
     static thread_local AsyncGenerator* current_;
+    static void fiber_entry(uint32_t lo, uint32_t hi);
 };
 
 

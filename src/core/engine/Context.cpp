@@ -730,11 +730,11 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
             return false;
         }
     }
-    
+
     if (outer_environment_) {
         return outer_environment_->set_binding(name, value);
     }
-    
+
     return false;
 }
 

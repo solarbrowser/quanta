@@ -925,73 +925,69 @@ Value ForOfStatement::evaluate(Context& ctx) {
         const uint32_t MAX_ITER = 1000000;
         for (uint32_t i = 0; i < MAX_ITER; i++) {
             Value awaited;
-            if (exec) {
-                size_t await_index = exec->next_await_index_++;
-                if (await_index < exec->target_await_index_) {
-                    if (await_index < exec->await_is_throw_.size() && exec->await_is_throw_[await_index]) {
-                        ctx.throw_exception(exec->await_results_[await_index]);
-                        return Value();
-                    }
-                    awaited = (await_index < exec->await_results_.size()) ? exec->await_results_[await_index] : Value();
-                } else {
-                    Value next_method_val = iterator_obj->get_property("next");
-                    if (!next_method_val.is_function()) {
-                        ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
-                        return Value();
-                    }
-                    Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
-                    if (ctx.has_exception()) return Value();
-                    bool is_throw = false;
-                    bool is_pending = false;
-                    Promise* prom = nullptr;
-                    if (AsyncUtils::is_promise(next_result)) {
-                        prom = static_cast<Promise*>(next_result.as_object());
-                        if (prom->get_state() == PromiseState::FULFILLED) {
-                            awaited = prom->get_value();
-                        } else if (prom->get_state() == PromiseState::REJECTED) {
-                            awaited = prom->get_value();
-                            is_throw = true;
-                        } else {
-                            is_pending = true;
-                        }
-                    } else {
-                        awaited = next_result;
-                    }
-                    if (is_pending) {
-                        auto self = exec->shared_from_this();
-                        size_t target_idx = exec->target_await_index_;
-                        auto on_fulfill_fn = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                                self->await_results_.push_back(args.empty() ? Value() : args[0]);
-                                self->await_is_throw_.push_back(false);
-                                self->target_await_index_++;
-                                if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-                                return Value();
-                            });
-                        auto on_reject_fn = ObjectFactory::create_native_function("",
-                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                                self->await_results_.push_back(args.empty() ? Value() : args[0]);
-                                self->await_is_throw_.push_back(true);
-                                self->target_await_index_++;
-                                if (gctx) gctx->queue_microtask([self]() mutable { self->run(); });
-                                return Value();
-                            });
-                        Function* ff = on_fulfill_fn.get();
-                        Function* rf = on_reject_fn.get();
-                        std::string suffix = std::to_string(target_idx);
-                        prom->set_property("__af__" + suffix, Value(on_fulfill_fn.release()));
-                        prom->set_property("__ar__" + suffix, Value(on_reject_fn.release()));
-                        prom->then(ff, rf);
-                        throw AwaitSuspendException{};
-                    }
-                    exec->await_results_.push_back(awaited);
-                    exec->await_is_throw_.push_back(is_throw);
-                    exec->target_await_index_++;
-                    if (is_throw) {
-                        ctx.throw_exception(awaited);
-                        return Value();
-                    }
+            if (exec && !exec->fiber_stack_.empty()) {
+                // Fiber-based: call next(), await the result
+                Value next_method_val = iterator_obj->get_property("next");
+                if (!next_method_val.is_function()) {
+                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
+                    return Value();
                 }
+                Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+                if (ctx.has_exception()) return Value();
+
+                bool is_pending = false;
+                bool settled_throw = false;
+                Value settled_val;
+
+                if (AsyncUtils::is_promise(next_result)) {
+                    Promise* prom = static_cast<Promise*>(next_result.as_object());
+                    if (prom->get_state() == PromiseState::FULFILLED) {
+                        settled_val = prom->get_value();
+                    } else if (prom->get_state() == PromiseState::REJECTED) {
+                        settled_val = prom->get_value();
+                        settled_throw = true;
+                    } else {
+                        is_pending = true;
+                        auto self = exec->shared_from_this();
+                        auto on_f = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
+                                return Value();
+                            });
+                        auto on_r = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
+                                return Value();
+                            });
+                        std::string key = std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
+                        Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
+                        prom->set_property("__af_" + key, Value(on_f.release()));
+                        prom->set_property("__ar_" + key, Value(on_r.release()));
+                        prom->then(ff_tmp_, fr_tmp_);
+                    }
+                } else {
+                    settled_val = next_result;
+                }
+
+                if (!is_pending) {
+                    auto self = exec->shared_from_this();
+                    Value val = settled_val;
+                    bool thr = settled_throw;
+                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+                }
+
+                swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+
+                if (exec->await_is_throw_) {
+                    ctx.throw_exception(exec->await_result_, true);
+                    exec->await_is_throw_ = false;
+                    exec->await_result_ = Value();
+                    return Value();
+                }
+                awaited = exec->await_result_;
+                exec->await_result_ = Value();
             } else {
                 Value next_method_val2 = iterator_obj->get_property("next");
                 if (!next_method_val2.is_function()) {
@@ -1025,11 +1021,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
             if (done.to_boolean()) break;
             Value value = iter_result->get_property("value");
 
-            // On replay: skip body for already-processed iterations (only run body for new ones)
-            bool skip_body = exec && ((exec->next_await_index_ - 1) < (exec->target_await_index_ - 1));
-
             if (var_name == "__destr__") {
-                if (!skip_body) {
                 if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                     auto* d = static_cast<DestructuringAssignment*>(left_.get());
                     d->evaluate_with_value(ctx, value);
@@ -1041,7 +1033,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (ctx.has_break()) { ctx.clear_break_continue(); break; }
                 if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-                }
                 if (ctx.has_return_value()) return Value();
                 continue;
             }
@@ -1056,17 +1047,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 ctx.create_binding(var_name, value, true);
             }
 
-            if (!skip_body) {
-                body_->evaluate(ctx);
-            }
-
+            body_->evaluate(ctx);
             if (per_iter) ctx.pop_block_scope();
-            if (!skip_body) {
-                if (ctx.has_exception()) return Value();
-                if (ctx.has_break()) { ctx.clear_break_continue(); break; }
-                if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
-                if (ctx.has_return_value()) return Value();
-            }
+            if (ctx.has_exception()) return Value();
+            if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+            if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
+            if (ctx.has_return_value()) return Value();
         }
         return Value();
     }
@@ -1697,9 +1683,6 @@ Value TryStatement::evaluate(Context& ctx) {
             ctx.clear_exception();
         }
     } catch (const YieldException&) {
-        try_recursion_depth--;
-        throw;
-    } catch (const AwaitSuspendException&) {
         try_recursion_depth--;
         throw;
     } catch (const std::exception& e) {
