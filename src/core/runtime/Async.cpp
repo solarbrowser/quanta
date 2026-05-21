@@ -414,13 +414,20 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     throwing_ = false;
     returning_ = false;
 
-    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto self = this;
-    auto task = [self]() { self->enter_fiber(); };
-    if (queue_ctx) {
-        queue_ctx->queue_microtask(std::move(task));
+    if (state_ == State::SuspendedStart) {
+        // Per spec: the first next() call must run the generator body synchronously
+        // up to the first yield/await so that side effects (e.g. callCount++) are
+        // visible immediately after next() returns.
+        enter_fiber();
     } else {
-        EventLoop::instance().schedule_microtask(std::move(task));
+        Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
+        auto self = this;
+        auto task = [self]() { self->enter_fiber(); };
+        if (queue_ctx) {
+            queue_ctx->queue_microtask(std::move(task));
+        } else {
+            EventLoop::instance().schedule_microtask(std::move(task));
+        }
     }
 
     return AsyncGeneratorResult(std::move(promise));
