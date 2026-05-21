@@ -1146,17 +1146,32 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                             Value result = next_fn->call(ctx, {}, iterator_obj);
 
-                            if (ctx.has_exception()) { close_iterator(); return Value(); }
+                            // Per spec: if next() throws abruptly, do NOT close the iterator.
+                            if (ctx.has_exception()) { return Value(); }
 
                             if (result.is_object()) {
                                 Object* result_obj = result.as_object();
                                 Value done = result_obj->get_property("done");
+                                // Propagate getter exception (may land in Object::current_context_)
+                                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                                        && Object::current_context_->has_exception()) {
+                                    ctx.throw_exception(Object::current_context_->get_exception(), true);
+                                    Object::current_context_->clear_exception();
+                                }
+                                // Per spec: done/value getter throws → do NOT close iterator
+                                if (ctx.has_exception()) return Value();
 
                                 if (done.is_boolean() && done.to_boolean()) {
                                     break;
                                 }
 
                                 Value value = result_obj->get_property("value");
+                                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                                        && Object::current_context_->has_exception()) {
+                                    ctx.throw_exception(Object::current_context_->get_exception(), true);
+                                    Object::current_context_->clear_exception();
+                                }
+                                if (ctx.has_exception()) return Value();
 
                                 if (left_->get_type() == Type::MEMBER_EXPRESSION) {
                                     MemberExpression* member = static_cast<MemberExpression*>(left_.get());

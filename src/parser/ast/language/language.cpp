@@ -1367,11 +1367,23 @@ Value YieldExpression::evaluate(Context& ctx) {
                 }
 
                 if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
-                Value done_val = nr.as_object()->get_property("done");
-                if (ctx.has_exception()) return Value();
-                last_val = nr.as_object()->get_property("value");
-                if (ctx.has_exception()) return Value();
-                if (done_val.to_boolean()) { delegate_done = true; break; }
+                // Set Object::current_context_ locally so getter exceptions land in ctx.
+                {
+                    Context* prev_oc = Object::current_context_;
+                    Object::current_context_ = &ctx;
+                    Value done_val_tmp = nr.as_object()->get_property("done");
+                    Object::current_context_ = prev_oc;
+                    if (ctx.has_exception()) return Value();
+                    last_val = [&]() -> Value {
+                        Context* p2 = Object::current_context_;
+                        Object::current_context_ = &ctx;
+                        Value v = nr.as_object()->get_property("value");
+                        Object::current_context_ = p2;
+                        return v;
+                    }();
+                    if (ctx.has_exception()) return Value();
+                    if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
+                }
 
                 // Yield the value to the consumer
                 async_gen->yield_value_    = last_val;
