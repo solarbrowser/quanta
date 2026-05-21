@@ -36,9 +36,19 @@ AsyncExecutor::AsyncExecutor(std::unique_ptr<ASTNode> body,
     uintptr_t ptr = reinterpret_cast<uintptr_t>(this);
     makecontext(&fiber_ctx_, (void(*)())fiber_entry, 2,
                 (uint32_t)(ptr & 0xFFFFFFFFu), (uint32_t)(ptr >> 32));
+    // Keep outer_promise alive as a GC root for the lifetime of this executor.
+    // Without this, GC may collect the promise (and the awaited inner Promises
+    // stored on it as pins) while the fiber is suspended.
+    if (engine_ && engine_->get_garbage_collector()) {
+        engine_->get_garbage_collector()->add_root_object(outer_promise_);
+    }
 }
 
-AsyncExecutor::~AsyncExecutor() = default;
+AsyncExecutor::~AsyncExecutor() {
+    if (engine_ && engine_->get_garbage_collector()) {
+        engine_->get_garbage_collector()->remove_root_object(outer_promise_);
+    }
+}
 
 void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     uintptr_t ptr = ((uintptr_t)hi << 32) | (uintptr_t)lo;
@@ -95,9 +105,13 @@ void AsyncExecutor::run() {
 }
 
 void AsyncExecutor::resume(Value result, bool is_throw) {
-    await_result_   = std::move(result);
+    await_result_   = result;
     await_is_throw_ = is_throw;
+    // Pin the result on outer_promise_ so GC doesn't collect it while the
+    // fiber reads it (fiber stack is not a GC root).
+    if (outer_promise_) outer_promise_->set_property("__rv_", result);
     run();
+    if (outer_promise_) outer_promise_->delete_property("__rv_");
 }
 
 // AsyncFunction
@@ -159,7 +173,14 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
 
         Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
 
-        // Resolve awaited value to a settled state or register pending callbacks
+        // Pin expr_val on outer_promise_ IMMEDIATELY (before any allocations that
+        // could trigger GC and collect the awaited Promise while it's only on the
+        // fiber's stack — which GC does not scan).
+        static thread_local size_t pin_counter = 0;
+        std::string pin_key = "__ap_" + std::to_string(pin_counter++);
+        exec->outer_promise_->set_property(pin_key, expr_val);
+
+        // Now resolve awaited value / register pending callbacks
         Value settled_val;
         bool settled_throw = false;
         bool is_pending = false;
@@ -203,7 +224,10 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         }
 
         if (!is_pending) {
-            // Per spec, even already-settled await goes through microtask queue
+            // Also pin the settled value (e.g. module namespace) on outer_promise
+            // so GC can't collect it while it's only in the microtask lambda capture.
+            std::string sv_key = pin_key + "_v";
+            exec->outer_promise_->set_property(sv_key, settled_val);
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
@@ -215,7 +239,9 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
         // Suspend fiber — return control to the microtask runner
         swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
 
-        // Resumed by resume() after promise settled
+        // Resumed by resume() — await_result_ holds the settled value
+        exec->outer_promise_->delete_property(pin_key);
+
         if (exec->await_is_throw_) {
             ctx.throw_exception(exec->await_result_, true);
             exec->await_is_throw_ = false;
@@ -336,6 +362,7 @@ void AsyncGenerator::handle_suspension() {
             result_obj->set_property("done", Value(false));
             pending_promise_->fulfill(Value(result_obj.release()));
             pending_promise_ = nullptr;
+            delete_property("__pending_promise__");
             break;
         }
         case SuspendReason::Await:
@@ -352,15 +379,19 @@ void AsyncGenerator::handle_suspension() {
                 pending_promise_->fulfill(Value(result_obj.release()));
             }
             pending_promise_ = nullptr;
+            delete_property("__pending_promise__");
             break;
         }
     }
 }
 
 void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
-    await_result_   = std::move(result);
+    await_result_   = result;
     await_is_throw_ = is_throw;
+    // Pin result on 'this' (a GC-managed Object) to prevent collection.
+    set_property("__rv_", result);
     enter_fiber();
+    delete_property("__rv_");
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
@@ -377,6 +408,8 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
     }
 
     pending_promise_ = promise.get();
+    // Pin the pending promise on 'this' (an Object, GC-traced) so GC doesn't collect it.
+    set_property("__pending_promise__", Value(pending_promise_));
     sent_value_ = value;
     throwing_ = false;
     returning_ = false;

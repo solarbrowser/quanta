@@ -1063,6 +1063,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
         }
 
+        async_gen->await_result_ = expr_val;  // pin awaited value as GC root during suspension
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
         swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
 
@@ -1082,7 +1083,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
     if (exec && !exec->fiber_stack_.empty()) {
         // Fiber-based await: evaluate, suspend, resume with result
         if (!argument_) {
-            // `await` with no argument — suspend once then return undefined
+            // `await` with no argument -- suspend once then return undefined
             auto self = exec->shared_from_this();
             Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
             if (gctx) gctx->queue_microtask([self]() mutable { self->resume(Value(), false); });
@@ -1096,6 +1097,11 @@ Value AwaitExpression::evaluate(Context& ctx) {
         if (ctx.has_exception()) return Value();
 
         Context* gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+
+        // Pin immediately -- before any allocations that could trigger GC.
+        static thread_local size_t aw_pin_ctr = 0;
+        std::string aw_pin_key = "__ap_" + std::to_string(aw_pin_ctr++);
+        exec->outer_promise_->set_property(aw_pin_key, expr_val);
 
         Promise* awaited_promise = nullptr;
         Value settled_val;
@@ -1171,6 +1177,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
             awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
             awaited_promise->then(ff_tmp_, fr_tmp_);
         } else {
+            // Pin settled_val too (e.g. module namespace object in microtask capture).
+            exec->outer_promise_->set_property(aw_pin_key + "_v", settled_val);
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
@@ -1178,6 +1186,8 @@ Value AwaitExpression::evaluate(Context& ctx) {
         }
 
         swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+        exec->outer_promise_->delete_property(aw_pin_key);
+        exec->outer_promise_->delete_property(aw_pin_key + "_v");
 
         if (exec->await_is_throw_) {
             ctx.throw_exception(exec->await_result_, true);
@@ -1324,7 +1334,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     } else if (p->get_state() == PromiseState::REJECTED) {
                         ctx.throw_exception(p->get_value(), true); return Value();
                     } else {
-                        // Pending — suspend and await
+                        // Pending -- suspend and await
                         auto on_f = ObjectFactory::create_native_function("",
                             [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
@@ -1342,6 +1352,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                         p->set_property("__af_" + key, Value(on_f.release()));
                         p->set_property("__ar_" + key, Value(on_r.release()));
                         p->then(ff_tmp_, fr_tmp_);
+                        async_gen->await_result_ = nr;  // pin promise as GC root
                         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                         swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
                         if (async_gen->await_is_throw_) {

@@ -93,7 +93,12 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Promise* child = static_cast<Promise*>(child_obj.release());
 
     if (state_ == PromiseState::PENDING) {
-        // Store for later when promise resolves
+        // Also store callbacks as own properties so GC (which traces properties but
+        // not C++ then_records_ directly) keeps them alive during suspension.
+        std::string pin = "__then_" + std::to_string(then_records_.size());
+        if (on_fulfilled) set_property(pin + "f", Value(on_fulfilled));
+        if (on_rejected)  set_property(pin + "r", Value(on_rejected));
+        if (child)        set_property(pin + "c", Value(child));
         then_records_.push_back({on_fulfilled, on_rejected, child});
     } else if (state_ == PromiseState::FULFILLED) {
         if (on_fulfilled) {
@@ -221,6 +226,13 @@ void Promise::execute_handlers() {
     // live closure variable access (shared mutable state across async boundaries).
     auto records = std::move(then_records_);
     then_records_.clear();
+    // Clear the GC-pinning properties for all handlers we're about to run.
+    for (size_t i = 0; i < records.size(); i++) {
+        std::string pin = "__then_" + std::to_string(i);
+        delete_property(pin + "f");
+        delete_property(pin + "r");
+        delete_property(pin + "c");
+    }
 
     for (auto& rec : records) {
         if (state_ == PromiseState::FULFILLED) {

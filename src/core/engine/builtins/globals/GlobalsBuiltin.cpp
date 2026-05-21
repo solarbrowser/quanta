@@ -226,11 +226,9 @@ void register_global_builtins(Context& ctx) {
                         Value exception = eval_ctx.get_exception();
                         eval_ctx.clear_exception();
                         ctx.throw_exception(exception);
-                        delete eval_env;
                         return Value();
                     }
 
-                    delete eval_env;
                     return result;
                 } else {
                     // Non-strict eval: evaluate in calling context
