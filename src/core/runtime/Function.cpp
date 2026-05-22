@@ -643,14 +643,24 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                             // Variable is in the direct caller's scope -- write there.
                             parent_var_env->set_binding(var_name, current_value);
                         } else if (closure_context_) {
-                            // Variable not in caller's scope.  Walk to the lexical scope
-                            // where this function was defined and write there if the var
-                            // is explicitly declared (has_own_binding).  This propagates
-                            // mutations like `nextCount++` back to the global scope even
-                            // when the function is called from a nested wrapper.
                             auto* cve = closure_context_->get_variable_environment();
                             if (cve && cve->has_own_binding(var_name)) {
                                 cve->set_binding(var_name, current_value);
+                                // For non-global envs (Function/Declarative), the own
+                                // binding is a closure-loaded copy.  Propagate the write
+                                // up the outer chain so callers at higher scopes (e.g.
+                                // global) also see the updated value.
+                                if (cve->get_type() != Environment::Type::Object &&
+                                    cve->get_type() != Environment::Type::Global) {
+                                    Environment* outer = cve->get_outer();
+                                    while (outer) {
+                                        if (outer->has_own_binding(var_name)) {
+                                            outer->set_binding(var_name, current_value);
+                                            break;
+                                        }
+                                        outer = outer->get_outer();
+                                    }
+                                }
                             }
                         }
                     }

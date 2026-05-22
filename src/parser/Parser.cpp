@@ -1526,6 +1526,17 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                                next != 'p' && next != 'P' && next != 'k' && next != 'c') {
                         add_error("SyntaxError: Invalid escape \\" + std::string(1, next) + " in regexp /u");
                         return nullptr;
+                    } else if (next == 'u' || next == 'x') {
+                        // Skip \uXXXX, \u{XXXX}, \xXX
+                        i++;
+                        if (next == 'u' && i + 1 < p.size() && p[i+1] == '{') {
+                            i++;  // skip {
+                            while (i + 1 < p.size() && p[i+1] != '}') i++;
+                            if (i + 1 < p.size()) i++;  // skip }
+                        } else {
+                            size_t skip = (next == 'u') ? 4 : 2;
+                            for (size_t s = 0; s < skip && i + 1 < p.size(); s++) i++;
+                        }
                     } else {
                         i++;
                     }
@@ -5863,7 +5874,12 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     add_error("Invalid shorthand property");
                     return nullptr;
                 }
-                
+                // Computed keys cannot be shorthands: ({[x]}) is a SyntaxError
+                if (computed) {
+                    add_error("SyntaxError: Computed property name cannot be shorthand");
+                    return nullptr;
+                }
+
                 if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
                     auto value = std::make_unique<Identifier>(
                         identifier_key->get_name(),
