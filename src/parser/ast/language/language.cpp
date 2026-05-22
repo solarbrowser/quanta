@@ -103,17 +103,16 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         function_obj->set_source_text(source_text_);
     }
 
-    // Detect "use strict" directive in function body
     if (function_obj && body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
         BlockStatement* blk = static_cast<BlockStatement*>(body_.get());
-        const auto& stmts = blk->get_statements();
-        if (!stmts.empty() && stmts[0]->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-            ExpressionStatement* es = static_cast<ExpressionStatement*>(stmts[0].get());
-            if (es->get_expression() && es->get_expression()->get_type() == ASTNode::Type::STRING_LITERAL) {
-                StringLiteral* sl = static_cast<StringLiteral*>(es->get_expression());
-                if (sl->get_value() == "use strict") {
-                    function_obj->set_is_strict(true);
-                }
+        for (const auto& s : blk->get_statements()) {
+            if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+            auto* es = static_cast<ExpressionStatement*>(s.get());
+            if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
+            auto* sl = static_cast<StringLiteral*>(es->get_expression());
+            if (sl->get_value() == "use strict" && !sl->has_escapes()) {
+                function_obj->set_is_strict(true);
+                break;
             }
         }
     }
@@ -776,18 +775,14 @@ Value FunctionExpression::evaluate(Context& ctx) {
         bool is_strict = ctx.is_strict_mode();
         if (!is_strict && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             BlockStatement* block = static_cast<BlockStatement*>(body_.get());
-            const auto& stmts = block->get_statements();
-            if (!stmts.empty()) {
-                auto* first_stmt = stmts[0].get();
-                if (first_stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-                    auto* expr_stmt = static_cast<ExpressionStatement*>(first_stmt);
-                    auto* expr = expr_stmt->get_expression();
-                    if (expr && expr->get_type() == ASTNode::Type::STRING_LITERAL) {
-                        auto* string_literal = static_cast<StringLiteral*>(expr);
-                        if (string_literal->get_value() == "use strict") {
-                            is_strict = true;
-                        }
-                    }
+            for (const auto& s : block->get_statements()) {
+                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+                auto* es2 = static_cast<ExpressionStatement*>(s.get());
+                if (!es2->get_expression() || es2->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
+                auto* sl2 = static_cast<StringLiteral*>(es2->get_expression());
+                if (sl2->get_value() == "use strict" && !sl2->has_escapes()) {
+                    is_strict = true;
+                    break;
                 }
             }
         }

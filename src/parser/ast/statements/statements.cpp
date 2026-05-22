@@ -186,19 +186,15 @@ std::unique_ptr<ASTNode> Program::clone() const {
 }
 
 void Program::check_use_strict_directive(Context& ctx) {
-    if (!statements_.empty()) {
-        auto* first_stmt = statements_[0].get();
-        if (first_stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-            auto* expr_stmt = static_cast<ExpressionStatement*>(first_stmt);
-            auto* expr = expr_stmt->get_expression();
-
-            if (expr && expr->get_type() == ASTNode::Type::STRING_LITERAL) {
-                auto* string_literal = static_cast<StringLiteral*>(expr);
-                std::string str_val = string_literal->get_value();
-                if (str_val == "use strict") {
-                    ctx.set_strict_mode(true);
-                }
-            }
+    for (const auto& stmt : statements_) {
+        if (stmt->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+        auto* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
+        auto* expr = expr_stmt->get_expression();
+        if (!expr || expr->get_type() != ASTNode::Type::STRING_LITERAL) break;
+        auto* sl = static_cast<StringLiteral*>(expr);
+        if (sl->get_value() == "use strict" && !sl->has_escapes()) {
+            ctx.set_strict_mode(true);
+            return;
         }
     }
 }
@@ -331,19 +327,18 @@ std::unique_ptr<ASTNode> VariableDeclaration::clone() const {
 
 
 void BlockStatement::check_use_strict_directive(Context& ctx) {
-    if (!statements_.empty()) {
-        auto* first_stmt = statements_[0].get();
-        if (first_stmt->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
-            auto* expr_stmt = static_cast<ExpressionStatement*>(first_stmt);
-            auto* expr = expr_stmt->get_expression();
-
-            if (expr && expr->get_type() == ASTNode::Type::STRING_LITERAL) {
-                auto* string_literal = static_cast<StringLiteral*>(expr);
-                std::string str_val = string_literal->get_value();
-                if (str_val == "use strict") {
-                    ctx.set_strict_mode(true);
-                }
-            }
+    // Scan the directive prologue -- all consecutive string-literal statements
+    // at the top of the function body, not just the first one.
+    for (const auto& stmt : statements_) {
+        if (stmt->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+        auto* expr_stmt = static_cast<ExpressionStatement*>(stmt.get());
+        auto* expr = expr_stmt->get_expression();
+        if (!expr || expr->get_type() != ASTNode::Type::STRING_LITERAL) break;
+        auto* sl = static_cast<StringLiteral*>(expr);
+        // Per spec: directive is only valid when it has no escape sequences.
+        if (sl->get_value() == "use strict" && !sl->has_escapes()) {
+            ctx.set_strict_mode(true);
+            return;
         }
     }
 }

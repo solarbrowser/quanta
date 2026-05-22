@@ -1288,18 +1288,13 @@ std::unique_ptr<ASTNode> Parser::parse_number_literal() {
 std::unique_ptr<ASTNode> Parser::parse_string_literal() {
     const Token& token = current_token();
     std::string value = token.get_value();
+    bool has_escapes = token.string_has_escapes();
 
     Position start = token.get_start();
     Position end = token.get_end();
     advance();
 
-    while (!at_end() && current_token().get_type() == TokenType::STRING) {
-        value += current_token().get_value();
-        end = current_token().get_end();
-        advance();
-    }
-
-    return std::make_unique<StringLiteral>(value, start, end);
+    return std::make_unique<StringLiteral>(value, start, end, has_escapes);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_this_expression() {

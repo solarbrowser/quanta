@@ -132,13 +132,16 @@ public:
 class StringLiteral : public ASTNode {
 private:
     std::string value_;
+    bool has_escapes_ = false;
 
 public:
-    StringLiteral(const std::string& value, const Position& start, const Position& end)
-        : ASTNode(Type::STRING_LITERAL, start, end), value_(value) {}
-    
+    StringLiteral(const std::string& value, const Position& start, const Position& end,
+                  bool has_escapes = false)
+        : ASTNode(Type::STRING_LITERAL, start, end), value_(value), has_escapes_(has_escapes) {}
+
     const std::string& get_value() const { return value_; }
-    
+    bool has_escapes() const { return has_escapes_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
