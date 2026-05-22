@@ -353,7 +353,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     proto = proto->get_prototype();
                 }
             }
-            if (desc.is_accessor_descriptor() && desc.has_setter()) {
+            // For plain assignment only: invoke setter directly here.
+            // Compound assignments (+=, &= etc.) need to read the current value first,
+            // so they go through the switch and call set_property (which invokes setters).
+            if (operator_ == Operator::ASSIGN && desc.is_accessor_descriptor() && desc.has_setter()) {
                 Object* setter = desc.get_setter();
                 if (setter) {
                     Function* setter_fn = dynamic_cast<Function*>(setter);
