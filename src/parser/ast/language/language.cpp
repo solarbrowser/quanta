@@ -185,6 +185,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
+    std::vector<std::pair<std::string, PropertyDescriptor>> deferred_instance_methods;
 
     if (body_) {
         for (const auto& stmt : body_->get_statements()) {
@@ -267,25 +268,28 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
                     }
                     instance_method->set_is_strict(true);
+                    // Getter/setter functions must not have [[Construct]] or prototype.
+                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
+                        instance_method->set_function_prototype(nullptr);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
-                        PropertyDescriptor existing = prototype->get_property_descriptor(method_name);
+                        // Find existing deferred entry or create new one
+                        PropertyDescriptor* existing_deferred = nullptr;
+                        for (auto& dp : deferred_instance_methods) {
+                            if (dp.first == method_name) { existing_deferred = &dp.second; break; }
+                        }
                         PropertyDescriptor desc;
-                        if (existing.is_accessor_descriptor() || existing.has_getter() || existing.has_setter()) {
-                            desc = existing;
-                        }
-                        if (method->get_kind() == MethodDefinition::GETTER) {
-                            desc.set_getter(instance_method.release());
-                        } else {
-                            desc.set_setter(instance_method.release());
-                        }
+                        if (existing_deferred && existing_deferred->is_accessor_descriptor()) desc = *existing_deferred;
+                        if (method->get_kind() == MethodDefinition::GETTER) desc.set_getter(instance_method.release());
+                        else desc.set_setter(instance_method.release());
                         desc.set_enumerable(false);
                         desc.set_configurable(true);
-                        prototype->set_property_descriptor(method_name, desc);
+                        if (existing_deferred) *existing_deferred = desc;
+                        else deferred_instance_methods.push_back({method_name, desc});
                     } else {
                         PropertyDescriptor method_desc(Value(instance_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-                        prototype->set_property_descriptor(method_name, method_desc);
+                        deferred_instance_methods.push_back({method_name, method_desc});
                     }
                 }
             }
@@ -352,7 +356,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     Object* proto_ptr = prototype.get();
     if (constructor_fn.get() && proto_ptr) {
         constructor_fn->set_property("prototype", Value(proto_ptr));
-        proto_ptr->set_property("constructor", Value(constructor_fn.get()));
+        // Add constructor first so it appears first in getOwnPropertyNames per spec.
+        {
+            PropertyDescriptor ctor_desc(Value(constructor_fn.get()),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            proto_ptr->set_property_descriptor("constructor", ctor_desc);
+        }
+        // Add instance methods after constructor to ensure constructor comes first.
+        for (auto& dm : deferred_instance_methods)
+            proto_ptr->set_property_descriptor(dm.first, dm.second);
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
         if (!has_explicit_constructor) {
@@ -388,7 +400,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
                         method_name = str->get_value();
                     } else if (NumberLiteral* num = dynamic_cast<NumberLiteral*>(method->get_key())) {
-                        method_name = num->to_string();
+                        // Evaluate to get numeric value -> canonical property key (e.g. 0b10 -> "2")
+                        Value num_val = num->evaluate(ctx);
+                        method_name = num_val.to_property_key();
                     } else {
                         method_name = "[unknown]";
                     }
@@ -422,6 +436,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
                     }
                     static_method->set_is_strict(true);
+                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
+                        static_method->set_function_prototype(nullptr);
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);

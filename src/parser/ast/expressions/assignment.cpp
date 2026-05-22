@@ -794,10 +794,10 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (ctx.has_exception()) { close_iter(); return; }
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (ctx.has_exception()) return;
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
                                     }
                                     if (!iter_done) { close_iter(); }
@@ -831,15 +831,16 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                                 if (ctx.has_exception()) { close_iter(); return; }
                                             }
                                         }
-                                        // Now call next()
+                                        // Now call next(). Per spec, if next()/done/value throw,
+                                        // do NOT close the iterator (no IteratorClose on abrupt next).
                                         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (ctx.has_exception()) return;
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (ctx.has_exception()) return;
                                         if (done_v.to_boolean()) { iter_done = true; break; }
                                         Value val_v = res.as_object()->get_property("value");
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
                                     }
                                     if (!iter_done) { close_iter(); }
