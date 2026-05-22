@@ -981,6 +981,7 @@ static bool is_unicode_id_start(uint32_t cp) {
     if (cp == 0x2102 || cp == 0x2107) return true;
     if (cp >= 0x210A && cp <= 0x2113) return true;
     if (cp == 0x2115) return true;
+    if (cp == 0x2118) return true; 
     if (cp >= 0x2119 && cp <= 0x211D) return true;
     if (cp == 0x2124 || cp == 0x2126 || cp == 0x2128) return true;
     if (cp >= 0x212A && cp <= 0x2139) return true;
