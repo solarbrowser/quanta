@@ -742,11 +742,9 @@ Value Function::get_property(const std::string& key) const {
         return Value(static_cast<double>(parameters_.size()));
     }
     if (key == "prototype") {
+        if (prototype_ == nullptr) return Value();  
         return Value(prototype_);
     }
-
-    // call, apply, bind are now handled via Function.prototype
-    // No need for special handling here anymore
 
     Value result = get_own_property(key);
     if (!result.is_undefined()) {

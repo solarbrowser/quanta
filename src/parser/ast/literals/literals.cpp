@@ -139,6 +139,8 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                 ctx.throw_exception(Value(std::string("Getter/setter must be a function")));
                 return Value();
             }
+            // Getter/setter functions must not expose [[Construct]] -- remove prototype.
+            value.as_function()->set_function_prototype(nullptr);
 
             PropertyDescriptor desc;
             if (object->has_own_property(key)) {
