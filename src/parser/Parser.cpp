@@ -1490,6 +1490,61 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         std::vector<std::string> backrefs;
         bool has_unicode_flag = flags.find('u') != std::string::npos || flags.find('v') != std::string::npos;
         const std::string& p = pattern;
+
+        // Unicode-mode (/u or /v) strict validation
+        if (has_unicode_flag) {
+            int group_count = 0;
+            for (size_t i = 0; i < p.size(); i++) {
+                if (p[i] == '(' && (i == 0 || p[i-1] != '\\')) {
+                    group_count++;
+                } else if (p[i] == '\\' && i + 1 < p.size()) {
+                    char next = p[i+1];
+                    // \c must be followed by A-Z or a-z
+                    if (next == 'c') {
+                        if (i + 2 >= p.size() || !std::isalpha((unsigned char)p[i+2])) {
+                            add_error("SyntaxError: Invalid Unicode escape \\c in regexp /u");
+                            return nullptr;
+                        }
+                        i += 2;
+                    // \8 and \9 are invalid in unicode mode
+                    } else if (next == '8' || next == '9') {
+                        add_error("SyntaxError: Invalid escape \\8/\\9 in regexp /u");
+                        return nullptr;
+                    // \1..\7 are decimal escapes -- valid only with a group
+                    } else if (next >= '1' && next <= '7') {
+                        i++;
+                    // Non-identity escapes: letters that aren't valid
+                    } else if (std::isalpha((unsigned char)next) &&
+                               next != 'b' && next != 'B' && next != 'd' && next != 'D' &&
+                               next != 's' && next != 'S' && next != 'w' && next != 'W' &&
+                               next != 'n' && next != 'r' && next != 't' && next != 'v' &&
+                               next != 'f' && next != '0' && next != 'u' && next != 'x' &&
+                               next != 'p' && next != 'P' && next != 'k' && next != 'c') {
+                        add_error("SyntaxError: Invalid escape \\" + std::string(1, next) + " in regexp /u");
+                        return nullptr;
+                    } else {
+                        i++;
+                    }
+                } else if (p[i] == '{' && (i == 0 || p[i-1] != '\\')) {
+                    // Lone { not part of quantifier is invalid in unicode mode
+                    // Check if it's a valid quantifier: {n}, {n,}, {n,m}
+                    size_t j = i + 1;
+                    while (j < p.size() && std::isdigit((unsigned char)p[j])) j++;
+                    bool valid_quantifier = j > i + 1 && j < p.size() &&
+                        (p[j] == '}' || (p[j] == ',' &&
+                            (j + 1 < p.size() && (p[j+1] == '}' || std::isdigit((unsigned char)p[j+1])))));
+                    if (!valid_quantifier) {
+                        add_error("SyntaxError: Lone { not allowed in regexp /u");
+                        return nullptr;
+                    }
+                } else if (p[i] == '}' && (i == 0 || p[i-1] != '\\')) {
+                    // Lone } is invalid in unicode mode if not closing a valid quantifier
+                    // (simplified: only flag if not following a digit or after {n,m})
+                    if (i == 0 || p[i-1] != '{') {
+                    }
+                }
+            }
+        }
         for (size_t i = 0; i < p.size(); i++) {
             // Detect invalid group syntax: (?x where x is not :, =, !, <
             // e.g. (?i:...) modifiers proposal -- not valid in standard ES
@@ -5193,10 +5248,14 @@ std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
     }
 
     std::unique_ptr<ASTNode> argument = nullptr;
-    if (same_line && !at_end() && current_token().get_type() != TokenType::SEMICOLON &&
-        current_token().get_type() != TokenType::RIGHT_BRACE &&
-        current_token().get_type() != TokenType::RIGHT_PAREN) {
-        argument = parse_assignment_expression();
+    if (same_line && !at_end()) {
+        TokenType nt = current_token().get_type();
+        if (nt != TokenType::SEMICOLON && nt != TokenType::RIGHT_BRACE &&
+            nt != TokenType::RIGHT_PAREN && nt != TokenType::RIGHT_BRACKET &&
+            nt != TokenType::COMMA && nt != TokenType::EOF_TOKEN &&
+            nt != TokenType::COLON) {
+            argument = parse_assignment_expression();
+        }
     }
     
     Position end = get_current_position();
