@@ -117,7 +117,7 @@ Function::Function(const std::string& name,
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     CallStack& stack = CallStack::instance();
-    Position call_position(1, 1, 0);
+    Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
 
     execution_count_++;

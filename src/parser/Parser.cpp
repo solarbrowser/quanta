@@ -1263,8 +1263,11 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
         case TokenType::LESS_THAN:
             return parse_jsx_element();
         default: {
-            std::string error_msg = "Unexpected token: '" + token.get_value() + "' (type: " + std::to_string(static_cast<int>(token.get_type())) + ") at line " + std::to_string(token.get_start().line);
-            add_error(error_msg);
+            std::string tok_val = token.get_value().empty()
+                ? Token::token_type_name(token.get_type())
+                : "'" + token.get_value() + "'";
+            std::string error_msg = "SyntaxError: Unexpected token " + tok_val;
+            add_error(error_msg, token.get_start());
             advance();
             return nullptr;
         }
