@@ -1467,7 +1467,7 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
 
     // Validate flags: only valid flag chars, no duplicates, no unicode escapes
     {
-        static const std::string valid_flags = "gimsuyv";
+        static const std::string valid_flags = "dgimsuyv";
         std::unordered_set<char> seen_flags;
         for (char fc : flags) {
             if (valid_flags.find(fc) == std::string::npos) {
@@ -2653,6 +2653,18 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     }
 
     if (current_token().get_type() == TokenType::IN) {
+        // Early SyntaxError: LHS must be a valid assignment target
+        if (init && init->get_type() != ASTNode::Type::VARIABLE_DECLARATION) {
+            auto t = init->get_type();
+            if (t != ASTNode::Type::IDENTIFIER &&
+                t != ASTNode::Type::MEMBER_EXPRESSION &&
+                t != ASTNode::Type::ARRAY_LITERAL &&
+                t != ASTNode::Type::OBJECT_LITERAL &&
+                t != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                add_error("SyntaxError: Invalid left-hand side in for-in");
+                return nullptr;
+            }
+        }
         if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
             if (vd->declaration_count() > 1) {
@@ -2743,6 +2755,18 @@ check_for_of:
     }
 
     if (current_token().get_type() == TokenType::OF) {
+        // Early SyntaxError: LHS must be a valid assignment target
+        if (init && init->get_type() != ASTNode::Type::VARIABLE_DECLARATION) {
+            auto t = init->get_type();
+            if (t != ASTNode::Type::IDENTIFIER &&
+                t != ASTNode::Type::MEMBER_EXPRESSION &&
+                t != ASTNode::Type::ARRAY_LITERAL &&
+                t != ASTNode::Type::OBJECT_LITERAL &&
+                t != ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                add_error("SyntaxError: Invalid left-hand side in for-of");
+                return nullptr;
+            }
+        }
         // for-of: declaration with initializer or multiple bindings is SyntaxError
         if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
