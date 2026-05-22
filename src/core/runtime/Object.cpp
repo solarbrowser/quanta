@@ -463,8 +463,44 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             current = current->get_prototype();
         }
     }
+    // Check prototype chain for accessor descriptors (setter invocation)
+    if (!prop_exists) {
+        Object* cur = header_.prototype;
+        while (cur) {
+            PropertyDescriptor inherited_desc = cur->get_property_descriptor(key);
+            if (inherited_desc.is_accessor_descriptor() && inherited_desc.has_setter()) {
+                Object* setter = inherited_desc.get_setter();
+                if (setter && current_context_) {
+                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    if (setter_fn) {
+                        Value receiver = this->is_function()
+                            ? Value(static_cast<Function*>(this))
+                            : Value(this);
+                        setter_fn->call(*current_context_, {value}, receiver);
+                    }
+                }
+                return true;
+            }
+            if (cur->has_own_property(key)) break;
+            cur = cur->get_prototype();
+        }
+    }
+
     if (prop_exists) {
         PropertyDescriptor desc = get_property_descriptor(key);
+        if (desc.is_accessor_descriptor() && desc.has_setter()) {
+            Object* setter = desc.get_setter();
+            if (setter && current_context_) {
+                Function* setter_fn = dynamic_cast<Function*>(setter);
+                if (setter_fn) {
+                    Value receiver = this->is_function()
+                        ? Value(static_cast<Function*>(this))
+                        : Value(this);
+                    setter_fn->call(*current_context_, {value}, receiver);
+                }
+            }
+            return true;
+        }
         if (desc.is_data_descriptor() && !desc.is_writable()) {
             return false;
         }
