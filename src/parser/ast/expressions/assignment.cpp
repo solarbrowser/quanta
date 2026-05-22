@@ -893,10 +893,15 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
         if (ctx.has_binding(name)) {
             bool ok = ctx.set_binding(name, value);
             if (!ok) {
-                // Binding exists but immutable (const) -- TypeError
-                ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                if (ctx.is_strict_mode() || ctx.is_lexical_const(name)) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                }
             }
         } else {
+            if (ctx.is_strict_mode()) {
+                ctx.throw_reference_error("'" + name + "' is not defined");
+                return;
+            }
             ctx.create_binding(name, value, true);
         }
     } else if (target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
