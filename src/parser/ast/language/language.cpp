@@ -378,6 +378,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         Value key_val = method->get_key()->evaluate(ctx);
                         if (ctx.has_exception()) return Value();
                         method_name = key_val.to_property_key();
+                        // Computed static method named 'prototype' is a runtime TypeError
+                        if (method_name == "prototype") {
+                            ctx.throw_type_error("Class may not have a static property named 'prototype'");
+                            return Value();
+                        }
                     } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                         method_name = id->get_name();
                     } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
