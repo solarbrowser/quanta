@@ -1220,6 +1220,10 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 add_error("SyntaxError: 'yield' is not allowed in arrow function parameters");
                 return nullptr;
             }
+            if (!options_.in_generator_body && options_.strict_mode) {
+                add_error("SyntaxError: 'yield' is a reserved word in strict mode");
+                return nullptr;
+            }
             if ((options_.in_binary_expr || options_.in_unary_operand) && options_.in_generator_body) {
                 add_error("SyntaxError: 'yield' cannot be used in this expression context in a generator");
                 return nullptr;
