@@ -627,16 +627,28 @@ Token Lexer::read_number() {
 Token Lexer::read_string(char quote) {
     Position start = current_position_;
     advance();
-    
+
+    // Check if any backslash escape sequences appear in this string.
+    // Needed to reject 'use strict' as a directive prologue.
+    size_t scan_pos = position_;
+    bool has_escapes = false;
+    while (scan_pos < source_.size() && source_[scan_pos] != quote) {
+        if (source_[scan_pos] == '\n' || source_[scan_pos] == '\r') break;
+        if (source_[scan_pos] == '\\') { has_escapes = true; break; }
+        scan_pos++;
+    }
+
     std::string value = parse_string_literal(quote);
-    
+
     if (at_end() || current_char() != quote) {
         add_error("Unterminated string literal");
         return create_token(TokenType::INVALID, start);
     }
-    
+
     advance();
-    return create_token(TokenType::STRING, value, start);
+    Token tok = create_token(TokenType::STRING, value, start);
+    tok.set_string_has_escapes(has_escapes);
+    return tok;
 }
 
 Token Lexer::read_template_literal() {

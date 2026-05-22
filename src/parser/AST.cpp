@@ -90,7 +90,7 @@ std::string StringLiteral::to_string() const {
 }
 
 std::unique_ptr<ASTNode> StringLiteral::clone() const {
-    return std::make_unique<StringLiteral>(value_, start_, end_);
+    return std::make_unique<StringLiteral>(value_, start_, end_, has_escapes_);
 }
 
 

@@ -175,6 +175,7 @@ private:
     double numeric_value_;
     bool has_numeric_value_;
     bool has_escaped_keyword_;
+    bool string_has_escapes_ = false;
 
 public:
     Token();
@@ -191,6 +192,8 @@ public:
     bool has_numeric_value() const { return has_numeric_value_; }
     bool has_escaped_keyword() const { return has_escaped_keyword_; }
     void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
+    bool string_has_escapes() const { return string_has_escapes_; }
+    void set_string_has_escapes(bool v) { string_has_escapes_ = v; }
 
     bool is_keyword() const;
     bool is_operator() const;

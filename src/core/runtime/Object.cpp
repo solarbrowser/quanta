@@ -501,6 +501,10 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             }
             return true;
         }
+        // Accessor with no setter
+        if (desc.is_accessor_descriptor()) {
+            return false;
+        }
         if (desc.is_data_descriptor() && !desc.is_writable()) {
             return false;
         }
