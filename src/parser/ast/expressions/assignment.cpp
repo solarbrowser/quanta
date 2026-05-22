@@ -56,11 +56,18 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         }
 
         // For compound assignments, capture left value BEFORE evaluating right side
-        // This ensures correct ES1 left-to-right evaluation order
         Value left_value;
         if (operator_ != Operator::ASSIGN) {
-            left_value = ctx.get_binding(name);
-            if (ctx.has_exception()) return Value();
+            if (!ctx.has_binding(name)) {
+                if (ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    return Value();
+                }
+                // Non-strict: unresolvable left side -> leave left_value as undefined
+            } else {
+                left_value = ctx.get_binding(name);
+                if (ctx.has_exception()) return Value();
+            }
         }
 
         // Now evaluate right side
@@ -473,7 +480,20 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 } else {
                     Value current_value = obj->get_property(prop_name);
-                    obj->set_property(prop_name, Value(current_value.to_number() + right_value.to_number()));
+                    if (ctx.has_exception()) return Value();
+                    // String concatenation or numeric addition
+                    Value computed;
+                    if (current_value.is_string() || right_value.is_string()) {
+                        computed = Value(current_value.to_string() + right_value.to_string());
+                    } else {
+                        computed = Value(current_value.to_number() + right_value.to_number());
+                    }
+                    bool ok = obj->set_property(prop_name, computed);
+                    if (!ok && ctx.is_strict_mode()) {
+                        ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
+                        return Value();
+                    }
+                    return computed;
                 }
                 break;
             }

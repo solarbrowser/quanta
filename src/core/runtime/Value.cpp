@@ -363,9 +363,39 @@ bool Value::loose_equals(const Value& other) const {
         (is_number() && other.is_number()) ||
         (is_string() && other.is_string()) ||
         (is_symbol() && other.is_symbol()) ||
+        (is_bigint() && other.is_bigint()) ||
         (is_object() && other.is_object()) ||
         (is_function() && other.is_function())) {
         return strict_equals(other);
+    }
+
+    // BigInt == Number: compare numerically (spec 7.2.14 step 6-7)
+    if (is_bigint() && other.is_number()) {
+        if (other.is_nan() || other.is_positive_infinity() || other.is_negative_infinity()) return false;
+        double d = other.as_number();
+        if (d != std::floor(d)) return false;
+        return as_bigint()->to_double() == d;
+    }
+    if (is_number() && other.is_bigint()) {
+        return other.loose_equals(*this);
+    }
+    // BigInt == String: parse string as BigInt
+    if (is_bigint() && other.is_string()) {
+        try {
+            BigInt parsed = BigInt::from_string(other.as_string()->str());
+            return *as_bigint() == parsed;
+        } catch(...) { return false; }
+    }
+    if (is_string() && other.is_bigint()) {
+        return other.loose_equals(*this);
+    }
+    // Object with BigInt: ToPrimitive then compare
+    if (is_bigint() && (other.is_object() || other.is_function())) {
+        Value prim = Value(other.to_string());
+        return loose_equals(prim);
+    }
+    if ((is_object() || is_function()) && other.is_bigint()) {
+        return other.loose_equals(*this);
     }
     
     if ((is_null() && other.is_undefined()) || (is_undefined() && other.is_null())) {
