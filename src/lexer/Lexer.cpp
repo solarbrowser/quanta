@@ -165,7 +165,6 @@ Token Lexer::next_token() {
         int ltb = utf8_line_terminator_bytes();
         if (ltb > 0) {
             for (int i = 0; i < ltb; i++) advance();
-            // Multi-byte line terminators (U+2028, U+2029) must update line position
             current_position_.line++;
             current_position_.column = 1;
         } else {
@@ -1620,6 +1619,15 @@ Token Lexer::read_regex() {
         } else if (ch == '\n' || ch == '\r') {
             add_error("Unterminated regex literal");
             return create_token(TokenType::INVALID, start);
+        } else if ((unsigned char)ch == 0xE2 && position_ + 2 < source_.size()) {
+            unsigned char b1 = (unsigned char)source_[position_ + 1];
+            unsigned char b2 = (unsigned char)source_[position_ + 2];
+            if (b1 == 0x80 && (b2 == 0xA8 || b2 == 0xA9)) {
+                add_error("SyntaxError: Invalid regular expression: line terminator in pattern");
+                return create_token(TokenType::INVALID, start);
+            }
+            pattern += ch;
+            advance();
         } else {
             pattern += ch;
             advance();
@@ -1634,14 +1642,23 @@ Token Lexer::read_regex() {
     advance();
     
     std::string flags;
-    while (!at_end() && is_identifier_part(current_char())) {
-        char flag = current_char();
-        if (flag == 'g' || flag == 'i' || flag == 'm' || 
-            flag == 's' || flag == 'u' || flag == 'y') {
-            flags += flag;
+    while (!at_end()) {
+        char ch = current_char();
+        // Unicode escape in flags is a SyntaxError
+        if (ch == '\\') {
+            add_error("SyntaxError: Invalid regular expression flags");
+            return create_token(TokenType::INVALID, start);
+        }
+        if (!is_identifier_part(ch)) break;
+        // Only valid regex flags are lowercase
+        if (ch == 'd' || ch == 'g' || ch == 'i' || ch == 'm' ||
+            ch == 's' || ch == 'u' || ch == 'v' || ch == 'y') {
+            flags += ch;
             advance();
         } else {
-            break;
+            // Any other identifier char (including uppercase) = SyntaxError
+            add_error("SyntaxError: Invalid regular expression flags");
+            return create_token(TokenType::INVALID, start);
         }
     }
     
