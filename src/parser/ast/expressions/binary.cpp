@@ -864,6 +864,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
         case Operator::DELETE: {
             if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
+                // delete super.prop always throws ReferenceError (spec 13.5.1.2)
+                if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+                     static_cast<Identifier*>(member->get_object())->get_name() == "super") {
+                    ctx.throw_reference_error("Cannot delete a super property");
+                    return Value();
+                }
                 Value object_value = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
 
