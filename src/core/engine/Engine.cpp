@@ -20,6 +20,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/lexer/Lexer.h"
+#include "quanta/core/engine/CallStack.h"
 #include <fstream>
 #include <sstream>
 #include <chrono>
@@ -426,6 +427,8 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             std::string error_msg = errors.empty() ? "SyntaxError" : errors[0];
             if (error_msg.find("SyntaxError") == std::string::npos)
                 error_msg = "SyntaxError: " + error_msg;
+            size_t at_pos = error_msg.find(" at line ");
+            if (at_pos == std::string::npos) at_pos = error_msg.find("error at ");
             return Result(error_msg);
         }
         
@@ -435,10 +438,43 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
 
         if (parser.has_errors()) {
             const auto& errors = parser.get_errors();
-            std::string error_msg = errors.empty() ? "Parse error" : errors[0].message;
-            if (error_msg.find("SyntaxError") == std::string::npos)
-                error_msg = "SyntaxError: " + error_msg;
-            return Result(error_msg);
+            if (!errors.empty()) {
+                const auto& err = errors[0];
+                std::string msg = err.message;
+                if (msg.find("SyntaxError") == std::string::npos)
+                    msg = "SyntaxError: " + msg;
+
+                size_t err_line = err.position.line;
+                size_t err_col  = err.position.column;
+
+                std::vector<std::string> src_lines;
+                {
+                    std::istringstream ss(source);
+                    std::string l;
+                    while (std::getline(ss, l)) src_lines.push_back(l);
+                }
+
+                std::string decorated = msg + "\n";
+                // Show 1 line before, the error line, 1 line after
+                size_t first = (err_line >= 2) ? err_line - 2 : 0;
+                size_t last  = std::min((size_t)src_lines.size(), err_line + 1);
+                std::string line_num_width = std::to_string(last + 1);
+                size_t w = line_num_width.size();
+                for (size_t li = first; li < last; li++) {
+                    size_t ln = li + 1;
+                    std::string num = std::to_string(ln);
+                    std::string prefix = std::string(w - num.size(), ' ') + num +
+                                        (ln == err_line ? " > | " : "   | ");
+                    decorated += prefix + src_lines[li] + "\n";
+                    if (ln == err_line && err_col > 0) {
+                        std::string indent(prefix.size() + err_col - 1, ' ');
+                        decorated += indent + "^\n";
+                    }
+                }
+
+                return Result(decorated);
+            }
+            return Result("SyntaxError: Parse error");
         }
         
         if (!program) {
@@ -464,7 +500,22 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
                 global_context_->clear_exception();
-                return Result(exception.to_string(), exception);
+
+                std::string error_str;
+                if (exception.is_object() || exception.is_function()) {
+                    Object* obj = exception.is_object() ? exception.as_object()
+                                                        : static_cast<Object*>(exception.as_function());
+                    Error* err_obj = dynamic_cast<Error*>(obj);
+                    if (err_obj && !err_obj->get_stack_trace().empty()) {
+                        error_str = err_obj->get_stack_trace();
+                    } else {
+                        error_str = exception.to_string();
+                    }
+                } else {
+                    error_str = exception.to_string();
+                }
+
+                return Result(error_str, exception);
             }
 
             return Result(result);
