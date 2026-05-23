@@ -1228,6 +1228,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 var_name = declarator->get_id()->get_name();
                                 var_kind = declarator->get_kind();
                             }
+                        } else if (left_->get_type() == Type::USING_DECLARATION) {
+                            UsingDeclaration* using_decl = static_cast<UsingDeclaration*>(left_.get());
+                            if (!using_decl->get_bindings().empty()) {
+                                var_name = using_decl->get_bindings()[0].name;
+                            }
+                            var_kind = VariableDeclarator::Kind::CONST; // using bindings are immutable
                         } else if (left_->get_type() == Type::IDENTIFIER) {
                             Identifier* id = static_cast<Identifier*>(left_.get());
                             var_name = id->get_name();
