@@ -695,6 +695,13 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
                 add_error("SyntaxError: Invalid left-hand side in prefix operation");
                 return nullptr;
             }
+            if (options_.strict_mode && et == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(operand.get());
+                if (id->get_name() == "eval" || id->get_name() == "arguments") {
+                    add_error("SyntaxError: Invalid left-hand side expression in prefix operation");
+                    return nullptr;
+                }
+            }
         }
 
         return std::make_unique<UnaryExpression>(op, std::move(operand), true, start, end);
@@ -735,6 +742,13 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
             if (always_invalid) {
                 add_error("SyntaxError: Invalid left-hand side in postfix operation");
                 return expr;
+            }
+            if (!always_invalid && options_.strict_mode && et == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(expr.get());
+                if (id->get_name() == "eval" || id->get_name() == "arguments") {
+                    add_error("SyntaxError: Invalid left-hand side expression in postfix operation");
+                    return expr;
+                }
             }
         }
 
@@ -1092,6 +1106,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             }
             expr = std::make_unique<CallExpression>(std::move(expr), std::move(arguments), start, end);
         } else if (match(TokenType::TEMPLATE_LITERAL)) {
+            if (expr && expr->get_type() == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION) {
+                add_error("SyntaxError: Tagged template literal cannot be used in optional chain");
+                return nullptr;
+            }
             // Tagged template literal: fn`...`
             auto template_node = parse_template_literal();
             std::vector<std::unique_ptr<ASTNode>> arguments;
@@ -3285,11 +3303,15 @@ check_for_of:
                 return nullptr;
             }
         }
-        // for-of LHS: `this` is not a valid assignment target
+        // for-of LHS: `this` and `let` are not valid
         if (init && init->get_type() == ASTNode::Type::IDENTIFIER) {
             auto* id = static_cast<Identifier*>(init.get());
             if (id->get_name() == "this") {
                 add_error("SyntaxError: Invalid left-hand side in for-of");
+                return nullptr;
+            }
+            if (id->get_name() == "let") {
+                add_error("SyntaxError: 'let' is not a valid LHS in for-of");
                 return nullptr;
             }
         }
@@ -3424,9 +3446,29 @@ for_semicolon:
         add_error("Expected statement for for loop body");
         return nullptr;
     }
-    
+
+    // BoundNames of lexical declaration in for head must not appear in VarDeclaredNames of body
+    if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        auto* vd = static_cast<VariableDeclaration*>(init.get());
+        bool is_lexical = vd->get_kind() == VariableDeclarator::Kind::LET ||
+                          vd->get_kind() == VariableDeclarator::Kind::CONST;
+        if (is_lexical) {
+            std::unordered_set<std::string> head_names;
+            for (const auto& d : vd->get_declarations())
+                if (d->get_id()) head_names.insert(d->get_id()->get_name());
+            std::vector<std::string> body_vars;
+            collect_var_declared_names(body.get(), body_vars);
+            for (const auto& v : body_vars) {
+                if (head_names.count(v)) {
+                    add_error("SyntaxError: Variable '" + v + "' in for head conflicts with var declaration in body");
+                    return nullptr;
+                }
+            }
+        }
+    }
+
     Position end = get_current_position();
-    return std::make_unique<ForStatement>(std::move(init), std::move(test), 
+    return std::make_unique<ForStatement>(std::move(init), std::move(test),
                                          std::move(update), std::move(body), start, end);
 }
 
@@ -3518,6 +3560,11 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
 std::unique_ptr<ASTNode> Parser::parse_with_statement() {
     Position start = get_current_position();
 
+    if (options_.strict_mode) {
+        add_error("SyntaxError: 'with' statements are not allowed in strict mode");
+        return nullptr;
+    }
+
     if (!consume(TokenType::WITH)) {
         add_error("Expected 'with'");
         return nullptr;
@@ -3589,7 +3636,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         advance();
         options_.active_labels.insert(label);
 
-        // Peek through all labels to find the actual statement
+        // Peek through all labels to find the actual statement type for loop_labels tracking
         {
             size_t peek_idx = current_token_index_;
             while (peek_idx + 1 < tokens_.size() &&
@@ -3606,8 +3653,18 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
             if (peek_idx < tokens_.size()) {
                 TokenType inner = tokens_[peek_idx].get_type();
                 if (inner == TokenType::FUNCTION) {
-                    // labeled function: only 1 level allowed via Annex B
-                    // if more than one label -> SyntaxError
+                    // Generator function never allowed in labeled position
+                    size_t gen_idx = peek_idx + 1;
+                    while (gen_idx < tokens_.size() &&
+                           (tokens_[gen_idx].get_type() == TokenType::NEWLINE ||
+                            tokens_[gen_idx].get_type() == TokenType::WHITESPACE ||
+                            tokens_[gen_idx].get_type() == TokenType::COMMENT))
+                        gen_idx++;
+                    if (gen_idx < tokens_.size() && tokens_[gen_idx].get_type() == TokenType::MULTIPLY) {
+                        add_error("SyntaxError: Generator declarations are not allowed as labeled statements");
+                        return nullptr;
+                    }
+                    // labeled function: only 1 total level allowed via Annex B
                     size_t label_count = 0;
                     size_t ci = current_token_index_;
                     while (ci + 1 < tokens_.size() &&
@@ -3621,7 +3678,9 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                                 tokens_[ci].get_type() == TokenType::COMMENT))
                             ci++;
                     }
-                    if (label_count > 1 || options_.loop_depth > 0 || options_.strict_mode) {
+                    if (label_count + (int)options_.active_labels.size() > 1 ||
+                        options_.loop_depth > 0 || options_.strict_mode ||
+                        options_.in_substatement_body) {
                         add_error("SyntaxError: Function declarations not allowed in this context");
                         return nullptr;
                     }
@@ -3652,6 +3711,9 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                         }
                     }
                 }
+                if (inner == TokenType::FOR || inner == TokenType::WHILE || inner == TokenType::DO) {
+                    options_.loop_labels.insert(label);
+                }
             }
         }
         options_.in_substatement_body = true;
@@ -3663,6 +3725,7 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         }
 
         options_.active_labels.erase(label);
+        options_.loop_labels.erase(label);
         Position end = statement->get_end();
         return std::make_unique<LabeledStatement>(label, std::move(statement), start, end);
     }
@@ -3831,6 +3894,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         return nullptr;
     }
 
+    int saved_loop_fn = options_.loop_depth;
+    int saved_sw_fn = options_.switch_depth;
+    auto saved_al_fn = options_.active_labels;
+    auto saved_ll_fn = options_.loop_labels;
+    options_.loop_depth = 0;
+    options_.switch_depth = 0;
+    options_.active_labels.clear();
+    options_.loop_labels.clear();
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
@@ -3846,6 +3917,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
     options_.in_constructor = saved_ic_fd;
+    options_.loop_depth = saved_loop_fn;
+    options_.switch_depth = saved_sw_fn;
+    options_.active_labels = std::move(saved_al_fn);
+    options_.loop_labels = std::move(saved_ll_fn);
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -4026,15 +4101,27 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                 bool prev_generator = options_.in_generator_body;
                 bool prev_async = options_.in_async_body;
                 bool prev_strict = options_.strict_mode;
+                int prev_loop_sb = options_.loop_depth;
+                int prev_sw_sb = options_.switch_depth;
+                auto prev_al_sb = options_.active_labels;
+                auto prev_ll_sb = options_.loop_labels;
                 options_.in_class_static_block = true;
                 options_.in_generator_body = false;
                 options_.in_async_body = false;
                 options_.strict_mode = true;
+                options_.loop_depth = 0;
+                options_.switch_depth = 0;
+                options_.active_labels.clear();
+                options_.loop_labels.clear();
                 auto block = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block;
                 options_.in_generator_body = prev_generator;
                 options_.in_async_body = prev_async;
                 options_.strict_mode = prev_strict;
+                options_.loop_depth = prev_loop_sb;
+                options_.switch_depth = prev_sw_sb;
+                options_.active_labels = std::move(prev_al_sb);
+                options_.loop_labels = std::move(prev_ll_sb);
                 if (block) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(block.release())),
@@ -4232,15 +4319,27 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 bool prev_generator2 = options_.in_generator_body;
                 bool prev_async2 = options_.in_async_body;
                 bool prev_strict2 = options_.strict_mode;
+                int prev_loop_sb2 = options_.loop_depth;
+                int prev_sw_sb2 = options_.switch_depth;
+                auto prev_al_sb2 = options_.active_labels;
+                auto prev_ll_sb2 = options_.loop_labels;
                 options_.in_class_static_block = true;
                 options_.in_generator_body = false;
                 options_.in_async_body = false;
                 options_.strict_mode = true;
+                options_.loop_depth = 0;
+                options_.switch_depth = 0;
+                options_.active_labels.clear();
+                options_.loop_labels.clear();
                 auto sblock = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block2;
                 options_.in_generator_body = prev_generator2;
                 options_.in_async_body = prev_async2;
                 options_.strict_mode = prev_strict2;
+                options_.loop_depth = prev_loop_sb2;
+                options_.switch_depth = prev_sw_sb2;
+                options_.active_labels = std::move(prev_al_sb2);
+                options_.loop_labels = std::move(prev_ll_sb2);
                 if (sblock) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(sblock.release())),
@@ -4947,6 +5046,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         return nullptr;
     }
 
+    int saved_loop_fn = options_.loop_depth;
+    int saved_sw_fn = options_.switch_depth;
+    auto saved_al_fn = options_.active_labels;
+    auto saved_ll_fn = options_.loop_labels;
+    options_.loop_depth = 0;
+    options_.switch_depth = 0;
+    options_.active_labels.clear();
+    options_.loop_labels.clear();
     bool saved_gen_ctx = options_.in_generator_body;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
@@ -4962,6 +5069,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
     options_.in_constructor = saved_ic_fd;
+    options_.loop_depth = saved_loop_fn;
+    options_.switch_depth = saved_sw_fn;
+    options_.active_labels = std::move(saved_al_fn);
+    options_.loop_labels = std::move(saved_ll_fn);
     if (!body) {
         add_error("Expected function body");
         return nullptr;
@@ -5924,6 +6035,11 @@ std::unique_ptr<ASTNode> Parser::parse_break_statement() {
         advance();
     }
 
+    if (!label.empty() && !options_.active_labels.count(label)) {
+        add_error("SyntaxError: Undefined label '" + label + "'");
+        return nullptr;
+    }
+
     consume_if_match(TokenType::SEMICOLON);
 
     Position end = get_current_position();
@@ -5950,6 +6066,11 @@ std::unique_ptr<ASTNode> Parser::parse_continue_statement() {
         current_token().get_start().line == start.line) {
         label = current_token().get_value();
         advance();
+    }
+
+    if (!label.empty() && !options_.loop_labels.count(label)) {
+        add_error("SyntaxError: Undefined or non-loop label '" + label + "'");
+        return nullptr;
     }
 
     consume_if_match(TokenType::SEMICOLON);
@@ -6637,6 +6758,20 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
                 add_error("Invalid destructuring pattern in catch clause");
                 return nullptr;
             }
+            // Check for duplicate bound names in destructuring catch parameter
+            if (catch_destr_pattern->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT) {
+                auto* da = static_cast<DestructuringAssignment*>(catch_destr_pattern.get());
+                std::unordered_set<std::string> seen_names;
+                for (const auto& t : da->get_targets()) {
+                    if (!t) continue;
+                    const std::string& nm = t->get_name();
+                    if (nm.empty() || nm[0] == '_') continue;
+                    if (!seen_names.insert(nm).second) {
+                        add_error("SyntaxError: Duplicate binding '" + nm + "' in catch parameter");
+                        return nullptr;
+                    }
+                }
+            }
             parameter_name = "__destr_pattern__";
         } else if (match(TokenType::IDENTIFIER)) {
             parameter_name = current_token().get_value();
@@ -6663,6 +6798,33 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
     if (!body) {
         add_error("Expected block statement in catch clause");
         return nullptr;
+    }
+
+    // Check catch param names don't appear in LexicallyDeclaredNames of catch body
+    if (!parameter_name.empty() && parameter_name != "__destr_pattern__" &&
+        body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        auto* blk = static_cast<BlockStatement*>(body.get());
+        for (const auto& stmt : blk->get_statements()) {
+            if (!stmt) continue;
+            auto st = stmt->get_type();
+            if (st == ASTNode::Type::VARIABLE_DECLARATION) {
+                auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    for (const auto& d : vd->get_declarations()) {
+                        if (d->get_id() && d->get_id()->get_name() == parameter_name) {
+                            add_error("SyntaxError: Identifier '" + parameter_name + "' is already declared in catch");
+                            return nullptr;
+                        }
+                    }
+                }
+            } else if (st == ASTNode::Type::FUNCTION_DECLARATION) {
+                auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+                if (fn->get_id() && fn->get_id()->get_name() == parameter_name) {
+                    add_error("SyntaxError: Identifier '" + parameter_name + "' is already declared in catch");
+                    return nullptr;
+                }
+            }
+        }
     }
 
     Position end = get_current_position();
