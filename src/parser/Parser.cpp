@@ -199,6 +199,29 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                 return std::make_unique<EmptyStatement>(start, end);
             }
 
+        case TokenType::IDENTIFIER: {
+            // Contextual keyword 'using': 'using id = expr' is a UsingDeclaration
+            // when followed by an identifier (not '(' or '[' which would be a call/subscript)
+            const std::string& val = current_token().get_value();
+            if (val == "using") {
+                TokenType next = peek_token().get_type();
+                // 'using x =' pattern: next is an identifier that is NOT a keyword-as-expression
+                // Exclude: 'using(', 'using[', 'using;', 'using=', operator follows, etc.
+                // Allow 'await' as identifier when not in async context and not directly in static block
+                bool next_is_await_id = (next == TokenType::AWAIT && !options_.in_async_body
+                                         && !options_.in_class_static_block);
+                if (next == TokenType::IDENTIFIER || next == TokenType::LET ||
+                    next == TokenType::STATIC || next == TokenType::OF || next_is_await_id) {
+                    return parse_using_declaration(false);
+                }
+            }
+            if (val == "await" && peek_token().get_value() == "using") {
+                // 'await using id = expr' inside async context
+                return parse_using_declaration(true);
+            }
+            return parse_expression_statement();
+        }
+
         default:
             return parse_expression_statement();
     }
@@ -345,19 +368,12 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
             case TokenType::LOGICAL_OR_ASSIGN:
             case TokenType::LOGICAL_AND_ASSIGN:
             case TokenType::NULLISH_ASSIGN: {
-                // Desugar: x ||= y -> x = x || y,  x &&= y -> x = x && y,  x ??= y -> x = x ?? y
-                // NOTE: advance() and right parse already done above
-                std::unique_ptr<ASTNode> bin_expr;
-                Position bstart = left->get_start(), bend = right->get_end();
-                if (op_token == TokenType::NULLISH_ASSIGN) {
-                    bin_expr = std::make_unique<NullishCoalescingExpression>(left->clone(), std::move(right), bstart, bend);
-                } else {
-                    BinaryExpression::Operator bin_op = (op_token == TokenType::LOGICAL_OR_ASSIGN)
-                        ? BinaryExpression::Operator::LOGICAL_OR
-                        : BinaryExpression::Operator::LOGICAL_AND;
-                    bin_expr = std::make_unique<BinaryExpression>(left->clone(), bin_op, std::move(right), bstart, bend);
-                }
-                return std::make_unique<AssignmentExpression>(std::move(left), AssignmentExpression::Operator::ASSIGN, std::move(bin_expr), op_start, bend);
+                AssignmentExpression::Operator logical_op =
+                    (op_token == TokenType::LOGICAL_AND_ASSIGN) ? AssignmentExpression::Operator::LOGICAL_AND_ASSIGN :
+                    (op_token == TokenType::LOGICAL_OR_ASSIGN)  ? AssignmentExpression::Operator::LOGICAL_OR_ASSIGN :
+                                                                   AssignmentExpression::Operator::NULLISH_ASSIGN;
+                Position bend = right->get_end();
+                return std::make_unique<AssignmentExpression>(std::move(left), logical_op, std::move(right), op_start, bend);
             }
             default:
                 add_error("Unknown assignment operator");
@@ -2091,6 +2107,57 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
 }
 
 
+std::unique_ptr<ASTNode> Parser::parse_using_declaration(bool is_await, bool consume_semicolon) {
+    Position start = current_token().get_start();
+
+    if (is_await) {
+        // consume 'await'
+        advance();
+    }
+    // consume 'using'
+    advance();
+
+    std::vector<UsingBinding> bindings;
+
+    while (true) {
+        bool is_await_id = current_token().get_type() == TokenType::AWAIT
+                           && !options_.in_async_body && !options_.in_class_static_block;
+        if (current_token().get_type() != TokenType::IDENTIFIER &&
+            current_token().get_type() != TokenType::LET &&
+            current_token().get_type() != TokenType::STATIC &&
+            current_token().get_type() != TokenType::OF &&
+            !is_await_id) {
+            add_error("Expected identifier in 'using' declaration");
+            return nullptr;
+        }
+
+        std::string name = current_token().get_value();
+        advance();
+
+        if (current_token().get_type() != TokenType::ASSIGN) {
+            add_error("'using' declaration must have an initializer");
+            return nullptr;
+        }
+        advance();
+
+        auto init = parse_assignment_expression();
+        if (!init) return nullptr;
+
+        bindings.emplace_back(name, std::move(init));
+
+        if (current_token().get_type() != TokenType::COMMA) break;
+        advance();
+    }
+
+    Position end = get_current_position();
+    if (consume_semicolon && current_token().get_type() == TokenType::SEMICOLON) {
+        end = current_token().get_end();
+        advance();
+    }
+
+    return std::make_unique<UsingDeclaration>(std::move(bindings), is_await, start, end);
+}
+
 std::unique_ptr<ASTNode> Parser::parse_variable_declaration() {
     return parse_variable_declaration(true);
 }
@@ -2563,6 +2630,16 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
+        // Check for 'using' declaration in for init: for (using x = expr; ...)
+        if (match(TokenType::IDENTIFIER) && current_token().get_value() == "using") {
+            TokenType next = peek_token().get_type();
+            if (next == TokenType::IDENTIFIER || next == TokenType::LET ||
+                next == TokenType::STATIC || next == TokenType::OF) {
+                init = parse_using_declaration(false, false);
+                if (!init) return nullptr;
+                goto for_semicolon;
+            }
+        }
         // Non-strict: "let" followed by "=", ";", etc. is an identifier, not a declaration
         bool let_as_id = (!options_.strict_mode &&
                           match(TokenType::LET) &&
@@ -2900,11 +2977,12 @@ check_for_of:
         return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), is_await_loop, start, end);
     }
     
+for_semicolon:
     if (!consume(TokenType::SEMICOLON)) {
         add_error("Expected ';' after for loop init");
         return nullptr;
     }
-    
+
     std::unique_ptr<ASTNode> test = nullptr;
     if (!match(TokenType::SEMICOLON)) {
         test = parse_expression();
@@ -3532,7 +3610,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             size_t saved = current_token_index_;
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                bool prev_static_block = options_.in_class_static_block;
+                options_.in_class_static_block = true;
                 auto block = parse_block_statement(true);
+                options_.in_class_static_block = prev_static_block;
                 if (block) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(block.release())),
@@ -3726,7 +3807,10 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             size_t saved2 = current_token_index_;
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
+                bool prev_static_block2 = options_.in_class_static_block;
+                options_.in_class_static_block = true;
                 auto sblock = parse_block_statement(true);
+                options_.in_class_static_block = prev_static_block2;
                 if (sblock) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(sblock.release())),
@@ -4216,8 +4300,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     bool saved_a = options_.in_async_body;
     bool saved_g = options_.in_generator_body;
+    bool saved_sb = options_.in_class_static_block;
     if (is_async) options_.in_async_body = true;
     options_.in_generator_body = is_generator;
+    options_.in_class_static_block = false;
     bool saved_cm = options_.in_class_method;
     bool saved_ic = options_.in_constructor;
     options_.in_class_method = true;
@@ -4229,6 +4315,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     options_.in_constructor = saved_ic;
     options_.in_async_body = saved_a;
     options_.in_generator_body = saved_g;
+    options_.in_class_static_block = saved_sb;
     if (!body) {
         add_error("Expected method body");
         return nullptr;
@@ -4734,9 +4821,11 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     bool saved_async = options_.in_async_body;
     bool saved_gen = options_.in_generator_body;
     bool saved_cfi_ae = options_.in_class_field_init;
+    bool saved_sb_ae = options_.in_class_static_block;
     options_.in_async_body = true;
     options_.in_generator_body = is_generator;
     options_.in_class_field_init = false;
+    options_.in_class_static_block = false;
     bool saved_cm_ae = options_.in_class_method;
     options_.in_class_method = false;
     options_.in_constructor = false;
@@ -4746,6 +4835,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     options_.in_async_body = saved_async;
     options_.in_generator_body = saved_gen;
     options_.in_class_field_init = saved_cfi_ae;
+    options_.in_class_static_block = saved_sb_ae;
     options_.in_class_method = saved_cm_ae;
     if (!body) {
         add_error("Expected async function body");
@@ -5166,6 +5256,8 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     }
 
     std::unique_ptr<ASTNode> body;
+    bool saved_sb_arrow = options_.in_class_static_block;
+    options_.in_class_static_block = false;
     if (match(TokenType::LEFT_BRACE)) {
         options_.function_depth++;
         body = parse_block_statement(true);
@@ -5173,6 +5265,7 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     } else {
         body = parse_assignment_expression();
     }
+    options_.in_class_static_block = saved_sb_arrow;
 
     if (!body) {
         add_error("Expected arrow function body");
@@ -5777,10 +5870,12 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
             bool saved_ab = options_.in_async_body;
             bool saved_gb = options_.in_generator_body;
+            bool saved_sb_ol = options_.in_class_static_block;
             bool saved_cm_ol = options_.in_class_method;
             bool saved_ic_ol = options_.in_constructor;
             if (is_async) options_.in_async_body = true;
             options_.in_generator_body = is_generator;
+            options_.in_class_static_block = false;
             options_.in_class_method = true;
             options_.in_constructor = false;
             options_.function_depth++;
@@ -5788,6 +5883,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.function_depth--;
             options_.in_async_body = saved_ab;
             options_.in_generator_body = saved_gb;
+            options_.in_class_static_block = saved_sb_ol;
             options_.in_class_method = saved_cm_ol;
             options_.in_constructor = saved_ic_ol;
             if (!body) {

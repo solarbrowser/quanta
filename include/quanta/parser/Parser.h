@@ -34,6 +34,7 @@ public:
         bool in_class_method = false;
         bool in_constructor = false;
         bool class_has_heritage = false;
+        bool in_class_static_block = false;
         int loop_depth = 0;
         int switch_depth = 0;
         int function_depth = 0;
@@ -95,6 +96,7 @@ public:
     std::unique_ptr<ASTNode> parse_switch_statement();
     std::unique_ptr<ASTNode> parse_catch_clause();
     
+    std::unique_ptr<ASTNode> parse_using_declaration(bool is_await, bool consume_semicolon = true);
     std::unique_ptr<ASTNode> parse_import_statement();
     std::unique_ptr<ASTNode> parse_export_statement();
     std::unique_ptr<ImportSpecifier> parse_import_specifier();

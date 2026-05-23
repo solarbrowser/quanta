@@ -461,8 +461,10 @@ void Generator::setup_generator_prototype(Context& ctx) {
     ctx.create_binding("@@GeneratorPrototype", Value(gen_prototype.release()));
 
     // %GeneratorFunction.prototype% — [[Prototype]] of all generator functions
+    // Per spec: %GeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
     auto gen_fn_proto = ObjectFactory::create_object();
-    gen_fn_proto->set_prototype(s_generator_prototype_);
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    gen_fn_proto->set_prototype(func_proto ? func_proto : s_generator_prototype_);
     if (tag_sym) {
         PropertyDescriptor gf_tag(Value(std::string("GeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), gf_tag);

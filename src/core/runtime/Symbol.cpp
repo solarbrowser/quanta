@@ -28,6 +28,8 @@ const std::string Symbol::SPECIES = "Symbol.species";
 const std::string Symbol::TO_PRIMITIVE = "Symbol.toPrimitive";
 const std::string Symbol::TO_STRING_TAG = "Symbol.toStringTag";
 const std::string Symbol::UNSCOPABLES = "Symbol.unscopables";
+const std::string Symbol::DISPOSE = "Symbol.dispose";
+const std::string Symbol::ASYNC_DISPOSE = "Symbol.asyncDispose";
 
 Symbol::Symbol(const std::string& description) : description_(description), id_(next_id_++) {}
 
@@ -84,6 +86,8 @@ void Symbol::initialize_well_known_symbols() {
     well_known_symbols_[TO_PRIMITIVE] = create(TO_PRIMITIVE);
     well_known_symbols_[TO_STRING_TAG] = create(TO_STRING_TAG);
     well_known_symbols_[UNSCOPABLES] = create(UNSCOPABLES);
+    well_known_symbols_[DISPOSE] = create(DISPOSE);
+    well_known_symbols_[ASYNC_DISPOSE] = create(ASYNC_DISPOSE);
 }
 
 std::string Symbol::to_string() const {

@@ -94,6 +94,13 @@ private:
     int sync_then_depth_ = 0;
     bool in_param_eval_ = false;
 
+    // Dispose scope stack for 'using' declarations (Explicit Resource Management)
+    struct DisposableResource {
+        Value resource_value;   // passed as 'this' to dispose method
+        Value dispose_method;   // looked up once at initialization time
+    };
+    std::vector<std::vector<DisposableResource>> dispose_scope_stack_;
+
 public:
     explicit Context(Engine* engine, Type type = Type::Global);
     explicit Context(Engine* engine, Context* parent, Type type);
@@ -135,6 +142,11 @@ public:
     void pop_block_scope();
     void push_with_scope(class Object* obj);
     void pop_with_scope();
+
+    // Explicit Resource Management ('using' declaration support)
+    void push_dispose_scope();
+    void add_disposable_resource(const Value& resource, const Value& method);
+    void run_dispose_resources();  // dispose current scope, pop it
 
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;

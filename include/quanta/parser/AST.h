@@ -81,6 +81,8 @@ public:
         SWITCH_STATEMENT,
         CASE_CLAUSE,
         
+        USING_DECLARATION,
+
         IMPORT_STATEMENT,
         EXPORT_STATEMENT,
         IMPORT_SPECIFIER,
@@ -409,7 +411,10 @@ public:
         BITWISE_XOR_ASSIGN,
         LEFT_SHIFT_ASSIGN,
         RIGHT_SHIFT_ASSIGN,
-        UNSIGNED_RIGHT_SHIFT_ASSIGN
+        UNSIGNED_RIGHT_SHIFT_ASSIGN,
+        LOGICAL_AND_ASSIGN,
+        LOGICAL_OR_ASSIGN,
+        NULLISH_ASSIGN
     };
 
 private:
@@ -704,6 +709,31 @@ public:
     VariableDeclarator::Kind get_kind() const { return kind_; }
     size_t declaration_count() const { return declarations_.size(); }
     
+    Value evaluate(Context& ctx) override;
+    std::string to_string() const override;
+    std::unique_ptr<ASTNode> clone() const override;
+};
+
+struct UsingBinding {
+    std::string name;
+    std::unique_ptr<ASTNode> initializer;
+    UsingBinding(std::string n, std::unique_ptr<ASTNode> init)
+        : name(std::move(n)), initializer(std::move(init)) {}
+};
+
+class UsingDeclaration : public ASTNode {
+private:
+    std::vector<UsingBinding> bindings_;
+    bool is_await_;  // true for 'await using'
+public:
+    UsingDeclaration(std::vector<UsingBinding> bindings, bool is_await,
+                     const Position& start, const Position& end)
+        : ASTNode(Type::USING_DECLARATION, start, end),
+          bindings_(std::move(bindings)), is_await_(is_await) {}
+
+    const std::vector<UsingBinding>& get_bindings() const { return bindings_; }
+    bool is_await() const { return is_await_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
