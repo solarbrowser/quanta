@@ -91,7 +91,17 @@ void register_symbol_builtins(Context& ctx) {
     if (unscopables_sym) {
         symbol_constructor->set_property("unscopables", Value(unscopables_sym));
     }
-    
+
+    Symbol* dispose_sym = Symbol::get_well_known(Symbol::DISPOSE);
+    if (dispose_sym) {
+        symbol_constructor->set_property("dispose", Value(dispose_sym));
+    }
+
+    Symbol* async_dispose_sym = Symbol::get_well_known(Symbol::ASYNC_DISPOSE);
+    if (async_dispose_sym) {
+        symbol_constructor->set_property("asyncDispose", Value(async_dispose_sym));
+    }
+
     {
         auto sym_proto = ObjectFactory::create_object();
         sym_proto->set_property("constructor", Value(symbol_constructor.get()));

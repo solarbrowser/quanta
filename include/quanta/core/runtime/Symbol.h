@@ -78,6 +78,8 @@ public:
     static const std::string TO_PRIMITIVE;
     static const std::string TO_STRING_TAG;
     static const std::string UNSCOPABLES;
+    static const std::string DISPOSE;
+    static const std::string ASYNC_DISPOSE;
 };
 
 }

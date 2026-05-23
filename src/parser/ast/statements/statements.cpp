@@ -28,8 +28,24 @@
 
 namespace Quanta {
 
+// Thread-local flag for "empty completion" propagation (spec UpdateEmpty semantics).
+// Set to true by statements that produce empty completions (UsingDeclaration, VariableDeclaration).
+// Cleared by statements that produce real completions (ExpressionStatement, etc.).
+// BlockStatement and Program use this to implement UpdateEmpty.
+thread_local bool g_empty_completion = false;
+
+static bool is_anon_func_def(const ASTNode* node) {
+    if (!node) return false;
+    auto t = node->get_type();
+    return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+           t == ASTNode::Type::CLASS_DECLARATION;
+}
+
 Value ExpressionStatement::evaluate(Context& ctx) {
     Value result = expression_->evaluate(ctx);
+    g_empty_completion = false;
     if (ctx.has_exception()) {
         return Value();
     }
@@ -110,7 +126,9 @@ Value Program::evaluate(Context& ctx) {
 
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-            last_value = statement->evaluate(ctx);
+            g_empty_completion = false;
+            Value result = statement->evaluate(ctx);
+            if (!g_empty_completion) last_value = result;
             if (ctx.has_exception()) {
                 return Value();
             }
@@ -301,6 +319,7 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         }
     }
 
+    g_empty_completion = true;
     return Value();
 }
 
@@ -326,6 +345,78 @@ std::unique_ptr<ASTNode> VariableDeclaration::clone() const {
 }
 
 
+Value UsingDeclaration::evaluate(Context& ctx) {
+    for (const auto& binding : bindings_) {
+        if (!binding.initializer) {
+            ctx.throw_syntax_error("'using' declaration must have an initializer");
+            return Value();
+        }
+
+        Value val = binding.initializer->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+
+        // NamedEvaluation: only for IsAnonymousFunctionDefinition nodes
+        if (val.is_function() && is_anon_func_def(binding.initializer.get())) {
+            Function* fn = val.as_function();
+            if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                fn->set_name(binding.name);
+            }
+        }
+
+        // AddDisposableResource: null/undefined are allowed (skipped), other primitives throw
+        if (!val.is_null() && !val.is_undefined()) {
+            if (!val.is_object() && !val.is_function()) {
+                ctx.throw_type_error(
+                    "using declarations require the value to be an object or null/undefined");
+                return Value();
+            }
+            // GetDisposeMethod: read Symbol.dispose once at initialization time
+            Object* obj = val.is_object() ? val.as_object() : static_cast<Object*>(val.as_function());
+            Value dispose_method = obj->get_property(Symbol::DISPOSE);
+            if (ctx.has_exception()) return Value();
+            if (dispose_method.is_undefined() || dispose_method.is_null()) {
+                ctx.throw_type_error(
+                    "Value must have a [Symbol.dispose] method");
+                return Value();
+            }
+            if (!dispose_method.is_function()) {
+                ctx.throw_type_error(
+                    "Value's [Symbol.dispose] is not callable");
+                return Value();
+            }
+            ctx.add_disposable_resource(val, dispose_method);
+        }
+
+        bool success = ctx.create_lexical_binding(binding.name, val, false);
+        if (!success) {
+            ctx.throw_exception(Value(std::string("Variable '") + binding.name + "' already declared"));
+            return Value();
+        }
+    }
+    g_empty_completion = true;
+    return Value();
+}
+
+std::string UsingDeclaration::to_string() const {
+    std::ostringstream oss;
+    oss << (is_await_ ? "await using " : "using ");
+    for (size_t i = 0; i < bindings_.size(); ++i) {
+        if (i > 0) oss << ", ";
+        oss << bindings_[i].name;
+        if (bindings_[i].initializer) oss << " = " << bindings_[i].initializer->to_string();
+    }
+    oss << ";";
+    return oss.str();
+}
+
+std::unique_ptr<ASTNode> UsingDeclaration::clone() const {
+    std::vector<UsingBinding> cloned;
+    for (const auto& b : bindings_) {
+        cloned.emplace_back(b.name, b.initializer ? b.initializer->clone() : nullptr);
+    }
+    return std::make_unique<UsingDeclaration>(std::move(cloned), is_await_, start_, end_);
+}
+
 void BlockStatement::check_use_strict_directive(Context& ctx) {
     // Scan the directive prologue -- all consecutive string-literal statements
     // at the top of the function body, not just the first one.
@@ -346,10 +437,18 @@ void BlockStatement::check_use_strict_directive(Context& ctx) {
 Value BlockStatement::evaluate(Context& ctx) {
     Value last_value;
 
+    // Check if this block has any 'using' declarations
+    bool has_using = false;
+    for (const auto& stmt : statements_) {
+        if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) { has_using = true; break; }
+    }
+
     Environment* old_lexical_env = ctx.get_lexical_environment();
     auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
     Environment* block_env_ptr = block_env.release();
     ctx.set_lexical_environment(block_env_ptr);
+
+    if (has_using) ctx.push_dispose_scope();
 
     // Note: block_env_ptr is intentionally NOT deleted here. Child contexts
     // created inside the block (e.g. async function fibers) store this env as
@@ -357,40 +456,52 @@ Value BlockStatement::evaluate(Context& ctx) {
     // those fibers resume after the block exits.  Environments are already
     // leaked by Context::~Context(), so leaking here is consistent.
 
+    bool exiting = false;
+    bool block_had_non_empty = false;
     try {
         for (const auto& statement : statements_) {
             if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                g_empty_completion = false;
                 last_value = statement->evaluate(ctx);
-                if (ctx.has_exception()) {
-                    ctx.set_lexical_environment(old_lexical_env);
-                    return Value();
-                }
+                if (ctx.has_exception()) { exiting = true; break; }
             }
         }
 
-        for (const auto& statement : statements_) {
-            if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
-                last_value = statement->evaluate(ctx);
-                if (ctx.has_exception()) {
-                    ctx.set_lexical_environment(old_lexical_env);
-                    return Value();
-                }
-                if (ctx.has_return_value()) {
-                    ctx.set_lexical_environment(old_lexical_env);
-                    return ctx.get_return_value();
-                }
-                if (ctx.has_break() || ctx.has_continue()) {
-                    ctx.set_lexical_environment(old_lexical_env);
-                    return Value();
+        if (!exiting) {
+            for (const auto& statement : statements_) {
+                ASTNode::Type stype = statement->get_type();
+                if (stype != ASTNode::Type::FUNCTION_DECLARATION) {
+                    g_empty_completion = false;
+                    Value result = statement->evaluate(ctx);
+                    bool stmt_empty = g_empty_completion;
+                    if (!stmt_empty) {
+                        last_value = result;
+                        block_had_non_empty = true;
+                    }
+                    if (ctx.has_exception() || ctx.has_return_value() ||
+                        ctx.has_break() || ctx.has_continue()) {
+                        exiting = true;
+                        break;
+                    }
                 }
             }
         }
     } catch (...) {
+        if (has_using) ctx.run_dispose_resources();
         ctx.set_lexical_environment(old_lexical_env);
         throw;
     }
 
+    if (has_using) ctx.run_dispose_resources();
     ctx.set_lexical_environment(old_lexical_env);
+
+    if (exiting) {
+        g_empty_completion = false;
+        if (ctx.has_return_value()) return ctx.get_return_value();
+        return Value();
+    }
+    // Signal empty completion if block had statements but none produced a real value
+    g_empty_completion = (!statements_.empty() && !block_had_non_empty);
     return last_value;
 }
 
@@ -461,7 +572,9 @@ std::unique_ptr<ASTNode> IfStatement::clone() const {
 Value ForStatement::evaluate(Context& ctx) {
     LoopDepthGuard guard;
 
-    if (init_ && test_ && update_ && body_ && body_->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
+    bool has_using_init = init_ && init_->get_type() == ASTNode::Type::USING_DECLARATION;
+
+    if (!has_using_init && init_ && test_ && update_ && body_ && body_->get_type() == ASTNode::Type::EXPRESSION_STATEMENT) {
         ExpressionStatement* expr_stmt = static_cast<ExpressionStatement*>(body_.get());
         if (expr_stmt->get_expression() && expr_stmt->get_expression()->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
             AssignmentExpression* assign = static_cast<AssignmentExpression*>(expr_stmt->get_expression());
@@ -498,6 +611,7 @@ Value ForStatement::evaluate(Context& ctx) {
     }
 
     ctx.push_block_scope();
+    if (has_using_init) ctx.push_dispose_scope();
 
     std::string this_loop_label = ctx.get_next_statement_label();
     ctx.set_next_statement_label("");
@@ -505,17 +619,20 @@ Value ForStatement::evaluate(Context& ctx) {
     std::string prev_loop_label = ctx.get_current_loop_label();
     ctx.set_current_loop_label(this_loop_label);
 
+#define FOR_CLEANUP() \
+    do { if (has_using_init) ctx.run_dispose_resources(); \
+         ctx.set_current_loop_label(prev_loop_label); \
+         ctx.pop_block_scope(); } while(0)
+
     Value result;
     try {
         if (init_) {
             init_->evaluate(ctx);
             if (ctx.has_exception()) {
-                ctx.set_current_loop_label(prev_loop_label);
-                ctx.pop_block_scope();
+                FOR_CLEANUP();
                 return Value();
             }
         }
-
 
     unsigned int safety_counter = 0;
     const unsigned int max_iterations = 1000000000U;
@@ -545,7 +662,7 @@ Value ForStatement::evaluate(Context& ctx) {
         if (test_) {
             Value test_value = test_->evaluate(ctx);
             if (ctx.has_exception()) {
-                ctx.pop_block_scope();
+                FOR_CLEANUP();
                 return Value();
             }
             if (!test_value.to_boolean()) {
@@ -579,7 +696,7 @@ Value ForStatement::evaluate(Context& ctx) {
             }
 
             if (ctx.has_exception()) {
-                ctx.pop_block_scope();
+                FOR_CLEANUP();
                 return Value();
             }
 
@@ -602,6 +719,7 @@ Value ForStatement::evaluate(Context& ctx) {
                 break;
             }
             if (ctx.has_return_value()) {
+                FOR_CLEANUP();
                 return ctx.get_return_value();
             }
         } else if (has_per_iteration_scope) {
@@ -612,7 +730,7 @@ Value ForStatement::evaluate(Context& ctx) {
         if (update_) {
             update_->evaluate(ctx);
             if (ctx.has_exception()) {
-                ctx.pop_block_scope();
+                FOR_CLEANUP();
                 return Value();
             }
         }
@@ -620,12 +738,16 @@ Value ForStatement::evaluate(Context& ctx) {
 
         result = Value();
     } catch (...) {
+        if (has_using_init) ctx.run_dispose_resources();
         ctx.set_current_loop_label(prev_loop_label);
         ctx.pop_block_scope();
         decrement_loop_depth();
         throw;
     }
 
+#undef FOR_CLEANUP
+
+    if (has_using_init) ctx.run_dispose_resources();
     ctx.set_current_loop_label(prev_loop_label);
     ctx.pop_block_scope();
     decrement_loop_depth();

@@ -926,6 +926,54 @@ void Context::pop_block_scope() {
     }
 }
 
+void Context::push_dispose_scope() {
+    dispose_scope_stack_.push_back({});
+}
+
+void Context::add_disposable_resource(const Value& resource, const Value& method) {
+    if (!dispose_scope_stack_.empty()) {
+        dispose_scope_stack_.back().push_back({resource, method});
+    }
+}
+
+void Context::run_dispose_resources() {
+    if (dispose_scope_stack_.empty()) return;
+
+    auto resources = std::move(dispose_scope_stack_.back());
+    dispose_scope_stack_.pop_back();
+
+    // Capture any existing exception
+    bool had_exception = has_exception_;
+    Value saved_exception = current_exception_;
+    if (had_exception) clear_exception();
+
+    Value dispose_exception;
+    bool dispose_threw = false;
+
+    // Dispose in reverse order (spec: reverse list order)
+    for (auto it = resources.rbegin(); it != resources.rend(); ++it) {
+        // Use stored method (looked up once at initialization per spec)
+        if (!it->dispose_method.is_function()) continue;
+        Function* fn = it->dispose_method.as_function();
+        fn->call(*this, {}, it->resource_value);
+
+        if (has_exception_) {
+            if (!dispose_threw) {
+                dispose_threw = true;
+                dispose_exception = current_exception_;
+            }
+            clear_exception();
+        }
+    }
+
+    if (dispose_threw) {
+        throw_exception(dispose_exception, true);
+    } else if (had_exception) {
+        has_exception_ = true;
+        current_exception_ = saved_exception;
+    }
+}
+
 void Context::push_with_scope(Object* obj) {
     // Create object environment for with statement
     auto new_env = std::make_unique<Environment>(obj, lexical_environment_);

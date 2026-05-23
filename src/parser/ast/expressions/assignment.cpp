@@ -58,16 +58,42 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // For compound assignments, capture left value BEFORE evaluating right side
         Value left_value;
         if (operator_ != Operator::ASSIGN) {
+            bool is_logical = operator_ == Operator::LOGICAL_AND_ASSIGN ||
+                              operator_ == Operator::LOGICAL_OR_ASSIGN  ||
+                              operator_ == Operator::NULLISH_ASSIGN;
             if (!ctx.has_binding(name)) {
-                if (ctx.is_strict_mode()) {
+                if (ctx.is_strict_mode() || is_logical) {
+                    // Spec: GetValue on unresolvable reference always throws ReferenceError
                     ctx.throw_reference_error("'" + name + "' is not defined");
                     return Value();
                 }
-                // Non-strict: unresolvable left side -> leave left_value as undefined
+                // Non-strict compound (+=, -= etc): leave left_value as undefined
             } else {
                 left_value = ctx.get_binding(name);
                 if (ctx.has_exception()) return Value();
             }
+        }
+
+        // Logical assignment: short-circuit before evaluating RHS
+        if (operator_ == Operator::LOGICAL_AND_ASSIGN ||
+            operator_ == Operator::LOGICAL_OR_ASSIGN  ||
+            operator_ == Operator::NULLISH_ASSIGN) {
+            bool skip_assign =
+                (operator_ == Operator::LOGICAL_AND_ASSIGN && !left_value.to_boolean()) ||
+                (operator_ == Operator::LOGICAL_OR_ASSIGN  &&  left_value.to_boolean()) ||
+                (operator_ == Operator::NULLISH_ASSIGN     && !left_value.is_null() && !left_value.is_undefined());
+            if (skip_assign) return left_value;
+            // Evaluate RHS with NamedEvaluation
+            right_value = right_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            if (right_value.is_function() && is_anonymous_function_def(right_.get())) {
+                const std::string& fname = right_value.as_function()->get_name();
+                if (fname.empty() || fname == "<arrow>") {
+                    right_value.as_function()->set_name(name);
+                }
+            }
+            ctx.set_binding(name, right_value);
+            return right_value;
         }
 
         // Now evaluate right side
@@ -178,11 +204,52 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Value object_value = member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
-        // Evaluate key expression (but defer ToString/ToPropertyKey until after RHS)
+        // Evaluate key expression once (before RHS per spec)
         Value computed_key_value;
         if (member->is_computed()) {
             computed_key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+        }
+
+        // Logical assignment: get current value, short-circuit before evaluating RHS
+        if (operator_ == Operator::LOGICAL_AND_ASSIGN ||
+            operator_ == Operator::LOGICAL_OR_ASSIGN  ||
+            operator_ == Operator::NULLISH_ASSIGN) {
+            // Resolve property name from already-evaluated key
+            std::string lprop;
+            if (member->is_computed()) {
+                if (computed_key_value.is_symbol())
+                    lprop = computed_key_value.as_symbol()->to_property_key();
+                else
+                    lprop = computed_key_value.to_string();
+            } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+                lprop = static_cast<Identifier*>(member->get_property())->get_name();
+            }
+            // Spec: GetValue(ref) -> ToObject(base) throws TypeError for null/undefined
+            if (object_value.is_null() || object_value.is_undefined()) {
+                ctx.throw_type_error("Cannot read property of null or undefined");
+                return Value();
+            }
+            Object* lobj = object_value.is_object() ? object_value.as_object()
+                         : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
+                         : nullptr;
+            Value cur = lobj ? lobj->get_property(lprop) : Value();
+            if (ctx.has_exception()) return Value();
+            bool skip =
+                (operator_ == Operator::LOGICAL_AND_ASSIGN && !cur.to_boolean()) ||
+                (operator_ == Operator::LOGICAL_OR_ASSIGN  &&  cur.to_boolean()) ||
+                (operator_ == Operator::NULLISH_ASSIGN     && !cur.is_null() && !cur.is_undefined());
+            if (skip) return cur;
+            right_value = right_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            if (lobj) {
+                bool ok = lobj->set_property(lprop, right_value);
+                if (!ok && ctx.is_strict_mode()) {
+                    ctx.throw_type_error("Cannot assign to read only property '" + lprop + "'");
+                    return Value();
+                }
+            }
+            return right_value;
         }
 
         right_value = right_->evaluate(ctx);
@@ -965,6 +1032,10 @@ std::string AssignmentExpression::to_string() const {
         case Operator::MUL_ASSIGN: op_str = " *= "; break;
         case Operator::DIV_ASSIGN: op_str = " /= "; break;
         case Operator::MOD_ASSIGN: op_str = " %= "; break;
+        case Operator::LOGICAL_AND_ASSIGN: op_str = " &&= "; break;
+        case Operator::LOGICAL_OR_ASSIGN: op_str = " ||= "; break;
+        case Operator::NULLISH_ASSIGN: op_str = " ??= "; break;
+        default: op_str = " op= "; break;
     }
     return left_->to_string() + op_str + right_->to_string();
 }
