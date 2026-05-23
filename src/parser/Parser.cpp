@@ -620,14 +620,18 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
 std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
     if (current_token().get_type() == TokenType::AWAIT) {
         Position start = current_token().get_start();
+        if (options_.in_class_static_block) {
+            add_error("SyntaxError: 'await' is not allowed inside class static block");
+            return nullptr;
+        }
         advance();
-        
+
         auto argument = parse_unary_expression();
         if (!argument) {
             add_error("Expected expression after 'await'");
             return nullptr;
         }
-        
+
         Position end = get_current_position();
         return std::make_unique<AwaitExpression>(std::move(argument), start, end);
     }
@@ -1475,6 +1479,136 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
     return std::make_unique<TemplateLiteral>(std::move(elements), start, end);
 }
 
+static uint32_t decode_utf8_cp(const std::string& s, size_t& i) {
+    unsigned char c = (unsigned char)s[i];
+    if (c < 0x80) { return c; }
+    if ((c & 0xE0) == 0xC0 && i + 1 < s.size()) {
+        uint32_t cp = ((c & 0x1F) << 6) | ((unsigned char)s[i+1] & 0x3F);
+        i += 1; return cp;
+    }
+    if ((c & 0xF0) == 0xE0 && i + 2 < s.size()) {
+        uint32_t cp = ((c & 0x0F) << 12) | (((unsigned char)s[i+1] & 0x3F) << 6) | ((unsigned char)s[i+2] & 0x3F);
+        i += 2; return cp;
+    }
+    if ((c & 0xF8) == 0xF0 && i + 3 < s.size()) {
+        uint32_t cp = ((c & 0x07) << 18) | (((unsigned char)s[i+1] & 0x3F) << 12) |
+                      (((unsigned char)s[i+2] & 0x3F) << 6) | ((unsigned char)s[i+3] & 0x3F);
+        i += 3; return cp;
+    }
+    return 0xFFFD;
+}
+
+static bool is_unicode_id_start(uint32_t cp) {
+    if (cp < 0x80) return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || cp == '_' || cp == '$';
+    if (cp >= 0xD800 && cp <= 0xDFFF) return false; // surrogates
+    if (cp > 0x10FFFF) return false;
+    // reject non-letter symbol blocks
+    if (cp >= 0x2000 && cp <= 0x27FF) return false; // punctuation/symbols/dingbats
+    if (cp >= 0x2E00 && cp <= 0x2FFF) return false;
+    if (cp >= 0x3000 && cp <= 0x3004) return false; // CJK symbols partial
+    if (cp >= 0x104A0 && cp <= 0x104A9) return false; // Osmanya digits
+    if (cp >= 0x1F000 && cp <= 0x1FFFF) return false; // emoji/special blocks
+    if (cp == 0x10FFFF) return false; // last codepoint, not a letter
+    return true;
+}
+
+static bool is_unicode_id_continue(uint32_t cp) {
+    if (cp < 0x80) return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9') || cp == '_' || cp == '$';
+    if (cp >= 0xD800 && cp <= 0xDFFF) return false;
+    if (cp > 0x10FFFF) return false;
+    if (cp >= 0x2000 && cp <= 0x27FF) return false;
+    if (cp >= 0x2E00 && cp <= 0x2FFF) return false;
+    if (cp >= 0x104A0 && cp <= 0x104A9) return false;
+    if (cp >= 0x1F000 && cp <= 0x1FFFF) return false;
+    if (cp == 0x10FFFF) return false;
+    return true;
+}
+
+static bool parse_regex_hex_escape(const std::string& name, size_t& i, uint32_t& out_cp) {
+    // parses \uHHHH or \u{HHHHHH} starting after 'u', returns false on failure
+    if (i >= name.size()) return false;
+    if (name[i] == '{') {
+        i++;
+        uint32_t val = 0;
+        bool has_digit = false;
+        while (i < name.size() && name[i] != '}') {
+            char c = name[i++];
+            val <<= 4;
+            if (c >= '0' && c <= '9') val |= (c - '0');
+            else if (c >= 'a' && c <= 'f') val |= (c - 'a' + 10);
+            else if (c >= 'A' && c <= 'F') val |= (c - 'A' + 10);
+            else return false;
+            has_digit = true;
+        }
+        if (i >= name.size() || name[i] != '}' || !has_digit) return false;
+        i++; // consume '}'
+        out_cp = val;
+        return true;
+    }
+    // \uHHHH -- exactly 4 hex digits
+    if (i + 4 > name.size()) return false;
+    uint32_t val = 0;
+    for (int k = 0; k < 4; k++) {
+        char c = name[i++];
+        val <<= 4;
+        if (c >= '0' && c <= '9') val |= (c - '0');
+        else if (c >= 'a' && c <= 'f') val |= (c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') val |= (c - 'A' + 10);
+        else return false;
+    }
+    out_cp = val;
+    return true;
+}
+
+// Returns error string or empty string if valid
+static std::string validate_regex_group_name(const std::string& name) {
+    if (name.empty()) return "SyntaxError: Empty named capture group name";
+    size_t i = 0;
+    bool first = true;
+    while (i < name.size()) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '\\') {
+            i++;
+            if (i >= name.size() || name[i] != 'u')
+                return "SyntaxError: Invalid escape sequence in named capture group";
+            i++;
+            uint32_t cp;
+            if (!parse_regex_hex_escape(name, i, cp))
+                return "SyntaxError: Invalid unicode escape in named capture group";
+            if (cp > 0x10FFFF)
+                return "SyntaxError: Unicode escape out of range in named capture group";
+            if (cp >= 0xD800 && cp <= 0xDFFF)
+                return "SyntaxError: Lone surrogate in named capture group";
+            if (first && !is_unicode_id_start(cp))
+                return "SyntaxError: Invalid identifier start in named capture group";
+            if (!first && !is_unicode_id_continue(cp))
+                return "SyntaxError: Invalid identifier character in named capture group";
+        } else if (c < 0x80) {
+            // ASCII
+            if (first) {
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' || c == '$'))
+                    return "SyntaxError: Invalid identifier start in named capture group";
+            } else {
+                if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '$'))
+                    return "SyntaxError: Invalid identifier character in named capture group";
+            }
+            i++;
+        } else {
+            // non-ASCII: decode UTF-8
+            size_t save = i;
+            uint32_t cp = decode_utf8_cp(name, i);
+            i++;
+            (void)save;
+            if (first && !is_unicode_id_start(cp))
+                return "SyntaxError: Invalid identifier start in named capture group";
+            if (!first && !is_unicode_id_continue(cp))
+                return "SyntaxError: Invalid identifier character in named capture group";
+        }
+        first = false;
+    }
+    return "";
+}
+
 std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
     const Token& token = current_token();
     Position start = token.get_start();
@@ -1609,13 +1743,31 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                 }
             }
             if (p[i] == '(' && i + 2 < p.size() && p[i+1] == '?' && p[i+2] == '<') {
-                size_t end_pos = p.find('>', i + 3);
-                if (end_pos != std::string::npos) {
+                // find '>' but not crossing a ')' (find end of group specifier)
+                size_t end_pos = std::string::npos;
+                for (size_t j = i + 3; j < p.size(); j++) {
+                    if (p[j] == '>') { end_pos = j; break; }
+                    if (p[j] == ')') break;
+                }
+                if (end_pos == std::string::npos) {
+                    // not lookahead/lookbehind? check if it could be (?<= or (?<!
+                    if (i + 3 < p.size() && (p[i+3] == '=' || p[i+3] == '!')) {
+                        // it's lookbehind assertion, not a named group
+                    } else {
+                        add_error("SyntaxError: Unterminated named capture group");
+                        return nullptr;
+                    }
+                } else {
                     std::string name = p.substr(i + 3, end_pos - (i + 3));
                     if (name.empty()) {
                         add_error("SyntaxError: Empty named capture group name");
                         return nullptr;
                     } else if (name[0] != '=' && name[0] != '!') {
+                        std::string err = validate_regex_group_name(name);
+                        if (!err.empty()) {
+                            add_error(err);
+                            return nullptr;
+                        }
                         if (named_groups.count(name)) {
                             add_error("SyntaxError: Duplicate named capture group: " + name);
                             return nullptr;
@@ -2293,6 +2445,84 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
     return std::make_unique<VariableDeclaration>(std::move(declarations), kind, start, end);
 }
 
+static void collect_var_declared_names(ASTNode* node, std::vector<std::string>& vars) {
+    if (!node) return;
+    auto t = node->get_type();
+    // stop at function/class boundaries
+    if (t == ASTNode::Type::FUNCTION_DECLARATION ||
+        t == ASTNode::Type::FUNCTION_EXPRESSION ||
+        t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+        t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+        t == ASTNode::Type::CLASS_DECLARATION ||
+        t == ASTNode::Type::CLASS_STATIC_BLOCK) return;
+    if (t == ASTNode::Type::VARIABLE_DECLARATION) {
+        auto* vd = static_cast<VariableDeclaration*>(node);
+        if (vd->get_kind() == VariableDeclarator::Kind::VAR) {
+            for (const auto& d : vd->get_declarations())
+                if (d->get_id()) vars.push_back(d->get_id()->get_name());
+        }
+        return;
+    }
+    if (t == ASTNode::Type::BLOCK_STATEMENT) {
+        for (const auto& s : static_cast<BlockStatement*>(node)->get_statements())
+            collect_var_declared_names(s.get(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::IF_STATEMENT) {
+        auto* n = static_cast<IfStatement*>(node);
+        collect_var_declared_names(n->get_consequent(), vars);
+        collect_var_declared_names(n->get_alternate(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::FOR_STATEMENT) {
+        auto* n = static_cast<ForStatement*>(node);
+        collect_var_declared_names(n->get_init(), vars);
+        collect_var_declared_names(n->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::FOR_IN_STATEMENT) {
+        auto* n = static_cast<ForInStatement*>(node);
+        collect_var_declared_names(n->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::FOR_OF_STATEMENT) {
+        auto* n = static_cast<ForOfStatement*>(node);
+        collect_var_declared_names(n->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::WHILE_STATEMENT) {
+        collect_var_declared_names(static_cast<WhileStatement*>(node)->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::DO_WHILE_STATEMENT) {
+        collect_var_declared_names(static_cast<DoWhileStatement*>(node)->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::WITH_STATEMENT) {
+        collect_var_declared_names(static_cast<WithStatement*>(node)->get_body(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::LABELED_STATEMENT) {
+        collect_var_declared_names(static_cast<LabeledStatement*>(node)->get_statement(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::TRY_STATEMENT) {
+        auto* n = static_cast<TryStatement*>(node);
+        collect_var_declared_names(n->get_try_block(), vars);
+        if (n->get_catch_clause()) collect_var_declared_names(static_cast<CatchClause*>(n->get_catch_clause())->get_body(), vars);
+        collect_var_declared_names(n->get_finally_block(), vars);
+        return;
+    }
+    if (t == ASTNode::Type::SWITCH_STATEMENT) {
+        for (const auto& c : static_cast<SwitchStatement*>(node)->get_cases()) {
+            auto* cc = static_cast<CaseClause*>(c.get());
+            for (const auto& s : cc->get_consequent())
+                collect_var_declared_names(s.get(), vars);
+        }
+        return;
+    }
+}
+
 static std::string find_block_lexical_duplicate(const std::vector<std::unique_ptr<ASTNode>>& stmts) {
     std::vector<std::string> lexical;
     std::vector<std::string> vars;
@@ -2314,6 +2544,8 @@ static std::string find_block_lexical_duplicate(const std::vector<std::unique_pt
                     else lexical.push_back(decl->get_id()->get_name());
                 }
             }
+        } else {
+            collect_var_declared_names(stmt.get(), vars);
         }
     }
 
@@ -2786,6 +3018,11 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             Position var_end = current_token().get_end();
             advance();
 
+            if (options_.strict_mode && (var_name == "eval" || var_name == "arguments")) {
+                add_error("SyntaxError: '" + var_name + "' cannot be used as variable name in strict mode");
+                return nullptr;
+            }
+
             auto identifier = std::make_unique<Identifier>(var_name, var_start, var_end);
 
             std::unique_ptr<ASTNode> initializer = nullptr;
@@ -2871,6 +3108,23 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 add_error("SyntaxError: Invalid left-hand side in for-in");
                 return nullptr;
             }
+            // 'this' is not a valid assignment target
+            if (t == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(init.get());
+                if (id->get_name() == "this") {
+                    add_error("SyntaxError: Invalid left-hand side in for-in");
+                    return nullptr;
+                }
+            }
+            // validate destructuring patterns
+            if (t == ASTNode::Type::ARRAY_LITERAL) {
+                if (!validate_array_destructuring(static_cast<ArrayLiteral*>(init.get())))
+                    return nullptr;
+            }
+            if (t == ASTNode::Type::OBJECT_LITERAL) {
+                if (!validate_object_destructuring(static_cast<ObjectLiteral*>(init.get())))
+                    return nullptr;
+            }
         }
         if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
             auto* vd = static_cast<VariableDeclaration*>(init.get());
@@ -2893,19 +3147,19 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             add_error("Unexpected end of input after 'in'");
             return nullptr;
         }
-        
+
         auto object = parse_expression();
         if (!object) {
             add_error("Expected expression after 'in' in for...in loop");
             return nullptr;
         }
-        
+
         if (at_end() || current_token().get_type() != TokenType::RIGHT_PAREN) {
             add_error("Expected ')' after for...in object");
             return nullptr;
         }
         advance();
-        
+
         if (at_end()) {
             add_error("Expected statement after for...in");
             return nullptr;
@@ -2919,6 +3173,26 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         if (!body) {
             add_error("Failed to parse for...in body");
             return nullptr;
+        }
+
+        // BoundNames of for-head must not appear in VarDeclaredNames of body (for const/let)
+        if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(init.get());
+            bool is_lexical = vd->get_kind() == VariableDeclarator::Kind::LET ||
+                              vd->get_kind() == VariableDeclarator::Kind::CONST;
+            if (is_lexical) {
+                std::unordered_set<std::string> head_names;
+                for (const auto& d : vd->get_declarations())
+                    if (d->get_id()) head_names.insert(d->get_id()->get_name());
+                std::vector<std::string> body_vars;
+                collect_var_declared_names(body.get(), body_vars);
+                for (const auto& v : body_vars) {
+                    if (head_names.count(v)) {
+                        add_error("SyntaxError: Variable '" + v + "' in for-in head conflicts with var declaration in body");
+                        return nullptr;
+                    }
+                }
+            }
         }
 
         Position end = get_current_position();
@@ -2959,6 +3233,26 @@ check_for_of:
         if (!body) {
             add_error("Failed to parse for...in body");
             return nullptr;
+        }
+
+        // BoundNames of for-head must not appear in VarDeclaredNames of body (for const/let)
+        if (init && init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(init.get());
+            bool is_lexical = vd->get_kind() == VariableDeclarator::Kind::LET ||
+                              vd->get_kind() == VariableDeclarator::Kind::CONST;
+            if (is_lexical) {
+                std::unordered_set<std::string> head_names;
+                for (const auto& d : vd->get_declarations())
+                    if (d->get_id()) head_names.insert(d->get_id()->get_name());
+                std::vector<std::string> body_vars;
+                collect_var_declared_names(body.get(), body_vars);
+                for (const auto& v : body_vars) {
+                    if (head_names.count(v)) {
+                        add_error("SyntaxError: Variable '" + v + "' in for-in head conflicts with var declaration in body");
+                        return nullptr;
+                    }
+                }
+            }
         }
 
         Position end = get_current_position();
@@ -3729,9 +4023,18 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
                 bool prev_static_block = options_.in_class_static_block;
+                bool prev_generator = options_.in_generator_body;
+                bool prev_async = options_.in_async_body;
+                bool prev_strict = options_.strict_mode;
                 options_.in_class_static_block = true;
-                auto block = parse_block_statement(true);
+                options_.in_generator_body = false;
+                options_.in_async_body = false;
+                options_.strict_mode = true;
+                auto block = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block;
+                options_.in_generator_body = prev_generator;
+                options_.in_async_body = prev_async;
+                options_.strict_mode = prev_strict;
                 if (block) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(block.release())),
@@ -3926,9 +4229,18 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             advance();
             if (current_token().get_type() == TokenType::LEFT_BRACE) {
                 bool prev_static_block2 = options_.in_class_static_block;
+                bool prev_generator2 = options_.in_generator_body;
+                bool prev_async2 = options_.in_async_body;
+                bool prev_strict2 = options_.strict_mode;
                 options_.in_class_static_block = true;
-                auto sblock = parse_block_statement(true);
+                options_.in_generator_body = false;
+                options_.in_async_body = false;
+                options_.strict_mode = true;
+                auto sblock = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block2;
+                options_.in_generator_body = prev_generator2;
+                options_.in_async_body = prev_async2;
+                options_.strict_mode = prev_strict2;
                 if (sblock) {
                     statements.push_back(std::make_unique<ClassStaticBlock>(
                         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(sblock.release())),
@@ -5563,6 +5875,10 @@ std::unique_ptr<ASTNode> Parser::parse_return_statement() {
         return nullptr;
     }
 
+    if (options_.in_class_static_block) {
+        add_error("SyntaxError: Illegal return statement inside class static block");
+        return nullptr;
+    }
     if (options_.function_depth == 0 && !options_.allow_return_outside_function) {
         add_error("SyntaxError: Illegal return statement");
         return nullptr;
