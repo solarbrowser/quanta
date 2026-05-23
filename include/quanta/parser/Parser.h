@@ -44,6 +44,7 @@ public:
         bool in_binary_expr = false;
         bool in_unary_operand = false;
         std::unordered_set<std::string> active_labels;
+        std::unordered_set<std::string> loop_labels;
     };
 
     struct ParseError {
