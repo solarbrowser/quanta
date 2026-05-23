@@ -66,34 +66,48 @@ std::unique_ptr<Program> Parser::parse_program() {
         }
     }
     
-    if (options_.source_type_module || options_.strict_mode) {
-        auto dup_check = [&]() -> std::string {
-            std::vector<std::string> lexical;
-            for (const auto& stmt : statements) {
-                if (!stmt) continue;
-                if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
-                    auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
-                    if (fn->get_id()) lexical.push_back(fn->get_id()->get_name());
-                } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
-                    auto* cls = static_cast<ClassDeclaration*>(stmt.get());
-                    if (cls->get_id()) lexical.push_back(cls->get_id()->get_name());
-                } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-                    auto* vd = static_cast<VariableDeclaration*>(stmt.get());
-                    if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
-                        for (const auto& d : vd->get_declarations())
-                            if (d->get_id()) lexical.push_back(d->get_id()->get_name());
-                    }
+    // Always check class/let/const duplicates; also check function decl dups in strict/module.
+    {
+        std::vector<std::string> lex_only;   // class + let/const -- always checked
+        std::vector<std::string> fn_strict;  // function decls -- checked only in strict/module
+
+        for (const auto& stmt : statements) {
+            if (!stmt) continue;
+            if (stmt->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+                if (fn->get_id()) fn_strict.push_back(fn->get_id()->get_name());
+            } else if (stmt->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+                if (cls->get_id()) lex_only.push_back(cls->get_id()->get_name());
+            } else if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    for (const auto& d : vd->get_declarations())
+                        if (d->get_id()) lex_only.push_back(d->get_id()->get_name());
                 }
             }
-            for (size_t i = 0; i < lexical.size(); i++)
-                for (size_t j = i+1; j < lexical.size(); j++)
-                    if (lexical[i] == lexical[j]) return lexical[i];
-            return "";
-        };
-        std::string dup = dup_check();
-        if (!dup.empty()) {
-            add_error("SyntaxError: Identifier '" + dup + "' has already been declared");
         }
+
+        // Check class/let/const duplicates unconditionally
+        for (size_t i = 0; i < lex_only.size(); i++)
+            for (size_t j = i+1; j < lex_only.size(); j++)
+                if (lex_only[i] == lex_only[j]) {
+                    add_error("SyntaxError: Identifier '" + lex_only[i] + "' has already been declared");
+                    goto dup_done;
+                }
+
+        // Also check for class/let/const vs function-decl name collisions
+        if (options_.source_type_module || options_.strict_mode) {
+            std::vector<std::string> all_lex = lex_only;
+            all_lex.insert(all_lex.end(), fn_strict.begin(), fn_strict.end());
+            for (size_t i = 0; i < all_lex.size(); i++)
+                for (size_t j = i+1; j < all_lex.size(); j++)
+                    if (all_lex[i] == all_lex[j]) {
+                        add_error("SyntaxError: Identifier '" + all_lex[i] + "' has already been declared");
+                        goto dup_done;
+                    }
+        }
+        dup_done:;
     }
 
     Position end = get_current_position();
@@ -112,12 +126,26 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::CONST:
             return parse_variable_declaration();
         case TokenType::LET:
-            // Non-strict: "let" followed by "=", "[0]", "(", ";", etc. is an identifier expression
-            // Only treat as declaration if followed by identifier, "[", or "{"
+            // Non-strict: "let" followed by "=", "(", ";", etc. is an identifier expression.
+            // Skip whitespace/newlines when peeking -- ASI does not apply before a token
+            // that can start a LexicalBinding (BindingIdentifier or pattern).
             if (!options_.strict_mode) {
-                TokenType next = peek_token().get_type();
-                if (next != TokenType::IDENTIFIER && next != TokenType::LEFT_BRACKET &&
-                    next != TokenType::LEFT_BRACE) {
+                size_t peek_idx = current_token_index_ + 1;
+                while (peek_idx < tokens_.size() &&
+                       (tokens_[peek_idx].get_type() == TokenType::WHITESPACE ||
+                        tokens_[peek_idx].get_type() == TokenType::NEWLINE ||
+                        tokens_[peek_idx].get_type() == TokenType::COMMENT)) {
+                    peek_idx++;
+                }
+                TokenType next = (peek_idx < tokens_.size())
+                                 ? tokens_[peek_idx].get_type()
+                                 : TokenType::EOF_TOKEN;
+                bool can_start_binding =
+                    next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET ||
+                    next == TokenType::LEFT_BRACE  || next == TokenType::LET        ||
+                    next == TokenType::YIELD       || next == TokenType::AWAIT      ||
+                    next == TokenType::STATIC;
+                if (!can_start_binding) {
                     return parse_expression_statement();
                 }
             }
@@ -1244,6 +1272,15 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 return std::make_unique<Identifier>("undefined", start, end);
             }
         case TokenType::IDENTIFIER:
+            if (options_.strict_mode) {
+                static const std::unordered_set<std::string> strict_future = {
+                    "implements","interface","package","private","protected","public"
+                };
+                if (strict_future.count(current_token().get_value())) {
+                    add_error("SyntaxError: '" + current_token().get_value() + "' is a reserved word in strict mode");
+                    return nullptr;
+                }
+            }
             return parse_identifier();
         case TokenType::HASH:
             return parse_private_field();
@@ -2408,7 +2445,8 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         bool is_yield_id = (current_token().get_type() == TokenType::YIELD &&
                             !options_.strict_mode && !options_.in_generator_body);
         bool is_await_id = (current_token().get_type() == TokenType::AWAIT &&
-                            !options_.in_async_body);
+                            !options_.in_async_body && !options_.in_class_static_block &&
+                            !options_.source_type_module);
         bool is_let_id   = (current_token().get_type() == TokenType::LET && !options_.strict_mode);
         bool is_of_id    = (current_token().get_type() == TokenType::OF);
         if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id) {
@@ -2421,11 +2459,32 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
             return nullptr;
         }
 
+        const std::string& var_name_check = current_token().get_value();
+
+        // 'let' cannot be a binding name in let/const declarations.
+        if ((kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) &&
+            var_name_check == "let") {
+            add_error("SyntaxError: 'let' is not a valid binding name in 'let'/'const' declarations");
+            return nullptr;
+        }
+        // 'yield' cannot be a binding in generator bodies or strict mode.
+        if (var_name_check == "yield" &&
+            (options_.in_generator_body || options_.strict_mode)) {
+            add_error("SyntaxError: 'yield' cannot be used as a binding name here");
+            return nullptr;
+        }
+        // 'await' cannot be a binding in async bodies, module code, or class static blocks.
+        if (var_name_check == "await" &&
+            (options_.in_async_body || options_.source_type_module ||
+             options_.in_class_static_block)) {
+            add_error("SyntaxError: 'await' cannot be used as a binding name here");
+            return nullptr;
+        }
+
         // ES5: eval and arguments cannot be used as variable names in strict mode
         if (options_.strict_mode) {
-            const std::string& var_name = current_token().get_value();
-            if (var_name == "eval" || var_name == "arguments") {
-                add_error("'" + var_name + "' cannot be used as a variable name in strict mode");
+            if (var_name_check == "eval" || var_name_check == "arguments") {
+                add_error("'" + var_name_check + "' cannot be used as a variable name in strict mode");
                 return nullptr;
             }
         }
@@ -2586,6 +2645,33 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         return nullptr;
     }
 
+    bool outer_strict = options_.strict_mode;
+    if (is_function_body && !options_.strict_mode) {
+        // Lookahead scan for "use strict" directive without consuming tokens.
+        // Scans the directive prologue (leading string literals) to detect strict mode.
+        auto next_tok_idx = [&](size_t idx) -> size_t {
+            idx++;
+            while (idx < tokens_.size() &&
+                   (tokens_[idx].get_type() == TokenType::WHITESPACE ||
+                    tokens_[idx].get_type() == TokenType::NEWLINE ||
+                    tokens_[idx].get_type() == TokenType::COMMENT)) {
+                idx++;
+            }
+            return idx;
+        };
+        size_t scan = current_token_index_;
+        while (scan < tokens_.size() && tokens_[scan].get_type() == TokenType::STRING) {
+            if (tokens_[scan].get_value() == "use strict") {
+                options_.strict_mode = true;
+                break;
+            }
+            scan = next_tok_idx(scan);
+            if (scan < tokens_.size() && tokens_[scan].get_type() == TokenType::SEMICOLON) {
+                scan = next_tok_idx(scan);
+            }
+        }
+    }
+
     bool saved_block_ctx = options_.in_block_context;
     bool saved_sub = options_.in_substatement_body;
     bool saved_scl = options_.in_switch_case_list;
@@ -2612,6 +2698,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
     options_.in_block_context = saved_block_ctx;
     options_.in_substatement_body = saved_sub;
     options_.in_switch_case_list = saved_scl;
+
+    if (is_function_body) {
+        options_.strict_mode = outer_strict;
+    }
 
     if (!is_function_body) {
         std::string dup = find_block_lexical_duplicate(statements);
@@ -3026,15 +3116,41 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 goto check_for_of;
             }
 
-            if (current_token().get_type() != TokenType::IDENTIFIER) {
-                add_error("Expected identifier in variable declaration");
-                return nullptr;
+            // Accept keyword tokens that can serve as BindingIdentifiers in some contexts.
+            {
+                TokenType ct = current_token().get_type();
+                bool is_kw_binding = (ct == TokenType::LET || ct == TokenType::YIELD ||
+                                      ct == TokenType::AWAIT || ct == TokenType::STATIC);
+                if (ct != TokenType::IDENTIFIER && !is_kw_binding) {
+                    add_error("Expected identifier in variable declaration");
+                    return nullptr;
+                }
             }
 
             std::string var_name = current_token().get_value();
             Position var_start = current_token().get_start();
             Position var_end = current_token().get_end();
             advance();
+
+            // 'let' cannot be a binding name in let/const declarations (always).
+            if ((kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) &&
+                var_name == "let") {
+                add_error("SyntaxError: 'let' is not a valid binding name for 'let'/'const' declarations");
+                return nullptr;
+            }
+            // 'yield' cannot be a binding name in generators or strict mode.
+            if (var_name == "yield" &&
+                (options_.in_generator_body || options_.strict_mode)) {
+                add_error("SyntaxError: 'yield' cannot be used as a binding name here");
+                return nullptr;
+            }
+            // 'await' cannot be a binding name in async bodies or module code.
+            if (var_name == "await" &&
+                (options_.in_async_body || options_.source_type_module ||
+                 options_.in_class_static_block)) {
+                add_error("SyntaxError: 'await' cannot be used as a binding name here");
+                return nullptr;
+            }
 
             if (options_.strict_mode && (var_name == "eval" || var_name == "arguments")) {
                 add_error("SyntaxError: '" + var_name + "' cannot be used as variable name in strict mode");
@@ -4082,7 +4198,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     advance();
 
     bool saved_chh = options_.class_has_heritage;
+    bool saved_class_strict = options_.strict_mode;
     options_.class_has_heritage = (superclass != nullptr);
+    options_.strict_mode = true;
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_constructor = false;
 
@@ -4224,6 +4342,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     advance();
 
     options_.class_has_heritage = saved_chh;
+    options_.strict_mode = saved_class_strict;
 
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
@@ -4300,7 +4419,9 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     advance();
 
     bool saved_chh2 = options_.class_has_heritage;
+    bool saved_class_strict2 = options_.strict_mode;
     options_.class_has_heritage = (superclass != nullptr);
+    options_.strict_mode = true;
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_ctor2 = false;
 
@@ -4441,6 +4562,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     advance();
 
     options_.class_has_heritage = saved_chh2;
+    options_.strict_mode = saved_class_strict2;
 
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
@@ -6532,12 +6654,32 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 }
 
                 if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
+                    const std::string& shn = identifier_key->get_name();
+                    if (options_.in_class_static_block &&
+                        (shn == "await" || shn == "arguments")) {
+                        add_error("SyntaxError: '" + shn + "' cannot be used as identifier in class static block");
+                        return nullptr;
+                    }
+                    if (options_.strict_mode) {
+                        static const std::unordered_set<std::string> strict_future = {
+                            "implements","interface","let","package","private",
+                            "protected","public","static","yield"
+                        };
+                        if (strict_future.count(shn)) {
+                            add_error("SyntaxError: '" + shn + "' is a reserved word in strict mode");
+                            return nullptr;
+                        }
+                        if (shn == "eval" || shn == "arguments") {
+                            add_error("SyntaxError: '" + shn + "' cannot be used as identifier in strict mode");
+                            return nullptr;
+                        }
+                    }
                     auto value = std::make_unique<Identifier>(
-                        identifier_key->get_name(),
+                        shn,
                         identifier_key->get_start(),
                         identifier_key->get_end()
                     );
-                    
+
                     auto property = std::make_unique<ObjectLiteral::Property>(
                         std::move(key), std::move(value), computed, false
                     );
