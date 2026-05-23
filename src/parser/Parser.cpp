@@ -211,7 +211,20 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                 bool next_is_await_id = (next == TokenType::AWAIT && !options_.in_async_body
                                          && !options_.in_class_static_block);
                 if (next == TokenType::IDENTIFIER || next == TokenType::LET ||
-                    next == TokenType::STATIC || next == TokenType::OF || next_is_await_id) {
+                    next == TokenType::STATIC || next_is_await_id) {
+                    if (options_.in_substatement_body) {
+                        add_error("SyntaxError: 'using' declaration not allowed as substatement body");
+                        return nullptr;
+                    }
+                    if (options_.in_switch_case_list) {
+                        add_error("SyntaxError: 'using' declaration not allowed directly in switch case/default");
+                        return nullptr;
+                    }
+                    if (!options_.in_block_context && !options_.source_type_module
+                        && options_.function_depth == 0 && !options_.in_class_static_block) {
+                        add_error("SyntaxError: 'using' declaration not allowed at top level of a script");
+                        return nullptr;
+                    }
                     return parse_using_declaration(false);
                 }
             }
@@ -1254,6 +1267,13 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
                 return id;
             }
             break;
+        case TokenType::OF:
+        {   // 'of' is always a contextual keyword — valid as identifier in expressions
+            auto id = std::make_unique<Identifier>("of",
+                current_token().get_start(), current_token().get_end());
+            advance();
+            return id;
+        }
         case TokenType::IMPORT:
             return parse_import_expression();
         case TokenType::LEFT_BRACE:
@@ -2220,7 +2240,8 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         bool is_await_id = (current_token().get_type() == TokenType::AWAIT &&
                             !options_.in_async_body);
         bool is_let_id   = (current_token().get_type() == TokenType::LET && !options_.strict_mode);
-        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id) {
+        bool is_of_id    = (current_token().get_type() == TokenType::OF);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
@@ -2315,6 +2336,13 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         return nullptr;
     }
 
+    bool saved_block_ctx = options_.in_block_context;
+    bool saved_sub = options_.in_substatement_body;
+    bool saved_scl = options_.in_switch_case_list;
+    options_.in_block_context = true;
+    options_.in_substatement_body = false;
+    options_.in_switch_case_list = false;
+
     std::vector<std::unique_ptr<ASTNode>> statements;
 
     while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
@@ -2330,6 +2358,10 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
         add_error("Expected '}'");
         return nullptr;
     }
+
+    options_.in_block_context = saved_block_ctx;
+    options_.in_substatement_body = saved_sub;
+    options_.in_switch_case_list = saved_scl;
 
     if (!is_function_body) {
         std::string dup = find_block_lexical_duplicate(statements);
@@ -2587,7 +2619,9 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
     }
     
     if (!check_substatement_restrictions(false)) return nullptr;
+    options_.in_substatement_body = true;
     auto consequent = parse_statement();
+    options_.in_substatement_body = false;
     if (!consequent) {
         add_error("Expected statement after if condition");
         return nullptr;
@@ -2596,7 +2630,9 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
     std::unique_ptr<ASTNode> alternate = nullptr;
     if (consume_if_match(TokenType::ELSE)) {
         if (!check_substatement_restrictions(false)) return nullptr;
+        options_.in_substatement_body = true;
         alternate = parse_statement();
+        options_.in_substatement_body = false;
         if (!alternate) {
             add_error("Expected statement after 'else'");
             return nullptr;
@@ -2633,12 +2669,38 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         // Check for 'using' declaration in for init: for (using x = expr; ...)
         if (match(TokenType::IDENTIFIER) && current_token().get_value() == "using") {
             TokenType next = peek_token().get_type();
-            if (next == TokenType::IDENTIFIER || next == TokenType::LET ||
-                next == TokenType::STATIC || next == TokenType::OF) {
+            TokenType next2 = (current_token_index_ + 2 < tokens_.size())
+                              ? tokens_[current_token_index_ + 2].get_type()
+                              : TokenType::EOF_TOKEN;
+            if (next == TokenType::OF && next2 == TokenType::ASSIGN) {
+                // for (using of = ...; ...) — using declaration with 'of' as binding name
+                // Allow OF as binding name in parse_using_declaration (handled below)
+                init = parse_using_declaration(false, false);
+                if (!init) return nullptr;
+                goto for_semicolon;
+            } else if (next == TokenType::IDENTIFIER || next == TokenType::LET || next == TokenType::STATIC) {
+                if (next2 == TokenType::OF) {
+                    // for (using ID of iterable) — using-for-of: parse binding name only
+                    advance(); // consume 'using'
+                    std::string binding_name = current_token().get_value();
+                    Position binding_pos = get_current_position();
+                    // Early error: 'let' cannot be a binding name in using declaration
+                    if (current_token().get_type() == TokenType::LET) {
+                        add_error("SyntaxError: 'let' cannot be a binding name in 'using' declaration");
+                        return nullptr;
+                    }
+                    advance(); // consume ID
+                    std::vector<UsingBinding> bindings;
+                    bindings.push_back(UsingBinding(binding_name, nullptr));
+                    init = std::make_unique<UsingDeclaration>(std::move(bindings), false,
+                                                              binding_pos, get_current_position());
+                    goto check_for_of;
+                }
                 init = parse_using_declaration(false, false);
                 if (!init) return nullptr;
                 goto for_semicolon;
             }
+            // next is OF without '=' after: treat 'using' as identifier, fall through
         }
         // Non-strict: "let" followed by "=", ";", etc. is an identifier, not a declaration
         bool let_as_id = (!options_.strict_mode &&
@@ -2850,7 +2912,9 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
         }
         if (!check_substatement_restrictions()) return nullptr;
         options_.loop_depth++;
+        options_.in_substatement_body = true;
         auto body = parse_statement();
+        options_.in_substatement_body = false;
         options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...in body");
@@ -2888,7 +2952,9 @@ check_for_of:
         }
         if (!check_substatement_restrictions()) return nullptr;
         options_.loop_depth++;
+        options_.in_substatement_body = true;
         auto body = parse_statement();
+        options_.in_substatement_body = false;
         options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...in body");
@@ -2901,7 +2967,8 @@ check_for_of:
 
     if (current_token().get_type() == TokenType::OF) {
         // Early SyntaxError: LHS must be a valid assignment target
-        if (init && init->get_type() != ASTNode::Type::VARIABLE_DECLARATION) {
+        if (init && init->get_type() != ASTNode::Type::VARIABLE_DECLARATION
+                 && init->get_type() != ASTNode::Type::USING_DECLARATION) {
             auto t = init->get_type();
             if (t != ASTNode::Type::IDENTIFIER &&
                 t != ASTNode::Type::MEMBER_EXPRESSION &&
@@ -2966,13 +3033,56 @@ check_for_of:
         }
         if (!check_substatement_restrictions()) return nullptr;
         options_.loop_depth++;
+        options_.in_substatement_body = true;
         auto body = parse_statement();
+        options_.in_substatement_body = false;
         options_.loop_depth--;
         if (!body) {
             add_error("Failed to parse for...of body");
             return nullptr;
         }
-        
+
+        // Early error: BoundNames of for-head must not appear in VarDeclaredNames of body
+        if (init && (init->get_type() == ASTNode::Type::VARIABLE_DECLARATION ||
+                     init->get_type() == ASTNode::Type::USING_DECLARATION) && body) {
+            std::unordered_set<std::string> head_names;
+            if (init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                auto* vd = static_cast<VariableDeclaration*>(init.get());
+                for (const auto& d : vd->get_declarations())
+                    if (d->get_id()) head_names.insert(d->get_id()->get_name());
+            } else {
+                auto* ud = static_cast<UsingDeclaration*>(init.get());
+                for (const auto& b : ud->get_bindings()) head_names.insert(b.name);
+            }
+            // Collect var-declared names from body (stops at function boundaries)
+            std::function<void(ASTNode*)> collect_vars = [&](ASTNode* node) {
+                if (!node) return;
+                auto t = node->get_type();
+                if (t == ASTNode::Type::FUNCTION_DECLARATION || t == ASTNode::Type::FUNCTION_EXPRESSION ||
+                    t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION || t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+                    t == ASTNode::Type::CLASS_DECLARATION) return; // stop at function boundary
+                if (t == ASTNode::Type::VARIABLE_DECLARATION) {
+                    auto* vd = static_cast<VariableDeclaration*>(node);
+                    if (vd->get_kind() == VariableDeclarator::Kind::VAR) {
+                        for (const auto& d : vd->get_declarations())
+                            if (d->get_id() && head_names.count(d->get_id()->get_name())) {
+                                add_error("SyntaxError: Variable '" + d->get_id()->get_name() +
+                                          "' in for-of head conflicts with var declaration in body");
+                            }
+                    }
+                } else if (t == ASTNode::Type::BLOCK_STATEMENT) {
+                    auto* blk = static_cast<BlockStatement*>(node);
+                    for (const auto& s : blk->get_statements()) collect_vars(s.get());
+                } else if (t == ASTNode::Type::IF_STATEMENT) {
+                    auto* ifs = static_cast<IfStatement*>(node);
+                    collect_vars(ifs->get_consequent());
+                    collect_vars(ifs->get_alternate());
+                }
+            };
+            collect_vars(body.get());
+            if (has_errors()) return nullptr;
+        }
+
         Position end = get_current_position();
         return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), is_await_loop, start, end);
     }
@@ -3012,7 +3122,9 @@ for_semicolon:
     }
     if (!check_substatement_restrictions()) return nullptr;
     options_.loop_depth++;
+    options_.in_substatement_body = true;
     auto body = parse_statement();
+    options_.in_substatement_body = false;
     options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for for loop body");
@@ -3050,7 +3162,9 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
     
     if (!check_substatement_restrictions()) return nullptr;
     options_.loop_depth++;
+    options_.in_substatement_body = true;
     auto body = parse_statement();
+    options_.in_substatement_body = false;
     options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for while loop body");
@@ -3063,7 +3177,7 @@ std::unique_ptr<ASTNode> Parser::parse_while_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::DO)) {
         add_error("Expected 'do'");
         return nullptr;
@@ -3071,7 +3185,9 @@ std::unique_ptr<ASTNode> Parser::parse_do_while_statement() {
 
     if (!check_substatement_restrictions()) return nullptr;
     options_.loop_depth++;
+    options_.in_substatement_body = true;
     auto body = parse_statement();
+    options_.in_substatement_body = false;
     options_.loop_depth--;
     if (!body) {
         add_error("Expected statement for do-while loop body");
@@ -3244,7 +3360,9 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
                 }
             }
         }
+        options_.in_substatement_body = true;
         auto statement = parse_statement();
+        options_.in_substatement_body = false;
         if (!statement) {
             add_error("Expected statement after label");
             return nullptr;
@@ -6300,7 +6418,8 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
             }
             
             std::vector<std::unique_ptr<ASTNode>> consequent;
-            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) && 
+            options_.in_switch_case_list = true;
+            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) &&
                    !match(TokenType::RIGHT_BRACE) && !at_end()) {
                 auto stmt = parse_statement();
                 if (stmt) {
@@ -6309,23 +6428,25 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
                     break;
                 }
             }
-            
+            options_.in_switch_case_list = false;
+
             Position case_end = get_current_position();
             cases.push_back(std::make_unique<CaseClause>(
                 std::move(test), std::move(consequent), case_start, case_end
             ));
-            
+
         } else if (match(TokenType::DEFAULT)) {
             Position default_start = current_token().get_start();
             advance();
-            
+
             if (!consume(TokenType::COLON)) {
                 add_error("Expected ':' after 'default'");
                 return nullptr;
             }
-            
+
             std::vector<std::unique_ptr<ASTNode>> consequent;
-            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) && 
+            options_.in_switch_case_list = true;
+            while (!match(TokenType::CASE) && !match(TokenType::DEFAULT) &&
                    !match(TokenType::RIGHT_BRACE) && !at_end()) {
                 auto stmt = parse_statement();
                 if (stmt) {
@@ -6334,6 +6455,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
                     break;
                 }
             }
+            options_.in_switch_case_list = false;
             
             Position default_end = get_current_position();
             cases.push_back(std::make_unique<CaseClause>(
