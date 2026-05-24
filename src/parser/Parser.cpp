@@ -140,25 +140,30 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             return parse_variable_declaration();
         case TokenType::LET:
             // Non-strict: "let" followed by "=", "(", ";", etc. is an identifier expression.
-            // Skip whitespace/newlines when peeking -- ASI does not apply before a token
-            // that can start a LexicalBinding (BindingIdentifier or pattern).
+            // Also: if there is a line terminator between "let" and the next token,
+            // ASI applies and "let" is an identifier expression (not a declaration).
             if (!options_.strict_mode) {
                 size_t peek_idx = current_token_index_ + 1;
+                bool has_lt = false;
                 while (peek_idx < tokens_.size() &&
                        (tokens_[peek_idx].get_type() == TokenType::WHITESPACE ||
                         tokens_[peek_idx].get_type() == TokenType::NEWLINE ||
                         tokens_[peek_idx].get_type() == TokenType::COMMENT)) {
+                    if (tokens_[peek_idx].get_type() == TokenType::NEWLINE)
+                        has_lt = true;
                     peek_idx++;
                 }
                 TokenType next = (peek_idx < tokens_.size())
                                  ? tokens_[peek_idx].get_type()
                                  : TokenType::EOF_TOKEN;
+                // `let [` is the only form restricted by spec for ExpressionStatement;
+                // `let {` or `let id` after a line terminator: ASI treats "let" as expression.
                 bool can_start_binding =
                     next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET ||
                     next == TokenType::LEFT_BRACE  || next == TokenType::LET        ||
                     next == TokenType::YIELD       || next == TokenType::AWAIT      ||
                     next == TokenType::STATIC;
-                if (!can_start_binding) {
+                if (!can_start_binding || (has_lt && next != TokenType::LEFT_BRACKET)) {
                     return parse_expression_statement();
                 }
             }
@@ -3129,16 +3134,21 @@ bool Parser::check_substatement_restrictions(bool is_loop_body) {
     }
 
     if (t == TokenType::LET) {
-        // peek past whitespace/newlines
+        // peek past whitespace/newlines, tracking if there's a line terminator
         size_t i = current_token_index_ + 1;
+        bool has_lt = false;
         while (i < tokens_.size() &&
                (tokens_[i].get_type() == TokenType::NEWLINE ||
                 tokens_[i].get_type() == TokenType::WHITESPACE ||
                 tokens_[i].get_type() == TokenType::COMMENT)) {
+            if (tokens_[i].get_type() == TokenType::NEWLINE) has_lt = true;
             i++;
         }
         TokenType next = i < tokens_.size() ? tokens_[i].get_type() : TokenType::EOF_TOKEN;
-        if (next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET || next == TokenType::LEFT_BRACE) {
+        // With a line terminator before `{` or identifier, ASI applies: `let` is an identifier.
+        // `let [` is the only form restricted even with line terminators.
+        if (next == TokenType::LEFT_BRACKET ||
+            (!has_lt && (next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACE))) {
             add_error("SyntaxError: Lexical declarations are not allowed in single-statement context");
             return false;
         }
@@ -4079,9 +4089,24 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     start = expr->get_start();
     Position end = expr->get_end();
 
+    // Determine if there is a line terminator between the end of the expression
+    // and the next token, using raw token stream (since advance() skips newlines,
+    // the line-number comparison on get_end() is unreliable when get_current_position()
+    // returns the start of the next token).
+    bool has_lt_before_next = false;
+    if (current_token_index_ > 0) {
+        size_t i = current_token_index_;
+        while (i > 0) {
+            i--;
+            TokenType tt = tokens_[i].get_type();
+            if (tt == TokenType::NEWLINE) { has_lt_before_next = true; break; }
+            if (tt != TokenType::WHITESPACE && tt != TokenType::COMMENT) break;
+        }
+    }
+
     if (match(TokenType::SEMICOLON)) {
         advance();
-    } else if (at_end() || match(TokenType::RIGHT_BRACE) || current_token().get_start().line > end.line) {
+    } else if (at_end() || match(TokenType::RIGHT_BRACE) || has_lt_before_next) {
         // ASI applies
     } else {
         // No semicolon and ASI conditions not met: SyntaxError
@@ -7753,11 +7778,40 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         return std::make_unique<ExportStatement>(std::move(default_export), true, start, end);
     }
     
+    // export * from 'module'  OR  export * as name from 'module'
+    if (match(TokenType::MULTIPLY)) {
+        advance();
+        std::string exported_name = "*";
+        if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
+            advance();
+            if (!match(TokenType::IDENTIFIER) && !is_reserved_word_as_property_name()) {
+                add_error("Expected identifier after 'as' in export * as");
+                return nullptr;
+            }
+            exported_name = current_token().get_value();
+            advance();
+        }
+        if (current_token().get_type() != TokenType::FROM) {
+            add_error("Expected 'from' in export * statement");
+            return nullptr;
+        }
+        advance();
+        if (!match(TokenType::STRING)) {
+            add_error("Expected string literal after 'from' in export *");
+            return nullptr;
+        }
+        std::string source_module = current_token().get_value();
+        Position end = get_current_position();
+        std::vector<std::unique_ptr<ExportSpecifier>> specifiers;
+        specifiers.push_back(std::make_unique<ExportSpecifier>("*", exported_name, start, end));
+        return std::make_unique<ExportStatement>(std::move(specifiers), source_module, start, end);
+    }
+
     if (match(TokenType::LEFT_BRACE)) {
         advance();
-        
+
         std::vector<std::unique_ptr<ExportSpecifier>> specifiers;
-        
+
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
             auto specifier = parse_export_specifier();
             if (specifier) {
@@ -7809,7 +7863,8 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
 std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
     Position start = current_token().get_start();
     
-    if (!match(TokenType::IDENTIFIER) && !match(TokenType::DEFAULT)) {
+    if (!match(TokenType::IDENTIFIER) && !match(TokenType::DEFAULT) &&
+        !is_keyword_token(current_token().get_type())) {
         add_error("Expected identifier or 'default' in import specifier");
         return nullptr;
     }
@@ -7835,27 +7890,27 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
 
 std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     Position start = current_token().get_start();
-    
-    if (!match(TokenType::IDENTIFIER)) {
+
+    if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
         add_error("Expected identifier in export specifier");
         return nullptr;
     }
-    
+
     std::string local_name = current_token().get_value();
     std::string exported_name = local_name;
     advance();
-    
+
     if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
         advance();
-        
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
-            add_error("Expected identifier after 'as'");
+
+        if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
+            add_error("Expected identifier after 'as' in export specifier");
             return nullptr;
         }
         exported_name = current_token().get_value();
         advance();
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<ExportSpecifier>(local_name, exported_name, start, end);
 }
@@ -8643,6 +8698,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
     }
 
     std::unique_ptr<ASTNode> body = nullptr;
+    bool saved_async_aa = options_.in_async_body;
+    options_.in_async_body = true;
     if (match(TokenType::LEFT_BRACE)) {
         options_.function_depth++;
         body = parse_block_statement(true);
@@ -8657,6 +8714,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
                 auto* sl = static_cast<StringLiteral*>(es->get_expression());
                 if (sl->get_value() == "use strict") {
                     add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                    options_.in_async_body = saved_async_aa;
                     return nullptr;
                 }
                 break;
@@ -8677,6 +8735,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         statements.push_back(std::move(return_stmt));
         body = std::make_unique<BlockStatement>(std::move(statements), ret_start, ret_end);
     }
+
+    options_.in_async_body = saved_async_aa;
 
     if (!body) {
         add_error("Expected async arrow function body");
@@ -8715,6 +8775,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
     }
 
     std::unique_ptr<ASTNode> body = nullptr;
+    bool saved_async_sap = options_.in_async_body;
+    options_.in_async_body = true;
     if (match(TokenType::LEFT_BRACE)) {
         options_.function_depth++;
         body = parse_block_statement(true);
@@ -8723,6 +8785,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
         auto expr = parse_assignment_expression();
         if (!expr) {
             add_error("Expected function body");
+            options_.in_async_body = saved_async_sap;
             return nullptr;
         }
 
@@ -8734,6 +8797,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
         statements.push_back(std::move(return_stmt));
         body = std::make_unique<BlockStatement>(std::move(statements), ret_start, ret_end);
     }
+
+    options_.in_async_body = saved_async_sap;
 
     if (!body) {
         add_error("Expected async arrow function body");
