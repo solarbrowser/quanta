@@ -896,6 +896,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 Position prop_end;
 
                 if (match(TokenType::HASH)) {
+                    if (options_.class_depth == 0) {
+                        add_error("SyntaxError: Private names are not allowed outside class bodies");
+                        return nullptr;
+                    }
                     prop_start = current_token().get_start();
                     advance();
 
@@ -1001,6 +1005,10 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             Position prop_end;
 
             if (match(TokenType::HASH)) {
+                if (options_.class_depth == 0) {
+                    add_error("SyntaxError: Private names are not allowed outside class bodies");
+                    return nullptr;
+                }
                 prop_start = current_token().get_start();
                 advance();
 
@@ -2036,6 +2044,11 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
         return nullptr;
     }
 
+    if (options_.class_depth == 0) {
+        add_error("SyntaxError: Private names are not allowed outside class bodies");
+        return nullptr;
+    }
+
     const Token& token = current_token();
     std::string name = "#" + token.get_value();
     Position end = token.get_end();
@@ -2713,6 +2726,54 @@ static std::string find_block_lexical_duplicate(const std::vector<std::unique_pt
         for (const auto& v : vars)
             if (l == v) return l;
 
+    return "";
+}
+
+// Collect bound names from a parameter (including destructuring patterns).
+static void collect_param_bound_names(const Parameter* param, std::vector<std::string>& out) {
+    if (!param) return;
+    if (param->has_destructuring()) {
+        collect_var_declared_names(param->get_destructuring_pattern(), out);
+    } else if (param->get_name()) {
+        out.push_back(param->get_name()->get_name());
+    }
+}
+
+// Check if any formal parameter name appears in the lexically declared names of the body.
+// Returns the first duplicate name, or empty string if none.
+static std::string check_params_body_lex_conflict(
+    const std::vector<std::unique_ptr<Parameter>>& params,
+    const BlockStatement* body)
+{
+    if (!body) return "";
+    std::vector<std::string> param_names;
+    for (const auto& p : params) {
+        collect_param_bound_names(p.get(), param_names);
+    }
+    if (param_names.empty()) return "";
+
+    std::vector<std::string> lex_names;
+    for (const auto& stmt : body->get_statements()) {
+        if (!stmt) continue;
+        auto t = stmt->get_type();
+        if (t == ASTNode::Type::CLASS_DECLARATION) {
+            auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+            if (cls->get_id()) lex_names.push_back(cls->get_id()->get_name());
+        } else if (t == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+            if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                for (const auto& d : vd->get_declarations()) {
+                    if (d->get_id() && !d->get_id()->get_name().empty()) {
+                        lex_names.push_back(d->get_id()->get_name());
+                    }
+                }
+            }
+        }
+    }
+
+    for (const auto& pn : param_names)
+        for (const auto& ln : lex_names)
+            if (pn == ln) return pn;
     return "";
 }
 
@@ -3811,8 +3872,20 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
         std::string label = current_token().get_value();
         // Escaped reserved words as label identifiers are SyntaxErrors
         if (current_token().has_escaped_keyword()) {
-            if ((options_.in_async_body && label == "await") ||
+            // yield and await have context-dependent rules; all other reserved words are always invalid
+            static const std::unordered_set<std::string> always_reserved_labels = {
+                "false","true","null","this","super",
+                "break","case","catch","class","const","continue","debugger",
+                "default","delete","do","else","export","extends","finally",
+                "for","function","if","import","in","instanceof","new",
+                "return","switch","throw","try","typeof","var","void","while","with",
+                "enum","implements","interface","let","package","private",
+                "protected","public","static"
+            };
+            if (always_reserved_labels.count(label) ||
+                (options_.in_async_body && label == "await") ||
                 (options_.in_generator_body && label == "yield") ||
+                (options_.source_type_module && label == "await") ||
                 options_.strict_mode) {
                 add_error("SyntaxError: '" + label + "' cannot be used as a label identifier here");
                 return nullptr;
@@ -3936,8 +4009,13 @@ std::unique_ptr<ASTNode> Parser::parse_expression_statement() {
     if (match(TokenType::SEMICOLON)) {
         advance();
     } else if (at_end() || match(TokenType::RIGHT_BRACE) || current_token().get_start().line > end.line) {
+        // ASI applies
+    } else {
+        // No semicolon and ASI conditions not met: SyntaxError
+        add_error("SyntaxError: Unexpected token - missing semicolon");
+        return nullptr;
     }
-    
+
     return std::make_unique<ExpressionStatement>(std::move(expr), start, end);
 }
 
@@ -4214,6 +4292,15 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         }
     }
 
+    if (options_.strict_mode && body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration in strict mode)");
+            return nullptr;
+        }
+    }
+
     Position end = get_current_position();
     auto fn_decl = std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
@@ -4280,6 +4367,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     bool saved_class_strict = options_.strict_mode;
     options_.class_has_heritage = (superclass != nullptr);
     options_.strict_mode = true;
+    options_.class_depth++;
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_constructor = false;
 
@@ -4422,6 +4510,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     options_.class_has_heritage = saved_chh;
     options_.strict_mode = saved_class_strict;
+    options_.class_depth--;
 
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
@@ -4501,6 +4590,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     bool saved_class_strict2 = options_.strict_mode;
     options_.class_has_heritage = (superclass != nullptr);
     options_.strict_mode = true;
+    options_.class_depth++;
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_ctor2 = false;
 
@@ -4642,6 +4732,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     options_.class_has_heritage = saved_chh2;
     options_.strict_mode = saved_class_strict2;
+    options_.class_depth--;
 
     auto body = std::make_unique<BlockStatement>(std::move(statements), start, get_current_position());
 
@@ -5082,6 +5173,16 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
 
+    // Methods are always strict: params must not shadow lexical declarations in body.
+    if (body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration)");
+            return nullptr;
+        }
+    }
+
     std::string method_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
 
     auto function_expr = std::make_unique<FunctionExpression>(
@@ -5371,6 +5472,15 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         }
     }
 
+    if (options_.strict_mode && body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration in strict mode)");
+            return nullptr;
+        }
+    }
+
     Position end = get_current_position();
     auto fn_expr = std::make_unique<FunctionExpression>(
         std::move(id), std::move(params),
@@ -5596,6 +5706,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                     }
                 }
             }
+        }
+    }
+
+    if (body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration)");
+            return nullptr;
         }
     }
 
@@ -5826,6 +5945,15 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                     }
                 }
             }
+        }
+    }
+
+    if (body) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration)");
+            return nullptr;
         }
     }
 
@@ -6734,6 +6862,18 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
 
                 if (auto* identifier_key = dynamic_cast<Identifier*>(key.get())) {
                     const std::string& shn = identifier_key->get_name();
+                    // Reserved words are never valid as shorthand identifier references
+                    static const std::unordered_set<std::string> always_reserved = {
+                        "false","true","null","this","super",
+                        "break","case","catch","class","const","continue","debugger",
+                        "default","delete","do","else","export","extends","finally",
+                        "for","function","if","import","in","instanceof","new",
+                        "return","switch","throw","try","typeof","var","void","while","with"
+                    };
+                    if (always_reserved.count(shn)) {
+                        add_error("SyntaxError: '" + shn + "' cannot be used as an identifier reference");
+                        return nullptr;
+                    }
                     if (options_.in_class_static_block &&
                         (shn == "await" || shn == "arguments")) {
                         add_error("SyntaxError: '" + shn + "' cannot be used as identifier in class static block");
@@ -7058,8 +7198,14 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
 
 std::unique_ptr<ASTNode> Parser::parse_throw_statement() {
     Position start = current_token().get_start();
+    int throw_line = current_token().get_start().line;
     advance();
-    
+
+    if (current_token().get_start().line > throw_line) {
+        add_error("SyntaxError: Illegal newline after throw");
+        return nullptr;
+    }
+
     auto expression = parse_expression();
     if (!expression) {
         add_error("Expected expression after 'throw'");

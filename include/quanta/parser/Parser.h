@@ -41,6 +41,7 @@ public:
         int loop_depth = 0;
         int switch_depth = 0;
         int function_depth = 0;
+        int class_depth = 0;
         bool in_binary_expr = false;
         bool in_unary_operand = false;
         std::unordered_set<std::string> active_labels;
