@@ -232,7 +232,14 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             // when followed by an identifier (not '(' or '[' which would be a call/subscript)
             const std::string& val = current_token().get_value();
             if (val == "using") {
-                TokenType next = peek_token().get_type();
+                // 'using [no LineTerminator here] BindingIdentifier' -- do not skip newlines.
+                // Since whitespace is not in the token stream, just peek at the next token.
+                // A NEWLINE token means line-terminator is present -- do NOT treat as declaration.
+                size_t using_peek_idx = current_token_index_ + 1;
+                // (whitespace tokens are not emitted by the lexer, so no need to skip them)
+                TokenType next = (using_peek_idx < tokens_.size())
+                                 ? tokens_[using_peek_idx].get_type()
+                                 : TokenType::EOF_TOKEN;
                 // 'using x =' pattern: next is an identifier that is NOT a keyword-as-expression
                 // Exclude: 'using(', 'using[', 'using;', 'using=', operator follows, etc.
                 // Allow 'await' as identifier when not in async context and not directly in static block
@@ -256,9 +263,58 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                     return parse_using_declaration(false);
                 }
             }
-            if (val == "await" && peek_token().get_value() == "using") {
-                // 'await using id = expr' inside async context
-                return parse_using_declaration(true);
+            return parse_expression_statement();
+        }
+
+        case TokenType::AWAIT: {
+            // 'await [no LineTerminator here] using [no LineTerminator here] BindingIdentifier'
+            // Only skip single-line whitespace/comments -- a NEWLINE breaks the no-LT-here restriction.
+            size_t aw_peek_idx = current_token_index_ + 1;
+            while (aw_peek_idx < tokens_.size() &&
+                   tokens_[aw_peek_idx].get_type() == TokenType::WHITESPACE) {
+                aw_peek_idx++;
+            }
+            if (aw_peek_idx < tokens_.size() &&
+                tokens_[aw_peek_idx].get_type() == TokenType::IDENTIFIER &&
+                tokens_[aw_peek_idx].get_value() == "using") {
+                // No newline between await and using -- check what follows 'using'
+                size_t aw_peek_idx2 = aw_peek_idx + 1;
+                while (aw_peek_idx2 < tokens_.size() &&
+                       tokens_[aw_peek_idx2].get_type() == TokenType::WHITESPACE) {
+                    aw_peek_idx2++;
+                }
+                // If there's a NEWLINE between 'using' and the binding, it's two separate statements.
+                // Otherwise check if it can be a BindingIdentifier.
+                bool has_nl = (aw_peek_idx2 < tokens_.size() &&
+                               tokens_[aw_peek_idx2].get_type() == TokenType::NEWLINE);
+                if (!has_nl) {
+                    TokenType aw_next2 = (aw_peek_idx2 < tokens_.size())
+                                         ? tokens_[aw_peek_idx2].get_type()
+                                         : TokenType::EOF_TOKEN;
+                    bool aw_can_be_decl = (aw_next2 == TokenType::IDENTIFIER ||
+                                           aw_next2 == TokenType::LET ||
+                                           aw_next2 == TokenType::STATIC);
+                    if (aw_can_be_decl) {
+                        if (options_.in_substatement_body) {
+                            add_error("SyntaxError: 'await using' declaration not allowed as substatement body");
+                            return nullptr;
+                        }
+                        if (options_.in_switch_case_list) {
+                            add_error("SyntaxError: 'await using' declaration not allowed directly in switch case/default");
+                            return nullptr;
+                        }
+                        if (!options_.in_async_body && !options_.source_type_module) {
+                            add_error("SyntaxError: 'await using' declaration not allowed outside async context");
+                            return nullptr;
+                        }
+                        if (!options_.in_block_context && !options_.source_type_module
+                            && options_.function_depth == 0 && !options_.in_class_static_block) {
+                            add_error("SyntaxError: 'await using' declaration not allowed at top level of a script");
+                            return nullptr;
+                        }
+                        return parse_using_declaration(true);
+                    }
+                }
             }
             return parse_expression_statement();
         }
@@ -2347,6 +2403,12 @@ std::unique_ptr<ASTNode> Parser::parse_using_declaration(bool is_await, bool con
     std::vector<UsingBinding> bindings;
 
     while (true) {
+        // using/await using only accept BindingIdentifier, not destructuring patterns
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
+            add_error("SyntaxError: 'using' declarations do not support destructuring patterns");
+            return nullptr;
+        }
         bool is_await_id = current_token().get_type() == TokenType::AWAIT
                            && !options_.in_async_body && !options_.in_class_static_block;
         if (current_token().get_type() != TokenType::IDENTIFIER &&
@@ -2513,11 +2575,28 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         declarations.push_back(std::move(declarator));
         
     } while (consume_if_match(TokenType::COMMA));
-    
+
     if (consume_semicolon) {
-        consume_if_match(TokenType::SEMICOLON);
+        if (!consume_if_match(TokenType::SEMICOLON)) {
+            TokenType cur = current_token().get_type();
+            if (cur != TokenType::RIGHT_BRACE && cur != TokenType::EOF_TOKEN) {
+                // ASI only applies when a line terminator precedes the current token.
+                bool has_newline = false;
+                size_t i = current_token_index_;
+                while (i > 0) {
+                    i--;
+                    TokenType t = tokens_[i].get_type();
+                    if (t == TokenType::NEWLINE) { has_newline = true; break; }
+                    if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) break;
+                }
+                if (!has_newline) {
+                    add_error("SyntaxError: unexpected token after variable declaration");
+                    return nullptr;
+                }
+            }
+        }
     }
-    
+
     Position end = get_current_position();
     return std::make_unique<VariableDeclaration>(std::move(declarations), kind, start, end);
 }
