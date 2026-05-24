@@ -22,6 +22,7 @@ public:
         bool track_positions = true;
         bool allow_reserved_words = false;
         bool strict_mode = false;
+        bool source_type_module = false;
     };
 
 private:

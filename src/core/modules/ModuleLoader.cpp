@@ -218,13 +218,25 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         module_context->create_binding("__filename", Value(filename));
         module_context->create_binding("__dirname", Value(std::filesystem::path(filename).parent_path().string()));
         
-        Lexer lexer(source);
+        Lexer::LexerOptions lex_opts;
+        lex_opts.source_type_module = true;
+        Lexer lexer(source, lex_opts);
         auto tokens = lexer.tokenize();
         TokenSequence token_sequence{tokens};
-        Parser parser{token_sequence};
+        Parser::ParseOptions parse_opts;
+        parse_opts.source_type_module = true;
+        parse_opts.strict_mode = true;
+        Parser parser{token_sequence, parse_opts};
         auto ast = parser.parse_program();
-        if (!ast) {
-            std::cerr << "Failed to parse module: " << filename << std::endl;
+        if (!ast || parser.has_errors()) {
+            const auto& errs = parser.get_errors();
+            if (!errs.empty()) {
+                std::string msg = errs[0].message;
+                if (msg.find("SyntaxError") == std::string::npos) msg = "SyntaxError: " + msg;
+                std::cerr << msg << std::endl;
+            } else {
+                std::cerr << "SyntaxError: Failed to parse module: " << filename << std::endl;
+            }
             return false;
         }
         

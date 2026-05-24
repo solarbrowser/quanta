@@ -69,7 +69,8 @@ std::unique_ptr<Program> Parser::parse_program() {
     // Always check class/let/const duplicates; also check function decl dups in strict/module.
     {
         std::vector<std::string> lex_only;   // class + let/const -- always checked
-        std::vector<std::string> fn_strict;  // function decls -- checked only in strict/module
+        std::vector<std::string> fn_strict;  // function decls -- checked in strict/module
+        std::vector<std::string> var_names;  // var declarations -- checked for lex conflict in module
 
         for (const auto& stmt : statements) {
             if (!stmt) continue;
@@ -84,6 +85,9 @@ std::unique_ptr<Program> Parser::parse_program() {
                 if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
                     for (const auto& d : vd->get_declarations())
                         if (d->get_id()) lex_only.push_back(d->get_id()->get_name());
+                } else {
+                    for (const auto& d : vd->get_declarations())
+                        if (d->get_id()) var_names.push_back(d->get_id()->get_name());
                 }
             }
         }
@@ -96,7 +100,7 @@ std::unique_ptr<Program> Parser::parse_program() {
                     goto dup_done;
                 }
 
-        // Also check for class/let/const vs function-decl name collisions
+        // Also check for lex vs function-decl name collisions (strict/module)
         if (options_.source_type_module || options_.strict_mode) {
             std::vector<std::string> all_lex = lex_only;
             all_lex.insert(all_lex.end(), fn_strict.begin(), fn_strict.end());
@@ -106,6 +110,15 @@ std::unique_ptr<Program> Parser::parse_program() {
                         add_error("SyntaxError: Identifier '" + all_lex[i] + "' has already been declared");
                         goto dup_done;
                     }
+            // Module: var declarations must not conflict with lexical declarations
+            if (options_.source_type_module) {
+                for (const auto& vn : var_names)
+                    for (const auto& ln : all_lex)
+                        if (vn == ln) {
+                            add_error("SyntaxError: Identifier '" + vn + "' has already been declared");
+                            goto dup_done;
+                        }
+            }
         }
         dup_done:;
     }
@@ -213,10 +226,20 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                 peek_token().get_type() == TokenType::DOT) {
                 return parse_expression_statement();
             } else {
+                if (options_.source_type_module &&
+                    (options_.function_depth > 0 || options_.in_substatement_body)) {
+                    add_error("SyntaxError: import declarations are only permitted at the top level of a module");
+                    return nullptr;
+                }
                 return parse_import_statement();
             }
-            
+
         case TokenType::EXPORT:
+            if (options_.source_type_module &&
+                (options_.function_depth > 0 || options_.in_substatement_body)) {
+                add_error("SyntaxError: export declarations are only permitted at the top level of a module");
+                return nullptr;
+            }
             return parse_export_statement();
 
         case TokenType::SEMICOLON:
@@ -863,6 +886,15 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
 
             if (current_token().get_type() == TokenType::IDENTIFIER &&
                 current_token().get_value() == "target") {
+                if (current_token().has_escaped_keyword()) {
+                    add_error("SyntaxError: 'target' in new.target cannot contain unicode escape sequences");
+                    return nullptr;
+                }
+                if (!options_.in_eval_context &&
+                    options_.non_arrow_function_depth == 0 && options_.class_depth == 0) {
+                    add_error("SyntaxError: new.target is only valid inside a function or class body");
+                    return nullptr;
+                }
                 Position end = current_token().get_end();
                 advance();
                 return std::make_unique<MetaProperty>("new", "target", start, end);
@@ -1997,10 +2029,31 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
     Position end = token.get_end();
 
     if (escaped_kw) {
-        if ((name == "await" && options_.in_async_body) ||
+        // Always-reserved words can never appear as identifier references, even with escapes
+        static const std::unordered_set<std::string> always_reserved_ids = {
+            "false","true","null","this","super",
+            "break","case","catch","class","const","continue","debugger",
+            "default","delete","do","else","export","extends","finally",
+            "for","function","if","import","in","instanceof","new",
+            "return","switch","throw","try","typeof","var","void","while","with","enum"
+        };
+        if (always_reserved_ids.count(name)) {
+            add_error("SyntaxError: '" + name + "' cannot contain unicode escape sequences");
+            return nullptr;
+        }
+        if ((name == "await" && (options_.in_async_body || options_.source_type_module)) ||
             (name == "yield" && options_.in_generator_body)) {
             add_error("SyntaxError: '" + name + "' cannot contain unicode escape sequences in this context");
             return nullptr;
+        }
+        if (options_.strict_mode) {
+            static const std::unordered_set<std::string> strict_future = {
+                "implements","interface","let","package","private","protected","public","static","yield"
+            };
+            if (strict_future.count(name)) {
+                add_error("SyntaxError: '" + name + "' cannot contain unicode escape sequences in strict mode");
+                return nullptr;
+            }
         }
         // escaped `async` followed by `function` on same line = SyntaxError
         if (name == "async") {
@@ -4184,8 +4237,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     options_.in_class_method = false;
     options_.in_constructor = false;
     options_.function_depth++;
+    options_.non_arrow_function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.non_arrow_function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
@@ -4331,6 +4386,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     auto id = parse_identifier();
     if (!id) return nullptr;
 
+    bool saved_strict_pre = options_.strict_mode;
+    options_.strict_mode = true;
     std::unique_ptr<ASTNode> superclass = nullptr;
     if (match(TokenType::EXTENDS)) {
         advance();
@@ -4364,7 +4421,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     advance();
 
     bool saved_chh = options_.class_has_heritage;
-    bool saved_class_strict = options_.strict_mode;
+    bool saved_class_strict = saved_strict_pre;
     options_.class_has_heritage = (superclass != nullptr);
     options_.strict_mode = true;
     options_.class_depth++;
@@ -4554,6 +4611,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         if (!id) return nullptr;
     }
 
+    bool saved_strict_pre2 = options_.strict_mode;
+    options_.strict_mode = true;
     std::unique_ptr<ASTNode> superclass = nullptr;
     if (match(TokenType::EXTENDS)) {
         advance();
@@ -4587,7 +4646,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     advance();
 
     bool saved_chh2 = options_.class_has_heritage;
-    bool saved_class_strict2 = options_.strict_mode;
+    bool saved_class_strict2 = saved_strict_pre2;
     options_.class_has_heritage = (superclass != nullptr);
     options_.strict_mode = true;
     options_.class_depth++;
@@ -4850,12 +4909,24 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
 
         std::string private_name = "#" + current_token().get_value();
+        if (private_name == "#constructor") {
+            add_error("SyntaxError: '#constructor' is a reserved private name");
+            return nullptr;
+        }
         Position start = current_token().get_start();
         Position end = current_token().get_end();
         advance();
         key = std::make_unique<Identifier>(private_name, start, end);
     } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-        key = parse_identifier();
+        if (current_token().has_escaped_keyword()) {
+            std::string name = current_token().get_value();
+            Position s = current_token().get_start();
+            Position e = current_token().get_end();
+            advance();
+            key = std::make_unique<Identifier>(name, s, e);
+        } else {
+            key = parse_identifier();
+        }
     } else if (is_reserved_word_as_property_name()) {
         std::string name = current_token().get_value();
         Position start = current_token().get_start();
@@ -5130,8 +5201,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     options_.in_class_method = true;
     options_.in_constructor = (kind == MethodDefinition::CONSTRUCTOR);
     options_.function_depth++;
+    options_.non_arrow_function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.non_arrow_function_depth--;
     options_.in_class_method = saved_cm;
     options_.in_constructor = saved_ic;
     options_.in_async_body = saved_a;
@@ -5365,8 +5438,10 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     options_.in_class_method = false;
     options_.in_constructor = false;
     options_.function_depth++;
+    options_.non_arrow_function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.non_arrow_function_depth--;
     options_.in_generator_body = saved_gen_ctx;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
@@ -5682,8 +5757,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     options_.in_class_method = false;
     options_.in_constructor = false;
     options_.function_depth++;
+    options_.non_arrow_function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.non_arrow_function_depth--;
     options_.in_async_body = saved_async;
     options_.in_generator_body = saved_gen;
     options_.in_class_field_init = saved_cfi_ae;
@@ -5922,8 +5999,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     options_.in_class_method = false;
     options_.in_constructor = false;
     options_.function_depth++;
+    options_.non_arrow_function_depth++;
     auto body = parse_block_statement(true);
     options_.function_depth--;
+    options_.non_arrow_function_depth--;
     options_.in_async_body = saved_async2;
     options_.in_generator_body = saved_gen2;
     options_.in_class_field_init = saved_cfi_ad;
@@ -6254,7 +6333,6 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         if (current_token().get_type() == TokenType::IDENTIFIER) {
             const std::string& prop = current_token().get_value();
             if (prop == "meta") {
-                // import.meta only valid in module context
                 if (!options_.source_type_module) {
                     add_error("SyntaxError: import.meta is only valid in module code");
                     return nullptr;
@@ -6263,11 +6341,67 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                 advance();
                 return std::make_unique<MetaProperty>("import", "meta", start, end);
             }
-            // import.source, import.defer etc -- parse as MetaProperty, will fail at runtime
-            // if not in supported module context
-            Position end = current_token().get_end();
-            advance();
-            return std::make_unique<MetaProperty>("import", prop, start, end);
+            if (prop == "source") {
+                advance(); // consume 'source'
+                // import.source must be immediately called: import.source(AssignmentExpression)
+                if (!match(TokenType::LEFT_PAREN)) {
+                    add_error("SyntaxError: import.source must be called as import.source(specifier)");
+                    return nullptr;
+                }
+                advance(); // consume (
+                if (match(TokenType::RIGHT_PAREN)) {
+                    add_error("SyntaxError: import.source() requires a specifier argument");
+                    return nullptr;
+                }
+                if (match(TokenType::ELLIPSIS)) {
+                    add_error("SyntaxError: import.source() does not allow spread arguments");
+                    return nullptr;
+                }
+                auto specifier = parse_assignment_expression();
+                if (!specifier) {
+                    add_error("Expected module specifier in import.source()");
+                    return nullptr;
+                }
+                if (match(TokenType::COMMA)) {
+                    advance();
+                    if (!match(TokenType::RIGHT_PAREN)) {
+                        parse_assignment_expression();
+                    }
+                    if (match(TokenType::COMMA)) advance();
+                }
+                if (!consume(TokenType::RIGHT_PAREN)) {
+                    add_error("Expected ')' after import.source specifier");
+                    return nullptr;
+                }
+                Position end = get_current_position();
+                auto import_id = std::make_unique<Identifier>("import", start, start);
+                std::vector<std::unique_ptr<ASTNode>> args;
+                args.push_back(std::move(specifier));
+                return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
+            }
+            if (prop == "defer") {
+                advance(); // consume 'defer'
+                if (!consume(TokenType::LEFT_PAREN)) {
+                    add_error("SyntaxError: import.defer requires arguments");
+                    return nullptr;
+                }
+                std::vector<std::unique_ptr<ASTNode>> args;
+                if (!match(TokenType::RIGHT_PAREN)) {
+                    auto arg = parse_assignment_expression();
+                    if (arg) args.push_back(std::move(arg));
+                    if (match(TokenType::COMMA)) advance();
+                }
+                if (!consume(TokenType::RIGHT_PAREN)) {
+                    add_error("Expected ')' after import.defer argument");
+                    return nullptr;
+                }
+                Position end = get_current_position();
+                auto import_id = std::make_unique<Identifier>("import", start, start);
+                return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);
+            }
+            // import.UNKNOWN etc. are SyntaxErrors
+            add_error("SyntaxError: Unknown import meta-property '" + prop + "'");
+            return nullptr;
         }
         add_error("SyntaxError: Invalid import meta-property");
         return nullptr;
@@ -6424,10 +6558,13 @@ std::unique_ptr<Parser> create_statement_parser(const std::string& source) {
 }
 
 std::unique_ptr<Parser> create_module_parser(const std::string& source) {
-    Lexer lexer(source);
+    Lexer::LexerOptions lex_opts;
+    lex_opts.source_type_module = true;
+    Lexer lexer(source, lex_opts);
     TokenSequence tokens = lexer.tokenize();
     Parser::ParseOptions options;
     options.source_type_module = true;
+    options.strict_mode = true;
     return std::make_unique<Parser>(std::move(tokens), options);
 }
 
@@ -6584,7 +6721,15 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                 return nullptr;
             }
         } else if (match(TokenType::IDENTIFIER)) {
-            key = parse_identifier();
+            if (current_token().has_escaped_keyword()) {
+                std::string kname = current_token().get_value();
+                Position ks = current_token().get_start();
+                Position ke = current_token().get_end();
+                advance();
+                key = std::make_unique<Identifier>(kname, ks, ke);
+            } else {
+                key = parse_identifier();
+            }
         } else if (match(TokenType::STRING)) {
             key = parse_string_literal();
         } else if (match(TokenType::NUMBER)) {
@@ -6763,8 +6908,10 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.in_class_method = true;
             options_.in_constructor = false;
             options_.function_depth++;
+            options_.non_arrow_function_depth++;
             auto body = parse_block_statement(true);
             options_.function_depth--;
+            options_.non_arrow_function_depth--;
             options_.in_async_body = saved_ab;
             options_.in_generator_body = saved_gb;
             options_.in_class_static_block = saved_sb_ol;
@@ -6852,6 +6999,15 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             if (match(TokenType::COMMA) || match(TokenType::RIGHT_BRACE)) {
                 if (!key) {
                     add_error("Invalid shorthand property");
+                    return nullptr;
+                }
+                // Generator/async prefix requires a method body
+                if (is_generator) {
+                    add_error("SyntaxError: Generator method requires a function body");
+                    return nullptr;
+                }
+                if (is_async) {
+                    add_error("SyntaxError: Async method requires a function body");
                     return nullptr;
                 }
                 // Computed keys cannot be shorthands: ({[x]}) is a SyntaxError
@@ -7245,6 +7401,7 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
 
     options_.switch_depth++;
     std::vector<std::unique_ptr<ASTNode>> cases;
+    bool seen_default = false;
 
     while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
         if (match(TokenType::CASE)) {
@@ -7281,6 +7438,11 @@ std::unique_ptr<ASTNode> Parser::parse_switch_statement() {
             ));
 
         } else if (match(TokenType::DEFAULT)) {
+            if (seen_default) {
+                add_error("SyntaxError: Duplicate 'default' clause in switch statement");
+                return nullptr;
+            }
+            seen_default = true;
             Position default_start = current_token().get_start();
             advance();
 
@@ -8389,6 +8551,20 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         return nullptr;
     }
 
+    // Duplicate param check: always SyntaxError for async arrow (implicitly strict)
+    for (size_t pi = 0; pi < params.size(); pi++) {
+        if (!params[pi]->get_name()) continue;
+        const std::string& pn = params[pi]->get_name()->get_name();
+        if (pn.empty()) continue;
+        for (size_t pj = pi + 1; pj < params.size(); pj++) {
+            if (!params[pj]->get_name()) continue;
+            if (params[pj]->get_name()->get_name() == pn) {
+                add_error("SyntaxError: Duplicate parameter name not allowed in async arrow function");
+                return nullptr;
+            }
+        }
+    }
+
     if (!consume(TokenType::ARROW)) {
         add_error("Expected '=>' for async arrow function");
         return nullptr;
@@ -8399,6 +8575,21 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         options_.function_depth++;
         body = parse_block_statement(true);
         options_.function_depth--;
+        if (body && has_non_simple_params) {
+            auto* block = static_cast<BlockStatement*>(body.get());
+            for (const auto& stmt : block->get_statements()) {
+                if (!stmt || stmt->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+                auto* es = static_cast<ExpressionStatement*>(stmt.get());
+                if (!es->get_expression()) break;
+                if (es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
+                auto* sl = static_cast<StringLiteral*>(es->get_expression());
+                if (sl->get_value() == "use strict") {
+                    add_error("SyntaxError: Illegal 'use strict' directive in function with non-simple parameter list");
+                    return nullptr;
+                }
+                break;
+            }
+        }
     } else {
         auto expr = parse_assignment_expression();
         if (!expr) {
