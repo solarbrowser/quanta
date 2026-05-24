@@ -184,12 +184,20 @@ Token Lexer::next_token() {
         }
     }
 
-    // HTML-style comment: <!-- treated as single line comment
+    // HTML-style comment: <!-- treated as single line comment (not allowed in module code)
     if (ch == '<' && peek_char() == '!' && peek_char(2) == '-' && peek_char(3) == '-') {
+        if (options_.source_type_module) {
+            add_error("SyntaxError: HTML comments are not allowed in module code");
+            return create_token(TokenType::INVALID, "<!--", current_position_);
+        }
         return read_single_line_comment();
     }
 
     if (ch == '-' && peek_char() == '-' && peek_char(2) == '>') {
+        if (options_.source_type_module) {
+            add_error("SyntaxError: HTML comments are not allowed in module code");
+            return create_token(TokenType::INVALID, "-->", current_position_);
+        }
         if (current_position_.column == 1 || is_at_line_start()) {
             return read_single_line_comment();
         }

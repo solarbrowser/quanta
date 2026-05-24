@@ -35,12 +35,14 @@ public:
         bool in_constructor = false;
         bool class_has_heritage = false;
         bool in_class_static_block = false;
+        bool in_eval_context = false;
         bool in_substatement_body = false;   
         bool in_switch_case_list = false;   
         bool in_block_context = false;      
         int loop_depth = 0;
         int switch_depth = 0;
         int function_depth = 0;
+        int non_arrow_function_depth = 0;
         int class_depth = 0;
         bool in_binary_expr = false;
         bool in_unary_operand = false;

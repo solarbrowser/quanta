@@ -46,13 +46,41 @@ public:
     bool has_es6_module_syntax(const std::string& content) {
         std::istringstream stream(content);
         std::string line;
-        
+        bool in_block_comment = false;
+
         while (std::getline(stream, line)) {
+            // Track block comment state
+            size_t pos = 0;
+            while (pos < line.size()) {
+                if (in_block_comment) {
+                    size_t end = line.find("*/", pos);
+                    if (end == std::string::npos) {
+                        pos = line.size(); // whole line inside block comment
+                    } else {
+                        in_block_comment = false;
+                        pos = end + 2;
+                    }
+                    continue;
+                }
+                if (pos + 1 < line.size() && line[pos] == '/' && line[pos+1] == '*') {
+                    in_block_comment = true;
+                    pos += 2;
+                    continue;
+                }
+                if (pos + 1 < line.size() && line[pos] == '/' && line[pos+1] == '/') {
+                    break; // rest of line is a line comment
+                }
+                break;
+            }
+            if (in_block_comment) continue;
+
             size_t start = line.find_first_not_of(" \t\r\n");
             if (start == std::string::npos) continue;
-            
+
             std::string trimmed = line.substr(start);
-            
+            // Skip line comments
+            if (trimmed.size() >= 2 && trimmed[0] == '/' && trimmed[1] == '/') continue;
+
             if (trimmed.substr(0, 6) == "import" || trimmed.substr(0, 6) == "export") {
                 if (trimmed.length() == 6 || std::isspace(trimmed[6]) || trimmed[6] == '{' || trimmed[6] == '*') {
                     return true;
@@ -92,9 +120,7 @@ public:
             if (module) {
                 if (module->has_thrown_exception()) {
                     Value exc = module->get_thrown_exception();
-                    if (!silent) {
-                        std::cerr << exc.to_string() << std::endl;
-                    }
+                    std::cerr << exc.to_string() << std::endl;
                     return false;
                 }
                 if (!silent) {
@@ -102,16 +128,16 @@ public:
                 }
                 return true;
             } else {
-                if (!silent) {
+                if (module_loader->has_last_module_exception()) {
+                    std::cerr << module_loader->get_last_module_exception().to_string() << std::endl;
+                } else if (!silent) {
                     std::cout << RED << "Module loading failed!" << RESET << std::endl;
                 }
                 return false;
             }
 
         } catch (const std::exception& e) {
-            if (!silent) {
-                std::cout << RED << "Module execution error: " << e.what() << RESET << std::endl;
-            }
+            std::cerr << "SyntaxError: " << e.what() << std::endl;
             return false;
         }
     }
@@ -299,6 +325,7 @@ int main(int argc, char* argv[]) {
         QuantaConsole console;
         
         bool execute_code = false;
+        bool force_module = false;
         std::string code_to_execute;
         std::string filename;
 
@@ -310,13 +337,16 @@ int main(int argc, char* argv[]) {
                 code_to_execute = argv[i + 1];
                 i++;
                 continue;
+            } else if (arg == "--module") {
+                force_module = true;
+                continue;
             } else if (arg.find("--") == 0) {
                 continue;
             } else if (filename.empty()) {
                 filename = arg;
             }
         }
-        
+
         if (execute_code) {
             bool success = console.evaluate_expression(code_to_execute, false, true);
 
@@ -326,26 +356,27 @@ int main(int argc, char* argv[]) {
         }
 
         if (!filename.empty()) {
-            
+
             std::ifstream file(filename);
             if (!file.is_open()) {
                 std::cerr << "Error: Cannot open file " << filename << std::endl;
                 return 1;
             }
-            
+
             std::stringstream buffer;
             buffer << file.rdbuf();
             std::string content = buffer.str();
-            
+
             bool success = false;
-            if (console.has_es6_module_syntax(content)) {
+            bool run_as_module = force_module;
+            if (run_as_module) {
                 success = console.execute_as_module(filename, true);
             } else {
                 success = console.evaluate_expression(content, false, false, filename);
             }
-            
+
             EventLoop::instance().process_microtasks();
-            
+
             return success ? 0 : 1;
         }
         
