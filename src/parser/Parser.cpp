@@ -226,8 +226,12 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                 peek_token().get_type() == TokenType::DOT) {
                 return parse_expression_statement();
             } else {
-                if (options_.source_type_module &&
-                    (options_.function_depth > 0 || options_.in_substatement_body)) {
+                if (!options_.source_type_module) {
+                    add_error("SyntaxError: import declarations are not allowed in scripts");
+                    return nullptr;
+                }
+                if (options_.function_depth > 0 || options_.in_substatement_body ||
+                    options_.in_block_context || options_.switch_depth > 0) {
                     add_error("SyntaxError: import declarations are only permitted at the top level of a module");
                     return nullptr;
                 }
@@ -235,8 +239,12 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
             }
 
         case TokenType::EXPORT:
-            if (options_.source_type_module &&
-                (options_.function_depth > 0 || options_.in_substatement_body)) {
+            if (!options_.source_type_module) {
+                add_error("SyntaxError: export declarations are not allowed in scripts");
+                return nullptr;
+            }
+            if (options_.function_depth > 0 || options_.in_substatement_body ||
+                options_.in_block_context || options_.switch_depth > 0) {
                 add_error("SyntaxError: export declarations are only permitted at the top level of a module");
                 return nullptr;
             }
@@ -338,6 +346,10 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                         return parse_using_declaration(true);
                     }
                 }
+            }
+            if (options_.source_type_module && options_.function_depth > 0 && !options_.in_async_body) {
+                add_error("SyntaxError: await is only valid in async functions and the top level bodies of modules");
+                return nullptr;
             }
             return parse_expression_statement();
         }
@@ -2986,6 +2998,10 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
                 return false;
             }
         }
+        if (elem->get_type() == ASTNode::Type::META_PROPERTY) {
+            add_error("SyntaxError: Invalid destructuring assignment target");
+            return false;
+        }
     }
     return true;
 }
@@ -3046,6 +3062,10 @@ bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
         // validate nested value patterns
         if (prop->value) {
             ASTNode* val = prop->value.get();
+            if (val->get_type() == ASTNode::Type::META_PROPERTY) {
+                add_error("SyntaxError: Invalid destructuring assignment target");
+                return false;
+            }
             if (val->get_type() == ASTNode::Type::ARRAY_LITERAL) {
                 if (!validate_array_destructuring(static_cast<ArrayLiteral*>(val)))
                     return false;
@@ -6386,11 +6406,13 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                     return nullptr;
                 }
                 std::vector<std::unique_ptr<ASTNode>> args;
-                if (!match(TokenType::RIGHT_PAREN)) {
-                    auto arg = parse_assignment_expression();
-                    if (arg) args.push_back(std::move(arg));
-                    if (match(TokenType::COMMA)) advance();
+                if (match(TokenType::RIGHT_PAREN)) {
+                    add_error("SyntaxError: import.defer() requires a specifier argument");
+                    return nullptr;
                 }
+                auto arg = parse_assignment_expression();
+                if (arg) args.push_back(std::move(arg));
+                if (match(TokenType::COMMA)) advance();
                 if (!consume(TokenType::RIGHT_PAREN)) {
                     add_error("Expected ')' after import.defer argument");
                     return nullptr;
@@ -6933,6 +6955,14 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                             }
                         }
                     }
+                }
+            }
+            {
+                auto* blk = static_cast<BlockStatement*>(body.get());
+                std::string dup = check_params_body_lex_conflict(params, blk);
+                if (!dup.empty()) {
+                    add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration)");
+                    return nullptr;
                 }
             }
 
@@ -7513,7 +7543,15 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
         return nullptr;
     }
     advance();
-    
+
+    // Side-effect import: import "module"
+    if (match(TokenType::STRING)) {
+        std::string module_source = current_token().get_value();
+        Position end = get_current_position();
+        std::vector<std::unique_ptr<ImportSpecifier>> specifiers;
+        return std::make_unique<ImportStatement>(std::move(specifiers), module_source, start, end);
+    }
+
     if (match(TokenType::MULTIPLY)) {
         advance();
         
@@ -7588,9 +7626,43 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     }
     
     if (match(TokenType::IDENTIFIER)) {
+        // import defer * as ns from "module"
+        if (current_token().get_value() == "defer") {
+            size_t saved_idx = current_token_index_;
+            advance(); // try consuming 'defer'
+            if (match(TokenType::MULTIPLY)) {
+                advance();
+                if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
+                    add_error("Expected 'as' after '*' in import defer statement");
+                    return nullptr;
+                }
+                advance();
+                if (current_token().get_type() != TokenType::IDENTIFIER) {
+                    add_error("Expected identifier after 'as' in import defer statement");
+                    return nullptr;
+                }
+                std::string namespace_alias = current_token().get_value();
+                advance();
+                if (current_token().get_type() != TokenType::FROM) {
+                    add_error("Expected 'from' in import defer statement");
+                    return nullptr;
+                }
+                advance();
+                if (current_token().get_type() != TokenType::STRING) {
+                    add_error("Expected string literal after 'from' in import defer statement");
+                    return nullptr;
+                }
+                std::string module_source = current_token().get_value();
+                Position end = get_current_position();
+                return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
+            }
+            // Not import defer *, treat 'defer' as a default import alias
+            current_token_index_ = saved_idx;
+        }
+
         std::string default_alias = current_token().get_value();
         advance();
-        
+
         if (match(TokenType::COMMA)) {
             advance();
             
