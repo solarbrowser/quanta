@@ -125,6 +125,7 @@ enum class TokenType {
     COLON,
     QUESTION,
     HASH,
+    AT,
     
     ARROW,
     ELLIPSIS,

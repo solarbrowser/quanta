@@ -132,8 +132,16 @@ std::unique_ptr<Program> Parser::parse_program() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_statement() {
+    // Decorators before class declarations
+    if (current_token().get_type() == TokenType::AT) {
+        skip_decorator_list();
+        if (current_token().get_type() == TokenType::CLASS) {
+            return parse_class_declaration();
+        }
+    }
+
     TokenType current_type = current_token().get_type();
-    
+
     switch (current_type) {
         case TokenType::VAR:
         case TokenType::CONST:
@@ -160,9 +168,10 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
                     next == TokenType::IDENTIFIER || next == TokenType::LEFT_BRACKET ||
                     next == TokenType::LEFT_BRACE  || next == TokenType::LET        ||
                     next == TokenType::YIELD       || next == TokenType::AWAIT      ||
-                    next == TokenType::STATIC;
-                // `let [` with line terminator: ASI applies (let as identifier, [ as subscript)
-                if (!can_start_binding || (has_lt && next == TokenType::LEFT_BRACKET)) {
+                    next == TokenType::STATIC      || next == TokenType::ASYNC;
+                // `let [` or `let {` with line terminator: ASI applies (let as identifier)
+                if (!can_start_binding ||
+                    (has_lt && (next == TokenType::LEFT_BRACKET || next == TokenType::LEFT_BRACE))) {
                     return parse_expression_statement();
                 }
             }
@@ -1423,6 +1432,15 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_function_expression();
         case TokenType::CLASS:
             return parse_class_expression();
+        case TokenType::AT: {
+            // Decorator before class expression: @expr class {}
+            skip_decorator_list();
+            if (current_token().get_type() == TokenType::CLASS) {
+                return parse_class_expression();
+            }
+            add_error("SyntaxError: Unexpected token '@'");
+            return nullptr;
+        }
         case TokenType::YIELD:
             // Outside generator bodies (non-strict), yield is a valid identifier
             if (!options_.in_generator_body && !options_.strict_mode) {
@@ -1537,8 +1555,8 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     Position start = token.get_start();
     Position end = token.get_end();
 
-    // super is only valid inside class methods (not regular function bodies)
-    if (!options_.in_class_method) {
+    // super is only valid inside class methods, static blocks, field inits, or eval inside those
+    if (!options_.in_class_method && !options_.in_eval_context) {
         add_error("SyntaxError: 'super' keyword unexpected here");
         advance();
         return nullptr;
@@ -2128,7 +2146,7 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
         return nullptr;
     }
 
-    if (options_.class_depth == 0) {
+    if (options_.class_depth == 0 && !options_.in_eval_context) {
         add_error("SyntaxError: Private names are not allowed outside class bodies");
         return nullptr;
     }
@@ -2310,7 +2328,8 @@ bool Parser::is_reserved_word_as_property_name() {
            type == TokenType::ASYNC ||
            type == TokenType::AWAIT ||
            type == TokenType::YIELD ||
-           type == TokenType::ENUM;
+           type == TokenType::ENUM  ||
+           type == TokenType::STATIC;
 }
 
 bool Parser::at_end() const {
@@ -2345,6 +2364,47 @@ void Parser::skip_to(TokenType type) {
     }
 }
 
+void Parser::skip_decorator_list() {
+    // Consume zero or more decorators: @ DecoratorExpr
+    while (!at_end() && current_token().get_type() == TokenType::AT) {
+        advance(); // consume '@'
+        // Now consume the DecoratorMemberExpression / DecoratorCallExpression / ParenthesizedExpr
+        if (current_token().get_type() == TokenType::LEFT_PAREN) {
+            // @(expr) -- parenthesized decorator
+            int depth = 0;
+            do {
+                if (current_token().get_type() == TokenType::LEFT_PAREN) depth++;
+                else if (current_token().get_type() == TokenType::RIGHT_PAREN) depth--;
+                advance();
+            } while (!at_end() && depth > 0);
+        } else {
+            // identifier or keyword-as-identifier, then optional .name chains
+            // Accept any identifier-like token (IDENTIFIER, keyword tokens used as names)
+            if (current_token().get_type() != TokenType::IDENTIFIER &&
+                !is_reserved_word_as_property_name() &&
+                current_token().get_type() != TokenType::YIELD &&
+                current_token().get_type() != TokenType::AWAIT) {
+                // malformed decorator -- stop consuming
+                break;
+            }
+            advance(); // consume identifier
+            // consume optional .name chains
+            while (!at_end() && current_token().get_type() == TokenType::DOT) {
+                advance(); // consume '.'
+                if (!at_end()) advance(); // consume name
+            }
+            // optional argument list (makes it a call expression)
+            if (!at_end() && current_token().get_type() == TokenType::LEFT_PAREN) {
+                int depth = 0;
+                do {
+                    if (current_token().get_type() == TokenType::LEFT_PAREN) depth++;
+                    else if (current_token().get_type() == TokenType::RIGHT_PAREN) depth--;
+                    advance();
+                } while (!at_end() && depth > 0);
+            }
+        }
+    }
+}
 
 bool Parser::is_assignment_operator(TokenType type) const {
     return type == TokenType::ASSIGN ||
@@ -2467,9 +2527,11 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
         case ASTNode::Type::YIELD_EXPRESSION:
             return false;
         case ASTNode::Type::OBJECT_LITERAL: {
-            // Empty object literal {} is not a valid assignment target
             auto* obj = static_cast<const ObjectLiteral*>(node);
-            return !obj->get_properties().empty();
+            // Empty object literal {} is never a valid assignment target.
+            // Non-empty ({a, b} = x) is valid destructuring.
+            // Empty {} inside array element ([{} = default]) is valid (binding pattern).
+            return options_.in_array_element || !obj->get_properties().empty();
         }
         case ASTNode::Type::ARRAY_LITERAL:
             return true;
@@ -2611,7 +2673,8 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
                             !options_.source_type_module);
         bool is_let_id   = (current_token().get_type() == TokenType::LET && !options_.strict_mode);
         bool is_of_id    = (current_token().get_type() == TokenType::OF);
-        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id) {
+        bool is_async_id = (current_token().get_type() == TokenType::ASYNC);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id && !is_async_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
@@ -3253,6 +3316,19 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
+        // Early error: for (async of ...) is forbidden (lookahead restriction)
+        if (current_token().get_type() == TokenType::ASYNC && !current_token().has_escaped_keyword()) {
+            size_t next_idx = current_token_index_ + 1;
+            while (next_idx < tokens_.size() &&
+                   (tokens_[next_idx].get_type() == TokenType::WHITESPACE ||
+                    tokens_[next_idx].get_type() == TokenType::NEWLINE ||
+                    tokens_[next_idx].get_type() == TokenType::COMMENT))
+                next_idx++;
+            if (next_idx < tokens_.size() && tokens_[next_idx].get_type() == TokenType::OF) {
+                add_error("SyntaxError: 'async' is not a valid left-hand side in a for-of loop");
+                return nullptr;
+            }
+        }
         // Check for 'await using' declaration in for init: for (await using x of ...)
         if (match(TokenType::AWAIT) && options_.in_async_body) {
             size_t saved_idx = current_token_index_;
@@ -3274,7 +3350,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 TokenType next3 = (after_id_idx < tokens_.size())
                                   ? tokens_[after_id_idx].get_type() : TokenType::EOF_TOKEN;
                 if ((next2 == TokenType::IDENTIFIER || next2 == TokenType::STATIC) && next3 == TokenType::OF) {
-                    // for (await using id of iterable) — await-using for-of
+                    // for (await using id of iterable) -- await-using for-of
                     advance(); // consume 'using'
                     std::string binding_name = current_token().get_value();
                     Position binding_pos = get_current_position();
@@ -3286,7 +3362,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     goto check_for_of;
                 } else if ((next2 == TokenType::IDENTIFIER || next2 == TokenType::STATIC) &&
                            next3 == TokenType::ASSIGN) {
-                    // for (await using id = expr; ...) — regular for loop with await using init
+                    // for (await using id = expr; ...) -- regular for loop with await using init
                     current_token_index_ = saved_idx; // rewind to 'await'
                     init = parse_using_declaration(true, false);
                     if (!init) return nullptr;
@@ -4577,6 +4653,11 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             advance();
             continue;
         }
+        // Skip decorators on class elements
+        if (current_token().get_type() == TokenType::AT) {
+            skip_decorator_list();
+            continue;
+        }
         // static { } block
         if (current_token().get_type() == TokenType::STATIC) {
             Position sstart = get_current_position();
@@ -4587,11 +4668,13 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                 bool prev_generator = options_.in_generator_body;
                 bool prev_async = options_.in_async_body;
                 bool prev_strict = options_.strict_mode;
+                bool prev_cm_sb = options_.in_class_method;
                 int prev_loop_sb = options_.loop_depth;
                 int prev_sw_sb = options_.switch_depth;
                 auto prev_al_sb = options_.active_labels;
                 auto prev_ll_sb = options_.loop_labels;
                 options_.in_class_static_block = true;
+                options_.in_class_method = true;
                 options_.in_generator_body = false;
                 options_.in_async_body = false;
                 options_.strict_mode = true;
@@ -4601,6 +4684,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
                 options_.loop_labels.clear();
                 auto block = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block;
+                options_.in_class_method = prev_cm_sb;
                 options_.in_generator_body = prev_generator;
                 options_.in_async_body = prev_async;
                 options_.strict_mode = prev_strict;
@@ -4802,6 +4886,11 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             advance();
             continue;
         }
+        // Skip decorators on class elements
+        if (current_token().get_type() == TokenType::AT) {
+            skip_decorator_list();
+            continue;
+        }
         // static { } block
         if (current_token().get_type() == TokenType::STATIC) {
             Position sstart2 = get_current_position();
@@ -4812,11 +4901,13 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 bool prev_generator2 = options_.in_generator_body;
                 bool prev_async2 = options_.in_async_body;
                 bool prev_strict2 = options_.strict_mode;
+                bool prev_cm_sb2 = options_.in_class_method;
                 int prev_loop_sb2 = options_.loop_depth;
                 int prev_sw_sb2 = options_.switch_depth;
                 auto prev_al_sb2 = options_.active_labels;
                 auto prev_ll_sb2 = options_.loop_labels;
                 options_.in_class_static_block = true;
+                options_.in_class_method = true;
                 options_.in_generator_body = false;
                 options_.in_async_body = false;
                 options_.strict_mode = true;
@@ -4826,6 +4917,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 options_.loop_labels.clear();
                 auto sblock = parse_block_statement(false);
                 options_.in_class_static_block = prev_static_block2;
+                options_.in_class_method = prev_cm_sb2;
                 options_.in_generator_body = prev_generator2;
                 options_.in_async_body = prev_async2;
                 options_.strict_mode = prev_strict2;
@@ -5116,6 +5208,42 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
 
     if (!key) return nullptr;
 
+    // Handle `accessor FieldName` syntax (auto-accessor fields proposal)
+    // When key is identifier "accessor" and next non-ws token on same line is a valid field name, treat as accessor field
+    if (!computed && key->get_type() == ASTNode::Type::IDENTIFIER &&
+        static_cast<Identifier*>(key.get())->get_name() == "accessor" &&
+        !is_generator && !is_async && method_kind == MethodDefinition::METHOD) {
+        TokenType nxt = current_token().get_type();
+        size_t accessor_end_line = key->get_end().line;
+        bool on_same_line = (current_token().get_start().line == accessor_end_line);
+        bool valid_name = on_same_line && (nxt == TokenType::IDENTIFIER || nxt == TokenType::HASH ||
+                          nxt == TokenType::STRING || nxt == TokenType::NUMBER ||
+                          nxt == TokenType::LEFT_BRACKET || is_keyword_token(nxt));
+        if (valid_name) {
+            // Re-parse key as the actual accessor field name
+            if (nxt == TokenType::HASH) {
+                is_private = true;
+                size_t hash_start = current_token().get_start().offset;
+                advance();
+                if (!match(TokenType::IDENTIFIER)) { add_error("Expected identifier after '#'"); return nullptr; }
+                if (current_token().get_start().offset != hash_start + 1) {
+                    add_error("SyntaxError: Whitespace not allowed between '#' and identifier"); return nullptr;
+                }
+                key = std::make_unique<Identifier>("#" + current_token().get_value(), current_token().get_start(), current_token().get_end());
+                advance();
+            } else if (nxt == TokenType::LEFT_BRACKET) {
+                computed = true; advance();
+                key = parse_assignment_expression();
+                if (!key || !consume(TokenType::RIGHT_BRACKET)) { add_error("Expected ']'"); return nullptr; }
+            } else if (nxt == TokenType::IDENTIFIER) {
+                key = parse_identifier();
+            } else {
+                key = std::make_unique<Identifier>(current_token().get_value(), current_token().get_start(), current_token().get_end());
+                advance();
+            }
+        }
+    }
+
     if (current_token().get_type() == TokenType::ASSIGN ||
         current_token().get_type() == TokenType::SEMICOLON ||
         current_token().get_type() == TokenType::RIGHT_BRACE ||
@@ -5127,9 +5255,12 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         if (current_token().get_type() == TokenType::ASSIGN) {
             advance();
             bool saved_cfi = options_.in_class_field_init;
+            bool saved_cm_fi = options_.in_class_method;
             options_.in_class_field_init = true;
+            options_.in_class_method = true;
             init = parse_assignment_expression();
             options_.in_class_field_init = saved_cfi;
+            options_.in_class_method = saved_cm_fi;
             if (!init) {
                 add_error("Expected field initializer after '='");
                 return nullptr;
@@ -5140,12 +5271,16 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
             advance();
         } else {
             // ASI: no semicolon only valid if line terminator before next token
-            // Use key's end line (or init's end line) as reference
-            size_t field_end_line = init ? init->get_end().line : key->get_end().line;
             TokenType next = current_token().get_type();
             if (next != TokenType::RIGHT_BRACE && next != TokenType::EOF_TOKEN) {
-                size_t next_line = current_token().get_start().line;
-                if (next_line <= field_end_line) {
+                // Scan backward for a newline token before the current token
+                bool has_newline = false;
+                for (int bi = (int)current_token_index_ - 1; bi >= 0; bi--) {
+                    TokenType bt = tokens_[bi].get_type();
+                    if (bt == TokenType::NEWLINE) { has_newline = true; break; }
+                    if (bt != TokenType::WHITESPACE && bt != TokenType::COMMENT) break;
+                }
+                if (!has_newline) {
                     add_error("SyntaxError: Missing semicolon between class field declarations");
                     return nullptr;
                 }
@@ -5216,8 +5351,10 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     bool method_has_non_simple_params = false;
     bool saved_arrow_params_m = options_.in_arrow_params;
     bool saved_sb_params = options_.in_class_static_block;
+    bool saved_cm_params = options_.in_class_method;
     options_.in_arrow_params = true;
     options_.in_class_static_block = false;
+    options_.in_class_method = true;
     while (current_token().get_type() != TokenType::RIGHT_PAREN && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
@@ -5333,6 +5470,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     
     options_.in_arrow_params = saved_arrow_params_m;
     options_.in_class_static_block = saved_sb_params;
+    options_.in_class_method = saved_cm_params;
 
     if (!match(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -5750,8 +5888,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
 std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     Position start = get_current_position();
 
-    // Save async token end-line BEFORE consuming it (advance() skips newlines)
+    // Save async token end-line and end pos BEFORE consuming it (advance() skips newlines)
     size_t async_end_line = current_token().get_end().line;
+    Position async_end = current_token().get_end();
 
     if (!consume(TokenType::ASYNC)) {
         add_error("Expected 'async'");
@@ -5771,8 +5910,8 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     } else if (match(TokenType::IDENTIFIER)) {
         return parse_async_arrow_function_single_param(start);
     } else {
-        add_error("Expected 'function', '(', or identifier after 'async'");
-        return nullptr;
+        // Not an async function/arrow — `async` is being used as an identifier
+        return std::make_unique<Identifier>("async", start, async_end);
     }
 
     bool is_generator = false;

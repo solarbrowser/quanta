@@ -318,7 +318,14 @@ Value CallExpression::evaluate(Context& ctx) {
         // The function itself will convert to global object if not in strict mode
         Value this_value = Value();  // undefined
 
-        return function->call(ctx, arg_values, this_value);
+        // Direct eval detection: eval(code) called via plain Identifier lookup
+        bool is_direct_eval = (callee_->get_type() == ASTNode::Type::IDENTIFIER &&
+                               static_cast<Identifier*>(callee_.get())->get_name() == "eval");
+        bool saved_direct_eval = ctx.is_direct_eval_call();
+        if (is_direct_eval) ctx.set_direct_eval_call(true);
+        Value result = function->call(ctx, arg_values, this_value);
+        ctx.set_direct_eval_call(saved_direct_eval);
+        return result;
     }
 
     if (callee_value.is_object() &&
@@ -352,7 +359,7 @@ Value CallExpression::evaluate(Context& ctx) {
         }
         
         Value function_value = ctx.get_binding(func_name);
-        
+
         if (function_value.is_function()) {
             std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
             if (ctx.has_exception()) return Value();

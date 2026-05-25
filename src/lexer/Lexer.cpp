@@ -72,7 +72,8 @@ const std::unordered_map<char, TokenType> Lexer::single_char_tokens_ = {
     {',', TokenType::COMMA},
     {':', TokenType::COLON},
     {'~', TokenType::BITWISE_NOT},
-    {'#', TokenType::HASH}
+    {'#', TokenType::HASH},
+    {'@', TokenType::AT}
 };
 
 
@@ -148,9 +149,15 @@ Token Lexer::next_token() {
     if (at_end()) {
         return Token(TokenType::EOF_TOKEN, current_position_);
     }
-    
+
     Position start = current_position_;
     char ch = current_char();
+
+    // Hashbang comment: #! at the very beginning of the source (offset 0)
+    if (ch == '#' && position_ == 0 && position_ + 1 < source_.size() && source_[1] == '!') {
+        while (!at_end() && current_char() != '\n' && current_char() != '\r') advance();
+        return create_token(TokenType::COMMENT, start);
+    }
     
     if (is_whitespace(ch)) {
         if (options_.skip_whitespace) {
@@ -609,10 +616,15 @@ Token Lexer::read_number() {
         advance();
         size_t length = position_ - start_pos - 1;
         std::string bigint_str = source_.substr(start_pos, length);
-        // BigInt cannot have exponent or decimal point
-        if (bigint_str.find('e') != std::string::npos ||
-            bigint_str.find('E') != std::string::npos ||
-            bigint_str.find('.') != std::string::npos) {
+        // BigInt cannot have exponent or decimal point (only for decimal BigInts; hex/bin/oct allow A-F)
+        bool is_hex_bigint = bigint_str.size() >= 2 && bigint_str[0] == '0' &&
+                             (bigint_str[1] == 'x' || bigint_str[1] == 'X');
+        if (!is_hex_bigint && (bigint_str.find('e') != std::string::npos ||
+                               bigint_str.find('E') != std::string::npos)) {
+            add_error("SyntaxError: Invalid BigInt literal");
+            return create_token(TokenType::INVALID, start);
+        }
+        if (bigint_str.find('.') != std::string::npos) {
             add_error("SyntaxError: Invalid BigInt literal");
             return create_token(TokenType::INVALID, start);
         }
