@@ -71,6 +71,8 @@ private:
 
     size_t current_token_index_;
     bool no_in_mode_ = false; // when true, 'in' is not parsed as a relational operator
+    bool last_expr_was_parenthesized_ = false;
+    std::vector<std::unordered_set<std::string>> private_scope_stack_; // private names per class depth
 
 public:
     explicit Parser(TokenSequence tokens);
