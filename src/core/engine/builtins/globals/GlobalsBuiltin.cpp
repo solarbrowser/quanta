@@ -192,7 +192,7 @@ void register_global_builtins(Context& ctx) {
 
                 Parser::ParseOptions parse_opts;
                 parse_opts.strict_mode = strict;
-                parse_opts.in_eval_context = true;
+                parse_opts.in_eval_context = ctx.is_direct_eval_call();
                 Parser parser(tokens, parse_opts);
                 parser.set_source(code);
                 auto program = parser.parse_program();

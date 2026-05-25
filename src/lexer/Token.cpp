@@ -171,7 +171,11 @@ std::string Token::token_type_name(TokenType type) {
         {TokenType::DOT, "DOT"},
         {TokenType::COLON, "COLON"},
         {TokenType::QUESTION, "QUESTION"},
-        
+        {TokenType::HASH, "HASH"},
+        {TokenType::AT, "AT"},
+        {TokenType::ARROW, "ARROW"},
+        {TokenType::ELLIPSIS, "ELLIPSIS"},
+
         {TokenType::INVALID, "INVALID"}
     };
     

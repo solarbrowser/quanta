@@ -205,6 +205,7 @@ private:
     
     void skip_to_statement_boundary();
     void skip_to(TokenType type);
+    void skip_decorator_list();
     
     bool is_assignment_operator(TokenType type) const;
     bool is_binary_operator(TokenType type) const;
