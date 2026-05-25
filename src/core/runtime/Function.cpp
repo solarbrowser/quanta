@@ -341,6 +341,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
 
+        {
+            bool args_conflict = !is_arrow_;
+            if (!args_conflict) {
+                for (const auto& p : parameter_objects_) {
+                    if (!p->is_rest() && !p->has_destructuring() && p->get_name() && p->get_name()->get_name() == "arguments") {
+                        args_conflict = true;
+                        break;
+                    }
+                }
+            }
+            function_context.set_eval_arguments_conflict(args_conflict);
+        }
         function_context.set_in_param_eval(true);
         for (size_t i = 0; i < parameter_objects_.size(); ++i) {
             const auto& param = parameter_objects_[i];

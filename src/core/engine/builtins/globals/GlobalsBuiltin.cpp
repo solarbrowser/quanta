@@ -211,6 +211,52 @@ void register_global_builtins(Context& ctx) {
                     return Value();
                 }
 
+                auto collect_var_names = [](const Program* prog) {
+                    std::vector<std::string> names;
+                    if (!prog) return names;
+                    std::function<void(const ASTNode*)> walk = [&](const ASTNode* nd) {
+                        if (!nd) return;
+                        using T = ASTNode::Type;
+                        switch (nd->get_type()) {
+                            case T::VARIABLE_DECLARATION: {
+                                auto* vd = static_cast<const VariableDeclaration*>(nd);
+                                if (vd->get_kind() == VariableDeclarator::Kind::VAR)
+                                    for (const auto& d : vd->get_declarations())
+                                        if (d->get_id()) names.push_back(d->get_id()->get_name());
+                                break;
+                            }
+                            case T::FUNCTION_DECLARATION: {
+                                auto* fd = static_cast<const FunctionDeclaration*>(nd);
+                                if (fd->get_id()) names.push_back(fd->get_id()->get_name());
+                                break;
+                            }
+                            case T::BLOCK_STATEMENT:
+                                for (const auto& s : static_cast<const BlockStatement*>(nd)->get_statements()) walk(s.get());
+                                break;
+                            case T::IF_STATEMENT: {
+                                auto* is = static_cast<const IfStatement*>(nd);
+                                walk(is->get_consequent());
+                                if (is->has_alternate()) walk(is->get_alternate());
+                                break;
+                            }
+                            case T::FOR_STATEMENT: { auto* fs = static_cast<const ForStatement*>(nd); walk(fs->get_init()); walk(fs->get_body()); break; }
+                            case T::FOR_IN_STATEMENT: walk(static_cast<const ForInStatement*>(nd)->get_body()); break;
+                            case T::FOR_OF_STATEMENT: walk(static_cast<const ForOfStatement*>(nd)->get_body()); break;
+                            case T::WHILE_STATEMENT: walk(static_cast<const WhileStatement*>(nd)->get_body()); break;
+                            case T::DO_WHILE_STATEMENT: walk(static_cast<const DoWhileStatement*>(nd)->get_body()); break;
+                            case T::LABELED_STATEMENT: walk(static_cast<const LabeledStatement*>(nd)->get_statement()); break;
+                            case T::WITH_STATEMENT: walk(static_cast<const WithStatement*>(nd)->get_body()); break;
+                            case T::TRY_STATEMENT: { auto* ts = static_cast<const TryStatement*>(nd); walk(ts->get_try_block()); walk(ts->get_catch_clause()); walk(ts->get_finally_block()); break; }
+                            case T::CATCH_CLAUSE: walk(static_cast<const CatchClause*>(nd)->get_body()); break;
+                            case T::SWITCH_STATEMENT: { auto* ss = static_cast<const SwitchStatement*>(nd); for (const auto& c : ss->get_cases()) walk(c.get()); break; }
+                            case T::CASE_CLAUSE: { auto* cc = static_cast<const CaseClause*>(nd); for (const auto& s : cc->get_consequent()) walk(s.get()); break; }
+                            default: break;
+                        }
+                    };
+                    for (const auto& s : prog->get_statements()) walk(s.get());
+                    return names;
+                };
+
                 if (strict) {
                     // ES5 10.4.2: Strict eval creates isolated variable environment
                     Context eval_ctx(engine, &ctx, Context::Type::Eval);
@@ -232,14 +278,55 @@ void register_global_builtins(Context& ctx) {
 
                     return result;
                 } else {
-                    // Non-strict eval: evaluate in calling context
-                    auto result = engine->evaluate(code);
-                    if (result.success) {
-                        return result.value;
-                    } else {
-                        ctx.throw_syntax_error(result.error_message);
+                    // Non-strict eval: run in calling context's scope chain
+                    auto var_names = collect_var_names(program.get());
+
+                    // EvalDeclarationInstantiation: check var names against lex bindings
+                    // between lexEnv and varEnv (catches let/const conflicts in block scopes)
+                    auto* lex_env = ctx.get_lexical_environment();
+                    auto* var_env = ctx.get_variable_environment();
+                    if (lex_env != var_env) {
+                        Environment* env = lex_env;
+                        while (env && env != var_env) {
+                            if (env->get_type() != Environment::Type::Object) {
+                                for (const auto& vname : var_names) {
+                                    if (env->has_own_binding(vname)) {
+                                        ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
+                                        return Value();
+                                    }
+                                }
+                            }
+                            env = env->get_outer();
+                        }
+                    }
+
+                    // When eval runs inside default parameter expressions, var arguments conflicts
+                    // with the implicit arguments binding (or an explicit arguments parameter)
+                    if (ctx.is_in_param_eval() && ctx.has_eval_arguments_conflict()) {
+                        for (const auto& vname : var_names) {
+                            if (vname == "arguments") {
+                                ctx.throw_syntax_error("Variable 'arguments' has already been declared");
+                                return Value();
+                            }
+                        }
+                    }
+
+                    Context eval_ctx(engine, &ctx, Context::Type::Eval);
+                    eval_ctx.set_lexical_environment(ctx.get_lexical_environment());
+                    eval_ctx.set_variable_environment(ctx.get_variable_environment());
+                    eval_ctx.set_this_binding(ctx.get_this_binding());
+                    eval_ctx.set_strict_mode(false);
+
+                    Value result = program->evaluate(eval_ctx);
+
+                    if (eval_ctx.has_exception()) {
+                        Value exception = eval_ctx.get_exception();
+                        eval_ctx.clear_exception();
+                        ctx.throw_exception(exception);
                         return Value();
                     }
+
+                    return result;
                 }
             } catch (const std::exception& e) {
                 ctx.throw_syntax_error(std::string(e.what()));

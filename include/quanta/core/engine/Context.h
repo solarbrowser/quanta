@@ -94,6 +94,7 @@ private:
     int sync_then_depth_ = 0;
     bool in_param_eval_ = false;
     bool is_direct_eval_call_ = false;
+    bool eval_arguments_conflict_ = false;
 
     // Dispose scope stack for 'using' declarations (Explicit Resource Management)
     struct DisposableResource {
@@ -123,6 +124,8 @@ public:
     void set_in_param_eval(bool v) { in_param_eval_ = v; }
     bool is_direct_eval_call() const { return is_direct_eval_call_; }
     void set_direct_eval_call(bool v) { is_direct_eval_call_ = v; }
+    bool has_eval_arguments_conflict() const { return eval_arguments_conflict_; }
+    void set_eval_arguments_conflict(bool v) { eval_arguments_conflict_ = v; }
     
     const std::string& get_current_filename() const { return current_filename_; }
     void set_current_filename(const std::string& filename) { current_filename_ = filename; }
