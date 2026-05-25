@@ -625,6 +625,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     if (!param_objs.empty()) {
         size_t regular_count = 0;
         for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        gen_context.set_eval_arguments_conflict(true);
         gen_context.set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
             const auto& param = param_objs[i];

@@ -980,6 +980,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     if (!param_objs.empty()) {
         size_t regular_count = 0;
         for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        gen_ctx->set_eval_arguments_conflict(true);
         gen_ctx->set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
             const auto& param = param_objs[i];
