@@ -147,6 +147,9 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
             std::string msg = errors.empty() ? "Syntax error" : errors[0].message;
             return Result(msg);
         }
+        if (program_ast && program_ast->get_statements().size() == 0) {
+            return Result(Value()); // empty program (e.g. just comments) -> undefined
+        }
         if (program_ast && program_ast->get_statements().size() > 0) {
             Value result = program_ast->evaluate(*global_context_);
 

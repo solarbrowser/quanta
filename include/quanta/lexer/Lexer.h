@@ -32,6 +32,7 @@ private:
     LexerOptions options_;
     std::vector<std::string> errors_;
     TokenType last_token_type_;
+    const std::vector<Token>* tokens_so_far_ = nullptr;
 
     static const std::unordered_map<std::string, TokenType> keywords_;
     
