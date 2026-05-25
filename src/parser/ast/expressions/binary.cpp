@@ -847,6 +847,13 @@ Value UnaryExpression::evaluate(Context& ctx) {
             return operand_value.bitwise_not();
         }
         case Operator::TYPEOF: {
+            if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                const std::string& id_name = static_cast<Identifier*>(operand_.get())->get_name();
+                if (ctx.is_in_tdz(id_name)) {
+                    ctx.throw_reference_error("Cannot access '" + id_name + "' before initialization");
+                    return Value();
+                }
+            }
             Value operand_value = operand_->evaluate(ctx);
 
             if (ctx.has_exception()) {

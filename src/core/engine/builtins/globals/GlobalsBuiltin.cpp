@@ -17,6 +17,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/core/modules/ModuleLoader.h"
@@ -193,6 +194,12 @@ void register_global_builtins(Context& ctx) {
                 Parser::ParseOptions parse_opts;
                 parse_opts.strict_mode = strict;
                 parse_opts.in_eval_context = ctx.is_direct_eval_call();
+                // new.target in eval is valid inside non-arrow function code
+                parse_opts.eval_in_function_code = (ctx.get_type() == Context::Type::Function ||
+                                                    ctx.get_type() == Context::Type::Eval) &&
+                                                   !ctx.is_arrow_function_context();
+                // super in eval is valid if we're inside a method/derived-class context (__super__ present)
+                parse_opts.eval_in_method_code = ctx.has_binding("__super__");
                 Parser parser(tokens, parse_opts);
                 parser.set_source(code);
                 auto program = parser.parse_program();
@@ -257,8 +264,17 @@ void register_global_builtins(Context& ctx) {
                     return names;
                 };
 
+                // Eval is strict if the calling context is strict OR the eval source has 'use strict'.
+                // program->is_strict() captures both: parse_opts.strict_mode starts from ctx strict,
+                // and check_for_use_strict_directive() sets it true if the source has 'use strict'.
+                if (!strict && program && program->is_strict()) {
+                    strict = true;
+                }
+
                 if (strict) {
                     // ES5 10.4.2: Strict eval creates isolated variable environment
+                    auto var_names = collect_var_names(program.get());
+
                     Context eval_ctx(engine, &ctx, Context::Type::Eval);
                     eval_ctx.set_strict_mode(true);
                     auto eval_env = new Environment(
@@ -266,6 +282,12 @@ void register_global_builtins(Context& ctx) {
                     eval_ctx.set_lexical_environment(eval_env);
                     eval_ctx.set_variable_environment(eval_env);
                     eval_ctx.set_this_binding(ctx.get_this_binding());
+
+                    // Pre-create var bindings in isolated env so hoist doesn't find them in
+                    // the outer scope chain and skip creation (which would cause them to leak)
+                    for (const auto& vname : var_names) {
+                        eval_env->create_binding(vname, Value(), true, false);
+                    }
 
                     Value result = program->evaluate(eval_ctx);
 
@@ -282,9 +304,19 @@ void register_global_builtins(Context& ctx) {
                     auto var_names = collect_var_names(program.get());
 
                     // EvalDeclarationInstantiation: check var names against lex bindings
-                    // between lexEnv and varEnv (catches let/const conflicts in block scopes)
                     auto* lex_env = ctx.get_lexical_environment();
                     auto* var_env = ctx.get_variable_environment();
+                    // 18.2.1 step 5a: check lex_env itself for lexical declarations
+                    // (covers global scope where lex_env == var_env)
+                    if (lex_env) {
+                        for (const auto& vname : var_names) {
+                            if (lex_env->has_lexical_declaration(vname)) {
+                                ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
+                                return Value();
+                            }
+                        }
+                    }
+                    // Also walk between lex_env and var_env for block-scope conflicts
                     if (lex_env != var_env) {
                         Environment* env = lex_env;
                         while (env && env != var_env) {
@@ -311,8 +343,60 @@ void register_global_builtins(Context& ctx) {
                         }
                     }
 
+                    // EvalDeclarationInstantiation CanDeclareGlobalFunction pre-flight check.
+                    // Must run before the eval body so bindings are never created on TypeError.
+                    if (var_env && var_env->get_type() == Environment::Type::Object && var_env->get_binding_object()) {
+                        Object* global_obj = var_env->get_binding_object();
+                        std::unordered_set<std::string> checked_func_names;
+                        for (auto it = program->get_statements().rbegin(); it != program->get_statements().rend(); ++it) {
+                            const ASTNode* nd = it->get();
+                            if (nd->get_type() != ASTNode::Type::FUNCTION_DECLARATION) continue;
+                            auto* fd = static_cast<const FunctionDeclaration*>(nd);
+                            if (!fd->get_id()) continue;
+                            const std::string& fn = fd->get_id()->get_name();
+                            if (checked_func_names.count(fn)) continue;
+                            checked_func_names.insert(fn);
+                            if (global_obj->has_own_property(fn)) {
+                                PropertyDescriptor existing = global_obj->get_property_descriptor(fn);
+                                if (!existing.is_configurable() && (!existing.is_writable() || !existing.is_enumerable())) {
+                                    ctx.throw_type_error("Cannot declare function '" + fn + "'");
+                                    return Value();
+                                }
+                            }
+                        }
+                    }
+
+                    // Collect top-level lex declarations (let/const/class) for TDZ pre-instantiation
+                    auto collect_lex_names = [](const Program* prog) {
+                        std::vector<std::string> names;
+                        if (!prog) return names;
+                        for (const auto& s : prog->get_statements()) {
+                            const ASTNode* nd = s.get();
+                            if (nd->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                                auto* vd = static_cast<const VariableDeclaration*>(nd);
+                                if (vd->get_kind() != VariableDeclarator::Kind::VAR)
+                                    for (const auto& d : vd->get_declarations())
+                                        if (d->get_id()) names.push_back(d->get_id()->get_name());
+                            } else if (nd->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                                auto* cd = static_cast<const ClassDeclaration*>(nd);
+                                if (cd->get_id()) names.push_back(cd->get_id()->get_name());
+                            }
+                        }
+                        return names;
+                    };
+
                     Context eval_ctx(engine, &ctx, Context::Type::Eval);
-                    eval_ctx.set_lexical_environment(ctx.get_lexical_environment());
+                    // Spec 18.2.1 step 9a: direct eval's lexEnv is a NEW declarative env
+                    // (child of caller's lexEnv), so let/const/class in eval are isolated from caller.
+                    auto* eval_lex_env = new Environment(
+                        Environment::Type::Declarative, ctx.get_lexical_environment());
+
+                    // Pre-instantiate lexical bindings as uninitialized (TDZ) per spec step 14.
+                    for (const auto& lname : collect_lex_names(program.get())) {
+                        eval_lex_env->create_uninitialized_binding(lname);
+                    }
+
+                    eval_ctx.set_lexical_environment(eval_lex_env);
                     eval_ctx.set_variable_environment(ctx.get_variable_environment());
                     eval_ctx.set_this_binding(ctx.get_this_binding());
                     eval_ctx.set_strict_mode(false);

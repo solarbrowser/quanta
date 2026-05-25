@@ -244,6 +244,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     if (is_arrow_ && this->has_property("__arrow_new_target__")) {
         function_context.set_new_target(this->get_property("__arrow_new_target__"));
     }
+    function_context.set_arrow_function_context(is_arrow_);
 
     // Check for strict mode BEFORE setting up 'this' binding
     if (is_strict_) {
