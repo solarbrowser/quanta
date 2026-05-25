@@ -128,9 +128,15 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         }
     } else {
         // Try the variable environment first; if it fails (already exists from closure capture),
-        // use the lexical environment so the write-back won't propagate to the outer scope
+        // use the lexical environment so the write-back won't propagate to the outer scope.
+        // Exception: in non-strict eval, duplicate function declarations must update var_env
+        // (spec 18.2.1.3 step 15 -- the last declaration wins and is visible after eval returns).
         if (!ctx.create_binding(function_name, function_value, true)) {
-            ctx.create_lexical_binding_force(function_name, function_value);
+            if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
+                ctx.create_global_function_binding(function_name, function_value);
+            } else {
+                ctx.create_lexical_binding_force(function_name, function_value);
+            }
         }
     }
 
@@ -565,7 +571,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
 
-    ctx.create_binding(class_name, Value(constructor_fn.get()));
+    // Class declarations are lexically scoped (like let/const), not var-scoped.
+    // Using create_lexical_binding ensures they don't leak out of eval or block scopes.
+    if (!ctx.create_lexical_binding(class_name, Value(constructor_fn.get()), true)) {
+        ctx.create_lexical_binding_force(class_name, Value(constructor_fn.get()));
+    }
 
     if (!static_field_initializers.empty()) {
         for (auto& sfi : static_field_initializers) {

@@ -271,6 +271,11 @@ Value Identifier::evaluate(Context& ctx) {
         }
     }
 
+    if (ctx.is_in_tdz(name_)) {
+        ctx.throw_reference_error("Cannot access '" + name_ + "' before initialization");
+        return Value();
+    }
+
     if (!ctx.has_binding(name_)) {
         static const std::set<std::string> known_globals = {
             "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number",

@@ -12,6 +12,7 @@
 #include "quanta/core/gc/GC.h"
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <memory>
 #include <functional>
@@ -95,6 +96,7 @@ private:
     bool in_param_eval_ = false;
     bool is_direct_eval_call_ = false;
     bool eval_arguments_conflict_ = false;
+    bool is_arrow_function_context_ = false;
 
     // Dispose scope stack for 'using' declarations (Explicit Resource Management)
     struct DisposableResource {
@@ -124,6 +126,8 @@ public:
     void set_in_param_eval(bool v) { in_param_eval_ = v; }
     bool is_direct_eval_call() const { return is_direct_eval_call_; }
     void set_direct_eval_call(bool v) { is_direct_eval_call_ = v; }
+    bool is_arrow_function_context() const { return is_arrow_function_context_; }
+    void set_arrow_function_context(bool v) { is_arrow_function_context_ = v; }
     bool has_eval_arguments_conflict() const { return eval_arguments_conflict_; }
     void set_eval_arguments_conflict(bool v) { eval_arguments_conflict_ = v; }
     
@@ -165,7 +169,9 @@ public:
     void create_lexical_binding_force(const std::string& name, const Value& value);
     bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool create_lexical_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
+    void create_global_function_binding(const std::string& name, const Value& value);
     bool delete_binding(const std::string& name);
+    bool is_in_tdz(const std::string& name) const;
 
     void push_frame(std::unique_ptr<StackFrame> frame);
     std::unique_ptr<StackFrame> pop_frame();
@@ -333,6 +339,7 @@ private:
     std::unordered_map<std::string, bool> mutable_flags_;
     std::unordered_map<std::string, bool> initialized_flags_;
     std::unordered_map<std::string, bool> deletable_flags_;  // ES1: DontDelete attribute (false = DontDelete)
+    std::unordered_set<std::string> lexical_names_; 
     Object* binding_object_;
 
 public:
@@ -363,6 +370,10 @@ public:
     void mark_references() const;
 
     bool has_own_binding(const std::string& name) const;
+    bool has_lexical_declaration(const std::string& name) const { return lexical_names_.count(name) > 0; }
+    void mark_lexical_declaration(const std::string& name) { lexical_names_.insert(name); }
+    void create_global_function_binding(const std::string& name, const Value& value);
+    void create_uninitialized_binding(const std::string& name);
 };
 
 /**

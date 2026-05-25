@@ -178,15 +178,36 @@ void Context::create_lexical_binding_force(const std::string& name, const Value&
 
 bool Context::create_var_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (variable_environment_) {
-        // ES1: Variables declared with 'var' have DontDelete attribute (not deletable)
-        return variable_environment_->create_binding(name, value, mutable_binding, false);
+        // Regular var has DontDelete (non-deletable). Variables created by eval are deletable
+        // per spec 18.2.1.3 CreateGlobalVarBinding(N, true).
+        bool deletable = (type_ == Type::Eval);
+        return variable_environment_->create_binding(name, value, mutable_binding, deletable);
     }
     return false;
 }
 
 bool Context::create_lexical_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (lexical_environment_) {
-        return lexical_environment_->create_binding(name, value, mutable_binding);
+        bool ok = lexical_environment_->create_binding(name, value, mutable_binding);
+        if (ok) lexical_environment_->mark_lexical_declaration(name);
+        return ok;
+    }
+    return false;
+}
+
+void Context::create_global_function_binding(const std::string& name, const Value& value) {
+    if (variable_environment_) {
+        variable_environment_->create_global_function_binding(name, value);
+    }
+}
+
+bool Context::is_in_tdz(const std::string& name) const {
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->get_type() != Environment::Type::Object && env->has_own_binding(name)) {
+            return !env->is_initialized_binding(name);
+        }
+        env = env->get_outer();
     }
     return false;
 }
@@ -745,6 +766,32 @@ void Environment::force_set_binding(const std::string& name, const Value& value)
         bindings_[name] = value;
         mutable_flags_[name] = true;
         initialized_flags_[name] = true;
+    }
+}
+
+void Environment::create_uninitialized_binding(const std::string& name) {
+    if (has_own_binding(name)) return;
+    bindings_[name] = Value();
+    mutable_flags_[name] = true;
+    initialized_flags_[name] = false;
+}
+
+void Environment::create_global_function_binding(const std::string& name, const Value& value) {
+    if (type_ == Type::Object && binding_object_) {
+        PropertyDescriptor existing = binding_object_->get_property_descriptor(name);
+        PropertyDescriptor desc;
+        if (!binding_object_->has_own_property(name) || existing.is_configurable()) {
+            int attrs = PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable;
+            desc = PropertyDescriptor(value, static_cast<PropertyAttributes>(attrs));
+        } else {
+            desc = PropertyDescriptor(value, existing.get_attributes());
+        }
+        binding_object_->set_property_descriptor(name, desc);
+    } else {
+        bindings_[name] = value;
+        mutable_flags_[name] = true;
+        initialized_flags_[name] = true;
+        deletable_flags_[name] = true;
     }
 }
 

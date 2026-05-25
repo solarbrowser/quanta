@@ -36,6 +36,8 @@ public:
         bool class_has_heritage = false;
         bool in_class_static_block = false;
         bool in_eval_context = false;
+        bool eval_in_function_code = false;  // true if eval is called from inside a function/method
+        bool eval_in_method_code = false;    // true if eval is called from inside a method with [[HomeObject]]
         bool in_substatement_body = false;   
         bool in_switch_case_list = false;   
         bool in_block_context = false;      

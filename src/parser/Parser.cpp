@@ -921,8 +921,12 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     add_error("SyntaxError: 'target' in new.target cannot contain unicode escape sequences");
                     return nullptr;
                 }
-                if (!options_.in_eval_context &&
-                    options_.non_arrow_function_depth == 0 && options_.class_depth == 0) {
+                // new.target is valid inside non-arrow functions, classes, or eval that is
+                // itself inside function code. It's a SyntaxError in global code and in eval
+                // called from global scope.
+                bool in_function_or_class = options_.non_arrow_function_depth > 0 || options_.class_depth > 0;
+                bool in_valid_eval = options_.in_eval_context && options_.eval_in_function_code;
+                if (!in_function_or_class && !in_valid_eval) {
                     add_error("SyntaxError: new.target is only valid inside a function or class body");
                     return nullptr;
                 }
@@ -1561,8 +1565,11 @@ std::unique_ptr<ASTNode> Parser::parse_super_expression() {
     Position start = token.get_start();
     Position end = token.get_end();
 
-    // super is only valid inside class methods, static blocks, field inits, or eval inside those
-    if (!options_.in_class_method && !options_.in_eval_context) {
+    // super is valid inside class/object methods, static blocks, field inits, or eval inside methods.
+    // In eval called from global or regular function code (no [[HomeObject]]), super is a SyntaxError.
+    bool in_method_or_eval_in_method = options_.in_class_method ||
+        (options_.in_eval_context && options_.eval_in_method_code);
+    if (!in_method_or_eval_in_method) {
         add_error("SyntaxError: 'super' keyword unexpected here");
         advance();
         return nullptr;
@@ -9246,23 +9253,28 @@ std::unique_ptr<ASTNode> Parser::parse_jsx_attribute() {
 }
 
 void Parser::check_for_use_strict_directive() {
-    while (!at_end() && current_token().get_type() == TokenType::STRING) {
-        std::string str_value = current_token().get_value();
-        
+    // Lookahead-only scan: detect 'use strict' without consuming tokens.
+    // Consuming tokens here would cause string-literal expression statements
+    // (e.g. eval("'1'")) to disappear from the parse tree.
+    auto skip_trivia = [&](size_t i) {
+        while (i < tokens_.size() &&
+               (tokens_[i].get_type() == TokenType::NEWLINE ||
+                tokens_[i].get_type() == TokenType::WHITESPACE ||
+                tokens_[i].get_type() == TokenType::COMMENT)) {
+            i++;
+        }
+        return i;
+    };
+    size_t idx = skip_trivia(current_token_index_);
+    while (idx < tokens_.size() && tokens_[idx].get_type() == TokenType::STRING) {
+        std::string str_value = tokens_[idx].get_value();
+        idx = skip_trivia(idx + 1);
+        if (idx < tokens_.size() && tokens_[idx].get_type() == TokenType::SEMICOLON) {
+            idx = skip_trivia(idx + 1);
+        }
         if (str_value == "use strict") {
             options_.strict_mode = true;
-            advance();
-            
-            if (match(TokenType::SEMICOLON)) {
-                advance();
-            }
-            
-            continue;
-        }
-        
-        advance();
-        if (match(TokenType::SEMICOLON)) {
-            advance();
+            return;
         }
     }
 }

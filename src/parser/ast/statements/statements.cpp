@@ -309,7 +309,15 @@ Value VariableDeclaration::evaluate(Context& ctx) {
             if (kind == VariableDeclarator::Kind::VAR) {
                 success = ctx.create_var_binding(name, init_value, mutable_binding);
             } else {
-                success = ctx.create_lexical_binding(name, init_value, mutable_binding);
+                // If a pre-instantiated TDZ binding exists, initialize it instead of failing
+                Environment* lex_env = ctx.get_lexical_environment();
+                if (lex_env && lex_env->has_own_binding(name) && !lex_env->is_initialized_binding(name)) {
+                    lex_env->initialize_binding(name, init_value);
+                    lex_env->mark_lexical_declaration(name);
+                    success = true;
+                } else {
+                    success = ctx.create_lexical_binding(name, init_value, mutable_binding);
+                }
             }
 
             if (!success) {
@@ -902,11 +910,6 @@ Value ForInStatement::evaluate(Context& ctx) {
         keys.erase(std::remove_if(keys.begin(), keys.end(), [](const std::string& k) {
             return k.size() >= 2 && k[0] == '_' && k[1] == '_';
         }), keys.end());
-
-        if (keys.size() > 50) {
-            ctx.throw_exception(Value(std::string("For...in: Object has too many properties (>50)")));
-            return Value();
-        }
 
         uint32_t iteration_count = 0;
         const uint32_t MAX_ITERATIONS = 1000000000;
