@@ -107,7 +107,8 @@ Lexer::Lexer(const std::string& source, const LexerOptions& options)
 TokenSequence Lexer::tokenize() {
     std::vector<Token> tokens;
     bool strict_mode_detected = false;
-    
+    tokens_so_far_ = &tokens;
+
     while (!at_end()) {
         Token token = next_token();
 
@@ -764,6 +765,18 @@ Token Lexer::read_multi_line_comment() {
             advance();
             return create_token(TokenType::COMMENT, value, start);
         }
+        // U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
+        // must be treated as line terminators
+        if ((unsigned char)current_char() == 0xE2 &&
+            position_ + 2 < source_.length() &&
+            (unsigned char)source_[position_ + 1] == 0x80 &&
+            ((unsigned char)source_[position_ + 2] == 0xA8 ||
+             (unsigned char)source_[position_ + 2] == 0xA9)) {
+            value += advance(); value += advance(); value += advance();
+            current_position_.line++;
+            current_position_.column = 1;
+            continue;
+        }
         value += advance();
     }
 
@@ -1112,9 +1125,96 @@ bool Lexer::is_regex_context() const {
         case TokenType::DELETE:
         case TokenType::IN:
         case TokenType::INSTANCEOF:
+        case TokenType::YIELD:
+        case TokenType::AWAIT:
+        case TokenType::CASE:
+        case TokenType::ELSE:
 
         case TokenType::EOF_TOKEN:
             return true;
+
+        case TokenType::RIGHT_BRACE:
+            // Scan backward to find the matching { and determine if it's a block body
+            if (tokens_so_far_ == nullptr) return false;
+            {
+                const auto& toks = *tokens_so_far_;
+                int depth = 0;
+                int match_idx = -1;
+                for (int i = (int)toks.size() - 1; i >= 0; i--) {
+                    TokenType tt = toks[i].get_type();
+                    if (tt == TokenType::NEWLINE) continue;
+                    if (tt == TokenType::RIGHT_BRACE) { depth++; }
+                    else if (tt == TokenType::LEFT_BRACE) {
+                        if (--depth == 0) { match_idx = i; break; }
+                    }
+                }
+                if (match_idx < 0) return true;
+
+                // Find the first non-NEWLINE token before the matching {
+                int prev_idx = match_idx - 1;
+                while (prev_idx >= 0 && toks[prev_idx].get_type() == TokenType::NEWLINE) prev_idx--;
+                if (prev_idx < 0) return true; // { at very start = standalone block
+
+                TokenType prev = toks[prev_idx].get_type();
+                switch (prev) {
+                    case TokenType::DO:
+                    case TokenType::ELSE:
+                    case TokenType::TRY:
+                    case TokenType::FINALLY:
+                    case TokenType::COLON: // labeled block
+                        return true;
+                    case TokenType::FUNCTION:
+                    case TokenType::CLASS:
+                        return true; // anonymous function/class body
+                    case TokenType::ARROW:
+                        return false; // arrow function body is expression context
+                    case TokenType::RIGHT_PAREN: {
+                        // Find matching ( and look at what precedes it
+                        int d2 = 0;
+                        int pi = -1;
+                        for (int i = prev_idx; i >= 0; i--) {
+                            TokenType tt = toks[i].get_type();
+                            if (tt == TokenType::NEWLINE) continue;
+                            if (tt == TokenType::RIGHT_PAREN) d2++;
+                            else if (tt == TokenType::LEFT_PAREN) {
+                                if (--d2 == 0) { pi = i; break; }
+                            }
+                        }
+                        if (pi < 0) return true;
+                        // Scan backward from pi, skipping identifiers/*/async to find keyword
+                        for (int i = pi - 1; i >= 0; i--) {
+                            TokenType tt = toks[i].get_type();
+                            if (tt == TokenType::NEWLINE) continue;
+                            if (tt == TokenType::FUNCTION || tt == TokenType::CLASS ||
+                                tt == TokenType::IF || tt == TokenType::WHILE ||
+                                tt == TokenType::FOR || tt == TokenType::WITH ||
+                                tt == TokenType::CATCH || tt == TokenType::SWITCH)
+                                return true;
+                            if (tt == TokenType::IDENTIFIER || tt == TokenType::MULTIPLY ||
+                                tt == TokenType::ASYNC)
+                                continue;
+                            break;
+                        }
+                        return false;
+                    }
+                    case TokenType::IDENTIFIER: {
+                        // Could be class/function name: class Foo {}, function foo {}
+                        if (prev_idx >= 1) {
+                            int pp = prev_idx - 1;
+                            while (pp >= 0 && toks[pp].get_type() == TokenType::NEWLINE) pp--;
+                            if (pp >= 0) {
+                                TokenType tt = toks[pp].get_type();
+                                if (tt == TokenType::FUNCTION || tt == TokenType::CLASS ||
+                                    tt == TokenType::EXTENDS)
+                                    return true;
+                            }
+                        }
+                        return false;
+                    }
+                    default:
+                        return false;
+                }
+            }
 
         default:
             return false;
