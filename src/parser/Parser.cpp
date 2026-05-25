@@ -397,10 +397,12 @@ std::unique_ptr<ASTNode> Parser::parse_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
+    last_expr_was_parenthesized_ = false;
+
     if (match(TokenType::IDENTIFIER) && peek_token(1).get_type() == TokenType::ARROW) {
         return parse_arrow_function();
     }
-    
+
     if (match(TokenType::LEFT_PAREN)) {
         size_t saved_pos = current_token_index_;
         if (try_parse_arrow_function_params()) {
@@ -409,7 +411,7 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
         }
         current_token_index_ = saved_pos;
     }
-    
+
     auto left = parse_conditional_expression();
     if (!left) return nullptr;
 
@@ -429,7 +431,11 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
     }
 
     if (is_assignment_operator(current_token().get_type())) {
-        if (!is_valid_assignment_target(left.get())) {
+        bool lhs_was_paren = last_expr_was_parenthesized_;
+        last_expr_was_parenthesized_ = false;
+        // ObjectLiteral in parenthesized form ({}) = x → ATT = invalid per spec
+        bool lhs_invalid = lhs_was_paren && left->get_type() == ASTNode::Type::OBJECT_LITERAL;
+        if (lhs_invalid || !is_valid_assignment_target(left.get())) {
             add_error("SyntaxError: Invalid left-hand side in assignment");
             return nullptr;
         }
@@ -2180,6 +2186,7 @@ std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
         return expr;
     }
 
+    last_expr_was_parenthesized_ = true;
     return expr;
 }
 
@@ -2527,11 +2534,9 @@ bool Parser::is_valid_assignment_target(ASTNode* node) const {
         case ASTNode::Type::YIELD_EXPRESSION:
             return false;
         case ASTNode::Type::OBJECT_LITERAL: {
-            auto* obj = static_cast<const ObjectLiteral*>(node);
-            // Empty object literal {} is never a valid assignment target.
-            // Non-empty ({a, b} = x) is valid destructuring.
-            // Empty {} inside array element ([{} = default]) is valid (binding pattern).
-            return options_.in_array_element || !obj->get_properties().empty();
+            // Any ObjectLiteral is a valid assignment target via the cover grammar (destructuring).
+            // The parenthesized case ({}) = x is handled at the call site.
+            return true;
         }
         case ASTNode::Type::ARRAY_LITERAL:
             return true;
@@ -4296,11 +4301,21 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         is_generator = true;
     }
     
-    if (current_token().get_type() != TokenType::IDENTIFIER) {
-        add_error("Expected function name");
-        return nullptr;
+    {
+        TokenType ct = current_token().get_type();
+        bool name_ok = ct == TokenType::IDENTIFIER;
+        if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode && !is_generator)
+            name_ok = true;
+        if (!name_ok && ct == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block)
+            name_ok = true;
+        if (!name_ok && ct == TokenType::LET && !options_.strict_mode)
+            name_ok = true;
+        if (!name_ok) {
+            add_error("Expected function name");
+            return nullptr;
+        }
     }
-    
+
     std::string fn_name = current_token().get_value();
     auto id = std::make_unique<Identifier>(fn_name,
                                          current_token().get_start(), current_token().get_end());
@@ -4648,6 +4663,23 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_constructor = false;
 
+    // Pre-scan to collect declared private names before parsing body (for nested class access)
+    {
+        std::unordered_set<std::string> pre_declared;
+        size_t depth = 1;
+        for (size_t i = current_token_index_; i < tokens_.size() && depth > 0; i++) {
+            auto tt = tokens_[i].get_type();
+            if (tt == TokenType::LEFT_BRACE) depth++;
+            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
+            else if (tt == TokenType::HASH && depth == 1 &&
+                     i + 1 < tokens_.size() && tokens_[i+1].get_type() == TokenType::IDENTIFIER &&
+                     tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
+                pre_declared.insert("#" + tokens_[i+1].get_value());
+            }
+        }
+        private_scope_stack_.push_back(std::move(pre_declared));
+    }
+
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::SEMICOLON) {
             advance();
@@ -4791,6 +4823,121 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
         }
     }
 
+    // AllPrivateNamesValid: every #name used inside the class body must be declared
+    // (including names from enclosing class scopes)
+    {
+        std::unordered_set<std::string> declared;
+        for (const auto& stmt : statements) {
+            if (!stmt) continue;
+            ASTNode* key_node = nullptr;
+            bool computed = false;
+            if (stmt->get_type() == ASTNode::Type::METHOD_DEFINITION) {
+                auto* md = static_cast<MethodDefinition*>(stmt.get());
+                key_node = md->get_key(); computed = md->is_computed();
+            } else if (stmt->get_type() == ASTNode::Type::CLASS_FIELD) {
+                auto* cf = static_cast<ClassField*>(stmt.get());
+                key_node = cf->get_key(); computed = cf->is_computed();
+            }
+            if (!computed && key_node && key_node->get_type() == ASTNode::Type::IDENTIFIER) {
+                const auto& n = static_cast<Identifier*>(key_node)->get_name();
+                if (!n.empty() && n[0] == '#') declared.insert(n);
+            }
+        }
+        // Include private names from all enclosing scopes (stack already has this class's names from pre-scan)
+        std::unordered_set<std::string> all_valid = declared;
+        for (const auto& scope : private_scope_stack_)
+            all_valid.insert(scope.begin(), scope.end());
+
+        std::string bad_name;
+        std::function<void(const ASTNode*)> chk = [&](const ASTNode* nd) {
+            if (!nd || !bad_name.empty()) return;
+            using T = ASTNode::Type;
+            switch (nd->get_type()) {
+                case T::CLASS_DECLARATION: return; // nested class has its own private scope
+                case T::MEMBER_EXPRESSION: {
+                    auto* me = static_cast<const MemberExpression*>(nd);
+                    if (!me->is_computed()) {
+                        auto* p = me->get_property();
+                        if (p && p->get_type() == T::IDENTIFIER) {
+                            const auto& nm = static_cast<const Identifier*>(p)->get_name();
+                            if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; }
+                        }
+                    }
+                    chk(me->get_object()); if (me->is_computed()) chk(me->get_property()); break;
+                }
+                case T::OPTIONAL_CHAINING_EXPRESSION: {
+                    auto* oc = static_cast<const OptionalChainingExpression*>(nd);
+                    if (!oc->is_computed()) {
+                        auto* p = oc->get_property();
+                        if (p && p->get_type() == T::IDENTIFIER) {
+                            const auto& nm = static_cast<const Identifier*>(p)->get_name();
+                            if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; }
+                        }
+                    }
+                    chk(oc->get_object()); if (oc->is_computed()) chk(oc->get_property()); break;
+                }
+                case T::BINARY_EXPRESSION: {
+                    auto* be = static_cast<const BinaryExpression*>(nd);
+                    if (be->get_operator() == BinaryExpression::Operator::IN) {
+                        auto* lft = be->get_left();
+                        if (lft && lft->get_type() == T::IDENTIFIER) {
+                            const auto& nm = static_cast<const Identifier*>(lft)->get_name();
+                            if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; }
+                        }
+                    }
+                    chk(be->get_left()); chk(be->get_right()); break;
+                }
+                case T::UNARY_EXPRESSION: chk(static_cast<const UnaryExpression*>(nd)->get_operand()); break;
+                case T::ASSIGNMENT_EXPRESSION: { auto* ae = static_cast<const AssignmentExpression*>(nd); chk(ae->get_left()); chk(ae->get_right()); break; }
+                case T::CONDITIONAL_EXPRESSION: { auto* ce = static_cast<const ConditionalExpression*>(nd); chk(ce->get_test()); chk(ce->get_consequent()); chk(ce->get_alternate()); break; }
+                case T::CALL_EXPRESSION: { auto* ce = static_cast<const CallExpression*>(nd); chk(ce->get_callee()); for (const auto& a : ce->get_arguments()) chk(a.get()); break; }
+                case T::NEW_EXPRESSION: { auto* ne = static_cast<const NewExpression*>(nd); chk(ne->get_constructor()); for (const auto& a : ne->get_arguments()) chk(a.get()); break; }
+                case T::AWAIT_EXPRESSION: chk(static_cast<const AwaitExpression*>(nd)->get_argument()); break;
+                case T::YIELD_EXPRESSION: chk(static_cast<const YieldExpression*>(nd)->get_argument()); break;
+                case T::SPREAD_ELEMENT: chk(static_cast<const SpreadElement*>(nd)->get_argument()); break;
+                case T::NULLISH_COALESCING_EXPRESSION: { auto* nc = static_cast<const NullishCoalescingExpression*>(nd); chk(nc->get_left()); chk(nc->get_right()); break; }
+                case T::ARRAY_LITERAL: for (const auto& e : static_cast<const ArrayLiteral*>(nd)->get_elements()) chk(e.get()); break;
+                case T::OBJECT_LITERAL: for (const auto& pr : static_cast<const ObjectLiteral*>(nd)->get_properties()) { if (pr->computed) chk(pr->key.get()); chk(pr->value.get()); } break;
+                case T::FUNCTION_EXPRESSION: { auto* fe = static_cast<const FunctionExpression*>(nd); chk(fe->get_body()); for (const auto& p : fe->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::ARROW_FUNCTION_EXPRESSION: { auto* af = static_cast<const ArrowFunctionExpression*>(nd); chk(af->get_body()); for (const auto& p : af->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::ASYNC_FUNCTION_EXPRESSION: { auto* af = static_cast<const AsyncFunctionExpression*>(nd); chk(af->get_body()); for (const auto& p : af->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::FUNCTION_DECLARATION: { auto* fd = static_cast<const FunctionDeclaration*>(nd); chk(fd->get_body()); for (const auto& p : fd->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::EXPRESSION_STATEMENT: chk(static_cast<const ExpressionStatement*>(nd)->get_expression()); break;
+                case T::BLOCK_STATEMENT: for (const auto& s : static_cast<const BlockStatement*>(nd)->get_statements()) chk(s.get()); break;
+                case T::RETURN_STATEMENT: chk(static_cast<const ReturnStatement*>(nd)->get_argument()); break;
+                case T::THROW_STATEMENT: chk(static_cast<const ThrowStatement*>(nd)->get_expression()); break;
+                case T::IF_STATEMENT: { auto* is = static_cast<const IfStatement*>(nd); chk(is->get_test()); chk(is->get_consequent()); if (is->has_alternate()) chk(is->get_alternate()); break; }
+                case T::FOR_STATEMENT: { auto* fs = static_cast<const ForStatement*>(nd); chk(fs->get_init()); chk(fs->get_test()); chk(fs->get_update()); chk(fs->get_body()); break; }
+                case T::FOR_IN_STATEMENT: { auto* fi = static_cast<const ForInStatement*>(nd); chk(fi->get_left()); chk(fi->get_right()); chk(fi->get_body()); break; }
+                case T::FOR_OF_STATEMENT: { auto* fo = static_cast<const ForOfStatement*>(nd); chk(fo->get_left()); chk(fo->get_right()); chk(fo->get_body()); break; }
+                case T::WHILE_STATEMENT: { auto* ws = static_cast<const WhileStatement*>(nd); chk(ws->get_test()); chk(ws->get_body()); break; }
+                case T::DO_WHILE_STATEMENT: { auto* dw = static_cast<const DoWhileStatement*>(nd); chk(dw->get_body()); chk(dw->get_test()); break; }
+                case T::WITH_STATEMENT: { auto* wi = static_cast<const WithStatement*>(nd); chk(wi->get_object()); chk(wi->get_body()); break; }
+                case T::LABELED_STATEMENT: chk(static_cast<const LabeledStatement*>(nd)->get_statement()); break;
+                case T::TRY_STATEMENT: { auto* ts = static_cast<const TryStatement*>(nd); chk(ts->get_try_block()); chk(ts->get_catch_clause()); chk(ts->get_finally_block()); break; }
+                case T::CATCH_CLAUSE: chk(static_cast<const CatchClause*>(nd)->get_body()); break;
+                case T::SWITCH_STATEMENT: { auto* ss = static_cast<const SwitchStatement*>(nd); chk(ss->get_discriminant()); for (const auto& c : ss->get_cases()) chk(c.get()); break; }
+                case T::CASE_CLAUSE: { auto* cc = static_cast<const CaseClause*>(nd); chk(cc->get_test()); for (const auto& s : cc->get_consequent()) chk(s.get()); break; }
+                case T::VARIABLE_DECLARATION: for (const auto& d : static_cast<const VariableDeclaration*>(nd)->get_declarations()) chk(d->get_init()); break;
+                case T::METHOD_DEFINITION: { auto* md = static_cast<const MethodDefinition*>(nd); if (md->is_computed()) chk(md->get_key()); chk(md->get_value()); break; }
+                case T::CLASS_FIELD: { auto* cf = static_cast<const ClassField*>(nd); if (cf->is_computed()) chk(cf->get_key()); chk(cf->get_value()); break; }
+                case T::CLASS_STATIC_BLOCK: chk(static_cast<const ClassStaticBlock*>(nd)->get_body()); break;
+                case T::USING_DECLARATION: for (const auto& b : static_cast<const UsingDeclaration*>(nd)->get_bindings()) chk(b.initializer.get()); break;
+                default: break;
+            }
+        };
+
+        for (const auto& stmt : statements) {
+            chk(stmt.get());
+            if (!bad_name.empty()) {
+                private_scope_stack_.pop_back();
+                add_error("SyntaxError: Private name '" + bad_name + "' is not defined");
+                return nullptr;
+            }
+        }
+        private_scope_stack_.pop_back();
+    }
+
     advance();
 
     options_.class_has_heritage = saved_chh;
@@ -4880,6 +5027,23 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     options_.class_depth++;
     std::vector<std::unique_ptr<ASTNode>> statements;
     bool seen_ctor2 = false;
+
+    // Pre-scan to collect declared private names before parsing body (for nested class access)
+    {
+        std::unordered_set<std::string> pre_declared;
+        size_t depth = 1;
+        for (size_t i = current_token_index_; i < tokens_.size() && depth > 0; i++) {
+            auto tt = tokens_[i].get_type();
+            if (tt == TokenType::LEFT_BRACE) depth++;
+            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
+            else if (tt == TokenType::HASH && depth == 1 &&
+                     i + 1 < tokens_.size() && tokens_[i+1].get_type() == TokenType::IDENTIFIER &&
+                     tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
+                pre_declared.insert("#" + tokens_[i+1].get_value());
+            }
+        }
+        private_scope_stack_.push_back(std::move(pre_declared));
+    }
 
     while (current_token().get_type() != TokenType::RIGHT_BRACE && !at_end()) {
         if (current_token().get_type() == TokenType::SEMICOLON) {
@@ -5021,6 +5185,78 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
                 priv_seen2.erase(it);
             }
         }
+    }
+
+    // AllPrivateNamesValid check 
+    {
+        std::unordered_set<std::string> declared;
+        for (const auto& stmt : statements) {
+            if (!stmt) continue;
+            ASTNode* key_node = nullptr; bool computed = false;
+            if (stmt->get_type() == ASTNode::Type::METHOD_DEFINITION) { auto* md = static_cast<MethodDefinition*>(stmt.get()); key_node = md->get_key(); computed = md->is_computed(); }
+            else if (stmt->get_type() == ASTNode::Type::CLASS_FIELD) { auto* cf = static_cast<ClassField*>(stmt.get()); key_node = cf->get_key(); computed = cf->is_computed(); }
+            if (!computed && key_node && key_node->get_type() == ASTNode::Type::IDENTIFIER) {
+                const auto& n = static_cast<Identifier*>(key_node)->get_name();
+                if (!n.empty() && n[0] == '#') declared.insert(n);
+            }
+        }
+        // Include names from all enclosing scopes (stack already has this class's names from pre-scan)
+        std::unordered_set<std::string> all_valid = declared;
+        for (const auto& scope : private_scope_stack_)
+            all_valid.insert(scope.begin(), scope.end());
+        std::string bad_name;
+        std::function<void(const ASTNode*)> chk = [&](const ASTNode* nd) {
+            if (!nd || !bad_name.empty()) return;
+            using T = ASTNode::Type;
+            switch (nd->get_type()) {
+                case T::CLASS_DECLARATION: return;
+                case T::MEMBER_EXPRESSION: { auto* me = static_cast<const MemberExpression*>(nd); if (!me->is_computed()) { auto* p = me->get_property(); if (p && p->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(p)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(me->get_object()); if (me->is_computed()) chk(me->get_property()); break; }
+                case T::OPTIONAL_CHAINING_EXPRESSION: { auto* oc = static_cast<const OptionalChainingExpression*>(nd); if (!oc->is_computed()) { auto* p = oc->get_property(); if (p && p->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(p)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(oc->get_object()); if (oc->is_computed()) chk(oc->get_property()); break; }
+                case T::BINARY_EXPRESSION: { auto* be = static_cast<const BinaryExpression*>(nd); if (be->get_operator() == BinaryExpression::Operator::IN) { auto* lft = be->get_left(); if (lft && lft->get_type() == T::IDENTIFIER) { const auto& nm = static_cast<const Identifier*>(lft)->get_name(); if (!nm.empty() && nm[0] == '#' && !all_valid.count(nm)) { bad_name = nm; return; } } } chk(be->get_left()); chk(be->get_right()); break; }
+                case T::UNARY_EXPRESSION: chk(static_cast<const UnaryExpression*>(nd)->get_operand()); break;
+                case T::ASSIGNMENT_EXPRESSION: { auto* ae = static_cast<const AssignmentExpression*>(nd); chk(ae->get_left()); chk(ae->get_right()); break; }
+                case T::CONDITIONAL_EXPRESSION: { auto* ce = static_cast<const ConditionalExpression*>(nd); chk(ce->get_test()); chk(ce->get_consequent()); chk(ce->get_alternate()); break; }
+                case T::CALL_EXPRESSION: { auto* ce = static_cast<const CallExpression*>(nd); chk(ce->get_callee()); for (const auto& a : ce->get_arguments()) chk(a.get()); break; }
+                case T::NEW_EXPRESSION: { auto* ne = static_cast<const NewExpression*>(nd); chk(ne->get_constructor()); for (const auto& a : ne->get_arguments()) chk(a.get()); break; }
+                case T::AWAIT_EXPRESSION: chk(static_cast<const AwaitExpression*>(nd)->get_argument()); break;
+                case T::YIELD_EXPRESSION: chk(static_cast<const YieldExpression*>(nd)->get_argument()); break;
+                case T::SPREAD_ELEMENT: chk(static_cast<const SpreadElement*>(nd)->get_argument()); break;
+                case T::NULLISH_COALESCING_EXPRESSION: { auto* nc = static_cast<const NullishCoalescingExpression*>(nd); chk(nc->get_left()); chk(nc->get_right()); break; }
+                case T::ARRAY_LITERAL: for (const auto& e : static_cast<const ArrayLiteral*>(nd)->get_elements()) chk(e.get()); break;
+                case T::OBJECT_LITERAL: for (const auto& pr : static_cast<const ObjectLiteral*>(nd)->get_properties()) { if (pr->computed) chk(pr->key.get()); chk(pr->value.get()); } break;
+                case T::FUNCTION_EXPRESSION: { auto* fe = static_cast<const FunctionExpression*>(nd); chk(fe->get_body()); for (const auto& p : fe->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::ARROW_FUNCTION_EXPRESSION: { auto* af = static_cast<const ArrowFunctionExpression*>(nd); chk(af->get_body()); for (const auto& p : af->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::ASYNC_FUNCTION_EXPRESSION: { auto* af = static_cast<const AsyncFunctionExpression*>(nd); chk(af->get_body()); for (const auto& p : af->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::FUNCTION_DECLARATION: { auto* fd = static_cast<const FunctionDeclaration*>(nd); chk(fd->get_body()); for (const auto& p : fd->get_params()) if (p->has_default()) chk(p->get_default_value()); break; }
+                case T::EXPRESSION_STATEMENT: chk(static_cast<const ExpressionStatement*>(nd)->get_expression()); break;
+                case T::BLOCK_STATEMENT: for (const auto& s : static_cast<const BlockStatement*>(nd)->get_statements()) chk(s.get()); break;
+                case T::RETURN_STATEMENT: chk(static_cast<const ReturnStatement*>(nd)->get_argument()); break;
+                case T::THROW_STATEMENT: chk(static_cast<const ThrowStatement*>(nd)->get_expression()); break;
+                case T::IF_STATEMENT: { auto* is = static_cast<const IfStatement*>(nd); chk(is->get_test()); chk(is->get_consequent()); if (is->has_alternate()) chk(is->get_alternate()); break; }
+                case T::FOR_STATEMENT: { auto* fs = static_cast<const ForStatement*>(nd); chk(fs->get_init()); chk(fs->get_test()); chk(fs->get_update()); chk(fs->get_body()); break; }
+                case T::FOR_IN_STATEMENT: { auto* fi = static_cast<const ForInStatement*>(nd); chk(fi->get_left()); chk(fi->get_right()); chk(fi->get_body()); break; }
+                case T::FOR_OF_STATEMENT: { auto* fo = static_cast<const ForOfStatement*>(nd); chk(fo->get_left()); chk(fo->get_right()); chk(fo->get_body()); break; }
+                case T::WHILE_STATEMENT: { auto* ws = static_cast<const WhileStatement*>(nd); chk(ws->get_test()); chk(ws->get_body()); break; }
+                case T::DO_WHILE_STATEMENT: { auto* dw = static_cast<const DoWhileStatement*>(nd); chk(dw->get_body()); chk(dw->get_test()); break; }
+                case T::WITH_STATEMENT: { auto* wi = static_cast<const WithStatement*>(nd); chk(wi->get_object()); chk(wi->get_body()); break; }
+                case T::LABELED_STATEMENT: chk(static_cast<const LabeledStatement*>(nd)->get_statement()); break;
+                case T::TRY_STATEMENT: { auto* ts = static_cast<const TryStatement*>(nd); chk(ts->get_try_block()); chk(ts->get_catch_clause()); chk(ts->get_finally_block()); break; }
+                case T::CATCH_CLAUSE: chk(static_cast<const CatchClause*>(nd)->get_body()); break;
+                case T::SWITCH_STATEMENT: { auto* ss = static_cast<const SwitchStatement*>(nd); chk(ss->get_discriminant()); for (const auto& c : ss->get_cases()) chk(c.get()); break; }
+                case T::CASE_CLAUSE: { auto* cc = static_cast<const CaseClause*>(nd); chk(cc->get_test()); for (const auto& s : cc->get_consequent()) chk(s.get()); break; }
+                case T::VARIABLE_DECLARATION: for (const auto& d : static_cast<const VariableDeclaration*>(nd)->get_declarations()) chk(d->get_init()); break;
+                case T::METHOD_DEFINITION: { auto* md = static_cast<const MethodDefinition*>(nd); if (md->is_computed()) chk(md->get_key()); chk(md->get_value()); break; }
+                case T::CLASS_FIELD: { auto* cf = static_cast<const ClassField*>(nd); if (cf->is_computed()) chk(cf->get_key()); chk(cf->get_value()); break; }
+                case T::CLASS_STATIC_BLOCK: chk(static_cast<const ClassStaticBlock*>(nd)->get_body()); break;
+                case T::USING_DECLARATION: for (const auto& b : static_cast<const UsingDeclaration*>(nd)->get_bindings()) chk(b.initializer.get()); break;
+                default: break;
+            }
+        };
+        for (const auto& stmt : statements) {
+            chk(stmt.get());
+            if (!bad_name.empty()) { private_scope_stack_.pop_back(); add_error("SyntaxError: Private name '" + bad_name + "' is not defined"); return nullptr; }
+        }
+        private_scope_stack_.pop_back();
     }
 
     advance();
@@ -6166,11 +6402,21 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         is_generator = true;
     }
 
-    if (current_token().get_type() != TokenType::IDENTIFIER) {
-        add_error("Expected function name after 'async function'");
-        return nullptr;
+    {
+        TokenType ct = current_token().get_type();
+        bool name_ok = ct == TokenType::IDENTIFIER;
+        if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode && !is_generator)
+            name_ok = true;
+        if (!name_ok && ct == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block)
+            name_ok = true;
+        if (!name_ok && ct == TokenType::LET && !options_.strict_mode)
+            name_ok = true;
+        if (!name_ok) {
+            add_error("Expected function name after 'async function'");
+            return nullptr;
+        }
     }
-    
+
     std::string af_name = current_token().get_value();
     auto id = std::make_unique<Identifier>(af_name,
                                         current_token().get_start(), current_token().get_end());
