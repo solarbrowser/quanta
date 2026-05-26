@@ -7,6 +7,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Async.h"
@@ -1947,6 +1948,13 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             }
         }
         
+        if (!method_name.empty() && method_name[0] == '#') {
+            if (!private_brand_check(ctx, obj, method_name)) {
+                ctx.throw_type_error("Cannot read private member " + method_name + " from an object whose class did not declare it");
+                return Value();
+            }
+        }
+
         Value method_value = obj->get_property(method_name);
         if (method_value.is_function()) {
             std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);

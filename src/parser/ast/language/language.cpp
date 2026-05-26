@@ -276,6 +276,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     // Getter/setter functions must not have [[Construct]] or prototype.
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
                         instance_method->set_function_prototype(nullptr);
+                    instance_method->set_property("__private_class_brand__", Value(prototype.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         // Find existing deferred entry or create new one
@@ -443,6 +444,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_is_strict(true);
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
                         static_method->set_function_prototype(nullptr);
+                    static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);

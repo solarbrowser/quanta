@@ -7,6 +7,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Async.h"
@@ -38,6 +39,46 @@
 #endif
 
 namespace Quanta {
+
+static bool do_brand_check(Object* obj, Object* expected) {
+    if (obj->is_function() && static_cast<Function*>(obj)->is_class_constructor()) {
+        return obj == expected;
+    }
+    Object* expected_proto;
+    if (expected->is_function() && static_cast<Function*>(expected)->is_class_constructor()) {
+        Value pv = static_cast<Function*>(expected)->get_property("prototype");
+        expected_proto = pv.is_object() ? pv.as_object() : nullptr;
+    } else {
+        expected_proto = expected;
+    }
+    if (!expected_proto) return false;
+    Object* proto = obj;
+    while (proto) {
+        if (proto == expected_proto) return true;
+        proto = proto->get_prototype();
+    }
+    return false;
+}
+
+bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name) {
+    (void)ctx;
+    CallStack& cs = CallStack::instance();
+    if (!cs.is_empty() && cs.top().function_ptr) {
+        Value brand_val = cs.top().function_ptr->get_property("__private_class_brand__");
+        if (brand_val.is_object() || brand_val.is_function()) {
+            Object* expected = brand_val.is_function()
+                ? static_cast<Object*>(brand_val.as_function())
+                : brand_val.as_object();
+            return do_brand_check(obj, expected);
+        }
+    }
+    bool found = obj->has_private_slot(prop_name);
+    if (!found) {
+        Object* p = obj->get_prototype();
+        while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+    }
+    return found;
+}
 
 std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_ptr<ASTNode>>& arguments, Context& ctx);
 
@@ -150,17 +191,8 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(static_cast<double>(obj->get_length()));
             }
 
-            // Private field brand check: throw if not found on obj or prototype chain
             if (!prop_name.empty() && prop_name[0] == '#') {
-                bool found = obj->has_private_slot(prop_name);
-                if (!found) {
-                    Object* proto = obj->get_prototype();
-                    while (proto && !found) {
-                        if (proto->has_private_slot(prop_name)) found = true;
-                        proto = proto->get_prototype();
-                    }
-                }
-                if (!found) {
+                if (!private_brand_check(ctx, obj, prop_name)) {
                     ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
                     return Value();
                 }
