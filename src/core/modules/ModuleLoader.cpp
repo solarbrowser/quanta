@@ -10,6 +10,7 @@
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
 #include "quanta/lexer/Lexer.h"
+#include "quanta/core/runtime/Object.h"
 #include <fstream>
 #include <filesystem>
 #include <iostream>
@@ -210,7 +211,20 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
     
     try {
         auto module_context = std::make_unique<Context>(engine_);
-        
+
+        // Share globalThis with the engine's global context so that cross-module
+        // globalThis.xxx assignments are visible to the main script and vice versa.
+        if (engine_ && engine_->get_global_context()) {
+            Object* shared_global = engine_->get_global_context()->get_global_object();
+            if (shared_global && module_context->get_global_object()) {
+                PropertyDescriptor desc(Value(shared_global),
+                    static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                module_context->get_global_object()->set_property_descriptor("globalThis", desc);
+                module_context->get_global_object()->set_property_descriptor("global", desc);
+                module_context->get_global_object()->set_property_descriptor("window", desc);
+            }
+        }
+
         auto module_obj = std::make_shared<Object>();
         module_context->create_binding("module", Value(module_obj.get()));
         auto exports_obj = std::make_shared<Object>();

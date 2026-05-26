@@ -131,12 +131,12 @@ public:
     bool set_element(uint32_t index, const Value& value);
     bool delete_element(uint32_t index);
     
-    std::vector<std::string> get_own_property_keys() const;
-    std::vector<std::string> get_enumerable_keys() const;
+    virtual std::vector<std::string> get_own_property_keys() const;
+    virtual std::vector<std::string> get_enumerable_keys() const;
     std::vector<uint32_t> get_element_indices() const;
     
     PropertyDescriptor get_property_descriptor(const std::string& key) const;
-    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
+    virtual bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc);
     
     bool is_extensible() const;
     void prevent_extensions();

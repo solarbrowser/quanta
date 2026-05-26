@@ -1906,6 +1906,90 @@ std::unique_ptr<ASTNode> ImportSpecifier::clone() const {
     return std::make_unique<ImportSpecifier>(imported_name_, local_name_, start_, end_);
 }
 
+// Deferred namespace object: evaluates the module lazily on first non-symbol-like property access.
+// Per spec IsSymbolLikeNamespaceKey: Symbol keys and "then" do NOT trigger evaluation.
+class DeferredNamespaceObject : public Object {
+    ModuleLoader* loader_;
+    std::string module_source_;
+    std::string from_path_;
+    bool evaluated_ = false;
+
+    void ensure_evaluated() {
+        if (evaluated_) return;
+        evaluated_ = true;
+        Module* mod = loader_->load_module(module_source_, from_path_);
+        if (!mod) return;
+        for (const auto& name : mod->get_export_names())
+            Object::set_property(name, mod->get_export(name));
+    }
+
+    static bool is_symbol_like(const std::string& key) {
+        // Per spec: Symbol keys and "then" do not trigger deferred evaluation.
+        // Symbol keys in this engine are stored as "@@sym:N" or "Symbol.xxx".
+        if (key == "then") return true;
+        if (key.size() >= 5 && key.substr(0, 5) == "@@sym") return true;
+        if (key.size() >= 7 && key.substr(0, 7) == "Symbol.") return true;
+        return false;
+    }
+
+public:
+    DeferredNamespaceObject(ModuleLoader* loader, const std::string& src, const std::string& from)
+        : loader_(loader), module_source_(src), from_path_(from) {}
+
+    Value get_property(const std::string& key) const override {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_property(key);
+    }
+
+    bool has_own_property(const std::string& key) const override {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::has_own_property(key);
+    }
+
+    bool has_property(const std::string& key) const override {
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::has_property(key);
+    }
+
+    bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override {
+        // Spec: [[Set]] on a namespace object always returns false without triggering evaluation.
+        return false;
+    }
+
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) override {
+        // Spec: [[DefineOwnProperty]] on a namespace object triggers evaluation for non-symbol-like keys.
+        if (!is_symbol_like(key))
+            ensure_evaluated();
+        return Object::set_property_descriptor(key, desc);
+    }
+
+    PropertyDescriptor get_property_descriptor(const std::string& key) const override {
+        // Spec: [[GetOwnProperty]] on a deferred namespace object triggers evaluation for non-symbol-like keys.
+        if (!is_symbol_like(key))
+            const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_property_descriptor(key);
+    }
+
+    bool delete_property(const std::string& key) override {
+        if (!is_symbol_like(key))
+            ensure_evaluated();
+        return Object::delete_property(key);
+    }
+
+    std::vector<std::string> get_own_property_keys() const override {
+        const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_own_property_keys();
+    }
+
+    std::vector<std::string> get_enumerable_keys() const override {
+        const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
+        return Object::get_enumerable_keys();
+    }
+};
+
 Value ImportStatement::evaluate(Context& ctx) {
     Engine* engine = ctx.get_engine();
     if (!engine) {
@@ -1924,22 +2008,30 @@ Value ImportStatement::evaluate(Context& ctx) {
         std::string from_path = ctx.get_current_filename();
 
         if (!is_namespace_import_ && (!is_default_import_ || is_mixed_import())) {
-            for (const auto& specifier : specifiers_) {
-                std::string imported_name = specifier->get_imported_name();
-                std::string local_name = specifier->get_local_name();
+            if (specifiers_.empty()) {
+                // Side-effect-only import: execute the module for its side effects
+                module_loader->load_module(module_source_, from_path);
+            } else {
+                for (const auto& specifier : specifiers_) {
+                    std::string imported_name = specifier->get_imported_name();
+                    std::string local_name = specifier->get_local_name();
 
-                Value imported_value = module_loader->import_from_module(
-                    module_source_, imported_name, from_path
-                );
+                    Value imported_value = module_loader->import_from_module(
+                        module_source_, imported_name, from_path
+                    );
 
-                ctx.create_binding(local_name, imported_value);
+                    ctx.create_binding(local_name, imported_value);
+                }
             }
         }
 
         if (is_namespace_import_) {
-            Value namespace_obj = module_loader->import_namespace_from_module(
-                module_source_, from_path
-            );
+            Value namespace_obj;
+            if (is_deferred_) {
+                namespace_obj = Value(new DeferredNamespaceObject(module_loader, module_source_, from_path));
+            } else {
+                namespace_obj = module_loader->import_namespace_from_module(module_source_, from_path);
+            }
             ctx.create_binding(namespace_alias_, namespace_obj);
         }
 
@@ -1989,7 +2081,7 @@ std::string ImportStatement::to_string() const {
 
 std::unique_ptr<ASTNode> ImportStatement::clone() const {
     if (is_namespace_import_) {
-        return std::make_unique<ImportStatement>(namespace_alias_, module_source_, start_, end_);
+        return std::make_unique<ImportStatement>(namespace_alias_, module_source_, start_, end_, is_deferred_);
     } else if (is_default_import_) {
         return std::make_unique<ImportStatement>(default_alias_, module_source_, true, start_, end_);
     } else {

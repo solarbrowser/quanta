@@ -8307,7 +8307,7 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                 std::string module_source = current_token().get_value();
                 advance(); skip_import_with();
                 Position end = get_current_position();
-                return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end);
+                return std::make_unique<ImportStatement>(namespace_alias, module_source, start, end, true);
             }
             // Not import defer *, treat 'defer' as a default import alias
             current_token_index_ = saved_idx;
