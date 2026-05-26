@@ -411,6 +411,13 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
 
+        if (obj && !is_string_object && !prop_name.empty() && prop_name[0] == '#') {
+            if (!private_brand_check(ctx, obj, prop_name, false)) {
+                ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
+                return Value();
+            }
+        }
+
         if (obj && !is_string_object) {
             // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);

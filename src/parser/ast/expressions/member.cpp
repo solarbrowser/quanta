@@ -60,16 +60,44 @@ static bool do_brand_check(Object* obj, Object* expected) {
     return false;
 }
 
-bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name) {
+bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists) {
     (void)ctx;
     CallStack& cs = CallStack::instance();
     if (!cs.is_empty() && cs.top().function_ptr) {
-        Value brand_val = cs.top().function_ptr->get_property("__private_class_brand__");
+        Function* fn = cs.top().function_ptr;
+
+        Value brands_val = fn->get_property("__private_brands__");
+        if (brands_val.is_object()) {
+            Object* brands = brands_val.as_object();
+            Value name_brand = brands->get_property(prop_name);
+            if (name_brand.is_object() || name_brand.is_function()) {
+                Object* expected = name_brand.is_function()
+                    ? static_cast<Object*>(name_brand.as_function())
+                    : name_brand.as_object();
+                if (!do_brand_check(obj, expected)) return false;
+                if (!require_exists) return true;
+                bool found = obj->has_private_slot(prop_name);
+                if (!found) {
+                    Object* p = obj->get_prototype();
+                    while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+                }
+                return found;
+            }
+        }
+
+        Value brand_val = fn->get_property("__private_class_brand__");
         if (brand_val.is_object() || brand_val.is_function()) {
             Object* expected = brand_val.is_function()
                 ? static_cast<Object*>(brand_val.as_function())
                 : brand_val.as_object();
-            return do_brand_check(obj, expected);
+            if (!do_brand_check(obj, expected)) return false;
+            if (!require_exists) return true;
+            bool found = obj->has_private_slot(prop_name);
+            if (!found) {
+                Object* p = obj->get_prototype();
+                while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+            }
+            return found;
         }
     }
     bool found = obj->has_private_slot(prop_name);
@@ -195,6 +223,19 @@ Value MemberExpression::evaluate(Context& ctx) {
                 if (!private_brand_check(ctx, obj, prop_name)) {
                     ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
                     return Value();
+                }
+                Object* lookup = obj;
+                while (lookup) {
+                    PropertyDescriptor d = lookup->get_property_descriptor(prop_name);
+                    if (d.is_accessor_descriptor()) {
+                        if (!d.has_getter()) {
+                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                            return Value();
+                        }
+                        break;
+                    }
+                    if (d.has_value()) break;
+                    lookup = lookup->get_prototype();
                 }
             }
 

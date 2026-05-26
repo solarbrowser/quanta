@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "../ast_internal.h"
 #include <algorithm>
 
 namespace Quanta {
@@ -281,8 +282,16 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
             Identifier* prop_id = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop_id->get_name();
 
-            if (object_value.is_object()) {
-                Object* obj = object_value.as_object();
+            if (object_value.is_object() || object_value.is_function()) {
+                Object* obj = object_value.is_function()
+                    ? static_cast<Object*>(object_value.as_function())
+                    : object_value.as_object();
+                if (!prop_name.empty() && prop_name[0] == '#') {
+                    if (!private_brand_check(ctx, obj, prop_name)) {
+                        ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
+                        return Value();
+                    }
+                }
                 return obj->get_property(prop_name);
             }
         }
