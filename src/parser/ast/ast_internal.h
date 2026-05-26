@@ -16,7 +16,7 @@ class Context;
 class Object;
 extern std::unordered_map<std::string, Value> g_object_function_map;
 
-bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name);
+bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists = true);
 
 inline size_t utf16_length(const std::string& str) {
     size_t count = 0;

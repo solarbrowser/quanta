@@ -14,6 +14,7 @@
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/modules/ModuleLoader.h"
+#include "quanta/core/engine/CallStack.h"
 #include <sstream>
 #include <set>
 
@@ -183,6 +184,15 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
 Value ClassDeclaration::evaluate(Context& ctx) {
     std::string class_name = id_->get_name();
 
+    CallStack& outer_cs_ = CallStack::instance();
+    Object* outer_brands_ptr = nullptr;
+    if (!outer_cs_.is_empty() && outer_cs_.top().function_ptr) {
+        Value ob_ = outer_cs_.top().function_ptr->get_property("__private_brands__");
+        if (ob_.is_object()) outer_brands_ptr = ob_.as_object();
+    }
+    std::vector<std::string> private_instance_names;
+    Object* instance_brands_raw = nullptr;
+
     auto prototype = ObjectFactory::create_object();
 
     std::unique_ptr<ASTNode> constructor_body = nullptr;
@@ -200,6 +210,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_field_initializers.push_back(stmt->clone());
                 } else {
                     field_initializers.push_back(stmt->clone());
+                    if (!cf->is_computed()) {
+                        if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
+                            if (!kid->get_name().empty() && kid->get_name()[0] == '#')
+                                private_instance_names.push_back(kid->get_name());
+                        }
+                    }
                 }
                 continue;
             }
@@ -243,6 +259,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     }
                 } else if (method->is_static()) {
                 } else {
+                    if (!method_name.empty() && method_name[0] == '#')
+                        private_instance_names.push_back(method_name);
                     bool method_is_gen = false;
                     bool method_is_async = false;
                     std::vector<std::unique_ptr<Parameter>> method_params;
@@ -373,6 +391,20 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             proto_ptr->set_property_descriptor(dm.first, dm.second);
         constructor_fn->set_is_class_constructor(true);
         constructor_fn->set_is_strict(true);
+        constructor_fn->set_property("__private_class_brand__", Value(proto_ptr));
+
+        {
+            auto instance_brands = ObjectFactory::create_object();
+            if (outer_brands_ptr) {
+                for (const auto& k : outer_brands_ptr->get_own_property_keys())
+                    instance_brands->set_property(k, outer_brands_ptr->get_property(k));
+            }
+            for (const auto& pn : private_instance_names)
+                instance_brands->set_property(pn, Value(proto_ptr));
+            instance_brands_raw = instance_brands.release();
+            constructor_fn->set_property("__private_brands__", Value(instance_brands_raw));
+        }
+
         if (!has_explicit_constructor) {
             constructor_fn->set_property("__default_ctor__", Value(true));
         }
@@ -570,6 +602,22 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         Value method_val = constructor_fn->get_property(key);
         if (method_val.is_function()) {
             method_val.as_function()->set_property(closure_key, ctor_val);
+        }
+    }
+
+    if (proto_ptr && instance_brands_raw) {
+        for (const auto& key : proto_ptr->get_own_property_keys()) {
+            if (key == "constructor") continue;
+            PropertyDescriptor bdesc = proto_ptr->get_property_descriptor(key);
+            if (bdesc.has_getter() && bdesc.get_getter())
+                static_cast<Function*>(bdesc.get_getter())->set_property("__private_brands__", Value(instance_brands_raw));
+            if (bdesc.has_setter() && bdesc.get_setter())
+                static_cast<Function*>(bdesc.get_setter())->set_property("__private_brands__", Value(instance_brands_raw));
+            if (!bdesc.is_accessor_descriptor()) {
+                Value mv = proto_ptr->get_property(key);
+                if (mv.is_function())
+                    mv.as_function()->set_property("__private_brands__", Value(instance_brands_raw));
+            }
         }
     }
 
