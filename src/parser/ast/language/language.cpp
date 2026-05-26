@@ -56,9 +56,17 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
 
 
     if (function_obj) {
+        // Guard: never call get_binding() on variables that live in the global Object env.
+        // The global Object env (outer==nullptr, type==Object) may have accessor properties
+        // whose getters have side effects (e.g. deleting themselves). Those variables are
+        // always reachable via the env chain at call time; no closure capture needed.
+        auto is_global_obj_binding = [&](const std::string& n) -> bool {
+            Environment* e = ctx.find_binding_env(n);
+            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+        };
 
         auto var_env = ctx.get_variable_environment();
-        if (var_env) {
+        if (var_env && var_env->get_type() != Environment::Type::Object) {
             auto var_binding_names = var_env->get_binding_names();
             for (const auto& name : var_binding_names) {
                 if (name != "this" && name != "arguments") {
@@ -76,7 +84,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
                 if (name != "this" && name != "arguments") {
-                    if (!function_obj->has_property("__closure_" + name)) {
+                    if (!function_obj->has_property("__closure_" + name) && !is_global_obj_binding(name)) {
                         Value value = ctx.get_binding(name);
                         if (!value.is_undefined()) {
                             function_obj->set_property("__closure_" + name, value);
@@ -89,7 +97,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
 
         std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
         for (const auto& var_name : potential_vars) {
-            if (ctx.has_binding(var_name)) {
+            if (ctx.has_binding(var_name) && !is_global_obj_binding(var_name)) {
                 Value value = ctx.get_binding(var_name);
                 if (!value.is_undefined()) {
                     if (!function_obj->has_property("__closure_" + var_name)) {
@@ -802,8 +810,13 @@ Value FunctionExpression::evaluate(Context& ctx) {
             function->set_is_param_default(true);
         }
 
+        auto is_global_obj_binding_fe = [&](const std::string& n) -> bool {
+            Environment* e = ctx.find_binding_env(n);
+            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+        };
+
         auto var_env = ctx.get_variable_environment();
-        if (var_env) {
+        if (var_env && var_env->get_type() != Environment::Type::Object) {
             auto var_binding_names = var_env->get_binding_names();
             for (const auto& name : var_binding_names) {
                 if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
@@ -821,7 +834,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
             auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
                 if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
-                    if (!function->has_property("__closure_" + name)) {
+                    if (!function->has_property("__closure_" + name) && !is_global_obj_binding_fe(name)) {
                         Value value = ctx.get_binding(name);
                         if (!value.is_undefined()) {
                             function->set_property("__closure_" + name, value);
@@ -947,8 +960,12 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         }
 
         std::set<std::string> async_param_set(param_names.begin(), param_names.end());
+        auto is_global_obj_binding_af = [&](const std::string& n) -> bool {
+            Environment* e = ctx.find_binding_env(n);
+            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+        };
         auto var_env = ctx.get_variable_environment();
-        if (var_env) {
+        if (var_env && var_env->get_type() != Environment::Type::Object) {
             for (const auto& bname : var_env->get_binding_names()) {
                 if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
                     Value value = ctx.get_binding(bname);
@@ -963,7 +980,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         while (walk && walk != var_env) {
             for (const auto& bname : walk->get_binding_names()) {
                 if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
-                    if (!async_fn->has_property("__closure_" + bname)) {
+                    if (!async_fn->has_property("__closure_" + bname) && !is_global_obj_binding_af(bname)) {
                         Value value = ctx.get_binding(bname);
                         if (!value.is_undefined()) {
                             async_fn->set_property("__closure_" + bname, value);
@@ -1010,8 +1027,13 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         param_names.insert(param->get_name()->get_name());
     }
 
+    auto is_global_obj_binding_ar = [&](const std::string& n) -> bool {
+        Environment* e = ctx.find_binding_env(n);
+        return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+    };
+
     auto var_env = ctx.get_variable_environment();
-    if (var_env) {
+    if (var_env && var_env->get_type() != Environment::Type::Object) {
         auto var_binding_names = var_env->get_binding_names();
         for (const auto& name : var_binding_names) {
             if (name != "this" && param_names.find(name) == param_names.end()) {
@@ -1029,7 +1051,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         auto lex_binding_names = walk->get_binding_names();
         for (const auto& name : lex_binding_names) {
             if (name != "this" && param_names.find(name) == param_names.end()) {
-                if (!arrow_function->has_property("__closure_" + name)) {
+                if (!arrow_function->has_property("__closure_" + name) && !is_global_obj_binding_ar(name)) {
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined()) {
                         arrow_function->set_property("__closure_" + name, value);
