@@ -1468,22 +1468,27 @@ bool Object::is_array_index(const std::string& key, uint32_t* index) const {
 bool Object::store_in_shape(const std::string& key, const Value& value, PropertyAttributes attrs) {
     if (header_.property_count < 32) {
         bool is_new_property = !header_.shape->has_property(key);
-        
+        bool was_deleted = !is_new_property && deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0;
+
         transition_shape(key, attrs);
-        
+
         auto info = header_.shape->get_property_info(key);
         if (info.offset >= properties_.size()) {
             properties_.resize(info.offset + 1);
         }
         properties_[info.offset] = value;
-        
-        if (is_new_property) {
+
+        if (was_deleted) {
+            deleted_shape_properties_->erase(key);
+        }
+
+        if (is_new_property || was_deleted) {
             header_.property_count++;
         }
-        
+
         update_hash_code();
-        
-        
+
+
         return true;
     }
     

@@ -152,6 +152,7 @@ public:
     void pop_block_scope();
     void push_with_scope(class Object* obj);
     void pop_with_scope();
+    Environment* find_binding_env(const std::string& name) const;
 
     // Explicit Resource Management ('using' declaration support)
     void push_dispose_scope();
@@ -355,6 +356,7 @@ public:
     Value get_binding(const std::string& name) const;
     Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
+    Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     void force_set_binding(const std::string& name, const Value& value);
     bool delete_binding(const std::string& name);

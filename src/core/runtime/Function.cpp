@@ -327,6 +327,21 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                         closure_value = parent_val;
                     }
                 }
+                // Do not materialize variables that live in the global Object env.
+                // The global env has no outer (outer == nullptr); with-scope Object envs
+                // do have an outer and must still be materialized (the with-scope will be
+                // popped by the time the function runs, so the env chain no longer has it).
+                bool skip_materialize = false;
+                Environment* check_env = parent_context->get_lexical_environment();
+                while (check_env) {
+                    if (check_env->has_own_binding(var_name)) {
+                        skip_materialize = (check_env->get_type() == Environment::Type::Object &&
+                                            check_env->get_outer() == nullptr);
+                        break;
+                    }
+                    check_env = check_env->get_outer();
+                }
+                if (skip_materialize) continue;
             }
             function_context.create_binding(var_name, closure_value, true);
         }

@@ -122,6 +122,21 @@ bool Context::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
+Environment* Context::find_binding_env(const std::string& name) const {
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->has_own_binding(name)) return env;
+        env = env->get_outer();
+    }
+    return nullptr;
+}
+
+Environment* Environment::find_binding_env(const std::string& name) {
+    if (has_own_binding(name)) return this;
+    if (outer_environment_) return outer_environment_->find_binding_env(name);
+    return nullptr;
+}
+
 std::unordered_map<std::string, Value> Context::snapshot_bindings() const {
     std::unordered_map<std::string, Value> snap;
     Environment* env = lexical_environment_;

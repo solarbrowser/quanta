@@ -1966,7 +1966,7 @@ public:
         return Object::set_property_descriptor(key, desc);
     }
 
-    PropertyDescriptor get_property_descriptor(const std::string& key) const override {
+    PropertyDescriptor get_property_descriptor(const std::string& key) const {
         // Spec: [[GetOwnProperty]] on a deferred namespace object triggers evaluation for non-symbol-like keys.
         if (!is_symbol_like(key))
             const_cast<DeferredNamespaceObject*>(this)->ensure_evaluated();
