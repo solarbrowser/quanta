@@ -55,8 +55,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return Value();
         }
 
-        // For compound assignments, capture left value BEFORE evaluating right side
+        // For compound assignments, capture left value BEFORE evaluating right side.
+        // Capture ref_env BEFORE get_binding because a getter may delete the property
+        // (object environment record: PutValue must write to the original env's binding object).
         Value left_value;
+        Environment* ref_env = nullptr;
         if (operator_ != Operator::ASSIGN) {
             bool is_logical = operator_ == Operator::LOGICAL_AND_ASSIGN ||
                               operator_ == Operator::LOGICAL_OR_ASSIGN  ||
@@ -65,10 +68,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 // Spec 8.7.1: GetValue on unresolvable reference always throws ReferenceError
                 ctx.throw_reference_error("'" + name + "' is not defined");
                 return Value();
-            } else {
-                left_value = ctx.get_binding(name);
-                if (ctx.has_exception()) return Value();
             }
+            // Capture the binding env before GetValue (getter may delete the property)
+            ref_env = ctx.find_binding_env(name);
+            left_value = ctx.get_binding(name);
+            if (ctx.has_exception()) return Value();
         }
 
         // Logical assignment: short-circuit before evaluating RHS
@@ -93,11 +97,34 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return right_value;
         }
 
+        // For ASSIGN: capture ref_env before RHS evaluation (RHS may delete the binding)
+        if (operator_ == Operator::ASSIGN && ctx.has_binding(name)) {
+            ref_env = ctx.find_binding_env(name);
+        }
+
         // Now evaluate right side
         right_value = right_->evaluate(ctx);
         if (ctx.has_exception()) {
             return Value();
         }
+
+        // PutValue helper: for object env records (with scopes), write directly to the
+        // binding object that was captured before GetValue — even if the property was
+        // deleted by the getter.  Strict mode + deleted property -> ReferenceError.
+        auto put_value = [&](const Value& val) {
+            if (ref_env && ref_env->get_type() == Environment::Type::Object &&
+                ref_env->get_binding_object()) {
+                Object* bobj = ref_env->get_binding_object();
+                bool still_exists = bobj->has_own_property(name);
+                if (!still_exists && ctx.is_strict_mode()) {
+                    ctx.throw_reference_error("'" + name + "' is not defined");
+                    return;
+                }
+                bobj->set_property(name, val);
+            } else {
+                ctx.set_binding(name, val);
+            }
+        };
 
         switch (operator_) {
             case Operator::ASSIGN: {
@@ -108,15 +135,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         right_value.as_function()->set_name(name);
                     }
                 }
-                bool has_it = ctx.has_binding(name);
-                if (!has_it) {
+                if (!ref_env) {
+                    // Unresolvable reference (binding didn't exist when we captured ref_env)
                     if (ctx.is_strict_mode()) {
                         ctx.throw_reference_error("'" + name + "' is not defined");
                         return Value();
-                    } else {
-                        // ES1: Assignments without 'var' create deletable global bindings
-                        ctx.create_binding(name, right_value, true, true);
                     }
+                    // ES1: Assignments without 'var' create deletable global bindings
+                    ctx.create_binding(name, right_value, true, true);
+                } else if (ref_env->get_type() == Environment::Type::Object &&
+                           ref_env->get_binding_object()) {
+                    // Object Environment Record PutValue: always write to binding object
+                    Object* bobj = ref_env->get_binding_object();
+                    bool still_exists = bobj->has_own_property(name);
+                    if (!still_exists && ctx.is_strict_mode()) {
+                        ctx.throw_reference_error("'" + name + "' is not defined");
+                        return Value();
+                    }
+                    bobj->set_property(name, right_value);
                 } else {
                     bool success = ctx.set_binding(name, right_value);
                     if (!success) {
@@ -129,61 +165,60 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return right_value;
             }
             case Operator::PLUS_ASSIGN: {
-                // Use add() method to handle both string concatenation and numeric addition
                 Value result = left_value.add(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::MINUS_ASSIGN: {
                 Value result = Value(left_value.to_number() - right_value.to_number());
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::MUL_ASSIGN: {
                 Value result = Value(left_value.to_number() * right_value.to_number());
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::DIV_ASSIGN: {
                 Value result = Value(left_value.to_number() / right_value.to_number());
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::MOD_ASSIGN: {
                 double left_num = left_value.to_number();
                 double right_num = right_value.to_number();
                 Value result = Value(std::fmod(left_num, right_num));
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::BITWISE_AND_ASSIGN: {
                 Value result = left_value.bitwise_and(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::BITWISE_OR_ASSIGN: {
                 Value result = left_value.bitwise_or(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::BITWISE_XOR_ASSIGN: {
                 Value result = left_value.bitwise_xor(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::LEFT_SHIFT_ASSIGN: {
                 Value result = left_value.left_shift(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::RIGHT_SHIFT_ASSIGN: {
                 Value result = left_value.right_shift(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
                 Value result = left_value.unsigned_right_shift(right_value);
-                ctx.set_binding(name, result);
+                put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }
             default:
@@ -249,9 +284,32 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return right_value;
         }
 
+        // Spec: for compound operators GetValue(lref) happens before RHS eval.
+        // This means CheckObjectCoercible(base) and ToPropertyKey(key) must happen first.
+        if (operator_ != Operator::ASSIGN) {
+            if (object_value.is_null() || object_value.is_undefined()) {
+                ctx.throw_type_error(std::string("Cannot read properties of ") +
+                    (object_value.is_null() ? "null" : "undefined"));
+                return Value();
+            }
+            if (member->is_computed() && !computed_key_value.is_symbol() &&
+                (computed_key_value.is_object() || computed_key_value.is_function())) {
+                Object* pobj = computed_key_value.is_function()
+                    ? static_cast<Object*>(computed_key_value.as_function())
+                    : computed_key_value.as_object();
+                Value ts = pobj ? pobj->get_property("toString") : Value();
+                if (ts.is_function()) {
+                    Value str_result = ts.as_function()->call(ctx, {}, computed_key_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!str_result.is_object() && !str_result.is_function())
+                        computed_key_value = str_result;
+                }
+            }
+        }
+
         right_value = right_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        
+
         std::string str_value = object_value.is_string() ? object_value.to_string() : "";
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
             Value index_value = member->get_property()->evaluate(ctx);
