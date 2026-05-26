@@ -62,12 +62,9 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                               operator_ == Operator::LOGICAL_OR_ASSIGN  ||
                               operator_ == Operator::NULLISH_ASSIGN;
             if (!ctx.has_binding(name)) {
-                if (ctx.is_strict_mode() || is_logical) {
-                    // Spec: GetValue on unresolvable reference always throws ReferenceError
-                    ctx.throw_reference_error("'" + name + "' is not defined");
-                    return Value();
-                }
-                // Non-strict compound (+=, -= etc): leave left_value as undefined
+                // Spec 8.7.1: GetValue on unresolvable reference always throws ReferenceError
+                ctx.throw_reference_error("'" + name + "' is not defined");
+                return Value();
             } else {
                 left_value = ctx.get_binding(name);
                 if (ctx.has_exception()) return Value();
@@ -415,6 +412,22 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (!private_brand_check(ctx, obj, prop_name, false)) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
                 return Value();
+            }
+            if (operator_ != Operator::ASSIGN && !obj->has_private_slot(prop_name)) {
+                Object* proto = obj->get_prototype();
+                while (proto) {
+                    PropertyDescriptor pd = proto->get_property_descriptor(prop_name);
+                    if (pd.has_value() && !pd.is_accessor_descriptor()) {
+                        ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
+                        return Value();
+                    }
+                    if (pd.is_accessor_descriptor() && !pd.has_setter()) {
+                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
+                        return Value();
+                    }
+                    if (pd.has_value() || pd.is_accessor_descriptor()) break;
+                    proto = proto->get_prototype();
+                }
             }
         }
 
