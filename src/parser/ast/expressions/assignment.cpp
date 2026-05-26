@@ -493,14 +493,6 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 } else {
                     if (obj) {
-                        // ES5: Strict mode checks for property assignment
-                        if (ctx.is_strict_mode()) {
-                            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-                            if (desc.is_accessor_descriptor() && !desc.has_setter()) {
-                                ctx.throw_type_error("Cannot set property '" + prop_name + "' which has only a getter");
-                                return Value();
-                            }
-                        }
                         bool success = obj->set_property(prop_name, right_value);
                         if (!success && ctx.is_strict_mode()) {
                             ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");

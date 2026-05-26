@@ -1530,6 +1530,7 @@ private:
     std::string default_alias_;
     bool is_namespace_import_;
     bool is_default_import_;
+    bool is_deferred_;
 
 public:
     ImportStatement(std::vector<std::unique_ptr<ImportSpecifier>> specifiers,
@@ -1537,28 +1538,28 @@ public:
                    const Position& start, const Position& end)
         : ASTNode(Type::IMPORT_STATEMENT, start, end),
           specifiers_(std::move(specifiers)), module_source_(module_source),
-          is_namespace_import_(false), is_default_import_(false) {}
+          is_namespace_import_(false), is_default_import_(false), is_deferred_(false) {}
 
     ImportStatement(const std::string& namespace_alias, const std::string& module_source,
-                   const Position& start, const Position& end)
+                   const Position& start, const Position& end, bool is_deferred = false)
         : ASTNode(Type::IMPORT_STATEMENT, start, end),
           module_source_(module_source), namespace_alias_(namespace_alias),
-          is_namespace_import_(true), is_default_import_(false) {}
+          is_namespace_import_(true), is_default_import_(false), is_deferred_(is_deferred) {}
 
     ImportStatement(const std::string& default_alias, const std::string& module_source,
                    bool is_default, const Position& start, const Position& end)
         : ASTNode(Type::IMPORT_STATEMENT, start, end),
           module_source_(module_source), default_alias_(default_alias),
-          is_namespace_import_(false), is_default_import_(is_default) {}
+          is_namespace_import_(false), is_default_import_(is_default), is_deferred_(false) {}
 
-    ImportStatement(const std::string& default_alias, 
+    ImportStatement(const std::string& default_alias,
                    std::vector<std::unique_ptr<ImportSpecifier>> specifiers,
                    const std::string& module_source,
                    const Position& start, const Position& end)
         : ASTNode(Type::IMPORT_STATEMENT, start, end),
-          specifiers_(std::move(specifiers)), module_source_(module_source), 
+          specifiers_(std::move(specifiers)), module_source_(module_source),
           default_alias_(default_alias),
-          is_namespace_import_(false), is_default_import_(true) {}
+          is_namespace_import_(false), is_default_import_(true), is_deferred_(false) {}
 
     const std::vector<std::unique_ptr<ImportSpecifier>>& get_specifiers() const { return specifiers_; }
     const std::string& get_module_source() const { return module_source_; }
@@ -1567,6 +1568,7 @@ public:
     bool is_namespace_import() const { return is_namespace_import_; }
     bool is_default_import() const { return is_default_import_; }
     bool is_mixed_import() const { return is_default_import_ && !specifiers_.empty(); }
+    bool is_deferred() const { return is_deferred_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
