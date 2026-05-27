@@ -1,1 +1,0 @@
-You can reach all of the documentations from: https://quanta.js.org/pages/docs/docs.html
