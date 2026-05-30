@@ -276,12 +276,11 @@ void register_function_builtins(Context& ctx) {
 
             Value name_val = function_obj->get_property("name");
             std::string bound_name = "bound " + (name_val.is_string() ? name_val.to_string() : target_func->get_name());
-            auto bound_function = ObjectFactory::create_native_constructor(bound_name,
+            auto bound_function = ObjectFactory::create_native_function(bound_name,
                 [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());
 
-                    // If called as constructor, ignore bound this and use new object
                     if (ctx.is_in_constructor_call()) {
                         return target_func->construct(ctx, final_args);
                     } else {
