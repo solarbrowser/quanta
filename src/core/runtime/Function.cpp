@@ -1029,7 +1029,8 @@ void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
             if (declarator->get_kind() == VariableDeclarator::Kind::VAR) {
                 const std::string& name = declarator->get_id()->get_name();
 
-                if (!ctx.has_binding(name)) {
+                auto* var_env = ctx.get_variable_environment();
+                if (!var_env || !var_env->has_own_binding(name)) {
                     ctx.create_var_binding(name, Value(), true);
                 }
             }
