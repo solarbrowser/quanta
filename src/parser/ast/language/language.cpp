@@ -949,6 +949,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         auto* async_fn = new AsyncFunction(name, param_names, body_->clone(), &ctx);
         async_fn->set_is_arrow(true);
         async_fn->set_is_constructor(false);
+        if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
 
         if (ctx.has_binding("this")) {
             async_fn->set_property("__arrow_this__", ctx.get_binding("this"));
@@ -1016,6 +1017,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
     arrow_function->set_is_constructor(false);
     arrow_function->set_is_arrow(true);
+    if (ctx.is_strict_mode()) {
+        arrow_function->set_is_strict(true);
+    }
 
     if (ctx.has_binding("this")) {
         Value this_value = ctx.get_binding("this");
