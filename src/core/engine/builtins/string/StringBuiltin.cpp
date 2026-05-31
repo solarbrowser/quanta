@@ -647,8 +647,9 @@ void register_string_builtins(Context& ctx) {
             if (args.size() < 2) return Value(str);
 
             Value search_val = args[0];
+            bool replace_is_fn = args.size() >= 2 && args[1].is_function();
 
-            std::string replacement = args[1].to_string();
+            std::string replacement = replace_is_fn ? "" : args[1].to_string();
 
             auto process_replacement = [](const std::string& repl, Object* match_obj, const std::string& orig_str, int match_pos) -> std::string {
                 std::string result;
@@ -732,10 +733,23 @@ void register_string_builtins(Context& ctx) {
                                 int match_index = static_cast<int>(index_val.to_number());
                                 std::string matched = matched_str.to_string();
 
-                                std::string processed_repl = process_replacement(replacement, match_obj, str, match_index);
+                                std::string processed_repl;
+                                if (replace_is_fn) {
+                                    std::vector<Value> fn_args;
+                                    fn_args.push_back(Value(matched));
+                                    uint32_t cnt = static_cast<uint32_t>(match_obj->get_property("length").to_number());
+                                    for (uint32_t ci = 1; ci < cnt; ci++) fn_args.push_back(match_obj->get_element(ci));
+                                    fn_args.push_back(Value(static_cast<double>(match_index)));
+                                    fn_args.push_back(Value(str));
+                                    Value ret = args[1].as_function()->call(ctx, fn_args, Value());
+                                    if (ctx.has_exception()) return Value();
+                                    processed_repl = ret.to_string();
+                                } else {
+                                    processed_repl = process_replacement(replacement, match_obj, str, match_index);
+                                }
 
                                 result.replace(match_index + offset, matched.length(), processed_repl);
-                                offset += processed_repl.length() - matched.length();
+                                offset += static_cast<int>(processed_repl.length()) - static_cast<int>(matched.length());
                             }
                         }
 
@@ -753,7 +767,20 @@ void register_string_builtins(Context& ctx) {
                                 size_t pos = static_cast<size_t>(index_val.to_number());
                                 std::string matched = match_str.to_string();
 
-                                std::string processed_repl = process_replacement(replacement, match_arr, str, static_cast<int>(pos));
+                                std::string processed_repl;
+                                if (replace_is_fn) {
+                                    std::vector<Value> fn_args;
+                                    fn_args.push_back(Value(matched));
+                                    uint32_t cnt = static_cast<uint32_t>(match_arr->get_property("length").to_number());
+                                    for (uint32_t ci = 1; ci < cnt; ci++) fn_args.push_back(match_arr->get_element(ci));
+                                    fn_args.push_back(Value(static_cast<double>(pos)));
+                                    fn_args.push_back(Value(str));
+                                    Value ret = args[1].as_function()->call(ctx, fn_args, Value());
+                                    if (ctx.has_exception()) return Value();
+                                    processed_repl = ret.to_string();
+                                } else {
+                                    processed_repl = process_replacement(replacement, match_arr, str, static_cast<int>(pos));
+                                }
 
                                 str.replace(pos, matched.length(), processed_repl);
                                 return Value(str);
@@ -767,7 +794,21 @@ void register_string_builtins(Context& ctx) {
             size_t pos = str.find(search);
 
             if (pos != std::string::npos) {
-                str.replace(pos, search.length(), replacement);
+                std::string repl;
+                if (replace_is_fn) {
+                    Function* fn = args[1].as_function();
+                    std::vector<Value> fn_args = {
+                        Value(search),
+                        Value(static_cast<double>(pos)),
+                        Value(str)
+                    };
+                    Value ret = fn->call(ctx, fn_args, Value());
+                    if (ctx.has_exception()) return Value();
+                    repl = ret.to_string();
+                } else {
+                    repl = replacement;
+                }
+                str.replace(pos, search.length(), repl);
             }
 
             return Value(str);

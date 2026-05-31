@@ -112,16 +112,21 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         function_obj->set_source_text(source_text_);
     }
 
-    if (function_obj && body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        BlockStatement* blk = static_cast<BlockStatement*>(body_.get());
-        for (const auto& s : blk->get_statements()) {
-            if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
-            auto* es = static_cast<ExpressionStatement*>(s.get());
-            if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
-            auto* sl = static_cast<StringLiteral*>(es->get_expression());
-            if (sl->get_value() == "use strict" && !sl->has_escapes()) {
-                function_obj->set_is_strict(true);
-                break;
+    if (function_obj) {
+        // ES5 10.1.1: a function is strict if the outer code is strict OR its body has "use strict"
+        if (ctx.is_strict_mode()) {
+            function_obj->set_is_strict(true);
+        } else if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+            BlockStatement* blk = static_cast<BlockStatement*>(body_.get());
+            for (const auto& s : blk->get_statements()) {
+                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+                auto* es = static_cast<ExpressionStatement*>(s.get());
+                if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
+                auto* sl = static_cast<StringLiteral*>(es->get_expression());
+                if (sl->get_value() == "use strict" && !sl->has_escapes()) {
+                    function_obj->set_is_strict(true);
+                    break;
+                }
             }
         }
     }
