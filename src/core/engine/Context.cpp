@@ -164,7 +164,10 @@ void Context::restore_bindings(const std::unordered_map<std::string, Value>& sna
 bool Context::is_lexical_const(const std::string& name) const {
     Environment* env = lexical_environment_;
     while (env) {
-        if (env->get_type() != Environment::Type::Object && env->has_mutable_flag(name)) {
+        if (env->get_type() == Environment::Type::Object) {
+            if (env->is_const_binding(name)) return true;
+            if (env->get_binding_object() && env->get_binding_object()->has_own_property(name)) return false;
+        } else if (env->has_mutable_flag(name)) {
             return !env->is_mutable_binding(name);
         }
         env = env->get_outer();
@@ -204,7 +207,10 @@ bool Context::create_var_binding(const std::string& name, const Value& value, bo
 bool Context::create_lexical_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (lexical_environment_) {
         bool ok = lexical_environment_->create_binding(name, value, mutable_binding);
-        if (ok) lexical_environment_->mark_lexical_declaration(name);
+        if (ok) {
+            lexical_environment_->mark_lexical_declaration(name);
+            if (!mutable_binding) lexical_environment_->mark_const_binding(name);
+        }
         return ok;
     }
     return false;
@@ -820,13 +826,9 @@ bool Environment::create_binding(const std::string& name, const Value& value, bo
     }
 
     if (type_ == Type::Object && binding_object_) {
-        // ES1: Set Configurable attribute based on deletable flag
-        // Configurable = true means deletable 
-        // Configurable = false means DontDelete 
-        int attrs_value = PropertyAttributes::Writable | PropertyAttributes::Enumerable;
-        if (deletable) {
-            attrs_value |= PropertyAttributes::Configurable;
-        }
+        int attrs_value = PropertyAttributes::Enumerable;
+        if (mutable_binding) attrs_value |= PropertyAttributes::Writable;
+        if (deletable) attrs_value |= PropertyAttributes::Configurable;
         PropertyAttributes attrs = static_cast<PropertyAttributes>(attrs_value);
         PropertyDescriptor desc(value, attrs);
         return binding_object_->set_property_descriptor(name, desc);
