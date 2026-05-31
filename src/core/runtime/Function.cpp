@@ -1085,6 +1085,42 @@ void Function::scan_for_var_declarations(ASTNode* node, Context& ctx) {
         WhileStatement* while_stmt = static_cast<WhileStatement*>(node);
         scan_for_var_declarations(while_stmt->get_body(), ctx);
     }
+    else if (node->get_type() == ASTNode::Type::DO_WHILE_STATEMENT) {
+        DoWhileStatement* do_stmt = static_cast<DoWhileStatement*>(node);
+        scan_for_var_declarations(do_stmt->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::WITH_STATEMENT) {
+        WithStatement* with_stmt = static_cast<WithStatement*>(node);
+        scan_for_var_declarations(with_stmt->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
+        TryStatement* try_stmt = static_cast<TryStatement*>(node);
+        scan_for_var_declarations(try_stmt->get_try_block(), ctx);
+        if (try_stmt->get_catch_clause()) scan_for_var_declarations(try_stmt->get_catch_clause(), ctx);
+        if (try_stmt->get_finally_block()) scan_for_var_declarations(try_stmt->get_finally_block(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::SWITCH_STATEMENT) {
+        SwitchStatement* sw = static_cast<SwitchStatement*>(node);
+        for (const auto& c : sw->get_cases()) {
+            for (const auto& s : static_cast<CaseClause*>(c.get())->get_consequent()) {
+                scan_for_var_declarations(s.get(), ctx);
+            }
+        }
+    }
+    else if (node->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+        LabeledStatement* lbl = static_cast<LabeledStatement*>(node);
+        scan_for_var_declarations(lbl->get_statement(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
+        ForInStatement* forin = static_cast<ForInStatement*>(node);
+        if (forin->get_left()) scan_for_var_declarations(forin->get_left(), ctx);
+        scan_for_var_declarations(forin->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::FOR_OF_STATEMENT) {
+        ForOfStatement* forof = static_cast<ForOfStatement*>(node);
+        if (forof->get_left()) scan_for_var_declarations(forof->get_left(), ctx);
+        scan_for_var_declarations(forof->get_body(), ctx);
+    }
 }
 
 }
