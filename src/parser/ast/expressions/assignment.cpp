@@ -141,8 +141,9 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_reference_error("'" + name + "' is not defined");
                         return Value();
                     }
-                    // ES1: Assignments without 'var' create deletable global bindings
-                    ctx.create_binding(name, right_value, true, true);
+                    // ES5 8.7.2: PutValue on unresolvable reference -- set on global object (deletable)
+                    Object* global = ctx.get_global_object();
+                    if (global) global->set_property(name, right_value);
                 } else if (ref_env->get_type() == Environment::Type::Object &&
                            ref_env->get_binding_object()) {
                     // Object Environment Record PutValue: always write to binding object

@@ -228,10 +228,14 @@ bool Context::is_in_tdz(const std::string& name) const {
 }
 
 bool Context::delete_binding(const std::string& name) {
-    // ES1: Delete from variable environment (where 'var' and global assignments go)
-    // This matches where create_binding puts bindings
-    if (variable_environment_) {
-        return variable_environment_->delete_binding(name);
+    // Walk the lexical environment chain to find the first env that owns this binding,
+    // so that `delete x` inside a with(obj) block deletes from obj, not the global.
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->has_own_binding(name)) {
+            return env->delete_binding(name);
+        }
+        env = env->get_outer();
     }
     return false;
 }

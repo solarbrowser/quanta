@@ -142,7 +142,9 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                     return Value();
                 } else {
-                    ctx.create_var_binding(name, result_value);
+                    // ES5 8.7.2: PutValue on unresolvable reference -- set on global object
+                    Object* global = ctx.get_global_object();
+                    if (global) global->set_property(name, result_value);
                     return result_value;
                 }
             }
