@@ -120,7 +120,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("'" + name + "' is not defined");
                     return;
                 }
-                bobj->set_property(name, val);
+                bool ok = bobj->set_property(name, val);
+                if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                }
             } else {
                 ctx.set_binding(name, val);
             }
@@ -153,7 +156,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_reference_error("'" + name + "' is not defined");
                         return Value();
                     }
-                    bobj->set_property(name, right_value);
+                    bool ok = bobj->set_property(name, right_value);
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                        return Value();
+                    }
                 } else {
                     bool success = ctx.set_binding(name, right_value);
                     if (!success) {
@@ -1470,7 +1477,11 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                     if (!ctx.has_binding(var_name)) {
                         ctx.create_binding(var_name, element, true);
                     } else {
-                        ctx.set_binding(var_name, element);
+                        bool ok = ctx.set_binding(var_name, element);
+                        if (!ok && ctx.is_lexical_const(var_name)) {
+                            ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
+                            return Value();
+                        }
                     }
                 }
             }

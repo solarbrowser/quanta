@@ -1960,6 +1960,21 @@ Value TryStatement::evaluate(Context& ctx) {
     }
 
     if (finally_block_) {
+        // Save abrupt completion from try/catch so finally can override it
+        bool saved_break     = ctx.has_break();
+        bool saved_continue  = ctx.has_continue();
+        std::string saved_break_label    = ctx.get_break_label();
+        std::string saved_continue_label = ctx.get_continue_label();
+        bool saved_return    = ctx.has_return_value();
+        Value saved_ret_val  = saved_return ? ctx.get_return_value() : Value();
+        Value saved_exception = ctx.has_exception() ? ctx.get_exception() : Value();
+        bool saved_has_exc   = ctx.has_exception();
+
+        if (saved_break)    ctx.clear_break_continue();
+        if (saved_continue) ctx.clear_break_continue();
+        if (saved_return)   ctx.clear_return_value();
+        if (saved_has_exc)  ctx.clear_exception();
+
         try {
             finally_block_->evaluate(ctx);
         } catch (const std::exception& e) {
@@ -1967,9 +1982,17 @@ Value TryStatement::evaluate(Context& ctx) {
         } catch (...) {
             std::cerr << "Finally block unknown error" << std::endl;
         }
-    }
 
-    if (ctx.has_exception()) {
+        // If finally completed normally (no abrupt), restore try/catch's completion
+        bool finally_abrupt = ctx.has_break() || ctx.has_continue() ||
+                              ctx.has_return_value() || ctx.has_exception();
+        if (!finally_abrupt) {
+            if (saved_has_exc)  ctx.throw_exception(saved_exception);
+            if (saved_return)   { ctx.set_return_value(saved_ret_val); }
+            if (saved_break)    ctx.set_break(saved_break_label);
+            if (saved_continue) ctx.set_continue(saved_continue_label);
+        }
+    } else if (ctx.has_exception()) {
         ctx.clear_exception();
     }
 

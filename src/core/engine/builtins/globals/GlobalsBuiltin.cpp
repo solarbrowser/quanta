@@ -93,7 +93,7 @@ void register_global_builtins(Context& ctx) {
             }
         }, 2);
     Function* parseInt_raw = parseInt_fn.get();
-    ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), true);
 
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -128,7 +128,7 @@ void register_global_builtins(Context& ctx) {
             }
         }, 1);
     Function* parseFloat_raw = parseFloat_fn.get();
-    ctx.get_lexical_environment()->create_binding("parseFloat", Value(parseFloat_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("parseFloat", Value(parseFloat_fn.release()), true);
 
     // ES6: Number.parseFloat and Number.parseInt must be the same objects as globals
     {
@@ -154,7 +154,7 @@ void register_global_builtins(Context& ctx) {
             // Check if conversion resulted in NaN
             return Value(num_val.is_nan());
         }, 1);
-    ctx.get_lexical_environment()->create_binding("isNaN", Value(isNaN_global_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("isNaN", Value(isNaN_global_fn.release()), true);
 
     auto isFinite_global_fn = ObjectFactory::create_native_function("isFinite",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -162,7 +162,7 @@ void register_global_builtins(Context& ctx) {
             double num = args[0].to_number();
             return Value(std::isfinite(num));
         }, 1);
-    ctx.get_lexical_environment()->create_binding("isFinite", Value(isFinite_global_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("isFinite", Value(isFinite_global_fn.release()), true);
 
     auto eval_fn = ObjectFactory::create_native_function("eval",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -420,16 +420,16 @@ void register_global_builtins(Context& ctx) {
                 return Value();
             }
         }, 1);
-    ctx.get_lexical_environment()->create_binding("eval", Value(eval_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("eval", Value(eval_fn.release()), true);
 
-    ctx.get_lexical_environment()->create_binding("undefined", Value(), false);
-    ctx.get_lexical_environment()->create_binding("null", Value::null(), false);
+    ctx.get_lexical_environment()->create_binding("undefined", Value(), false, false);
+    ctx.get_lexical_environment()->create_binding("null", Value::null(), false, false);
     
     if (ctx.get_global_object()) {
-        ctx.get_lexical_environment()->create_binding("globalThis", Value(ctx.get_global_object()), false);
-        ctx.get_lexical_environment()->create_binding("global", Value(ctx.get_global_object()), false);
-        ctx.get_lexical_environment()->create_binding("window", Value(ctx.get_global_object()), false);
-        ctx.get_lexical_environment()->create_binding("this", Value(ctx.get_global_object()), false);
+        ctx.get_lexical_environment()->create_binding("globalThis", Value(ctx.get_global_object()), true);
+        ctx.get_lexical_environment()->create_binding("global", Value(ctx.get_global_object()), true);
+        ctx.get_lexical_environment()->create_binding("window", Value(ctx.get_global_object()), true);
+        ctx.get_lexical_environment()->create_binding("this", Value(ctx.get_global_object()), true);
 
         PropertyDescriptor global_ref_desc(Value(ctx.get_global_object()), PropertyAttributes::BuiltinFunction);
         ctx.get_global_object()->set_property_descriptor("globalThis", global_ref_desc);
@@ -437,11 +437,11 @@ void register_global_builtins(Context& ctx) {
         ctx.get_global_object()->set_property_descriptor("window", global_ref_desc);
         ctx.get_global_object()->set_property_descriptor("this", global_ref_desc);
     }
-    ctx.get_lexical_environment()->create_binding("true", Value(true), false);
-    ctx.get_lexical_environment()->create_binding("false", Value(false), false);
+    ctx.get_lexical_environment()->create_binding("true", Value(true), false, false);
+    ctx.get_lexical_environment()->create_binding("false", Value(false), false, false);
     
-    ctx.get_lexical_environment()->create_binding("NaN", Value::nan(), false);
-    ctx.get_lexical_environment()->create_binding("Infinity", Value::positive_infinity(), false);
+    ctx.get_lexical_environment()->create_binding("NaN", Value::nan(), false, false);
+    ctx.get_lexical_environment()->create_binding("Infinity", Value::positive_infinity(), false, false);
 
     if (ctx.get_global_object()) {
         PropertyDescriptor nan_desc(Value::nan(), PropertyAttributes::None);
@@ -500,7 +500,7 @@ void register_global_builtins(Context& ctx) {
             }
             return Value(result);
         }, 1);
-    ctx.get_lexical_environment()->create_binding("encodeURI", Value(encode_uri_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("encodeURI", Value(encode_uri_fn.release()), true);
 
     auto decode_uri_fn = ObjectFactory::create_native_function("decodeURI",
         [is_hex_digit, hex_to_int, is_uri_reserved](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -565,7 +565,7 @@ void register_global_builtins(Context& ctx) {
             }
             return Value(result);
         }, 1);
-    ctx.get_lexical_environment()->create_binding("decodeURI", Value(decode_uri_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("decodeURI", Value(decode_uri_fn.release()), true);
 
     auto encode_uri_component_fn = ObjectFactory::create_native_function("encodeURIComponent",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -595,7 +595,7 @@ void register_global_builtins(Context& ctx) {
             }
             return Value(result);
         }, 1);
-    ctx.get_lexical_environment()->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("encodeURIComponent", Value(encode_uri_component_fn.release()), true);
 
     auto decode_uri_component_fn = ObjectFactory::create_native_function("decodeURIComponent",
         [is_hex_digit, hex_to_int](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -654,7 +654,7 @@ void register_global_builtins(Context& ctx) {
             }
             return Value(result);
         }, 1);
-    ctx.get_lexical_environment()->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("decodeURIComponent", Value(decode_uri_component_fn.release()), true);
     
     auto bigint_fn = ObjectFactory::create_native_function("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
