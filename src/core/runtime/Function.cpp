@@ -341,22 +341,27 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             std::string var_name = key.substr(10);
             Value closure_value = this->get_property(key);
             if (var_name != "arguments" && var_name != "this") {
+                // Use the caller's current value only when it matches the captured closure
+                // (same binding, just mutated). If the values differ, the closure captured
+                // a shadowing inner binding -- preserve the captured value.
                 if (parent_var_names.count(var_name)) {
                     Value parent_val = parent_var_env->get_binding(var_name);
-                    if (!parent_val.is_undefined() && !parent_val.is_function()) {
+                    if (!parent_val.is_undefined() && !parent_val.is_function() &&
+                            parent_val.strict_equals(closure_value)) {
                         closure_value = parent_val;
                     }
                 }
-                // Do not materialize variables that live in the global Object env.
-                // The global env has no outer (outer == nullptr); with-scope Object envs
-                // do have an outer and must still be materialized (the with-scope will be
-                // popped by the time the function runs, so the env chain no longer has it).
+                // Skip materializing only if the variable lives in the global Object env
+                // AND the closure captured the same value (not a shadowing inner binding).
                 bool skip_materialize = false;
                 Environment* check_env = parent_context->get_lexical_environment();
                 while (check_env) {
                     if (check_env->has_own_binding(var_name)) {
-                        skip_materialize = (check_env->get_type() == Environment::Type::Object &&
-                                            check_env->get_outer() == nullptr);
+                        if (check_env->get_type() == Environment::Type::Object &&
+                                check_env->get_outer() == nullptr) {
+                            Value global_val = check_env->get_binding(var_name);
+                            skip_materialize = global_val.strict_equals(closure_value);
+                        }
                         break;
                     }
                     check_env = check_env->get_outer();
