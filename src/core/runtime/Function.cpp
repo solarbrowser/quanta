@@ -262,10 +262,30 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         actual_this = this->get_property("__arrow_this__");
     }
 
-    if (!is_arrow_ && !function_context.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
-        Object* global = function_context.get_global_object();
-        if (global) {
-            actual_this = Value(global);
+    if (!is_arrow_ && !function_context.is_strict_mode()) {
+        if (this_value.is_undefined() || this_value.is_null()) {
+            Object* global = function_context.get_global_object();
+            if (global) {
+                actual_this = Value(global);
+            }
+        } else if (this_value.is_number() || this_value.is_string() || this_value.is_boolean()) {
+            // ES5 10.4.3: box primitive this to wrapper object in non-strict mode
+            Object* global = function_context.get_global_object();
+            const char* ctor_name = this_value.is_number() ? "Number"
+                                  : this_value.is_string() ? "String" : "Boolean";
+            Object::ObjectType obj_type = this_value.is_number() ? Object::ObjectType::Number
+                                        : this_value.is_string() ? Object::ObjectType::String
+                                        : Object::ObjectType::Boolean;
+            auto wrapper = std::make_unique<Object>(obj_type);
+            wrapper->set_property("[[PrimitiveValue]]", this_value);
+            if (global) {
+                Value ctor_val = global->get_property(ctor_name);
+                if (ctor_val.is_function()) {
+                    Value proto = ctor_val.as_function()->get_property("prototype");
+                    if (proto.is_object()) wrapper->set_prototype(proto.as_object());
+                }
+            }
+            actual_this = Value(wrapper.release());
         }
     }
 
@@ -452,7 +472,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         for (size_t i = 0; i < args.size(); i++) {
             arguments_obj->set_element(i, args[i]);
         }
-        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        {
+            PropertyDescriptor len_desc(Value(static_cast<double>(args.size())),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            arguments_obj->set_property_descriptor("length", len_desc);
+        }
         // ES5: Arguments object [[Class]] is "Arguments"
         arguments_obj->set_type(Object::ObjectType::Arguments);
         // Arguments should inherit from Object.prototype, not Array.prototype
@@ -511,8 +535,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             thrower.release();
             // 'caller' is NOT added as own property in strict mode (ES2017 spec)
         } else {
-            // ES1: In non-strict mode, arguments.callee is the function itself
-            PropertyDescriptor callee_desc(Value(this), PropertyAttributes::Default);
+            // ES5 10.6 step 13.a: callee is {writable:true, enumerable:false, configurable:true}
+            PropertyDescriptor callee_desc(Value(this), PropertyAttributes::BuiltinFunction);
             arguments_obj->set_property_descriptor("callee", callee_desc);
         }
 

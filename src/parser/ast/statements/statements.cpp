@@ -506,6 +506,8 @@ Value BlockStatement::evaluate(Context& ctx) {
     if (exiting) {
         g_empty_completion = false;
         if (ctx.has_return_value()) return ctx.get_return_value();
+        // break/continue: propagate last non-empty value (spec UpdateEmpty semantics)
+        if (ctx.has_break() || ctx.has_continue()) return last_value;
         return Value();
     }
     // Signal empty completion if block had statements but none produced a real value
@@ -633,6 +635,7 @@ Value ForStatement::evaluate(Context& ctx) {
          ctx.pop_block_scope(); } while(0)
 
     Value result;
+    Value V; // spec ForBodyEvaluation: V tracks last non-empty body completion
     try {
         if (init_) {
             init_->evaluate(ctx);
@@ -691,6 +694,7 @@ Value ForStatement::evaluate(Context& ctx) {
 
         if (body_) {
             Value body_result = body_->evaluate(ctx);
+            if (!g_empty_completion) V = body_result;
 
             if (has_per_iteration_scope) {
                 std::vector<Value> updated_values;
@@ -744,7 +748,7 @@ Value ForStatement::evaluate(Context& ctx) {
         }
     }
 
-        result = Value();
+        result = V;
     } catch (...) {
         if (has_using_init) ctx.run_dispose_resources();
         ctx.set_current_loop_label(prev_loop_label);
@@ -759,6 +763,7 @@ Value ForStatement::evaluate(Context& ctx) {
     ctx.set_current_loop_label(prev_loop_label);
     ctx.pop_block_scope();
     decrement_loop_depth();
+    g_empty_completion = false;
     return result;
 }
 
@@ -1542,6 +1547,7 @@ Value WhileStatement::evaluate(Context& ctx) {
 
     int safety_counter = 0;
     const int max_iterations = 1000000000;
+    Value V;
 
     try {
         while (true) {
@@ -1570,6 +1576,7 @@ Value WhileStatement::evaluate(Context& ctx) {
 
             try {
                 Value body_result = body_->evaluate(ctx);
+                if (!g_empty_completion) V = body_result;
                 if (ctx.has_exception()) return Value();
 
                 if (ctx.has_break()) {
@@ -1590,9 +1597,6 @@ Value WhileStatement::evaluate(Context& ctx) {
                     }
                     break;
                 }
-
-                if (safety_counter % 10 == 0) {
-                }
             } catch (...) {
                 ctx.throw_exception(Value(std::string("Error in while-loop body execution")));
                 ctx.set_current_loop_label(prev_loop_label);
@@ -1606,7 +1610,8 @@ Value WhileStatement::evaluate(Context& ctx) {
     }
 
     ctx.set_current_loop_label(prev_loop_label);
-    return Value();
+    g_empty_completion = false;
+    return V;
 }
 
 std::string WhileStatement::to_string() const {
@@ -1623,6 +1628,7 @@ std::unique_ptr<ASTNode> WhileStatement::clone() const {
 Value DoWhileStatement::evaluate(Context& ctx) {
     int safety_counter = 0;
     const int max_iterations = 1000000000;
+    Value V;
 
     try {
         do {
@@ -1638,6 +1644,7 @@ Value DoWhileStatement::evaluate(Context& ctx) {
 
             try {
                 Value body_result = body_->evaluate(ctx);
+                if (!g_empty_completion) V = body_result;
                 if (ctx.has_exception()) return Value();
 
                 if (ctx.has_break()) {
@@ -1673,7 +1680,8 @@ Value DoWhileStatement::evaluate(Context& ctx) {
         return Value();
     }
 
-    return Value();
+    g_empty_completion = false;
+    return V;
 }
 
 std::string DoWhileStatement::to_string() const {
@@ -1777,6 +1785,7 @@ std::unique_ptr<ASTNode> ReturnStatement::clone() const {
 
 Value BreakStatement::evaluate(Context& ctx) {
     ctx.set_break(label_);
+    g_empty_completion = true;
     return Value();
 }
 
@@ -1791,6 +1800,7 @@ std::unique_ptr<ASTNode> BreakStatement::clone() const {
 
 Value ContinueStatement::evaluate(Context& ctx) {
     ctx.set_continue(label_);
+    g_empty_completion = true;
     return Value();
 }
 
@@ -2022,30 +2032,30 @@ Value SwitchStatement::evaluate(Context& ctx) {
         return Value();
     }
 
-    bool executing = false;
-    Value result;
+    Value V;
 
     for (size_t i = static_cast<size_t>(start_index); i < cases_.size(); i++) {
         CaseClause* case_clause = static_cast<CaseClause*>(cases_[i].get());
-        executing = true;
 
         for (const auto& stmt : case_clause->get_consequent()) {
-            result = stmt->evaluate(ctx);
+            Value result = stmt->evaluate(ctx);
+            if (!g_empty_completion) V = result;
             if (ctx.has_exception()) return Value();
 
             if (ctx.has_break()) {
                 ctx.clear_break_continue();
-                return result;
+                g_empty_completion = false;
+                return V;
             }
 
             if (ctx.has_return_value()) {
                 return ctx.get_return_value();
             }
         }
-
     }
 
-    return result;
+    g_empty_completion = false;
+    return V;
 }
 
 std::string SwitchStatement::to_string() const {

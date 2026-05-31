@@ -67,7 +67,11 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("multiline", Value(flags_.find('m') != std::string::npos));
         obj->set_property("unicode", Value(flags_.find('u') != std::string::npos));
         obj->set_property("sticky", Value(flags_.find('y') != std::string::npos));
-        obj->set_property("lastIndex", Value(0.0));
+        {
+            // ES2015 21.2.3.2.1: lastIndex is {Writable:true, Enumerable:false, Configurable:false}
+            PropertyDescriptor li_desc(Value(0.0), PropertyAttributes::Writable);
+            obj->set_property_descriptor("lastIndex", li_desc);
+        }
 
         auto regexp_impl = std::make_shared<RegExp>(pattern_, flags_);
         Object* obj_ptr = obj.get();
@@ -77,7 +81,7 @@ Value RegexLiteral::evaluate(Context& ctx) {
                 (void)ctx;
                 if (args.empty()) return Value(false);
 
-                if (regexp_impl->get_global()) {
+                if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
                     Value lastIndex_val = obj_ptr->get_property("lastIndex");
                     if (lastIndex_val.is_number()) {
                         regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
@@ -87,7 +91,7 @@ Value RegexLiteral::evaluate(Context& ctx) {
                 std::string str = args[0].to_string();
                 bool result = regexp_impl->test(str);
 
-                if (regexp_impl->get_global()) {
+                if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
                     obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
                 }
 

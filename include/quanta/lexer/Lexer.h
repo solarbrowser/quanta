@@ -33,6 +33,7 @@ private:
     std::vector<std::string> errors_;
     TokenType last_token_type_;
     const std::vector<Token>* tokens_so_far_ = nullptr;
+    bool current_string_has_legacy_octal_ = false;
 
     static const std::unordered_map<std::string, TokenType> keywords_;
     

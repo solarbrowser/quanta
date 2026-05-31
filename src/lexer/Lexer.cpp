@@ -603,6 +603,7 @@ Token Lexer::read_number() {
             }
             value = parse_legacy_octal_literal();
         } else if (next == '_') {
+            advance();
             add_error("SyntaxError: Numeric separator cannot appear after leading zero");
             return create_token(TokenType::INVALID, start);
         } else {
@@ -659,6 +660,7 @@ Token Lexer::read_string(char quote) {
         scan_pos++;
     }
 
+    current_string_has_legacy_octal_ = false;
     std::string value = parse_string_literal(quote);
 
     if (at_end() || current_char() != quote) {
@@ -669,6 +671,7 @@ Token Lexer::read_string(char quote) {
     advance();
     Token tok = create_token(TokenType::STRING, value, start);
     tok.set_string_has_escapes(has_escapes);
+    tok.set_string_has_legacy_octal(current_string_has_legacy_octal_);
     return tok;
 }
 
@@ -1409,9 +1412,20 @@ double Lexer::parse_legacy_octal_literal() {
     double value = 0.0;
     advance();
 
-    while (!at_end() && is_octal_digit(current_char())) {
-        char ch = advance();
-        value = value * 8 + (ch - '0');
+    bool has_non_octal = false;
+    std::string digits;
+    while (!at_end() && std::isdigit((unsigned char)current_char())) {
+        char ch = current_char();
+        if (ch == '8' || ch == '9') has_non_octal = true;
+        digits += ch;
+        advance();
+    }
+
+    if (has_non_octal) {
+        // NonOctalDecimalIntegerLiteral: treat as decimal
+        value = std::stod("0" + digits);
+    } else {
+        for (char c : digits) value = value * 8 + (c - '0');
     }
     return value;
 }
@@ -1445,12 +1459,40 @@ std::string Lexer::parse_escape_sequence(bool in_template) {
 
     char ch = current_char();
 
+    // LineContinuation: \ followed by LineTerminator → empty string (11.8.4 SV)
+    if (ch == '\n') { advance(); current_position_.line++; return ""; }
+    if (ch == '\r') {
+        advance();
+        if (!at_end() && current_char() == '\n') advance(); // CRLF
+        current_position_.line++;
+        return "";
+    }
+    // U+2028 LINE SEPARATOR (E2 80 A8) and U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
+    if ((unsigned char)ch == 0xE2 && remaining() >= 3) {
+        unsigned char b2 = (unsigned char)source_[position_ + 1];
+        unsigned char b3 = (unsigned char)source_[position_ + 2];
+        if (b2 == 0x80 && (b3 == 0xA8 || b3 == 0xA9)) {
+            advance(); advance(); advance();
+            current_position_.line++;
+            return "";
+        }
+    }
+
     // ES1: Octal escape sequences \0-\377 (up to 3 octal digits)
     if (ch >= '0' && ch <= '7') {
-        // ES5: Octal escapes not allowed in strict mode (except \0 not followed by digit)
+        // ES5: Octal escapes not allowed in strict mode (except \0 not followed by any decimal digit)
         if (options_.strict_mode) {
-            if (ch != '0' || (peek_char(1) >= '0' && peek_char(1) <= '7')) {
+            char next = peek_char(1);
+            bool next_is_digit = (next >= '0' && next <= '9');
+            if (ch != '0' || next_is_digit) {
                 add_error("SyntaxError: Octal escape sequences are not allowed in strict mode");
+            }
+        } else {
+            // Track legacy octal for retroactive strict-mode check in directive prologues
+            char next = peek_char(1);
+            bool next_is_digit = (next >= '0' && next <= '9');
+            if (ch != '0' || next_is_digit) {
+                current_string_has_legacy_octal_ = true;
             }
         }
         int octal_value = 0;
@@ -1470,7 +1512,14 @@ std::string Lexer::parse_escape_sequence(bool in_template) {
             }
         }
 
-        return std::string(1, static_cast<char>(octal_value));
+        if (octal_value <= 0x7F) {
+            return std::string(1, static_cast<char>(octal_value));
+        }
+        // Encode as UTF-8 to match parse_hex_escape behavior (0x80-0xFF)
+        std::string utf8;
+        utf8 += static_cast<char>(0xC0 | (octal_value >> 6));
+        utf8 += static_cast<char>(0x80 | (octal_value & 0x3F));
+        return utf8;
     }
 
     advance();
@@ -1494,6 +1543,8 @@ std::string Lexer::parse_escape_sequence(bool in_template) {
         case '9':
             if (in_template || options_.strict_mode) {
                 add_error("SyntaxError: Non-octal decimal escape sequence is not allowed");
+            } else {
+                current_string_has_legacy_octal_ = true;
             }
             return std::string(1, ch);
         default: return std::string(1, ch);

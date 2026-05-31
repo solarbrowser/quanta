@@ -5,6 +5,7 @@
  */
 
 #include "quanta/parser/Parser.h"
+#include "quanta/core/runtime/RegExp.h"
 #include <algorithm>
 #include <iostream>
 #include <map>
@@ -1878,6 +1879,19 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         bool has_unicode_flag = flags.find('u') != std::string::npos || flags.find('v') != std::string::npos;
         const std::string& p = pattern;
 
+        // Pre-scan: collect ALL named groups for forward-reference support
+        std::unordered_set<std::string> seen_groups; // for duplicate detection in main loop
+        for (size_t i = 0; i < p.size(); i++) {
+            if (p[i] == '(' && i + 3 < p.size() && p[i+1] == '?' && p[i+2] == '<') {
+                if (p[i+3] != '=' && p[i+3] != '!') {
+                    size_t end = p.find('>', i + 3);
+                    if (end != std::string::npos) {
+                        named_groups.insert(p.substr(i + 3, end - (i + 3)));
+                    }
+                }
+            }
+        }
+
         // Unicode-mode (/u or /v) strict validation
         if (has_unicode_flag) {
             int group_count = 0;
@@ -1981,10 +1995,11 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                             add_error(err);
                             return nullptr;
                         }
-                        if (named_groups.count(name)) {
+                        if (seen_groups.count(name)) {
                             add_error("SyntaxError: Duplicate named capture group: " + name);
                             return nullptr;
                         }
+                        seen_groups.insert(name);
                         named_groups.insert(name);
                     }
                 }
@@ -2027,20 +2042,33 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
             add_error("SyntaxError: Quantifier without preceding atom in regular expression");
             return nullptr;
         }
-        // Quantifier after lookbehind assertion (?<=...) or (?<!...)
-        for (size_t i = 0; i + 5 < p.size(); i++) {
-            if (p[i] == '(' && p[i+1] == '?' && p[i+2] == '<' && (p[i+3] == '=' || p[i+3] == '!')) {
-                size_t depth = 1, j = i + 1;
-                while (j < p.size() && depth > 0) {
-                    if (p[j] == '(' && (j == 0 || p[j-1] != '\\')) depth++;
-                    else if (p[j] == ')' && (j == 0 || p[j-1] != '\\')) depth--;
-                    j++;
-                }
-                if (j < p.size() && is_quantifier_start(p, j)) {
-                    add_error("SyntaxError: Quantifier cannot follow a lookbehind assertion");
-                    return nullptr;
+        // Quantifier after lookbehind (?<=...) or (?<!...) or lookahead (?=...) or (?!...) in u mode
+        for (size_t i = 0; i + 3 < p.size(); i++) {
+            if (p[i] == '(' && p[i+1] == '?') {
+                bool is_lookahead = (p[i+2] == '=' || p[i+2] == '!');
+                bool is_lookbehind = (p[i+2] == '<' && i + 3 < p.size() && (p[i+3] == '=' || p[i+3] == '!'));
+                if (is_lookahead || is_lookbehind) {
+                    size_t depth = 1, j = i + 1;
+                    while (j < p.size() && depth > 0) {
+                        if (p[j] == '(' && (j == 0 || p[j-1] != '\\')) depth++;
+                        else if (p[j] == ')' && (j == 0 || p[j-1] != '\\')) depth--;
+                        j++;
+                    }
+                    if (j < p.size() && is_quantifier_start(p, j)) {
+                        if (is_lookbehind || has_unicode_flag) {
+                            add_error("SyntaxError: Quantifier cannot follow a lookahead/lookbehind assertion");
+                            return nullptr;
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    if (flags.find('u') != std::string::npos) {
+        if (!RegExp::is_valid_unicode_pattern(pattern, flags)) {
+            add_error("SyntaxError: Invalid regular expression: " + pattern);
+            return nullptr;
         }
     }
 
@@ -2969,15 +2997,24 @@ std::unique_ptr<ASTNode> Parser::parse_block_statement(bool is_function_body) {
             return idx;
         };
         size_t scan = current_token_index_;
+        bool found_use_strict = false;
+        bool preceding_has_legacy_octal = false;
         while (scan < tokens_.size() && tokens_[scan].get_type() == TokenType::STRING) {
             if (tokens_[scan].get_value() == "use strict") {
+                found_use_strict = true;
                 options_.strict_mode = true;
                 break;
+            }
+            if (tokens_[scan].string_has_legacy_octal()) {
+                preceding_has_legacy_octal = true;
             }
             scan = next_tok_idx(scan);
             if (scan < tokens_.size() && tokens_[scan].get_type() == TokenType::SEMICOLON) {
                 scan = next_tok_idx(scan);
             }
+        }
+        if (found_use_strict && preceding_has_legacy_octal) {
+            add_error("SyntaxError: Octal escape sequences are not allowed in strict mode");
         }
     }
 

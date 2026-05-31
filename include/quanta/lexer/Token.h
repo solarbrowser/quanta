@@ -177,6 +177,7 @@ private:
     bool has_numeric_value_;
     bool has_escaped_keyword_;
     bool string_has_escapes_ = false;
+    bool string_has_legacy_octal_ = false;
 
 public:
     Token();
@@ -195,6 +196,8 @@ public:
     void set_escaped_keyword(bool v) { has_escaped_keyword_ = v; }
     bool string_has_escapes() const { return string_has_escapes_; }
     void set_string_has_escapes(bool v) { string_has_escapes_ = v; }
+    bool string_has_legacy_octal() const { return string_has_legacy_octal_; }
+    void set_string_has_legacy_octal(bool v) { string_has_legacy_octal_ = v; }
 
     bool is_keyword() const;
     bool is_operator() const;
