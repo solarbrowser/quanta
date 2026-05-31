@@ -48,6 +48,8 @@ public:
 
     std::string to_string() const;
 
+    static bool is_valid_unicode_pattern(const std::string& pattern, const std::string& flags);
+
 private:
     void parse_flags(const std::string& flags);
     void do_compile();

@@ -393,13 +393,16 @@ bool RegExp::test(const std::string& str) {
         }
     }
 
-    uint32_t opts = sticky_ ? PCRE2_ANCHORED : 0;
     int rc = pcre2_match(re,
         reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
-        start, opts, md, nullptr);
+        start, 0, md, nullptr);
 
     bool found = (rc >= 0);
-    if (found && global_) {
+    if (found && sticky_) {
+        PCRE2_SIZE match_start = pcre2_get_ovector_pointer(md)[0];
+        if (match_start != start) found = false;
+    }
+    if (found && (global_ || sticky_)) {
         last_index_ = static_cast<int>(pcre2_get_ovector_pointer(md)[1]);
     } else if (!found && (global_ || sticky_)) {
         last_index_ = 0;
@@ -427,10 +430,9 @@ Value RegExp::exec(const std::string& str) {
         }
     }
 
-    uint32_t opts = sticky_ ? PCRE2_ANCHORED : 0;
     int rc = pcre2_match(re,
         reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
-        start, opts, md, nullptr);
+        start, 0, md, nullptr);
 
     if (rc < 0) {
         if (advances) last_index_ = 0;
@@ -439,6 +441,12 @@ Value RegExp::exec(const std::string& str) {
     }
 
     PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+
+    if (sticky_ && ov[0] != start) {
+        if (advances) last_index_ = 0;
+        pcre2_match_data_free(md);
+        return Value::null();
+    }
 
     uint32_t capture_count = 0;
     pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &capture_count);
@@ -500,6 +508,24 @@ void RegExp::compile(const std::string& pattern, const std::string& flags) {
 
 std::string RegExp::to_string() const {
     return "/" + pattern_ + "/" + flags_;
+}
+
+bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::string& flags) {
+    bool has_u = flags.find('u') != std::string::npos;
+    if (!has_u) return true;
+
+    std::string pat = fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(pattern)));
+    uint32_t options = PCRE2_UTF | PCRE2_UCP;
+    int errcode = 0;
+    PCRE2_SIZE erroffset = 0;
+    pcre2_code* re = pcre2_compile(
+        reinterpret_cast<PCRE2_SPTR>(pat.c_str()),
+        PCRE2_ZERO_TERMINATED,
+        options, &errcode, &erroffset, nullptr
+    );
+    if (!re) return false;
+    pcre2_code_free(re);
+    return true;
 }
 
 }
