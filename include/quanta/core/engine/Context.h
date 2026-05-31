@@ -340,7 +340,8 @@ private:
     std::unordered_map<std::string, bool> mutable_flags_;
     std::unordered_map<std::string, bool> initialized_flags_;
     std::unordered_map<std::string, bool> deletable_flags_;  // ES1: DontDelete attribute (false = DontDelete)
-    std::unordered_set<std::string> lexical_names_; 
+    std::unordered_set<std::string> lexical_names_;
+    std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;
 
 public:
@@ -374,6 +375,8 @@ public:
     bool has_own_binding(const std::string& name) const;
     bool has_lexical_declaration(const std::string& name) const { return lexical_names_.count(name) > 0; }
     void mark_lexical_declaration(const std::string& name) { lexical_names_.insert(name); }
+    bool is_const_binding(const std::string& name) const { return const_binding_names_.count(name) > 0; }
+    void mark_const_binding(const std::string& name) { const_binding_names_.insert(name); }
     void create_global_function_binding(const std::string& name, const Value& value);
     void create_uninitialized_binding(const std::string& name);
 };
