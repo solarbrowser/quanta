@@ -76,6 +76,7 @@ private:
 
     bool is_in_constructor_call_;
     bool super_called_;
+    bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Value new_target_;
 
     bool strict_mode_;
@@ -219,6 +220,8 @@ public:
     void set_in_constructor_call(bool value) { is_in_constructor_call_ = value; }
     bool was_super_called() const { return super_called_; }
     void set_super_called(bool value) { super_called_ = value; }
+    bool this_needs_super() const { return this_needs_super_; }
+    void set_this_needs_super(bool v) { this_needs_super_ = v; }
 
     Value get_new_target() const { return new_target_; }
     void set_new_target(const Value& val) { new_target_ = val; }

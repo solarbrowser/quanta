@@ -93,8 +93,15 @@ std::vector<Value> process_arguments_with_spread(const std::vector<std::unique_p
                     arg_values.push_back(Value(ch));
                     i += char_len;
                 }
+            } else if (!spread_value.is_null() && !spread_value.is_undefined()) {
+                // Non-iterable, non-null: TypeError
+                ctx.throw_type_error("Spread syntax requires an iterable");
+                return arg_values;
             } else {
-                arg_values.push_back(spread_value);
+                // null/undefined in call spread: TypeError (unlike object spread)
+                ctx.throw_type_error("Spread syntax requires an iterable, got " +
+                    std::string(spread_value.is_null() ? "null" : "undefined"));
+                return arg_values;
             }
         } else {
             Value arg_value = arg->evaluate(ctx);

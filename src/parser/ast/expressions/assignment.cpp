@@ -125,7 +125,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                 }
             } else {
-                ctx.set_binding(name, val);
+                bool ok = ctx.set_binding(name, val);
+                if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                }
             }
         };
 
