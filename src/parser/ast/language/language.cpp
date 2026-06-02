@@ -590,21 +590,25 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     }
 
     std::string closure_key = "__closure_" + class_name;
+    std::string const_marker = "__closure_const_" + class_name; // marks binding as immutable
     Value ctor_val(constructor_fn.get());
+    auto mark_class_name_closure = [&](Function* fn) {
+        fn->set_property(closure_key, ctor_val);
+        fn->set_property(const_marker, Value(true));
+    };
     if (proto_ptr) {
         auto proto_keys = proto_ptr->get_own_property_keys();
         for (const auto& key : proto_keys) {
             if (key == "constructor") continue;
             PropertyDescriptor desc = proto_ptr->get_property_descriptor(key);
             if (desc.has_getter() && desc.get_getter()) {
-                static_cast<Function*>(desc.get_getter())->set_property(closure_key, ctor_val);
+                mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
             } else if (desc.has_setter() && desc.get_setter()) {
-                static_cast<Function*>(desc.get_setter())->set_property(closure_key, ctor_val);
+                mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
             } else {
-                // Only call get_property for non-accessor properties to avoid invoking getters
                 Value method_val = proto_ptr->get_property(key);
                 if (method_val.is_function()) {
-                    method_val.as_function()->set_property(closure_key, ctor_val);
+                    mark_class_name_closure(method_val.as_function());
                 }
             }
         }
@@ -614,7 +618,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
         Value method_val = constructor_fn->get_property(key);
         if (method_val.is_function()) {
-            method_val.as_function()->set_property(closure_key, ctor_val);
+            mark_class_name_closure(method_val.as_function());
         }
     }
 

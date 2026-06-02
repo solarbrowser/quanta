@@ -340,7 +340,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);
             Value closure_value = this->get_property(key);
-            if (var_name != "arguments" && var_name != "this") {
+            bool is_const_closure = this->has_property("__closure_const_" + var_name);
+            if (var_name != "arguments" && var_name != "this" && !is_const_closure) {
                 // Use the caller's current value only when it matches the captured closure
                 // (same binding, just mutated). If the values differ, the closure captured
                 // a shadowing inner binding -- preserve the captured value.
@@ -368,7 +369,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 }
                 if (skip_materialize) continue;
             }
-            function_context.create_binding(var_name, closure_value, true);
+            if (is_const_closure) {
+                // Class name binding: always materialize as const, shadowing any outer binding
+                Environment* fn_lex = function_context.get_lexical_environment();
+                if (!fn_lex || !fn_lex->has_own_binding(var_name)) {
+                    function_context.create_lexical_binding(var_name, closure_value, false);
+                }
+            } else {
+                function_context.create_binding(var_name, closure_value, true);
+            }
         }
     }
 

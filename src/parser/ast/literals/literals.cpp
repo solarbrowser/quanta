@@ -36,12 +36,23 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                 return Value();
             }
 
-            if (!spread_value.is_object()) {
+            // ES2018: null/undefined in object spread are silently ignored
+            if (spread_value.is_null() || spread_value.is_undefined()) continue;
+            if (!spread_value.is_object() && !spread_value.is_function() &&
+                    !spread_value.is_string() && !spread_value.is_number() && !spread_value.is_boolean()) {
                 ctx.throw_exception(Value(std::string("TypeError: Spread syntax can only be applied to objects")));
                 return Value();
             }
 
-            Object* spread_obj = spread_value.as_object();
+            // Box primitives for spread
+            Object* spread_obj = nullptr;
+            if (spread_value.is_object()) {
+                spread_obj = spread_value.as_object();
+            } else if (spread_value.is_function()) {
+                spread_obj = spread_value.as_function();
+            } else {
+                continue; // primitives have no enumerable own properties
+            }
             if (!spread_obj) {
                 ctx.throw_exception(Value(std::string("Error: Could not convert value to object")));
                 return Value();
