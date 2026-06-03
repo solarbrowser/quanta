@@ -382,6 +382,26 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
 
 
+    // For non-simple params (defaults/rest/destructuring), create arguments early
+    // so default expressions can reference it (spec: unmapped arguments for non-simple).
+    if (!is_arrow_ && !parameter_objects_.empty()) {
+        bool has_complex = false;
+        for (const auto& p : parameter_objects_) {
+            if (p->has_default() || p->is_rest() || p->has_destructuring()) { has_complex = true; break; }
+        }
+        if (has_complex && !function_context.has_binding("arguments")) {
+            auto early_args = ObjectFactory::create_array(args.size());
+            for (size_t i = 0; i < args.size(); ++i) early_args->set_element(i, args[i]);
+            {
+                PropertyDescriptor ld(Value(static_cast<double>(args.size())),
+                    static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+                early_args->set_property_descriptor("length", ld);
+            }
+            early_args->set_type(Object::ObjectType::Arguments);
+            function_context.create_binding("arguments", Value(early_args.release()), false);
+        }
+    }
+
     if (!parameter_objects_.empty()) {
         size_t regular_param_count = 0;
 

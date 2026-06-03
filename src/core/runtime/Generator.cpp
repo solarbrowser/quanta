@@ -620,6 +620,16 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         }
     }
 
+    // Create arguments object BEFORE default param evaluation (default exprs can reference arguments)
+    {
+        auto arguments_obj = ObjectFactory::create_array(args.size());
+        for (size_t i = 0; i < args.size(); ++i)
+            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        arguments_obj->set_type(Object::ObjectType::Arguments);
+        gen_context.create_binding("arguments", Value(arguments_obj.release()), false);
+    }
+
     // Bind parameters
     const auto& param_objs = get_parameter_objects();
     if (!param_objs.empty()) {
@@ -669,15 +679,6 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
             gen_context.create_binding(params[i], arg);
         }
     }
-
-    // arguments object
-    auto arguments_obj = ObjectFactory::create_array(args.size());
-    for (size_t i = 0; i < args.size(); ++i) {
-        arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
-    }
-    arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
-    arguments_obj->set_type(Object::ObjectType::Arguments);
-    gen_context.create_binding("arguments", Value(arguments_obj.release()), false);
 
     std::unique_ptr<ASTNode> body_clone;
     if (body_) {
