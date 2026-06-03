@@ -314,9 +314,9 @@ Value Object::get_own_property(const std::string& key) const {
                 const PropertyDescriptor& desc = desc_it->second;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Object* getter = desc.get_getter();
-                    if (getter) {
+                    if (getter && current_context_) {
                         Function* getter_fn = dynamic_cast<Function*>(getter);
-                        if (getter_fn && !getter_fn->is_native() && current_context_) {
+                        if (getter_fn) {
                             return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                         }
                     }
@@ -567,6 +567,8 @@ bool Object::delete_property(const std::string& key) {
 
     uint32_t index;
     if (is_array_index(key, &index)) {
+        // Also remove any descriptor (e.g. mapped arguments accessor)
+        if (descriptors_) descriptors_->erase(key);
         return delete_element(index);
     }
 
