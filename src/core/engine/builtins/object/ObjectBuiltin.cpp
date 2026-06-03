@@ -1295,14 +1295,17 @@ void register_object_builtins(Context& ctx) {
                 return Value(false);
             }
 
-            std::string prop_name = args[0].to_string();
+            std::string prop_name;
+            if (args[0].is_symbol()) {
+                prop_name = args[0].as_symbol()->to_property_key();
+            } else {
+                prop_name = args[0].to_string();
+            }
 
-            // Check if property exists and is own property
             if (!this_obj->has_own_property(prop_name)) {
                 return Value(false);
             }
 
-            // Check if property is enumerable
             PropertyDescriptor desc = this_obj->get_property_descriptor(prop_name);
             return Value(desc.is_enumerable());
         }, 1);
