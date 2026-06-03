@@ -1021,8 +1021,38 @@ std::unique_ptr<ASTNode> ForInStatement::clone() const {
 }
 
 Value ForOfStatement::evaluate(Context& ctx) {
+    // ES6 13.7.5.6: ForDeclaration bound names are in TDZ when the iterable is evaluated.
+    // Create a block scope with TDZ bindings before evaluating the iterable so that
+    // `for (const x of [x])` sees x as TDZ, not any outer x.
+    Environment* pre_iter_env = nullptr;
+    if (left_->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        auto* vd = static_cast<VariableDeclaration*>(left_.get());
+        if (vd->declaration_count() > 0 &&
+                (vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::LET ||
+                 vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::CONST)) {
+            // Push new scope and create uninitialized (TDZ) binding
+            pre_iter_env = ctx.get_lexical_environment();
+            auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
+            Environment* tdz_ptr = tdz_env.release();
+            ctx.set_lexical_environment(tdz_ptr);
+            for (size_t di = 0; di < vd->declaration_count(); di++) {
+                const auto& decl = vd->get_declarations()[di];
+                if (decl->get_id()) {
+                    std::string bname = decl->get_id()->get_name();
+                    if (!bname.empty())
+                        tdz_ptr->create_uninitialized_binding(bname);
+                }
+            }
+        }
+    }
+
     Value iterable = right_->evaluate(ctx);
-    if (ctx.has_exception()) return Value();
+    if (ctx.has_exception()) {
+        if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
+        return Value();
+    }
+    // Restore outer env -- the loop body will re-create the binding per iteration
+    if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
 
     if (is_await_) {
         AsyncExecutor* exec = AsyncExecutor::get_current();

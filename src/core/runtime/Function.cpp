@@ -483,7 +483,17 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     // lexical arguments captured from the enclosing scope via __closure_arguments
     if (!is_arrow_) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
+        // Elements for non-mapped indices; mapped ones get accessor descriptors below.
+        // Only skip elements for simple param lists (no defaults/rest/destructuring).
+        bool pre_simple = !function_context.is_strict_mode() && !parameter_objects_.empty();
+        if (pre_simple) {
+            for (const auto& p : parameter_objects_) {
+                if (p->has_default() || p->is_rest() || p->has_destructuring()) { pre_simple = false; break; }
+            }
+        }
+        size_t map_count_pre = pre_simple ? std::min(args.size(), parameter_objects_.size()) : 0;
         for (size_t i = 0; i < args.size(); i++) {
+            if (i < map_count_pre) continue; // will be set via accessor
             arguments_obj->set_element(i, args[i]);
         }
         {
@@ -554,6 +564,45 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_property_descriptor("callee", callee_desc);
         }
 
+        // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple parameter lists
+        // (no defaults, no rest, no destructuring). Non-strict only.
+        bool is_simple_params = true;
+        for (const auto& p : parameter_objects_) {
+            if (p->has_default() || p->is_rest() || p->has_destructuring()) {
+                is_simple_params = false; break;
+            }
+        }
+        if (!function_context.is_strict_mode() && !parameter_objects_.empty() && is_simple_params) {
+            size_t map_count = std::min(args.size(), parameter_objects_.size());
+            for (size_t mi = 0; mi < map_count; mi++) {
+                const std::string& pname = parameter_objects_[mi]->get_name()->get_name();
+                if (pname.empty() || pname[0] == '_') continue;
+                // Shared index and param name captured by getter/setter
+                auto idx = std::make_shared<size_t>(mi);
+                auto name = std::make_shared<std::string>(pname);
+                // We need a stable pointer to function_context for the accessors.
+                // Since function_context outlives the argument evaluation, store a raw pointer.
+                Context* fc_ptr = &function_context;
+                auto getter_fn = ObjectFactory::create_native_function("get",
+                    [fc_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
+                        (void)ctx;
+                        return fc_ptr->get_binding(*name);
+                    });
+                auto setter_fn = ObjectFactory::create_native_function("set",
+                    [fc_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
+                        (void)ctx;
+                        if (!a.empty()) fc_ptr->set_binding(*name, a[0]);
+                        return Value();
+                    });
+                PropertyDescriptor map_desc;
+                map_desc.set_getter(getter_fn.get());
+                map_desc.set_setter(setter_fn.get());
+                map_desc.set_enumerable(true);
+                map_desc.set_configurable(true);
+                getter_fn.release(); setter_fn.release();
+                arguments_obj->set_property_descriptor(std::to_string(mi), map_desc);
+            }
+        }
         function_context.create_binding("arguments", Value(arguments_obj.release()), false);
     }
 
