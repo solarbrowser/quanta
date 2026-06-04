@@ -114,25 +114,48 @@ Value MemberExpression::evaluate(Context& ctx) {
     // ES6: super.prop / super[expr] looks up on parent prototype, not the constructor itself
     if (object_->get_type() == ASTNode::Type::IDENTIFIER &&
         static_cast<Identifier*>(object_.get())->get_name() == "super") {
+        Object* lookup_proto = nullptr;
         Value super_ctor = ctx.get_binding("__super__");
         if (super_ctor.is_function()) {
+            // Class method: super is the parent class, lookup on its prototype
             Value proto_val = super_ctor.as_function()->get_property("prototype");
-            if (proto_val.is_object()) {
-                Object* proto = proto_val.as_object();
-                std::string prop_name;
-                if (computed_) {
-                    Value key_val = property_->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (key_val.is_symbol()) {
-                        prop_name = key_val.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = key_val.to_string();
-                    }
-                } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
-                    prop_name = static_cast<Identifier*>(property_.get())->get_name();
+            if (proto_val.is_object()) lookup_proto = proto_val.as_object();
+        } else {
+            // Object literal method: super = Object.getPrototypeOf([[HomeObject]])
+            // Use __home_object__ if set, otherwise fall back to current 'this'
+            Value home = ctx.get_binding("__home_object__");
+            if (!home.is_undefined() && !home.is_null()) {
+                Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function())
+                                                      : home.as_object();
+                if (home_obj) lookup_proto = home_obj->get_prototype();
+            } else {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_object_like()) {
+                    Object* this_obj = this_val.is_function()
+                        ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+                    if (this_obj) lookup_proto = this_obj->get_prototype();
                 }
-                return proto->get_property(prop_name);
             }
+        }
+        if (lookup_proto) {
+            std::string prop_name;
+            if (computed_) {
+                Value key_val = property_->evaluate(ctx);
+                if (ctx.has_exception()) return Value();
+                prop_name = key_val.is_symbol() ? key_val.as_symbol()->to_property_key() : key_val.to_string();
+            } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+                prop_name = static_cast<Identifier*>(property_.get())->get_name();
+            }
+            // For getter properties, invoke with current 'this' as receiver (spec super[[Get]])
+            PropertyDescriptor desc = lookup_proto->get_property_descriptor(prop_name);
+            if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                if (getter) {
+                    Value this_val = ctx.get_binding("this");
+                    return getter->call(ctx, {}, this_val);
+                }
+            }
+            return lookup_proto->get_property(prop_name);
         }
     }
 

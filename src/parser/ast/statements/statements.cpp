@@ -1389,7 +1389,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 // Per spec: done/value getter throws → do NOT close iterator
                                 if (ctx.has_exception()) return Value();
 
-                                if (done.is_boolean() && done.to_boolean()) {
+                                if (done.to_boolean()) {
                                     break;
                                 }
 
