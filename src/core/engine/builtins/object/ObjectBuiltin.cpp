@@ -699,20 +699,14 @@ void register_object_builtins(Context& ctx) {
 
                 if (desc->has_own_property("writable")) {
                     prop_desc.set_writable(desc->get_property("writable").to_boolean());
-                } else {
-                    prop_desc.set_writable(false);
                 }
 
                 if (desc->has_own_property("enumerable")) {
                     prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
-                } else {
-                    prop_desc.set_enumerable(false);
                 }
 
                 if (desc->has_own_property("configurable")) {
                     prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
-                } else {
-                    prop_desc.set_configurable(false);
                 }
 
                 bool success;

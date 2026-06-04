@@ -824,6 +824,19 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     }
 
     if (desc.is_data_descriptor()) {
+        // ES5 10.6: if Arguments object has a mapped accessor for this index,
+        // setting a value via defineProperty must sync to the parameter binding.
+        if (header_.type == ObjectType::Arguments && desc.has_value() && descriptors_) {
+            auto it = descriptors_->find(key);
+            if (it != descriptors_->end() && it->second.is_accessor_descriptor() &&
+                    it->second.has_setter() && current_context_) {
+                Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
+                if (setter_fn) {
+                    std::vector<Value> sargs = {desc.get_value()};
+                    setter_fn->call(*current_context_, sargs, Value(this));
+                }
+            }
+        }
         uint32_t index;
         if (is_array_index(key, &index)) {
             if (index >= elements_.size()) {
@@ -864,9 +877,16 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         }
     }
 
-    // Store the authoritative descriptor AFTER set_property,
-    // so it doesn't get overwritten
-    (*descriptors_)[key] = desc;
+    // For generic descriptors (only attribute flags, no value/getter/setter),
+    // merge into the existing descriptor instead of replacing it.
+    if (desc.is_generic_descriptor() && descriptors_->count(key)) {
+        PropertyDescriptor& existing = (*descriptors_)[key];
+        if (desc.has_writable())     existing.set_writable(desc.is_writable());
+        if (desc.has_enumerable())   existing.set_enumerable(desc.is_enumerable());
+        if (desc.has_configurable()) existing.set_configurable(desc.is_configurable());
+    } else {
+        (*descriptors_)[key] = desc;
+    }
 
     return true;
 }
