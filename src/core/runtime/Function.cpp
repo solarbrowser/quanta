@@ -991,9 +991,6 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
     
     Value super_constructor_prop = get_property("__super_constructor__");
-    if (!super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        ctx.create_binding("__super__", super_constructor_prop);
-    }
     
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);

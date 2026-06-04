@@ -482,6 +482,29 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
                 return Value();
             }
+            // For any assignment (including =), check if target is a private method
+            if (!obj->has_private_slot(prop_name)) {
+                Object* proto = obj->get_prototype();
+                while (proto) {
+                    PropertyDescriptor pd = proto->get_property_descriptor(prop_name);
+                    if (pd.has_value()) {
+                        // It's a data property on prototype -- could be a private method
+                        if (!pd.is_accessor_descriptor() && pd.get_value().is_function()) {
+                            ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
+                            return Value();
+                        }
+                        break;
+                    }
+                    if (pd.is_accessor_descriptor()) {
+                        if (!pd.has_setter()) {
+                            ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
+                            return Value();
+                        }
+                        break;
+                    }
+                    proto = proto->get_prototype();
+                }
+            }
             if (operator_ != Operator::ASSIGN && !obj->has_private_slot(prop_name)) {
                 Object* proto = obj->get_prototype();
                 while (proto) {
