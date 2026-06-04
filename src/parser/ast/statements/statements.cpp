@@ -1061,7 +1061,6 @@ Value ForOfStatement::evaluate(Context& ctx) {
         if (vd->declaration_count() > 0 &&
                 (vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::LET ||
                  vd->get_declarations()[0]->get_kind() == VariableDeclarator::Kind::CONST)) {
-            // Push new scope and create uninitialized (TDZ) binding
             pre_iter_env = ctx.get_lexical_environment();
             auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
             Environment* tdz_ptr = tdz_env.release();
@@ -1075,6 +1074,14 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 }
             }
         }
+    } else if (left_->get_type() == ASTNode::Type::USING_DECLARATION) {
+        auto* ud = static_cast<UsingDeclaration*>(left_.get());
+        pre_iter_env = ctx.get_lexical_environment();
+        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
+        Environment* tdz_ptr = tdz_env.release();
+        ctx.set_lexical_environment(tdz_ptr);
+        for (const auto& b : ud->get_bindings())
+            if (!b.name.empty()) tdz_ptr->create_uninitialized_binding(b.name);
     }
 
     Value iterable = right_->evaluate(ctx);

@@ -114,6 +114,12 @@ Value MemberExpression::evaluate(Context& ctx) {
     // ES6: super.prop / super[expr] looks up on parent prototype, not the constructor itself
     if (object_->get_type() == ASTNode::Type::IDENTIFIER &&
         static_cast<Identifier*>(object_.get())->get_name() == "super") {
+        // ES2024 13.3.7.1: GetThisBinding() must succeed before evaluating the property expr.
+        // In a derived constructor before super(), this throws ReferenceError.
+        if (ctx.this_needs_super()) {
+            ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+            return Value();
+        }
         Object* lookup_proto = nullptr;
         Value super_ctor = ctx.get_binding("__super__");
         if (super_ctor.is_function()) {

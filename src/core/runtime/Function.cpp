@@ -301,6 +301,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_this_binding(this_obj);
     }
 
+    // Track uninitialized this for derived constructors (for super[expr] check)
+    {
+        Value scp = get_property("__super_constructor__");
+        if (is_class_constructor_ && scp.is_function() && !has_own_property("__default_ctor__")) {
+            function_context.set_this_needs_super(true);
+            function_context.set_super_called(false);
+        }
+    }
+
     if (!function_context.create_binding("this", actual_this, true)) {
         // Binding already exists (e.g. set from __closure_this) -- force update
         function_context.set_binding("this", actual_this);
@@ -1000,11 +1009,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     ctx.set_in_constructor_call(false);
     ctx.set_new_target(Value());
 
-    // If super() updated `this` to a different object (e.g. native Error/Array constructors),
-    // use that object as the result when the constructor returns normally (undefined result)
-    if (result.is_undefined() && super_was_called) {
-        // Check if this_value was updated by the super() call in call.cpp
-    }
+    // Propagate any exception from the constructor body before checking super state
+    if (ctx.has_exception()) return Value();
 
     // If super wasn't called and this is a derived class
     if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {

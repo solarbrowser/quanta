@@ -214,6 +214,7 @@ Value CallExpression::evaluate(Context& ctx) {
                     ctx.set_in_constructor_call(was_in_ctor);
                     ctx.set_new_target(old_new_target);
                     ctx.set_super_called(true);
+                    ctx.set_this_needs_super(false);
 
                     // If parent constructor explicitly returned an object, use that as new this
                     if ((result.is_object() || result.is_function()) && this_obj) {

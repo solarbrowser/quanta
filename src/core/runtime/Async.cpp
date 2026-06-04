@@ -140,6 +140,12 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     }
     exec_ctx->create_binding("this", bound_this, true);
 
+    // Set up __super__ for class methods
+    Value super_ctor = get_property("__super_constructor__");
+    if (super_ctor.is_function()) {
+        exec_ctx->create_binding("__super__", super_ctor, false);
+    }
+
     // Bind parameters
     const auto& params = get_parameters();
     for (size_t i = 0; i < params.size(); ++i) {

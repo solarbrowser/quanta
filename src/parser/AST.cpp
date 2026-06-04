@@ -255,6 +255,10 @@ std::unique_ptr<ASTNode> Parameter::clone() const {
 
 Value Identifier::evaluate(Context& ctx) {
     if (name_ == "super") {
+        if (ctx.this_needs_super()) {
+            ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+            return Value();
+        }
         Value super_constructor = ctx.get_binding("__super__");
         return super_constructor;
     }
