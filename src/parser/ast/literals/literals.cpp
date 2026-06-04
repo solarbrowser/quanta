@@ -31,10 +31,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         if (prop->key == nullptr && prop->value && prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
             SpreadElement* spread = static_cast<SpreadElement*>(prop->value.get());
             Value spread_value = spread->get_argument()->evaluate(ctx);
-            if (ctx.has_exception()) {
-                ctx.throw_exception(Value(std::string("Error evaluating spread argument")));
-                return Value();
-            }
+            if (ctx.has_exception()) return Value();
 
             // ES2018: null/undefined in object spread are silently ignored
             if (spread_value.is_null() || spread_value.is_undefined()) continue;
