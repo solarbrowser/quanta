@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iostream>
+#include <unordered_set>
 
 #ifdef __GNUC__
     #define LIKELY(x) __builtin_expect(!!(x), 1)
@@ -902,9 +903,22 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 
 
 Value ForInStatement::evaluate(Context& ctx) {
+    // ES6 13.7.5.6: TDZ bindings for let/const before evaluating the object
+    Environment* pre_obj_env = nullptr;
     if (left_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* vd = static_cast<VariableDeclaration*>(left_.get());
-        if (vd->get_kind() == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
+        auto kind = (vd->declaration_count() > 0) ? vd->get_declarations()[0]->get_kind()
+                                                   : VariableDeclarator::Kind::VAR;
+        if (kind == VariableDeclarator::Kind::LET || kind == VariableDeclarator::Kind::CONST) {
+            pre_obj_env = ctx.get_lexical_environment();
+            auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_obj_env);
+            Environment* tdz_ptr = tdz_env.release();
+            ctx.set_lexical_environment(tdz_ptr);
+            for (size_t di = 0; di < vd->declaration_count(); di++) {
+                const auto& decl = vd->get_declarations()[di];
+                if (decl->get_id()) tdz_ptr->create_uninitialized_binding(decl->get_id()->get_name());
+            }
+        } else if (kind == VariableDeclarator::Kind::VAR && vd->declaration_count() > 0) {
             auto* decl = vd->get_declarations()[0].get();
             std::string vname = decl->get_id()->get_name();
             Value init_val;
@@ -912,15 +926,13 @@ Value ForInStatement::evaluate(Context& ctx) {
                 init_val = decl->get_init()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
             }
-            if (!ctx.has_binding(vname)) {
-                ctx.create_binding(vname, init_val, true);
-            } else if (decl->get_init()) {
-                ctx.set_binding(vname, init_val);
-            }
+            if (!ctx.has_binding(vname)) ctx.create_binding(vname, init_val, true);
+            else if (decl->get_init()) ctx.set_binding(vname, init_val);
         }
     }
 
     Value object = right_->evaluate(ctx);
+    if (pre_obj_env) ctx.set_lexical_environment(pre_obj_env);
     if (ctx.has_exception()) return Value();
 
     if (object.is_object_like()) {
@@ -947,10 +959,26 @@ Value ForInStatement::evaluate(Context& ctx) {
             return Value();
         }
 
-        auto keys = obj->get_enumerable_keys();
-        keys.erase(std::remove_if(keys.begin(), keys.end(), [](const std::string& k) {
-            return k.size() >= 2 && k[0] == '_' && k[1] == '_';
-        }), keys.end());
+        // ES5 12.6.4: enumerate own enumerable properties then inherited ones.
+        // Non-enumerable own at a closer level blocks inherited enumerable at outer level.
+        std::vector<std::string> keys;
+        std::unordered_set<std::string> blocked; // seen at any closer level (blocks inherited)
+        Object* cur = obj;
+        while (cur) {
+            auto all_own = cur->get_own_property_keys();
+            // Yield enumerable own keys not already blocked by a closer object
+            for (const auto& k : all_own) {
+                if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
+                if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0 || k.find("Symbol(") == 0) continue;
+                if (blocked.count(k)) continue; // shadowed by closer level
+                // Check if this own key is enumerable
+                PropertyDescriptor d = cur->get_property_descriptor(k);
+                if (d.is_enumerable()) keys.push_back(k);
+                // Add to blocked regardless of enumerability (non-enum own blocks inherited enum)
+                blocked.insert(k);
+            }
+            cur = cur->get_prototype();
+        }
 
         uint32_t iteration_count = 0;
         const uint32_t MAX_ITERATIONS = 1000000000;
@@ -966,7 +994,6 @@ Value ForInStatement::evaluate(Context& ctx) {
 
         for (const auto& key : keys) {
             if (iteration_count >= MAX_ITERATIONS) break;
-            if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
             iteration_count++;
 
             if (is_destructuring) {
@@ -977,7 +1004,11 @@ Value ForInStatement::evaluate(Context& ctx) {
                 ctx.create_lexical_binding(var_name, Value(key), true);
             } else {
                 if (ctx.has_binding(var_name)) {
-                    ctx.set_binding(var_name, Value(key));
+                    bool ok = ctx.set_binding(var_name, Value(key));
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(var_name))) {
+                        ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
+                        return Value();
+                    }
                 } else {
                     ctx.create_binding(var_name, Value(key), true);
                 }

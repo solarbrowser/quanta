@@ -36,7 +36,10 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
 
     this->set_property("prototype", Value(prototype_));
-    prototype_->set_property("constructor", Value(this));
+    // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
+    PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
+        PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    prototype_->set_property_descriptor("constructor", ctor_desc);
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
@@ -60,7 +63,11 @@ Function::Function(const std::string& name,
     prototype_ = proto.release();
 
     this->set_property("prototype", Value(prototype_));
-    prototype_->set_property("constructor", Value(this));
+    {
+        PropertyDescriptor ctor_desc2(Value(this), static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Configurable));
+        prototype_->set_property_descriptor("constructor", ctor_desc2);
+    }
 
     PropertyDescriptor name_desc(Value(name_), PropertyAttributes::Configurable);
     this->set_property_descriptor("name", name_desc);
@@ -1007,11 +1014,17 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         // Use has_own_property to avoid inheriting __default_ctor__ from parent class
         bool is_default_ctor = has_own_property("__default_ctor__");
         if (is_default_ctor) {
-            // Default synthesized constructor: auto-call super(...args)
+            // Default synthesized constructor: auto-call super(...args) with [[Construct]]
             Function* super_constructor = super_constructor_prop.as_function();
             ctx.set_in_constructor_call(true);
             ctx.set_new_target(Value(static_cast<Object*>(this)));
-            Value super_result = super_constructor->call(ctx, args, this_value);
+            Value super_result;
+            if (super_constructor->is_native()) {
+                // Native built-ins (Boolean, Number, String, etc.) need construct semantics
+                super_result = super_constructor->construct(ctx, args);
+            } else {
+                super_result = super_constructor->call(ctx, args, this_value);
+            }
             ctx.set_in_constructor_call(false);
             ctx.set_new_target(Value());
             if (!super_result.is_undefined()) result = super_result;
