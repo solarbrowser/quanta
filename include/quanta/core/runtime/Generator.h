@@ -50,6 +50,7 @@ public:
         Value value;
         bool done;
         bool has_exception = false;
+        bool raw_result = false; // if true, value is the entire result object
         Value exception;
 
         GeneratorResult(const Value& v, bool d) : value(v), done(d) {}
@@ -57,6 +58,11 @@ public:
             GeneratorResult r(Value(), true);
             r.has_exception = true;
             r.exception = exc;
+            return r;
+        }
+        static GeneratorResult make_raw(const Value& result_obj) {
+            GeneratorResult r(result_obj, false);
+            r.raw_result = true;
             return r;
         }
     };
@@ -84,6 +90,8 @@ private:
 public:
     // Accessible from YieldExpression
     Value yielded_value_;
+    Value yielded_result_; // for yield*: full inner result object (may have undefined done)
+    bool yield_raw_result_ = false; // if true, return yielded_result_ as-is
     Value sent_value_;
     Value throw_value_;
     Value return_argument_;
