@@ -1560,13 +1560,18 @@ Value YieldExpression::evaluate(Context& ctx) {
             while (true) {
                 Value result = next_fn.as_function()->call(ctx, {}, iter_val);
                 if (ctx.has_exception()) return Value();
-                if (!result.is_object()) break;
+                if (!result.is_object()) {
+                    ctx.throw_type_error("Iterator result is not an object");
+                    return Value();
+                }
                 Value done = result.as_object()->get_property("done");
                 Value val  = result.as_object()->get_property("value");
                 if (ctx.has_exception()) return Value();
                 if (done.to_boolean()) { final_val = val; break; }
-                // Yield this element via swapcontext
-                current_gen->yielded_value_ = val;
+                // yield* propagates the WHOLE inner result object (spec 14.4.14)
+                current_gen->yielded_result_ = result;
+                current_gen->yield_raw_result_ = true;
+                current_gen->yielded_value_ = val; // fallback
                 current_gen->set_state(Generator::State::SuspendedYield);
                 swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
                 // Resumed

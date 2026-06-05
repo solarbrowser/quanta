@@ -272,10 +272,14 @@ void register_global_builtins(Context& ctx) {
                 }
 
                 if (strict) {
-                    // ES5 10.4.2: Strict eval creates isolated variable environment
+                    // ES5 10.4.2: Strict eval creates isolated variable environment.
+                    // IMPORTANT: heap-allocate and add to survivor pool so that functions
+                    // created inside eval can safely hold a pointer to this context after
+                    // eval returns (stack-allocated context would be a dangling pointer).
                     auto var_names = collect_var_names(program.get());
 
-                    Context eval_ctx(engine, &ctx, Context::Type::Eval);
+                    auto eval_ctx_ptr = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
+                    Context& eval_ctx = *eval_ctx_ptr;
                     eval_ctx.set_strict_mode(true);
                     auto eval_env = new Environment(
                         Environment::Type::Declarative, ctx.get_lexical_environment());
@@ -291,9 +295,15 @@ void register_global_builtins(Context& ctx) {
 
                     Value result = program->evaluate(eval_ctx);
 
-                    if (eval_ctx.has_exception()) {
-                        Value exception = eval_ctx.get_exception();
-                        eval_ctx.clear_exception();
+                    bool has_exc = eval_ctx.has_exception();
+                    Value exception = has_exc ? eval_ctx.get_exception() : Value();
+                    if (has_exc) eval_ctx.clear_exception();
+
+                    // Transfer to survivor pool so closures created inside can
+                    // safely reference this context after eval returns
+                    if (engine) engine->add_survivor_context(eval_ctx_ptr.release());
+
+                    if (has_exc) {
                         ctx.throw_exception(exception);
                         return Value();
                     }
@@ -385,13 +395,13 @@ void register_global_builtins(Context& ctx) {
                         return names;
                     };
 
-                    Context eval_ctx(engine, &ctx, Context::Type::Eval);
+                    // Heap-allocate so functions created inside keep valid closure_context_
+                    auto eval_ctx_ptr2 = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
+                    Context& eval_ctx = *eval_ctx_ptr2;
                     // Spec 18.2.1 step 9a: direct eval's lexEnv is a NEW declarative env
-                    // (child of caller's lexEnv), so let/const/class in eval are isolated from caller.
                     auto* eval_lex_env = new Environment(
                         Environment::Type::Declarative, ctx.get_lexical_environment());
 
-                    // Pre-instantiate lexical bindings as uninitialized (TDZ) per spec step 14.
                     for (const auto& lname : collect_lex_names(program.get())) {
                         eval_lex_env->create_uninitialized_binding(lname);
                     }
@@ -403,10 +413,14 @@ void register_global_builtins(Context& ctx) {
 
                     Value result = program->evaluate(eval_ctx);
 
-                    if (eval_ctx.has_exception()) {
-                        Value exception = eval_ctx.get_exception();
-                        eval_ctx.clear_exception();
-                        ctx.throw_exception(exception);
+                    bool has_exc2 = eval_ctx.has_exception();
+                    Value exc2 = has_exc2 ? eval_ctx.get_exception() : Value();
+                    if (has_exc2) eval_ctx.clear_exception();
+
+                    if (engine) engine->add_survivor_context(eval_ctx_ptr2.release());
+
+                    if (has_exc2) {
+                        ctx.throw_exception(exc2);
                         return Value();
                     }
 

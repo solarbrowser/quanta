@@ -95,6 +95,10 @@ Generator::GeneratorResult Generator::next(const Value& value) {
         generator_context_->clear_exception();
         return GeneratorResult::make_exception(exc);
     }
+    if (yield_raw_result_) {
+        yield_raw_result_ = false;
+        return GeneratorResult::make_raw(yielded_result_);
+    }
     return GeneratorResult(yielded_value_, false);
 }
 
@@ -358,6 +362,9 @@ Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
         ctx.throw_exception(result.exception);
         return Value();
     }
+
+    // yield* propagates the inner iterator's result object directly
+    if (result.raw_result) return result.value;
 
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("value", result.value);
