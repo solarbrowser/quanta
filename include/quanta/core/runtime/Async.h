@@ -62,18 +62,25 @@ private:
 };
 
 
+class Parameter;
+
 class AsyncFunction : public Function {
 private:
     std::unique_ptr<ASTNode> body_;
-    
+    std::vector<std::unique_ptr<Parameter>> ast_params_;
+
 public:
-    AsyncFunction(const std::string& name, 
+    AsyncFunction(const std::string& name,
                   const std::vector<std::string>& params,
                   std::unique_ptr<ASTNode> body,
                   Context* closure_context);
-    
+    AsyncFunction(const std::string& name,
+                  std::vector<std::unique_ptr<Parameter>> params,
+                  std::unique_ptr<ASTNode> body,
+                  Context* closure_context);
+
     Value call(Context& ctx, const std::vector<Value>& args, Value this_value = Value()) override;
-    
+
 private:
 };
 

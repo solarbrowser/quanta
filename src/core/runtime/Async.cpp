@@ -120,9 +120,13 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {}
 
-}
+AsyncFunction::AsyncFunction(const std::string& name,
+                           std::vector<std::unique_ptr<Parameter>> params,
+                           std::unique_ptr<ASTNode> body,
+                           Context* closure_context)
+    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {}
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto promise_obj = ObjectFactory::create_promise(&ctx);
@@ -146,15 +150,71 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         exec_ctx->create_binding("__super__", super_ctor, false);
     }
 
-    // Bind parameters
-    const auto& params = get_parameters();
-    for (size_t i = 0; i < params.size(); ++i) {
-        Value arg = i < args.size() ? args[i] : Value();
-        exec_ctx->create_binding(params[i], arg);
+    // Restore captured closure variables
+    for (const auto& key : get_own_property_keys()) {
+        if (key.size() <= 10 || key.substr(0, 10) != "__closure_") continue;
+        std::string var_name = key.substr(10);
+        if (var_name == "this") continue;
+        bool is_const = has_property("__closure_const_" + var_name);
+        exec_ctx->create_binding(var_name, get_property(key), !is_const);
     }
 
-    // Arrow functions inherit arguments from the enclosing scope; regular async functions get their own
-    if (arrow_this_val.is_undefined()) {
+    // Bind parameters with full AST support (defaults, destructuring, rest).
+    // Errors during param evaluation must reject the promise, not propagate synchronously.
+    const auto& param_objs = get_parameter_objects();
+    bool param_named_arguments = false;
+    if (!param_objs.empty()) {
+        size_t regular_count = 0;
+        for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
+        exec_ctx->set_in_param_eval(true);
+        for (size_t i = 0; i < param_objs.size(); ++i) {
+            const auto& param = param_objs[i];
+            if (param->is_rest()) {
+                auto rest_arr = ObjectFactory::create_array(0);
+                for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
+                exec_ctx->create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+            } else {
+                std::string pname = param->get_name() ? param->get_name()->get_name() : "";
+                if (pname == "arguments") param_named_arguments = true;
+                Value arg_val;
+                if (i < args.size() && !args[i].is_undefined()) {
+                    arg_val = args[i];
+                } else if (param->has_default()) {
+                    arg_val = param->get_default_value()->evaluate(*exec_ctx);
+                    if (exec_ctx->has_exception()) {
+                        exec_ctx->set_in_param_eval(false);
+                        promise_raw->reject(exec_ctx->get_exception());
+                        return promise_value;
+                    }
+                }
+                if (param->has_destructuring()) {
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
+                    if (destr) {
+                        destr->evaluate_with_value(*exec_ctx, arg_val);
+                        if (exec_ctx->has_exception()) {
+                            exec_ctx->set_in_param_eval(false);
+                            promise_raw->reject(exec_ctx->get_exception());
+                            return promise_value;
+                        }
+                    }
+                } else if (!pname.empty()) {
+                    exec_ctx->create_binding(pname, arg_val, true);
+                }
+            }
+        }
+        exec_ctx->set_in_param_eval(false);
+    } else {
+        const auto& params = get_parameters();
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (params[i] == "arguments") param_named_arguments = true;
+            Value arg = i < args.size() ? args[i] : Value();
+            exec_ctx->create_binding(params[i], arg);
+        }
+    }
+
+    // Arrow functions inherit arguments from the enclosing scope; regular async functions get their own.
+    // Skip if a parameter was already named "arguments" (it takes precedence).
+    if (arrow_this_val.is_undefined() && !param_named_arguments) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
         for (size_t i = 0; i < args.size(); ++i) {
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
