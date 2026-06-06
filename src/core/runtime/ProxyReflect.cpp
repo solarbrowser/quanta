@@ -1269,7 +1269,9 @@ Object* Reflect::to_object(const Value& value, Context& ctx) {
     if (value.is_object()) {
         return value.as_object();
     }
-    
+    if (value.is_function()) {
+        return static_cast<Object*>(value.as_function());
+    }
     ctx.throw_exception(Value(std::string("TypeError: Reflect operation requires an object")));
     return nullptr;
 }

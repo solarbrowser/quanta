@@ -123,7 +123,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
 
         if (value.is_function()) {
             Function* fn = value.as_function();
-            if (fn->get_name().empty()) {
+            if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                 std::string func_name = key;
                 if (prop->computed) {
                     Value key_check = prop->key->evaluate(ctx);

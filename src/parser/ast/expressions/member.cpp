@@ -271,7 +271,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             Shape* shape = obj->get_shape();
 
 
-            if (__builtin_expect(!obj->is_function(), 1)) {
+            if (__builtin_expect(!obj->is_function() && (prop_name.empty() || prop_name[0] != '#'), 1)) {
                 for (uint8_t i = 0; i < ic_size_; i++) {
                     if (__builtin_expect(ic_cache_[i].shape_ptr == shape, 1)) {
                         return obj->get_property_by_offset_unchecked(ic_cache_[i].offset);
@@ -310,7 +310,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 }
             }
 
-            if (__builtin_expect(shape != nullptr, 1)) {
+            if (__builtin_expect(shape != nullptr && (prop_name.empty() || prop_name[0] != '#'), 1)) {
                 auto info = shape->get_property_info(prop_name);
                 if (__builtin_expect(info.offset != UINT32_MAX, 1)) {
                     if (ic_size_ < 4) {

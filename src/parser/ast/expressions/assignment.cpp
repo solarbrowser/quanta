@@ -251,14 +251,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Value object_value = member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
-        // For super.x = val, object_value is the super lookup proto (may be undefined if no proto).
-        // The actual write target is 'this'. If there's no super prototype, throw TypeError.
+        // For super.x = val, the write always goes to 'this', not to the super prototype.
+        // The object_value (super prototype) is only used for setter lookup.
         Value write_target;
         if (is_super_assignment) {
-            if (object_value.is_undefined() || object_value.is_null()) {
-                ctx.throw_type_error("Cannot set property on undefined or null (super reference)");
-                return Value();
-            }
             write_target = ctx.get_binding("this");
         }
 
@@ -576,6 +572,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
         
+        // SetFunctionName for member assignment: obj.fn = () => {} -> fn.name = "fn"
+        if (operator_ == Operator::ASSIGN && !prop_name.empty() && prop_name[0] != '#' &&
+            right_value.is_function() && is_anonymous_function_def(right_.get())) {
+            Function* rfn = right_value.as_function();
+            if (rfn->get_name().empty() || rfn->get_name() == "<arrow>") {
+                rfn->set_name(prop_name);
+            }
+        }
+
         switch (operator_) {
             case Operator::ASSIGN:
                 if (is_string_object) {

@@ -839,26 +839,30 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         }
         uint32_t index;
         if (is_array_index(key, &index)) {
-            if (index >= elements_.size()) {
-                elements_.resize(index + 1);
+            if (desc.has_value()) {
+                if (index >= elements_.size()) {
+                    elements_.resize(index + 1);
+                }
+                elements_[index] = desc.get_value();
             }
-            elements_[index] = desc.get_value();
         } else {
             // Directly update shape/overflow to bypass writable check on existing props
             bool updated = false;
-            if (header_.shape && header_.shape->has_property(key)) {
+            if (desc.has_value() && header_.shape && header_.shape->has_property(key)) {
                 auto info = header_.shape->get_property_info(key);
                 if (info.offset < properties_.size()) {
                     properties_[info.offset] = desc.get_value();
                     updated = true;
                 }
             }
-            if (!updated && overflow_properties_ && overflow_properties_->count(key)) {
-                (*overflow_properties_)[key] = desc.get_value();
-                updated = true;
-            }
-            if (!updated) {
-                set_property(key, desc.get_value(), desc.get_attributes());
+            if (desc.has_value()) {
+                if (!updated && overflow_properties_ && overflow_properties_->count(key)) {
+                    (*overflow_properties_)[key] = desc.get_value();
+                    updated = true;
+                }
+                if (!updated) {
+                    set_property(key, desc.get_value(), desc.get_attributes());
+                }
             }
         }
     } else if (desc.is_accessor_descriptor() || desc.is_generic_descriptor()) {
@@ -877,13 +881,26 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         }
     }
 
-    // For generic descriptors (only attribute flags, no value/getter/setter),
-    // merge into the existing descriptor instead of replacing it.
-    if (desc.is_generic_descriptor() && descriptors_->count(key)) {
-        PropertyDescriptor& existing = (*descriptors_)[key];
-        if (desc.has_writable())     existing.set_writable(desc.is_writable());
-        if (desc.has_enumerable())   existing.set_enumerable(desc.is_enumerable());
-        if (desc.has_configurable()) existing.set_configurable(desc.is_configurable());
+    // Merge attribute-only descriptors: generic descriptors, and data descriptors that
+    // specify writable/enumerable/configurable but not value (e.g. defineProperty with
+    // {writable:false} alone must not overwrite the existing value).
+    bool is_attr_only = desc.is_generic_descriptor() ||
+                        (desc.is_data_descriptor() && !desc.has_value());
+    if (is_attr_only) {
+        if (descriptors_->count(key)) {
+            PropertyDescriptor& existing = (*descriptors_)[key];
+            if (desc.has_writable())     existing.set_writable(desc.is_writable());
+            if (desc.has_enumerable())   existing.set_enumerable(desc.is_enumerable());
+            if (desc.has_configurable()) existing.set_configurable(desc.is_configurable());
+        } else {
+            // No existing descriptor entry -- create one preserving the current value.
+            Value current_val = get_property(key);
+            PropertyDescriptor merged(current_val);
+            if (desc.has_writable())     merged.set_writable(desc.is_writable());
+            if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
+            if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
+            (*descriptors_)[key] = merged;
+        }
     } else {
         (*descriptors_)[key] = desc;
     }
