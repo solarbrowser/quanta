@@ -2045,13 +2045,21 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 
 
 Value AsyncFunctionExpression::evaluate(Context& ctx) {
-    std::string function_name = id_ ? id_->get_name() : "anonymous";
+    std::string function_name = id_ ? id_->get_name() : "";
 
     std::vector<std::unique_ptr<Parameter>> async_params;
     for (const auto& p : params_)
         async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
 
     auto* fn = new AsyncFunction(function_name, std::move(async_params), std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
+
+    if (is_arrow_) {
+        fn->set_is_arrow(true);
+        fn->set_is_constructor(false);
+        if (ctx.has_binding("this")) {
+            fn->set_property("__arrow_this__", ctx.get_binding("this"));
+        }
+    }
 
     if (ctx.has_binding("AsyncFunction")) {
         Value async_ctor = ctx.get_binding("AsyncFunction");
@@ -2061,6 +2069,41 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
                 fn->set_prototype(proto.as_object());
             }
         }
+    }
+
+    std::set<std::string> param_set;
+    for (const auto& p : params_) {
+        if (p->get_name()) param_set.insert(p->get_name()->get_name());
+    }
+    auto is_global_obj = [&](const std::string& n) -> bool {
+        Environment* e = ctx.find_binding_env(n);
+        return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+    };
+    auto var_env = ctx.get_variable_environment();
+    if (var_env && var_env->get_type() != Environment::Type::Object) {
+        for (const auto& bname : var_env->get_binding_names()) {
+            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
+                Value value = ctx.get_binding(bname);
+                if (!value.is_undefined()) {
+                    fn->set_property("__closure_" + bname, value);
+                }
+            }
+        }
+    }
+    auto lex_env = ctx.get_lexical_environment();
+    Environment* walk = lex_env;
+    while (walk && walk != var_env) {
+        for (const auto& bname : walk->get_binding_names()) {
+            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
+                if (!fn->has_property("__closure_" + bname) && !is_global_obj(bname)) {
+                    Value value = ctx.get_binding(bname);
+                    if (!value.is_undefined()) {
+                        fn->set_property("__closure_" + bname, value);
+                    }
+                }
+            }
+        }
+        walk = walk->get_outer();
     }
 
     return Value(fn);
@@ -2098,7 +2141,7 @@ std::unique_ptr<ASTNode> AsyncFunctionExpression::clone() const {
         id_ ? std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())) : nullptr,
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
-        start_, end_
+        start_, end_, is_arrow_
     );
 }
 
