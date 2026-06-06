@@ -890,10 +890,12 @@ Value Function::get_property(const std::string& key) const {
         if (descriptors_) {
             auto it = descriptors_->find("name");
             if (it != descriptors_->end() && it->second.is_data_descriptor()) {
-                return it->second.get_value();
+                Value v = it->second.get_value();
+                if (v.is_string() && v.to_string() == "<arrow>") return Value(std::string(""));
+                return v;
             }
         }
-        return Value(name_);
+        return Value(name_ == "<arrow>" ? std::string("") : name_);
     }
     if (key == "length") {
         PropertyDescriptor desc = get_property_descriptor(key);

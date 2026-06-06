@@ -1975,16 +1975,16 @@ Value TryStatement::evaluate(Context& ctx) {
         exception_value = Value(std::string("Error: Unknown error"));
     }
 
+    bool catch_param_ok = true;
     if (caught_exception && catch_clause_) {
         CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
-
         if (!catch_node->get_parameter_name().empty()) {
             std::string param_name = catch_node->get_parameter_name();
 
             if (param_name == "__destr_pattern__" && catch_node->get_destructuring_pattern()) {
                 auto* destr = static_cast<DestructuringAssignment*>(catch_node->get_destructuring_pattern());
                 destr->evaluate_with_value(ctx, exception_value);
-                if (ctx.has_exception()) { ctx.clear_exception(); }
+                if (ctx.has_exception()) { catch_param_ok = false; }
             } else if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {
                 std::string vars_str = param_name.substr(14);
                 std::vector<std::string> var_names;
@@ -2028,21 +2028,16 @@ Value TryStatement::evaluate(Context& ctx) {
             }
         }
 
-        try {
-            result = catch_node->get_body()->evaluate(ctx);
-
-            if (ctx.has_exception()) {
-                ctx.clear_exception();
-            }
-        } catch (const std::exception& e) {
-            result = Value(std::string("CatchBlockError: ") + e.what());
-            if (ctx.has_exception()) {
-                ctx.clear_exception();
-            }
-        } catch (...) {
-            result = Value(std::string("CatchBlockError: Unknown error in catch"));
-            if (ctx.has_exception()) {
-                ctx.clear_exception();
+        if (catch_param_ok) {
+            try {
+                result = catch_node->get_body()->evaluate(ctx);
+                if (ctx.has_exception()) { ctx.clear_exception(); }
+            } catch (const std::exception& e) {
+                result = Value(std::string("CatchBlockError: ") + e.what());
+                if (ctx.has_exception()) { ctx.clear_exception(); }
+            } catch (...) {
+                result = Value(std::string("CatchBlockError: Unknown error in catch"));
+                if (ctx.has_exception()) { ctx.clear_exception(); }
             }
         }
     }
@@ -2075,11 +2070,13 @@ Value TryStatement::evaluate(Context& ctx) {
         bool finally_abrupt = ctx.has_break() || ctx.has_continue() ||
                               ctx.has_return_value() || ctx.has_exception();
         if (!finally_abrupt) {
-            if (saved_has_exc)  ctx.throw_exception(saved_exception);
+            if (saved_has_exc)  ctx.throw_exception(saved_exception, true);
             if (saved_return)   { ctx.set_return_value(saved_ret_val); }
             if (saved_break)    ctx.set_break(saved_break_label);
             if (saved_continue) ctx.set_continue(saved_continue_label);
         }
+    } else if (ctx.has_exception() && !catch_param_ok) {
+        // Destructuring threw -- let exception propagate (don't clear it)
     } else if (ctx.has_exception()) {
         ctx.clear_exception();
     }

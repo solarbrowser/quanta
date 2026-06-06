@@ -855,22 +855,36 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             if (prop->shorthand && prop->value &&
                 prop->value->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 auto* assign = static_cast<AssignmentExpression*>(prop->value.get());
+                ASTNode* lhs = assign->left_.get();
                 if (prop_value.is_undefined()) {
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
+                    if (prop_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Function* fn = prop_value.as_function();
+                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                            fn->set_name(static_cast<Identifier*>(lhs)->get_name());
+                        }
+                    }
                 }
-                target = assign->left_.get();
+                target = lhs;
             }
 
             // Non-shorthand with AssignmentExpression value: {key: target = default}
             if (!prop->shorthand && target &&
                 target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 auto* assign = static_cast<AssignmentExpression*>(target);
+                ASTNode* lhs = assign->left_.get();
                 if (prop_value.is_undefined()) {
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
+                    if (prop_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Function* fn = prop_value.as_function();
+                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                            fn->set_name(static_cast<Identifier*>(lhs)->get_name());
+                        }
+                    }
                 }
-                target = assign->left_.get();
+                target = lhs;
             }
 
             assign_to_target(ctx, target, prop_value);
@@ -1079,11 +1093,18 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             // Check for default: element is AssignmentExpression like (a = default)
             if (target->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
                 auto* assign = static_cast<AssignmentExpression*>(target);
+                ASTNode* lhs = assign->left_.get();
                 if (elem_value.is_undefined()) {
                     elem_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
+                    if (elem_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                        Function* fn = elem_value.as_function();
+                        if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+                            fn->set_name(static_cast<Identifier*>(lhs)->get_name());
+                        }
+                    }
                 }
-                target = assign->left_.get();
+                target = lhs;
             }
 
             assign_to_target(ctx, target, elem_value);
