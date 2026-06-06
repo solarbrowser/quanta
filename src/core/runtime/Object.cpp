@@ -902,7 +902,19 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             (*descriptors_)[key] = merged;
         }
     } else {
-        (*descriptors_)[key] = desc;
+        // When replacing with a data/accessor descriptor that doesn't specify all attribute
+        // flags, merge the unspecified ones from the existing descriptor so we don't silently
+        // reset writable/enumerable/configurable to their defaults.
+        if (descriptors_->count(key)) {
+            PropertyDescriptor& existing = (*descriptors_)[key];
+            PropertyDescriptor merged = desc;
+            if (!desc.has_writable())     { if (existing.has_writable())     merged.set_writable(existing.is_writable()); }
+            if (!desc.has_enumerable())   { if (existing.has_enumerable())   merged.set_enumerable(existing.is_enumerable()); }
+            if (!desc.has_configurable()) { if (existing.has_configurable()) merged.set_configurable(existing.is_configurable()); }
+            (*descriptors_)[key] = merged;
+        } else {
+            (*descriptors_)[key] = desc;
+        }
     }
 
     return true;

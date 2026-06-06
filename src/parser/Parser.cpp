@@ -9452,7 +9452,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         nullptr,
         std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, end
+        start, end, true
     );
 }
 
@@ -9514,7 +9514,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Positio
         nullptr,
         std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
-        start, end
+        start, end, true
     );
 }
 

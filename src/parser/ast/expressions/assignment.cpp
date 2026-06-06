@@ -572,15 +572,6 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
         
-        // SetFunctionName for member assignment: obj.fn = () => {} -> fn.name = "fn"
-        if (operator_ == Operator::ASSIGN && !prop_name.empty() && prop_name[0] != '#' &&
-            right_value.is_function() && is_anonymous_function_def(right_.get())) {
-            Function* rfn = right_value.as_function();
-            if (rfn->get_name().empty() || rfn->get_name() == "<arrow>") {
-                rfn->set_name(prop_name);
-            }
-        }
-
         switch (operator_) {
             case Operator::ASSIGN:
                 if (is_string_object) {

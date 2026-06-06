@@ -1189,20 +1189,24 @@ private:
     std::unique_ptr<Identifier> id_;
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
+    bool is_arrow_ = false;
 
 public:
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<BlockStatement> body,
-                           const Position& start, const Position& end)
+                           const Position& start, const Position& end,
+                           bool is_arrow = false)
         : ASTNode(Type::ASYNC_FUNCTION_EXPRESSION, start, end),
-          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)) {}
-    
+          id_(std::move(id)), params_(std::move(params)), body_(std::move(body)),
+          is_arrow_(is_arrow) {}
+
     Identifier* get_id() const { return id_.get(); }
     const std::vector<std::unique_ptr<Parameter>>& get_params() const { return params_; }
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
-    
+    bool is_arrow() const { return is_arrow_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
