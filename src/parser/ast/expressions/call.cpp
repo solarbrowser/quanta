@@ -1909,38 +1909,32 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     } else if (object_value.is_number()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-            if (ctx.has_exception()) return Value();
-
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
         } else {
-            ctx.throw_exception(Value(std::string("Property is not a function")));
+            ctx.throw_type_error(member->to_string() + " is not a function");
             return Value();
         }
-        
+
     } else if (object_value.is_boolean()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
         if (method_value.is_function()) {
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-            if (ctx.has_exception()) return Value();
-            
             Function* method = method_value.as_function();
-            
-            
             return method->call(ctx, arg_values, object_value);
         } else {
-            ctx.throw_exception(Value(std::string("Property is not a function")));
+            ctx.throw_type_error(member->to_string() + " is not a function");
             return Value();
         }
-        
+
     } else if (object_value.is_object() || object_value.is_function()) {
         Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
-        
+
         std::string method_name;
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
@@ -1955,7 +1949,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 return Value();
             }
         }
-        
+
         if (!method_name.empty() && method_name[0] == '#') {
             if (!private_brand_check(ctx, obj, method_name)) {
                 ctx.throw_type_error("Cannot read private member " + method_name + " from an object whose class did not declare it");
@@ -1964,20 +1958,20 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         }
 
         Value method_value = obj->get_property(method_name);
-        if (method_value.is_function()) {
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-            if (ctx.has_exception()) return Value();
+        if (ctx.has_exception()) return Value();
 
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+
+        if (method_value.is_function()) {
             Function* method = method_value.as_function();
             return method->call(ctx, arg_values, object_value);
         } else if (method_value.is_object() &&
                    method_value.as_object()->get_type() == Object::ObjectType::Proxy) {
             Proxy* proxy = static_cast<Proxy*>(method_value.as_object());
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-            if (ctx.has_exception()) return Value();
             return proxy->apply_trap(arg_values, object_value);
         } else {
-            ctx.throw_exception(Value(std::string("Property is not a function")));
+            ctx.throw_type_error(method_name.empty() ? "is not a function" : method_name + " is not a function");
             return Value();
         }
     }
