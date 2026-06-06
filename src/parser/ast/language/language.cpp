@@ -1433,11 +1433,37 @@ Value YieldExpression::evaluate(Context& ctx) {
                                                            : async_gen->get_generator_context();
             Value last_val;
             bool delegate_done = false;
+            bool first_iter = true;
             while (!delegate_done) {
-                Value nr = next_fn_val.as_function()->call(ctx, {}, iter_val);
+                Value nr;
+
+                // Spec 27.6.3.9: forward throw()/next(sentValue) to the inner iterator.
+                if (!first_iter && async_gen->throwing_) {
+                    async_gen->throwing_ = false;
+                    Value throw_fn_v = iter_obj->get_property("throw");
+                    if (ctx.has_exception()) return Value();
+                    if (throw_fn_v.is_function()) {
+                        nr = throw_fn_v.as_function()->call(ctx, {async_gen->sent_value_}, iter_val);
+                    } else {
+                        // No throw method -- close the inner iterator then throw
+                        Value ret_fn_v = iter_obj->get_property("return");
+                        if (ret_fn_v.is_function())
+                            ret_fn_v.as_function()->call(ctx, {}, iter_val);
+                        ctx.clear_exception();
+                        ctx.throw_exception(async_gen->sent_value_, true);
+                        return Value();
+                    }
+                } else {
+                    // First call: no args. Subsequent calls: forward the value from next(value).
+                    std::vector<Value> call_args;
+                    if (!first_iter) call_args.push_back(async_gen->sent_value_);
+                    nr = next_fn_val.as_function()->call(ctx, call_args, iter_val);
+                }
+                first_iter = false;
+
                 if (ctx.has_exception()) return Value();
 
-                // Await the next() result if it's a promise
+                // Await the next()/throw() result if it's a promise
                 if (AsyncUtils::is_promise(nr)) {
                     Promise* p = static_cast<Promise*>(nr.as_object());
                     if (p->get_state() == PromiseState::FULFILLED) {
@@ -1463,7 +1489,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                         p->set_property("__af_" + key, Value(on_f.release()));
                         p->set_property("__ar_" + key, Value(on_r.release()));
                         p->then(ff_tmp_, fr_tmp_);
-                        async_gen->await_result_ = nr;  // pin promise as GC root
+                        async_gen->await_result_ = nr;
                         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                         swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
                         if (async_gen->await_is_throw_) {
@@ -1478,7 +1504,6 @@ Value YieldExpression::evaluate(Context& ctx) {
                 }
 
                 if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
-                // Set Object::current_context_ locally so getter exceptions land in ctx.
                 {
                     Context* prev_oc = Object::current_context_;
                     Object::current_context_ = &ctx;
@@ -1496,7 +1521,6 @@ Value YieldExpression::evaluate(Context& ctx) {
                     if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
                 }
 
-                // Yield the value to the consumer
                 async_gen->yield_value_    = last_val;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
                 swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
@@ -1504,11 +1528,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     async_gen->returning_ = false;
                     throw GeneratorReturnException(async_gen->return_arg_);
                 }
-                if (async_gen->throwing_) {
-                    async_gen->throwing_ = false;
-                    ctx.throw_exception(async_gen->sent_value_, true);
-                    return Value();
-                }
+                // throwing_ is handled at the top of the next iteration
             }
             return last_val;
         }
@@ -1813,7 +1833,55 @@ Value YieldExpression::evaluate(Context& ctx) {
     if (!current_gen) {
         if (AsyncGenerator::get_current()) {
             AsyncGenerator* async_gen = AsyncGenerator::get_current();
-            // Fiber-based yield in async generator
+
+            // Spec 27.6.3.7 AsyncGeneratorYield step 5: Await(value) before yielding.
+            // If the yielded value is a promise, await it. A rejection propagates as a
+            // throw inside the generator (may be caught by a try-catch around the yield).
+            if (AsyncUtils::is_promise(yield_value)) {
+                Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
+                                                               : async_gen->get_generator_context();
+                Promise* p = static_cast<Promise*>(yield_value.as_object());
+                if (p->get_state() == PromiseState::FULFILLED) {
+                    yield_value = p->get_value();
+                } else if (p->get_state() == PromiseState::REJECTED) {
+                    ctx.throw_exception(p->get_value(), true);
+                    return Value();
+                } else {
+                    auto on_f = ObjectFactory::create_native_function("",
+                        [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            Value val = args.empty() ? Value() : args[0];
+                            if (gctx) gctx->queue_microtask([async_gen, val]() mutable {
+                                async_gen->resume_from_await(val, false);
+                            });
+                            return Value();
+                        });
+                    auto on_r = ObjectFactory::create_native_function("",
+                        [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            Value reason = args.empty() ? Value() : args[0];
+                            if (gctx) gctx->queue_microtask([async_gen, reason]() mutable {
+                                async_gen->resume_from_await(reason, true);
+                            });
+                            return Value();
+                        });
+                    std::string aw_key = "yw_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                    Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
+                    p->set_property("__af_" + aw_key, Value(on_f.release()));
+                    p->set_property("__ar_" + aw_key, Value(on_r.release()));
+                    p->then(ff_tmp, fr_tmp);
+                    async_gen->await_result_ = yield_value;
+                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                    if (async_gen->await_is_throw_) {
+                        ctx.throw_exception(async_gen->await_result_, true);
+                        async_gen->await_is_throw_ = false;
+                        async_gen->await_result_ = Value();
+                        return Value();
+                    }
+                    yield_value = async_gen->await_result_;
+                    async_gen->await_result_ = Value();
+                }
+            }
+
             async_gen->yield_value_     = yield_value;
             async_gen->suspend_reason_  = AsyncGenerator::SuspendReason::Yield;
             swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);

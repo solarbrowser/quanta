@@ -109,7 +109,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         }
 
         // PutValue helper: for object env records (with scopes), write directly to the
-        // binding object that was captured before GetValue — even if the property was
+        // binding object that was captured before GetValue - even if the property was
         // deleted by the getter.  Strict mode + deleted property -> ReferenceError.
         auto put_value = [&](const Value& val) {
             if (ref_env && ref_env->get_type() == Environment::Type::Object &&
@@ -243,9 +243,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
     if (left_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         MemberExpression* member = static_cast<MemberExpression*>(left_.get());
 
+        // ES6: super.prop = val -- write to 'this', not to super
+        bool is_super_assignment = (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+            static_cast<Identifier*>(member->get_object())->get_name() == "super");
+
         // Spec: evaluate base, then key expression, then RHS, then ToPropertyKey
         Value object_value = member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return Value();
+
+        // For super.x = val, object_value is the super lookup proto (may be undefined if no proto).
+        // The actual write target is 'this'. If there's no super prototype, throw TypeError.
+        Value write_target;
+        if (is_super_assignment) {
+            if (object_value.is_undefined() || object_value.is_null()) {
+                ctx.throw_type_error("Cannot set property on undefined or null (super reference)");
+                return Value();
+            }
+            write_target = ctx.get_binding("this");
+        }
 
         // Evaluate key expression once (before RHS per spec)
         Value computed_key_value;
@@ -373,19 +388,21 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         Object* obj = nullptr;
         bool is_string_object = false;
 
+        // For super.x = val: write to 'this', not to super's prototype
+        Value effective_object = is_super_assignment ? write_target : object_value;
 
-        if (object_value.is_object()) {
-            obj = object_value.as_object();
-        } else if (object_value.is_function()) {
-            obj = object_value.as_function();
-        } else if (object_value.is_string() || object_value.is_number() || object_value.is_boolean()) {
-            std::string str_val = object_value.is_string() ? object_value.to_string() : "";
-            if (object_value.is_string() && str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
+        if (effective_object.is_object()) {
+            obj = effective_object.as_object();
+        } else if (effective_object.is_function()) {
+            obj = effective_object.as_function();
+        } else if (effective_object.is_string() || effective_object.is_number() || effective_object.is_boolean()) {
+            std::string str_val = effective_object.is_string() ? effective_object.to_string() : "";
+            if (effective_object.is_string() && str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
                 is_string_object = true;
             } else {
                 // ES5: Check for accessor setter on prototype before failing
-                std::string ctor_name = object_value.is_string() ? "String" :
-                    (object_value.is_number() ? "Number" : "Boolean");
+                std::string ctor_name = effective_object.is_string() ? "String" :
+                    (effective_object.is_number() ? "Number" : "Boolean");
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value pv = member->get_property()->evaluate(ctx);
