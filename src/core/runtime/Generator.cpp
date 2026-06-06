@@ -658,7 +658,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
                     arg_val = param->get_default_value()->evaluate(gen_context);
                     if (gen_context.has_exception()) {
                         gen_context.set_in_param_eval(false);
-                        ctx.throw_exception(gen_context.get_exception());
+                        ctx.throw_exception(gen_context.get_exception(), true);
                         return nullptr;
                     }
                 }
@@ -669,7 +669,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
                         destr->evaluate_with_value(gen_context, arg_val);
                         if (gen_context.has_exception()) {
                             gen_context.set_in_param_eval(false);
-                            ctx.throw_exception(gen_context.get_exception());
+                            ctx.throw_exception(gen_context.get_exception(), true);
                             return nullptr;
                         }
                     }

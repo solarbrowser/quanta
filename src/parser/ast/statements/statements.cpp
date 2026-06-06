@@ -1596,7 +1596,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             loop_ctx->pop_block_scope();
                         }
                         if (loop_ctx->has_exception()) {
-                            ctx.throw_exception(loop_ctx->get_exception());
+                            ctx.throw_exception(loop_ctx->get_exception(), true);
                             return Value();
                         }
                         if (loop_ctx->has_return_value()) {

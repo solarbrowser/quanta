@@ -460,7 +460,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     arg_value = param->get_default_value()->evaluate(function_context);
                     if (function_context.has_exception()) {
                         function_context.set_in_param_eval(false);
-                        ctx.throw_exception(function_context.get_exception());
+                        ctx.throw_exception(function_context.get_exception(), true);
                         return Value();
                     }
                 } else {
@@ -474,7 +474,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                         destructuring->evaluate_with_value(function_context, arg_value);
                         if (function_context.has_exception()) {
                             function_context.set_in_param_eval(false);
-                            ctx.throw_exception(function_context.get_exception());
+                            ctx.throw_exception(function_context.get_exception(), true);
                             return Value();
                         }
                     }
@@ -861,7 +861,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         if (function_context.has_exception()) {
-            ctx.throw_exception(function_context.get_exception());
+            ctx.throw_exception(function_context.get_exception(), true);
             return Value();
         }
 

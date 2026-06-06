@@ -176,6 +176,8 @@ Value ModuleLoader::import_namespace_from_module(const std::string& module_id, c
     }
     
     auto exports_obj = std::make_shared<Object>();
+    // Spec 10.4.6: module namespace objects have null [[Prototype]]
+    exports_obj->set_prototype(nullptr);
     if (module->is_loading() && module->get_context()) {
         // Partially loaded (circular/self-import): read from the in-progress exports object
         Value partial_exports = module->get_context()->get_binding("exports");
