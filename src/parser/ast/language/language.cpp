@@ -2297,7 +2297,8 @@ Value ExportStatement::evaluate(Context& ctx) {
             }
 
             if (export_value.is_undefined()) {
-                ctx.throw_exception(Value("ReferenceError: Cannot re-export '" + local_name + "' from '" + source_module_ + "'"));
+                // Spec 15.2.1.16.3: unresolvable re-export is a SyntaxError
+                ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
                 return Value();
             }
         } else {

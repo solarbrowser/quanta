@@ -71,7 +71,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -83,7 +83,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -162,7 +162,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -174,7 +174,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -243,7 +243,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -255,7 +255,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1024,7 +1024,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1036,7 +1036,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1091,7 +1091,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1103,7 +1103,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1158,7 +1158,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1170,7 +1170,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1225,7 +1225,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1237,7 +1237,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1292,7 +1292,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1304,7 +1304,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;
@@ -1373,7 +1373,7 @@ void register_typed_array_builtins(Context& ctx) {
                             if (!iter_call_ctx) iter_call_ctx = &ctx;
                             Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
                             if (iter_call_ctx->has_exception()) {
-                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception());
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
                                 return Value();
                             }
                             std::vector<Value> items;
@@ -1385,7 +1385,7 @@ void register_typed_array_builtins(Context& ctx) {
                                 if (!next_call_ctx) next_call_ctx = &ctx;
                                 Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
                                 if (next_call_ctx->has_exception()) {
-                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception());
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
                                     return Value();
                                 }
                                 if (!res.is_object()) break;

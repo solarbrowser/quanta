@@ -53,6 +53,14 @@ public:
     void set_thrown_exception(const Value& v) { thrown_exception_ = v; }
     const Value& get_thrown_exception() const { return thrown_exception_; }
     bool has_thrown_exception() const { return !thrown_exception_.is_undefined(); }
+
+    // Cached namespace object -- spec requires same namespace for same module
+    const Value& get_namespace() const { return namespace_; }
+    bool has_namespace() const { return !namespace_.is_undefined(); }
+    void set_namespace(const Value& ns) { namespace_ = ns; }
+
+private:
+    Value namespace_;
 };
 
 /**

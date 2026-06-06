@@ -153,6 +153,17 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         exec_ctx->create_binding(params[i], arg);
     }
 
+    // Arrow functions inherit arguments from the enclosing scope; regular async functions get their own
+    if (arrow_this_val.is_undefined()) {
+        auto arguments_obj = ObjectFactory::create_array(args.size());
+        for (size_t i = 0; i < args.size(); ++i) {
+            arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
+        }
+        arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
+        arguments_obj->set_type(Object::ObjectType::Arguments);
+        exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+    }
+
     // Clone body and start executor
     std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
     auto executor = std::make_shared<AsyncExecutor>(
@@ -1002,7 +1013,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
                     arg_val = param->get_default_value()->evaluate(*gen_ctx);
                     if (gen_ctx->has_exception()) {
                         gen_ctx->set_in_param_eval(false);
-                        ctx.throw_exception(gen_ctx->get_exception());
+                        ctx.throw_exception(gen_ctx->get_exception(), true);
                         return Value();
                     }
                 }
@@ -1013,7 +1024,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
                         destr->evaluate_with_value(*gen_ctx, arg_val);
                         if (gen_ctx->has_exception()) {
                             gen_ctx->set_in_param_eval(false);
-                            ctx.throw_exception(gen_ctx->get_exception());
+                            ctx.throw_exception(gen_ctx->get_exception(), true);
                             return Value();
                         }
                     }
