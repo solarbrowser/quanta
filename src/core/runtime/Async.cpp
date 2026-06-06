@@ -230,6 +230,14 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         std::move(body_clone), std::move(exec_ctx), promise_raw, ctx.get_engine());
     executor->run();
 
+    // Transfer the exec context to the engine's survivor pool so that any closures
+    // created inside the body (e.g. inner async functions) can still look up bindings
+    // after this call returns and the executor is eventually destroyed.
+    // Mirrors the ContextSurvivorGuard pattern used in sync Function::call().
+    if (ctx.get_engine() && executor->exec_context_owned_) {
+        ctx.get_engine()->add_survivor_context(executor->exec_context_owned_.release());
+    }
+
     return promise_value;
 }
 

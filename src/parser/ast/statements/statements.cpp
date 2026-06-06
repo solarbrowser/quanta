@@ -313,7 +313,7 @@ Value VariableDeclaration::evaluate(Context& ctx) {
             if (ctx.has_exception()) return Value();
             if (init_value.is_function()) {
                 Function* fn = init_value.as_function();
-                if (fn->get_name().empty()) {
+                if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                     fn->set_name(name);
                 }
             }
@@ -1455,8 +1455,18 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         return Value();
                                     }
 
-                                    if (loop_ctx->has_break()) { close_iterator(); loop_ctx->clear_break_continue(); break; }
-                                    if (loop_ctx->has_continue()) continue;
+                                    if (loop_ctx->has_break()) {
+                                        close_iterator();
+                                        if (loop_ctx->get_break_label().empty()) {
+                                            loop_ctx->clear_break_continue();
+                                        }
+                                        break;
+                                    }
+                                    if (loop_ctx->has_continue()) {
+                                        if (loop_ctx->get_continue_label().empty()) { continue; }
+                                        close_iterator();
+                                        return Value(); // labelled continue -- propagate up
+                                    }
                                     if (loop_ctx->has_return_value()) {
                                         close_iterator();
                                         return Value();
@@ -1470,8 +1480,18 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     return Value();
                                 }
 
-                                if (loop_ctx->has_break()) { close_iterator(); break; }
-                                if (loop_ctx->has_continue()) continue;
+                                if (loop_ctx->has_break()) {
+                                    close_iterator();
+                                    if (loop_ctx->get_break_label().empty()) {
+                                        loop_ctx->clear_break_continue();
+                                    }
+                                    break;
+                                }
+                                if (loop_ctx->has_continue()) {
+                                    if (loop_ctx->get_continue_label().empty()) { continue; }
+                                    close_iterator();
+                                    return Value(); // labelled continue -- propagate up
+                                }
                                 if (loop_ctx->has_return_value()) {
                                     close_iterator();
                                     return Value();
