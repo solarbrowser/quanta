@@ -40,11 +40,10 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
         function_obj = std::make_unique<GeneratorFunction>(function_name, std::move(gen_params), body_->clone(), &ctx);
     } else if (is_async_) {
-        std::vector<std::string> param_names;
-        for (const auto& param : param_clones) {
-            param_names.push_back(param->get_name()->get_name());
-        }
-        function_obj = std::make_unique<AsyncFunction>(function_name, param_names, body_->clone(), &ctx);
+        std::vector<std::unique_ptr<Parameter>> async_params;
+        for (const auto& p : param_clones)
+            async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+        function_obj = std::make_unique<AsyncFunction>(function_name, std::move(async_params), body_->clone(), &ctx);
     } else {
         function_obj = ObjectFactory::create_js_function(
             function_name,
@@ -297,9 +296,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         for (const auto& p : method_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
                         instance_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (method_is_async) {
-                        std::vector<std::string> async_params;
-                        for (const auto& p : method_params) async_params.push_back(p->get_name()->get_name());
-                        instance_method = std::make_unique<AsyncFunction>(method_name, async_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> async_params;
+                        for (const auto& p : method_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        instance_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
                     } else {
                         instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
                     }
@@ -480,9 +479,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         for (const auto& p : static_params) gen_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
                         static_method = std::make_unique<GeneratorFunction>(method_name, std::move(gen_params), method->get_value()->get_body()->clone(), &ctx);
                     } else if (static_is_async) {
-                        std::vector<std::string> async_params;
-                        for (const auto& p : static_params) async_params.push_back(p->get_name()->get_name());
-                        static_method = std::make_unique<AsyncFunction>(method_name, async_params, method->get_value()->get_body()->clone(), &ctx);
+                        std::vector<std::unique_ptr<Parameter>> async_params;
+                        for (const auto& p : static_params) async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        static_method = std::make_unique<AsyncFunction>(method_name, std::move(async_params), method->get_value()->get_body()->clone(), &ctx);
                     } else {
                         static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
                     }
@@ -945,12 +944,11 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     std::string name = "<arrow>";
 
     if (is_async_) {
-        std::vector<std::string> param_names;
-        for (const auto& param : params_) {
-            param_names.push_back(param->get_name()->get_name());
-        }
+        std::vector<std::unique_ptr<Parameter>> async_params;
+        for (const auto& p : params_)
+            async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
 
-        auto* async_fn = new AsyncFunction(name, param_names, body_->clone(), &ctx);
+        auto* async_fn = new AsyncFunction(name, std::move(async_params), body_->clone(), &ctx);
         async_fn->set_is_arrow(true);
         async_fn->set_is_constructor(false);
         if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
@@ -969,7 +967,8 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
             }
         }
 
-        std::set<std::string> async_param_set(param_names.begin(), param_names.end());
+        std::set<std::string> async_param_set;
+        for (const auto& p : params_) async_param_set.insert(p->get_name()->get_name());
         auto is_global_obj_binding_af = [&](const std::string& n) -> bool {
             Environment* e = ctx.find_binding_env(n);
             return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
@@ -1454,16 +1453,15 @@ Value YieldExpression::evaluate(Context& ctx) {
                         return Value();
                     }
                 } else {
-                    // First call: no args. Subsequent calls: forward the value from next(value).
-                    std::vector<Value> call_args;
-                    if (!first_iter) call_args.push_back(async_gen->sent_value_);
-                    nr = next_fn_val.as_function()->call(ctx, call_args, iter_val);
+                    // IteratorNext(iterator, received.[[Value]]): always pass value, undefined on first
+                    Value call_arg = first_iter ? Value() : async_gen->sent_value_;
+                    nr = next_fn_val.as_function()->call(ctx, {call_arg}, iter_val);
                 }
                 first_iter = false;
 
                 if (ctx.has_exception()) return Value();
 
-                // Await the next()/throw() result if it's a promise
+                // Await the next()/throw() result per spec PromiseResolve semantics
                 if (AsyncUtils::is_promise(nr)) {
                     Promise* p = static_cast<Promise*>(nr.as_object());
                     if (p->get_state() == PromiseState::FULFILLED) {
@@ -1471,7 +1469,6 @@ Value YieldExpression::evaluate(Context& ctx) {
                     } else if (p->get_state() == PromiseState::REJECTED) {
                         ctx.throw_exception(p->get_value(), true); return Value();
                     } else {
-                        // Pending -- suspend and await
                         auto on_f = ObjectFactory::create_native_function("",
                             [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
@@ -1501,6 +1498,43 @@ Value YieldExpression::evaluate(Context& ctx) {
                         nr = async_gen->await_result_;
                         async_gen->await_result_ = Value();
                     }
+                } else if (nr.is_object()) {
+                    // Thenable check: getting 'then' may throw (spec: Get(resolution, "then"))
+                    Object* nr_obj = nr.as_object();
+                    Value then_val = nr_obj->get_property("then");
+                    if (ctx.has_exception()) return Value();
+                    if (then_val.is_function()) {
+                        // Thenable: call then(resolve, reject) and suspend
+                        auto on_f = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([async_gen, val]() mutable { async_gen->resume_from_await(val, false); });
+                                return Value();
+                            });
+                        auto on_r = ObjectFactory::create_native_function("",
+                            [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([async_gen, reason]() mutable { async_gen->resume_from_await(reason, true); });
+                                return Value();
+                            });
+                        Function* rf = on_f.get(); Function* rjf = on_r.get();
+                        nr_obj->set_property("__th_rf_", Value(on_f.release()));
+                        nr_obj->set_property("__th_rjf_", Value(on_r.release()));
+                        then_val.as_function()->call(ctx, {Value(rf), Value(rjf)}, nr);
+                        if (ctx.has_exception()) return Value();
+                        async_gen->await_result_ = nr;
+                        async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                        swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                        if (async_gen->await_is_throw_) {
+                            ctx.throw_exception(async_gen->await_result_, true);
+                            async_gen->await_is_throw_ = false;
+                            async_gen->await_result_ = Value();
+                            return Value();
+                        }
+                        nr = async_gen->await_result_;
+                        async_gen->await_result_ = Value();
+                    }
+                    // else: not a thenable, nr is the direct value
                 }
 
                 if (!nr.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
@@ -1526,7 +1560,78 @@ Value YieldExpression::evaluate(Context& ctx) {
                 swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
                 if (async_gen->returning_) {
                     async_gen->returning_ = false;
-                    throw GeneratorReturnException(async_gen->return_arg_);
+                    // Spec 27.6.3.9 step 8.b: forward return() to inner iterator
+                    Value ret_arg = async_gen->return_arg_;
+                    Value ret_fn_v = iter_obj->get_property("return");
+                    if (ctx.has_exception()) return Value();
+                    if (!ret_fn_v.is_function()) {
+                        // No return method: just close (return the arg directly)
+                        last_val = ret_arg;
+                        delegate_done = true;
+                        break;
+                    }
+                    Value ret_result = ret_fn_v.as_function()->call(ctx, {ret_arg}, iter_val);
+                    if (ctx.has_exception()) return Value();
+                    // Await the return() result
+                    if (AsyncUtils::is_promise(ret_result)) {
+                        Promise* rp = static_cast<Promise*>(ret_result.as_object());
+                        if (rp->get_state() == PromiseState::FULFILLED) {
+                            ret_result = rp->get_value();
+                        } else if (rp->get_state() == PromiseState::REJECTED) {
+                            ctx.throw_exception(rp->get_value(), true); return Value();
+                        } else {
+                            auto on_f2 = ObjectFactory::create_native_function("",
+                                [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value val = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([async_gen, val]() mutable { async_gen->resume_from_await(val, false); });
+                                    return Value();
+                                });
+                            auto on_r2 = ObjectFactory::create_native_function("",
+                                [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value reason = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([async_gen, reason]() mutable { async_gen->resume_from_await(reason, true); });
+                                    return Value();
+                                });
+                            std::string rkey = "yr_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                            Function* frf = on_f2.get(); Function* frr = on_r2.get();
+                            rp->set_property("__af_" + rkey, Value(on_f2.release()));
+                            rp->set_property("__ar_" + rkey, Value(on_r2.release()));
+                            rp->then(frf, frr);
+                            async_gen->await_result_ = ret_result;
+                            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                            swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                            if (async_gen->await_is_throw_) {
+                                ctx.throw_exception(async_gen->await_result_, true);
+                                async_gen->await_is_throw_ = false;
+                                async_gen->await_result_ = Value();
+                                return Value();
+                            }
+                            ret_result = async_gen->await_result_;
+                            async_gen->await_result_ = Value();
+                        }
+                    }
+                    if (!ret_result.is_object()) { ctx.throw_type_error("iterator return result is not an object"); return Value(); }
+                    Value ret_done = ret_result.as_object()->get_property("done");
+                    if (ctx.has_exception()) return Value();
+                    last_val = ret_result.as_object()->get_property("value");
+                    if (ctx.has_exception()) return Value();
+                    if (ret_done.to_boolean()) {
+                        delegate_done = true;
+                        break;
+                    }
+                    // Inner iterator not done yet: yield the result and loop
+                    async_gen->yield_value_ = last_val;
+                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
+                    swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                    // After yielding, check if we got another return/throw
+                    if (async_gen->returning_) {
+                        // Another return: re-enter the forward-return logic next iteration
+                        // For now treat as a new return
+                        async_gen->returning_ = false;
+                        last_val = async_gen->return_arg_;
+                        delegate_done = true;
+                        break;
+                    }
                 }
                 // throwing_ is handled at the top of the next iteration
             }
@@ -1942,12 +2047,11 @@ std::unique_ptr<ASTNode> YieldExpression::clone() const {
 Value AsyncFunctionExpression::evaluate(Context& ctx) {
     std::string function_name = id_ ? id_->get_name() : "anonymous";
 
-    std::vector<std::string> param_names;
-    for (const auto& param : params_) {
-        param_names.push_back(param->get_name()->get_name());
-    }
+    std::vector<std::unique_ptr<Parameter>> async_params;
+    for (const auto& p : params_)
+        async_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
 
-    auto* fn = new AsyncFunction(function_name, param_names, std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
+    auto* fn = new AsyncFunction(function_name, std::move(async_params), std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
 
     if (ctx.has_binding("AsyncFunction")) {
         Value async_ctor = ctx.get_binding("AsyncFunction");
