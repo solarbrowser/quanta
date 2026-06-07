@@ -26,6 +26,7 @@ private:
     std::string id_;
     std::string filename_;
     std::unordered_map<std::string, Value> exports_;
+    std::unordered_map<std::string, std::string> export_local_names_;
     std::unique_ptr<Context> module_context_;
     bool loaded_;
     bool loading_;
@@ -40,7 +41,7 @@ public:
     bool is_loaded() const { return loaded_; }
     bool is_loading() const { return loading_; }
 
-    void add_export(const std::string& name, const Value& value);
+    void add_export(const std::string& name, const Value& value, const std::string& local_name = "");
     Value get_export(const std::string& name) const;
     bool has_export(const std::string& name) const;
     std::vector<std::string> get_export_names() const;

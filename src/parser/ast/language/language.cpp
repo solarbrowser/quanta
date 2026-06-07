@@ -2386,9 +2386,65 @@ Value ExportStatement::evaluate(Context& ctx) {
         exports_obj = exports_value.as_object();
     }
 
+    // Records export_name -> local module-scope binding name in a hidden tracker
+    // object, read back by ModuleLoader::execute_module_file so Module::get_export
+    // can return LIVE values (ES module exports are live bindings, not snapshots).
+    auto record_local_name = [&](const std::string& export_name, const std::string& local_name) {
+        const std::string LOCALNAMES_KEY = "\x01localnames";
+        Object* tracker = nullptr;
+        Value tracker_val = ctx.get_binding(LOCALNAMES_KEY);
+        if (tracker_val.is_object()) {
+            tracker = tracker_val.as_object();
+        } else {
+            auto t = ObjectFactory::create_object();
+            if (t) {
+                tracker = t.get();
+                ctx.create_binding(LOCALNAMES_KEY, Value(t.release()));
+            }
+        }
+        if (tracker) tracker->set_property(export_name, Value(local_name));
+    };
+
     if (is_default_export_ && default_export_) {
+        // export default function fn() {} / export default class Foo {} / export default
+        // async function fn() {} are HoistableDeclarations: the bound name gets a normal
+        // MUTABLE module-scope binding (unlike a named function expression, whose own name
+        // is an immutable self-reference). `default` is then a live alias for that binding,
+        // so reassignments inside the function (e.g. `fn = 2`) are observable through the
+        // module namespace's `default` property.
+        std::string default_local_name;
+        switch (default_export_->get_type()) {
+            case Type::FUNCTION_EXPRESSION: {
+                auto* fe = static_cast<FunctionExpression*>(default_export_.get());
+                if (fe->is_named()) default_local_name = fe->get_id()->get_name();
+                break;
+            }
+            case Type::ASYNC_FUNCTION_EXPRESSION: {
+                auto* afe = static_cast<AsyncFunctionExpression*>(default_export_.get());
+                if (afe->get_id()) default_local_name = afe->get_id()->get_name();
+                break;
+            }
+            case Type::CLASS_DECLARATION: {
+                auto* cd = static_cast<ClassDeclaration*>(default_export_.get());
+                if (cd->get_id()) default_local_name = cd->get_id()->get_name();
+                break;
+            }
+            default:
+                break;
+        }
+
         Value default_value = default_export_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
+
+        if (!default_local_name.empty()) {
+            if (!ctx.has_binding(default_local_name)) {
+                ctx.create_binding(default_local_name, default_value, true);
+            } else {
+                ctx.set_binding(default_local_name, default_value);
+            }
+            record_local_name("default", default_local_name);
+        }
+
         exports_obj->set_property("default", default_value);
 
         Engine* engine = ctx.get_engine();
@@ -2408,6 +2464,7 @@ Value ExportStatement::evaluate(Context& ctx) {
             if (ctx.has_binding(func_name)) {
                 Value func_value = ctx.get_binding(func_name);
                 exports_obj->set_property(func_name, func_value);
+                record_local_name(func_name, func_name);
             }
         } else if (declaration_->get_type() == Type::VARIABLE_DECLARATION) {
             VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(declaration_.get());
@@ -2418,6 +2475,7 @@ Value ExportStatement::evaluate(Context& ctx) {
                 if (ctx.has_binding(var_name)) {
                     Value var_value = ctx.get_binding(var_name);
                     exports_obj->set_property(var_name, var_value);
+                    record_local_name(var_name, var_name);
                 }
             }
         }
@@ -2430,27 +2488,99 @@ Value ExportStatement::evaluate(Context& ctx) {
 
         if (is_re_export_ && !source_module_.empty()) {
             Engine* engine = ctx.get_engine();
-            if (engine) {
-                ModuleLoader* module_loader = engine->get_module_loader();
+            ModuleLoader* module_loader = engine ? engine->get_module_loader() : nullptr;
+
+            if (local_name == "*") {
+                // export * from './module.js'  OR  export * as ns from './module.js'
                 if (module_loader) {
-                    try {
-                        export_value = module_loader->import_from_module(
-                            source_module_, local_name, ctx.get_current_filename()
-                        );
-                    } catch (...) {
-                        export_value = Value();
+                    Module* src_mod = module_loader->load_module(source_module_, ctx.get_current_filename());
+                    if (src_mod && src_mod->has_thrown_exception()) {
+                        ctx.throw_exception(src_mod->get_thrown_exception());
+                        return Value();
+                    }
+                    if (src_mod) {
+                        if (export_name == "*") {
+                            // Get or create star-export tracker to detect ambiguous names
+                            // (persists across multiple export* statements in the same module)
+                            const std::string STAR_KEY = "\x01star";
+                            Object* star_tracker = nullptr;
+                            Value tracker_val = ctx.get_binding(STAR_KEY);
+                            if (tracker_val.is_object()) {
+                                star_tracker = tracker_val.as_object();
+                            } else {
+                                auto t = ObjectFactory::create_object();
+                                if (t) {
+                                    star_tracker = t.get();
+                                    ctx.create_binding(STAR_KEY, Value(t.release()));
+                                }
+                            }
+
+                            for (const auto& name : src_mod->get_export_names()) {
+                                if (name == "default") continue;
+                                if (star_tracker && star_tracker->has_own_property(name)) {
+                                    // Same name from two export* sources -- ambiguous
+                                    ctx.throw_syntax_error("Ambiguous re-export of '" + name + "'");
+                                    return Value();
+                                }
+                                if (exports_obj->has_own_property(name)) {
+                                    // Name was set by a direct export -- direct wins, skip
+                                    continue;
+                                }
+                                if (star_tracker) star_tracker->set_property(name, Value(true));
+                                Value val = src_mod->get_export(name);
+                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
+                                    val = src_mod->get_context()->get_binding(name);
+                                }
+                                exports_obj->set_property(name, val);
+                            }
+                        } else {
+                            // export * as ns from './module.js' -- create namespace object
+                            auto ns_obj = ObjectFactory::create_object();
+                            ns_obj->set_prototype(nullptr);
+                            for (const auto& name : src_mod->get_export_names()) {
+                                Value val = src_mod->get_export(name);
+                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
+                                    val = src_mod->get_context()->get_binding(name);
+                                }
+                                ns_obj->set_property(name, val);
+                            }
+                            exports_obj->set_property(export_name, Value(ns_obj.release()));
+                        }
                     }
                 }
+                continue;
             }
 
-            if (export_value.is_undefined()) {
-                // Spec 15.2.1.16.3: unresolvable re-export is a SyntaxError
-                ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
-                return Value();
+            // Named re-export: export { local_name as export_name } from './module.js'
+            if (module_loader) {
+                Module* src_mod = module_loader->load_module(source_module_, ctx.get_current_filename());
+                if (!src_mod) {
+                    ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
+                    return Value();
+                }
+                if (src_mod->has_thrown_exception()) {
+                    ctx.throw_exception(src_mod->get_thrown_exception());
+                    return Value();
+                }
+                export_value = src_mod->get_export(local_name);
+                if (export_value.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
+                    if (src_mod->get_context()->has_binding(local_name)) {
+                        export_value = src_mod->get_context()->get_binding(local_name);
+                    } else {
+                        // Circular import: name not in source context -- unresolvable
+                        ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
+                        return Value();
+                    }
+                } else if (!src_mod->is_loading() && !src_mod->has_export(local_name)) {
+                    // Fully loaded source doesn't export this name
+                    ctx.throw_syntax_error("Cannot re-export '" + local_name + "' from '" + source_module_ + "'");
+                    return Value();
+                }
             }
         } else {
             if (ctx.has_binding(local_name)) {
                 export_value = ctx.get_binding(local_name);
+                record_local_name(export_name, local_name);
             } else {
                 ctx.throw_exception(Value("ReferenceError: " + local_name + " is not defined"));
                 return Value();
