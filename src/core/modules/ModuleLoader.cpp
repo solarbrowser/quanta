@@ -11,6 +11,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/Error.h"
 #include <fstream>
 #include <filesystem>
 #include <iostream>
@@ -21,11 +22,24 @@ Module::Module(const std::string& id, const std::string& filename)
     : id_(id), filename_(filename), loaded_(false), loading_(false) {
 }
 
-void Module::add_export(const std::string& name, const Value& value) {
+void Module::add_export(const std::string& name, const Value& value, const std::string& local_name) {
     exports_[name] = value;
+    if (!local_name.empty()) {
+        export_local_names_[name] = local_name;
+    }
 }
 
 Value Module::get_export(const std::string& name) const {
+    // Live binding: if this export is a direct alias for a module-scope binding
+    // (the common case -- `export var x`, `export { x }`, `export default function fn(){}`),
+    // read the binding's CURRENT value so later reassignments are observable
+    // through the module namespace, per ES module live-binding semantics.
+    auto local_it = export_local_names_.find(name);
+    if (local_it != export_local_names_.end() && module_context_ &&
+        module_context_->has_binding(local_it->second)) {
+        return module_context_->get_binding(local_it->second);
+    }
+
     auto it = exports_.find(name);
     if (it != exports_.end()) {
         return it->second;
@@ -207,7 +221,8 @@ std::unique_ptr<Module> ModuleLoader::create_module(const std::string& module_id
 bool ModuleLoader::execute_module_file(Module* module, const std::string& filename) {
     std::string source = read_file(filename);
     if (source.empty()) {
-        std::cerr << "Failed to read module file: " << filename << std::endl;
+        auto err = Error::create_type_error("Failed to fetch dynamically imported module '" + filename + "'");
+        last_module_exception_ = Value(err.release());
         return false;
     }
     
@@ -224,6 +239,15 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
                 module_context->get_global_object()->set_property_descriptor("globalThis", desc);
                 module_context->get_global_object()->set_property_descriptor("global", desc);
                 module_context->get_global_object()->set_property_descriptor("window", desc);
+
+                // A module shares its realm's global object: unqualified `this` inside a
+                // sloppy-mode function (e.g. Function('return this;')()) called from module
+                // code must resolve to the SAME global object the main script observes,
+                // not the module's own isolated pseudo-global. The module's own global
+                // object remains the binding object for its top-level var/function
+                // declarations (captured by the lexical environment at construction), so
+                // this only redirects `this`/Function.prototype.call resolution.
+                module_context->set_global_object(shared_global);
             }
         }
 
@@ -246,13 +270,11 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
         auto ast = parser.parse_program();
         if (!ast || parser.has_errors()) {
             const auto& errs = parser.get_errors();
-            if (!errs.empty()) {
-                std::string msg = errs[0].message;
-                if (msg.find("SyntaxError") == std::string::npos) msg = "SyntaxError: " + msg;
-                std::cerr << msg << std::endl;
-            } else {
-                std::cerr << "SyntaxError: Failed to parse module: " << filename << std::endl;
-            }
+            std::string msg = errs.empty() ? "Failed to parse module" : errs[0].message;
+            // Strip "SyntaxError: " prefix if present -- Error::create_syntax_error adds it
+            if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
+            auto err = Error::create_syntax_error(msg);
+            last_module_exception_ = Value(err.release());
             return false;
         }
         
@@ -266,15 +288,28 @@ bool ModuleLoader::execute_module_file(Module* module, const std::string& filena
             module->get_context()->clear_exception();
         }
 
+        // Local-name map recorded by ExportStatement::evaluate (export_name -> local
+        // module-scope binding name) -- lets Module::get_export return live values.
+        Object* local_names = nullptr;
+        {
+            Value ln = module->get_context()->get_binding("\x01localnames");
+            if (ln.is_object()) local_names = ln.as_object();
+        }
+
         Value exports_value = module->get_context()->get_binding("exports");
         if (exports_value.is_object()) {
             auto exports_obj = exports_value.as_object();
-            
+
             auto keys = exports_obj->get_own_property_keys();
 
             for (const auto& key : keys) {
                 Value prop_value = exports_obj->get_property(key);
-                module->add_export(key, prop_value);
+                std::string local_name;
+                if (local_names) {
+                    Value ln = local_names->get_property(key);
+                    if (ln.is_string()) local_name = ln.to_string();
+                }
+                module->add_export(key, prop_value, local_name);
             }
         }
         
