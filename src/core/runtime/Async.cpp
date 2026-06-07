@@ -445,9 +445,15 @@ void AsyncGenerator::handle_suspension() {
             auto result_obj = ObjectFactory::create_object();
             result_obj->set_property("value", yield_value_);
             result_obj->set_property("done", Value(false));
-            pending_promise_->fulfill(Value(result_obj.release()));
-            pending_promise_ = nullptr;
-            delete_property("__pending_promise__");
+            Promise* fulfilled = pending_promise_;
+            fulfilled->fulfill(Value(result_obj.release()));
+            // fulfill() runs .then() reactions synchronously (Promise::execute_handlers),
+            // so the consumer's callback may call next()/return()/throw() reentrantly and
+            // overwrite pending_promise_ with a new in-flight promise -- only clear ours.
+            if (pending_promise_ == fulfilled) {
+                pending_promise_ = nullptr;
+                delete_property("__pending_promise__");
+            }
             break;
         }
         case SuspendReason::Await:
