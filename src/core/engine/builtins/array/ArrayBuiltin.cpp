@@ -10,12 +10,169 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/Promise.h"
 #include <cmath>
 #include <functional>
 #include <sstream>
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
+
+// Array.fromAsync (spec 23.1.2.1): drives iteration via recursive Promise
+// chaining, since native functions can't suspend a fiber. Per-step state lives
+// as hidden properties on result_promise (GC-rooted, survives microtask ticks);
+// handler functions are created once in fa_setup_handlers and reused each step.
+static void fa_request_next(Context& ctx, Promise* result_promise);
+static void fa_request_arraylike_next(Context& ctx, Promise* result_promise);
+
+static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason) {
+    (void)ctx;
+    if (result_promise->is_pending()) result_promise->reject(reason);
+}
+
+static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Value& value) {
+    Value arr_v = result_promise->get_property("__fa_arr__");
+    Value idx_v = result_promise->get_property("__fa_idx__");
+    uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
+    if (arr_v.is_object()) {
+        arr_v.as_object()->set_element(idx, value);
+        arr_v.as_object()->set_property("length", Value(static_cast<double>(idx + 1)));
+    }
+    result_promise->set_property("__fa_idx__", Value(static_cast<double>(idx + 1)));
+    fa_request_next(ctx, result_promise);
+}
+
+// Registers a generic resolve/reject pair on `p` that route into `on_fulfilled_key`
+// (looked up on result_promise, called with the resolved value) or generic rejection.
+static void fa_chain(Context& ctx, Promise* result_promise, Promise* p, const char* on_fulfilled_key) {
+    Value ff = result_promise->get_property(on_fulfilled_key);
+    Value fr = result_promise->get_property("__fa_on_reject__");
+    if (ctx.has_exception()) return;
+    p->then(ff.is_function() ? ff.as_function() : nullptr,
+            fr.is_function() ? fr.as_function() : nullptr);
+}
+
+static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
+    (void)ctx;
+    // Generic rejection: reject result_promise with the reason. Bind via closure
+    // over the raw Promise* (mirrors Promise.all's pattern of capturing rp).
+    Promise* rp = result_promise;
+    auto reject_fn = ObjectFactory::create_native_function("",
+        [rp](Context& c, const std::vector<Value>& args) -> Value {
+            fa_reject(c, rp, args.empty() ? Value() : args[0]);
+            return Value();
+        });
+    result_promise->set_property("__fa_on_reject__", Value(reject_fn.release()));
+
+    // Step 1: handle the (possibly-awaited) iterator-result object {value, done}.
+    auto on_next_settled = ObjectFactory::create_native_function("",
+        [rp](Context& c, const std::vector<Value>& args) -> Value {
+            Value nr = args.empty() ? Value() : args[0];
+            if (!nr.is_object()) {
+                fa_reject(c, rp, Value(std::string("TypeError: iterator result is not an object")));
+                return Value();
+            }
+            Value done = nr.as_object()->get_property("done");
+            if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
+            if (done.to_boolean()) {
+                Value arr_v = rp->get_property("__fa_arr__");
+                if (rp->is_pending()) rp->fulfill(arr_v);
+                return Value();
+            }
+            Value value = nr.as_object()->get_property("value");
+            if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
+
+            Value used_async_v = rp->get_property("__fa_async__");
+            if (!used_async_v.to_boolean()) {
+                // Sync iterator (CreateAsyncFromSyncIterator): Await the value too.
+                Promise* vp = Promise::resolve(value);
+                fa_chain(c, rp, vp, "__fa_on_value__");
+            } else {
+                Value cb = rp->get_property("__fa_on_value__");
+                if (cb.is_function()) cb.as_function()->call(c, {value}, Value());
+            }
+            return Value();
+        });
+    result_promise->set_property("__fa_on_next_settled__", Value(on_next_settled.release()));
+
+    // Step 2: value (now resolved) -- apply mapfn if present (and Await its result).
+    auto on_value = ObjectFactory::create_native_function("",
+        [rp](Context& c, const std::vector<Value>& args) -> Value {
+            Value value = args.empty() ? Value() : args[0];
+            Value mapfn_v = rp->get_property("__fa_mapfn__");
+            if (mapfn_v.is_function()) {
+                Value idx_v = rp->get_property("__fa_idx__");
+                Value this_arg = rp->get_property("__fa_thisarg__");
+                std::vector<Value> margs = { value, idx_v };
+                Value mapped = mapfn_v.as_function()->call(c, margs, this_arg);
+                if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
+                Promise* mp = Promise::resolve(mapped);
+                fa_chain(c, rp, mp, "__fa_on_mapped__");
+            } else {
+                fa_set_and_advance(c, rp, value);
+            }
+            return Value();
+        });
+    result_promise->set_property("__fa_on_value__", Value(on_value.release()));
+
+    // Step 3: mapped value (now resolved) -- store and advance to the next index.
+    auto on_mapped = ObjectFactory::create_native_function("",
+        [rp](Context& c, const std::vector<Value>& args) -> Value {
+            fa_set_and_advance(c, rp, args.empty() ? Value() : args[0]);
+            return Value();
+        });
+    result_promise->set_property("__fa_on_mapped__", Value(on_mapped.release()));
+}
+
+// Array-like path (no @@asyncIterator/@@iterator): index through .length,
+// Awaiting each element (spec: Set nextValue to ? Await(Get(arrayLike, Pk))).
+static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
+    Value idx_v = result_promise->get_property("__fa_idx__");
+    Value len_v = result_promise->get_property("__fa_len__");
+    uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
+    uint32_t len = static_cast<uint32_t>(len_v.to_number());
+    if (idx >= len) {
+        Value arr_v = result_promise->get_property("__fa_arr__");
+        if (result_promise->is_pending()) result_promise->fulfill(arr_v);
+        return;
+    }
+    Value arraylike = result_promise->get_property("__fa_arraylike__");
+    if (!arraylike.is_object()) {
+        fa_reject(ctx, result_promise, Value(std::string("TypeError: Array.fromAsync: array-like is not an object")));
+        return;
+    }
+    Value element = arraylike.as_object()->get_element(idx);
+    if (ctx.has_exception()) {
+        Value e = ctx.get_exception(); ctx.clear_exception();
+        fa_reject(ctx, result_promise, e);
+        return;
+    }
+    Promise* ep = Promise::resolve(element);
+    fa_chain(ctx, result_promise, ep, "__fa_on_value__");
+}
+
+// Drives the next iteration step: requests the array-like element when no
+// iterator is in use, otherwise calls the iterator's next() method.
+static void fa_request_next(Context& ctx, Promise* result_promise) {
+    Value next_fn_v = result_promise->get_property("__fa_next__");
+    if (next_fn_v.is_undefined()) {
+        fa_request_arraylike_next(ctx, result_promise);
+        return;
+    }
+    Value iterator_v = result_promise->get_property("__fa_iter__");
+    if (!next_fn_v.is_function()) {
+        fa_reject(ctx, result_promise, Value(std::string("TypeError: iterator has no next method")));
+        return;
+    }
+    Value next_result = next_fn_v.as_function()->call(ctx, {}, iterator_v);
+    if (ctx.has_exception()) {
+        Value e = ctx.get_exception(); ctx.clear_exception();
+        fa_reject(ctx, result_promise, e);
+        return;
+    }
+    Promise* np = Promise::resolve(next_result);
+    fa_chain(ctx, result_promise, np, "__fa_on_next_settled__");
+}
 
 static Value array_species_create(Context& ctx, Object* original_array, uint32_t length) {
     bool is_actual_array = original_array->is_array();
@@ -249,7 +406,89 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto fromAsync_fn = ObjectFactory::create_native_function("fromAsync",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(ObjectFactory::create_array().release());
+            Value items = args.empty() ? Value() : args[0];
+            Function* mapfn = (args.size() > 1 && args[1].is_function()) ? args[1].as_function() : nullptr;
+            Value this_arg = args.size() > 2 ? args[2] : Value();
+
+            Function* this_ctor = nullptr;
+            Object* this_obj = ctx.get_this_binding();
+            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
+
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+            if (this_ctor) {
+                Value proto = this_ctor->get_property("prototype");
+                if (proto.is_object()) result_promise->set_prototype(proto.as_object());
+            }
+
+            if (!items.is_object() && !items.is_string()) {
+                result_promise->reject(Value(std::string("TypeError: Array.fromAsync requires an iterable or array-like object")));
+                return Value(result_promise_obj.release());
+            }
+
+            // Resolve the iterator: prefer @@asyncIterator, then @@iterator
+            // (sync iterators are conceptually wrapped via CreateAsyncFromSyncIterator --
+            // their yielded values get an extra Await, handled in fa_setup_handlers).
+            Value iterator_val;
+            Value next_fn_val;
+            bool used_async_iterator = false;
+            if (items.is_object()) {
+                Object* items_obj = items.as_object();
+                Value iter_method;
+                Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
+                if (async_iter_sym) iter_method = items_obj->get_property(async_iter_sym->to_property_key());
+                if (iter_method.is_function()) {
+                    used_async_iterator = true;
+                } else {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) iter_method = items_obj->get_property(iter_sym->to_property_key());
+                }
+                if (iter_method.is_function()) {
+                    iterator_val = iter_method.as_function()->call(ctx, {}, items);
+                    if (ctx.has_exception()) {
+                        Value e = ctx.get_exception(); ctx.clear_exception();
+                        result_promise->reject(e);
+                        return Value(result_promise_obj.release());
+                    }
+                    if (!iterator_val.is_object()) {
+                        result_promise->reject(Value(std::string("TypeError: Array.fromAsync: iterator must be an object")));
+                        return Value(result_promise_obj.release());
+                    }
+                    next_fn_val = iterator_val.as_object()->get_property("next");
+                }
+            }
+
+            auto result_arr_owner = ObjectFactory::create_array(0);
+            Object* result_arr = result_arr_owner.release();
+
+            if (next_fn_val.is_function()) {
+                result_promise->set_property("__fa_arr__", Value(result_arr));
+                result_promise->set_property("__fa_iter__", iterator_val);
+                result_promise->set_property("__fa_next__", next_fn_val);
+                result_promise->set_property("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
+                result_promise->set_property("__fa_thisarg__", this_arg);
+                result_promise->set_property("__fa_async__", Value(used_async_iterator));
+                result_promise->set_property("__fa_idx__", Value(0.0));
+                fa_setup_handlers(ctx, result_promise);
+                fa_request_next(ctx, result_promise);
+                return Value(result_promise_obj.release());
+            }
+
+            // Array-like fallback (no iterator method): spec iterates via .length,
+            // Awaiting each element before mapping.
+            Value length_v = items.is_object() ? items.as_object()->get_property("length") : Value();
+            uint32_t length = length_v.is_number() && length_v.to_number() > 0
+                ? static_cast<uint32_t>(length_v.to_number()) : 0;
+            result_promise->set_property("__fa_arr__", Value(result_arr));
+            result_promise->set_property("__fa_arraylike__", items);
+            result_promise->set_property("__fa_len__", Value(static_cast<double>(length)));
+            result_promise->set_property("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
+            result_promise->set_property("__fa_thisarg__", this_arg);
+            result_promise->set_property("__fa_async__", Value(true));
+            result_promise->set_property("__fa_idx__", Value(0.0));
+            fa_setup_handlers(ctx, result_promise);
+            fa_request_arraylike_next(ctx, result_promise);
+            return Value(result_promise_obj.release());
         });
 
     PropertyDescriptor fromAsync_length_desc(Value(1.0), PropertyAttributes::None);

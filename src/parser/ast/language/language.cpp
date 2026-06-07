@@ -1368,6 +1368,7 @@ Value YieldExpression::evaluate(Context& ctx) {
             // Try Symbol.asyncIterator first, then Symbol.iterator
             // Getter access itself may throw (abrupt completion on GetIterator)
             Value iter_val;
+            bool used_async_iterator = false;
             Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
             if (async_iter_sym) {
                 Value iter_fn = iterable_obj->get_property(async_iter_sym->to_property_key());
@@ -1375,6 +1376,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                 bool async_iter_defined = false;
                 if (!iter_fn.is_undefined() && !iter_fn.is_null()) {
                     async_iter_defined = true;
+                    used_async_iterator = true;
                     if (!iter_fn.is_function()) {
                         Object::current_context_ = prev_ctx;
                         ctx.throw_type_error("[Symbol.asyncIterator] is not callable");
@@ -1430,6 +1432,52 @@ Value YieldExpression::evaluate(Context& ctx) {
             // yield each value (with await on each next() result), return final value.
             Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
                                                            : async_gen->get_generator_context();
+
+            // CreateAsyncFromSyncIterator wraps sync-iterable delegation so each yielded
+            // value is Awaited (spec 27.1.4.2.1) -- only for sync iterables, not manually
+            // implemented async iterables, which must preserve promise identity. Hence the
+            // `!used_async_iterator` guard at each call site below.
+            auto await_before_yield = [&](Value& v) -> bool {
+                if (!AsyncUtils::is_promise(v)) return true;
+                Promise* p = static_cast<Promise*>(v.as_object());
+                if (p->get_state() == PromiseState::FULFILLED) {
+                    v = p->get_value();
+                    return true;
+                } else if (p->get_state() == PromiseState::REJECTED) {
+                    ctx.throw_exception(p->get_value(), true);
+                    return false;
+                }
+                auto on_f = ObjectFactory::create_native_function("",
+                    [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        Value val = args.empty() ? Value() : args[0];
+                        if (gctx) gctx->queue_microtask([async_gen, val]() mutable { async_gen->resume_from_await(val, false); });
+                        return Value();
+                    });
+                auto on_r = ObjectFactory::create_native_function("",
+                    [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                        Value reason = args.empty() ? Value() : args[0];
+                        if (gctx) gctx->queue_microtask([async_gen, reason]() mutable { async_gen->resume_from_await(reason, true); });
+                        return Value();
+                    });
+                std::string aw_key = "ydv_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                Function* ff_tmp = on_f.get(); Function* fr_tmp = on_r.get();
+                p->set_property("__af_" + aw_key, Value(on_f.release()));
+                p->set_property("__ar_" + aw_key, Value(on_r.release()));
+                p->then(ff_tmp, fr_tmp);
+                async_gen->await_result_ = v;
+                async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                if (async_gen->await_is_throw_) {
+                    ctx.throw_exception(async_gen->await_result_, true);
+                    async_gen->await_is_throw_ = false;
+                    async_gen->await_result_ = Value();
+                    return false;
+                }
+                v = async_gen->await_result_;
+                async_gen->await_result_ = Value();
+                return true;
+            };
+
             Value last_val;
             bool delegate_done = false;
             bool first_iter = true;
@@ -1555,12 +1603,16 @@ Value YieldExpression::evaluate(Context& ctx) {
                     if (done_val_tmp.to_boolean()) { delegate_done = true; break; }
                 }
 
+                if (!used_async_iterator && !await_before_yield(last_val)) return Value();
                 async_gen->yield_value_    = last_val;
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
                 swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
-                if (async_gen->returning_) {
+                // Spec 27.6.3.9 step 8.b: forward return() to inner iterator. `while`
+                // (not `if`) because a !done forwarded result suspends again, and the
+                // consumer may call iter.return() again before resuming -- that must be
+                // forwarded too, hence re-checking the condition after swapcontext.
+                while (async_gen->returning_) {
                     async_gen->returning_ = false;
-                    // Spec 27.6.3.9 step 8.b: forward return() to inner iterator
                     Value ret_arg = async_gen->return_arg_;
                     Value ret_fn_v = iter_obj->get_property("return");
                     if (ctx.has_exception()) return Value();
@@ -1616,22 +1668,17 @@ Value YieldExpression::evaluate(Context& ctx) {
                     last_val = ret_result.as_object()->get_property("value");
                     if (ctx.has_exception()) return Value();
                     if (ret_done.to_boolean()) {
-                        delegate_done = true;
-                        break;
+                        // Spec 27.6.3.9 step 8.b.iv.viii: a Return completion, not a
+                        // normal yield* result -- terminates the outer generator here.
+                        if (!await_before_yield(last_val)) return Value();
+                        throw GeneratorReturnException(last_val);
                     }
-                    // Inner iterator not done yet: yield the result and loop
+                    // Not done: yield and suspend -- the `while` condition re-forwards
+                    // on resume if the consumer called iter.return() again.
+                    if (!used_async_iterator && !await_before_yield(last_val)) return Value();
                     async_gen->yield_value_ = last_val;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Yield;
                     swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
-                    // After yielding, check if we got another return/throw
-                    if (async_gen->returning_) {
-                        // Another return: re-enter the forward-return logic next iteration
-                        // For now treat as a new return
-                        async_gen->returning_ = false;
-                        last_val = async_gen->return_arg_;
-                        delegate_done = true;
-                        break;
-                    }
                 }
                 // throwing_ is handled at the top of the next iteration
             }

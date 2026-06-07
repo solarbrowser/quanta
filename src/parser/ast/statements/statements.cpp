@@ -415,13 +415,25 @@ Value UsingDeclaration::evaluate(Context& ctx) {
                     "using declarations require the value to be an object or null/undefined");
                 return Value();
             }
-            // GetDisposeMethod: read Symbol.dispose once at initialization time
+            // GetDisposeMethod (spec 7.5.4): `await using` prefers Symbol.asyncDispose,
+            // falling back to Symbol.dispose -- called identically by run_dispose_resources,
+            // so no wrapper closure is needed.
             Object* obj = val.is_object() ? val.as_object() : static_cast<Object*>(val.as_function());
-            Value dispose_method = obj->get_property(Symbol::DISPOSE);
+            Value dispose_method;
+            if (is_await_) {
+                dispose_method = obj->get_property(Symbol::ASYNC_DISPOSE);
+                if (ctx.has_exception()) return Value();
+                if (dispose_method.is_undefined() || dispose_method.is_null()) {
+                    dispose_method = obj->get_property(Symbol::DISPOSE);
+                }
+            } else {
+                dispose_method = obj->get_property(Symbol::DISPOSE);
+            }
             if (ctx.has_exception()) return Value();
             if (dispose_method.is_undefined() || dispose_method.is_null()) {
                 ctx.throw_type_error(
-                    "Value must have a [Symbol.dispose] method");
+                    is_await_ ? "Value must have a [Symbol.asyncDispose] or [Symbol.dispose] method"
+                              : "Value must have a [Symbol.dispose] method");
                 return Value();
             }
             if (!dispose_method.is_function()) {
@@ -1104,9 +1116,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
         Object* iterable_obj = iterable.as_object();
 
         Value iter_method;
+        bool used_async_iterator = false;
         Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
         if (async_iter_sym) {
             iter_method = iterable_obj->get_property(async_iter_sym->to_property_key());
+            if (iter_method.is_function()) used_async_iterator = true;
         }
         if (!iter_method.is_function()) {
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
@@ -1249,6 +1263,77 @@ Value ForOfStatement::evaluate(Context& ctx) {
             Value done = iter_result->get_property("done");
             if (done.to_boolean()) break;
             Value value = iter_result->get_property("value");
+
+            // CreateAsyncFromSyncIterator (spec 27.1.4.2/.3): for sync-only iterables,
+            // each yielded value is PromiseResolve'd and Awaited -- e.g.
+            // `for await (const x of [Promise.resolve(1)])` must yield `1`, not the Promise.
+            if (!used_async_iterator) {
+                if (exec && !exec->fiber_stack_.empty()) {
+                    bool v_is_pending = false;
+                    bool v_settled_throw = false;
+                    Value v_settled_val;
+                    if (AsyncUtils::is_promise(value)) {
+                        Promise* vp = static_cast<Promise*>(value.as_object());
+                        if (vp->get_state() == PromiseState::FULFILLED) {
+                            v_settled_val = vp->get_value();
+                        } else if (vp->get_state() == PromiseState::REJECTED) {
+                            v_settled_val = vp->get_value();
+                            v_settled_throw = true;
+                        } else {
+                            v_is_pending = true;
+                            auto self = exec->shared_from_this();
+                            auto on_f = ObjectFactory::create_native_function("",
+                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value val = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
+                                    return Value();
+                                });
+                            auto on_r = ObjectFactory::create_native_function("",
+                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value reason = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
+                                    return Value();
+                                });
+                            std::string vkey = "fav_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
+                            Function* vff = on_f.get(); Function* vfr = on_r.get();
+                            vp->set_property("__af_" + vkey, Value(on_f.release()));
+                            vp->set_property("__ar_" + vkey, Value(on_r.release()));
+                            vp->then(vff, vfr);
+                        }
+                    } else {
+                        v_settled_val = value;
+                    }
+                    if (!v_is_pending) {
+                        auto self = exec->shared_from_this();
+                        Value vv = v_settled_val;
+                        bool vthr = v_settled_throw;
+                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume(vv, vthr); });
+                    }
+                    exec->await_result_ = value;  // pin as GC root during suspension
+                    swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+                    if (exec->await_is_throw_) {
+                        ctx.throw_exception(exec->await_result_, true);
+                        exec->await_is_throw_ = false;
+                        exec->await_result_ = Value();
+                        return Value();
+                    }
+                    value = exec->await_result_;
+                    exec->await_result_ = Value();
+                } else {
+                    if (AsyncUtils::is_promise(value)) {
+                        Promise* vp = static_cast<Promise*>(value.as_object());
+                        if (vp->get_state() == PromiseState::FULFILLED) {
+                            value = vp->get_value();
+                        } else if (vp->get_state() == PromiseState::REJECTED) {
+                            ctx.throw_exception(vp->get_value());
+                            return Value();
+                        } else {
+                            ctx.throw_exception(Value(std::string("for-await-of: pending promise outside async context")));
+                            return Value();
+                        }
+                    }
+                }
+            }
 
             if (var_name == "__destr__") {
                 if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
