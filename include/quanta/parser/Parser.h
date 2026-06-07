@@ -216,6 +216,17 @@ private:
     bool is_unary_operator(TokenType type) const;
     bool is_keyword_token(TokenType type) const;
     bool is_valid_assignment_target(ASTNode* node) const;
+
+    // Spec early errors: "It is a Syntax Error if FormalParameters Contains
+    // YieldExpression/AwaitExpression is true" (GeneratorDeclaration/Expression,
+    // AsyncFunctionDeclaration/Expression, AsyncGeneratorDeclaration/Expression).
+    // Scans each parameter's default value / destructuring-pattern initializer for a
+    // YieldExpression (if check_yield) or AwaitExpression (if check_await), without
+    // crossing into nested function/class boundaries (they have their own [Yield]/[Await]
+    // scope). Returns "yield"/"await" naming the first forbidden expression found, or ""
+    // if neither is present.
+    std::string find_forbidden_expr_in_params(
+        const std::vector<std::unique_ptr<Parameter>>& params, bool check_yield, bool check_await) const;
 };
 
 namespace ParserFactory {

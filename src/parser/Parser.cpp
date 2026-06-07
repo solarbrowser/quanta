@@ -2550,6 +2550,69 @@ bool Parser::is_keyword_token(TokenType type) const {
            type == TokenType::BOOLEAN;
 }
 
+std::string Parser::find_forbidden_expr_in_params(
+    const std::vector<std::unique_ptr<Parameter>>& params, bool check_yield, bool check_await) const {
+    using T = ASTNode::Type;
+    std::string found;
+
+    std::function<void(const ASTNode*)> walk = [&](const ASTNode* nd) {
+        if (!nd || !found.empty()) return;
+        switch (nd->get_type()) {
+            case T::YIELD_EXPRESSION:
+                if (check_yield) { found = "yield"; return; }
+                walk(static_cast<const YieldExpression*>(nd)->get_argument());
+                break;
+            case T::AWAIT_EXPRESSION:
+                if (check_await) { found = "await"; return; }
+                walk(static_cast<const AwaitExpression*>(nd)->get_argument());
+                break;
+            // Nested functions/classes/methods introduce their own [Yield]/[Await]
+            // grammar parameterization -- do not cross into their scopes.
+            case T::FUNCTION_EXPRESSION:
+            case T::FUNCTION_DECLARATION:
+            case T::ASYNC_FUNCTION_EXPRESSION:
+            case T::ARROW_FUNCTION_EXPRESSION:
+            case T::CLASS_DECLARATION:
+            case T::METHOD_DEFINITION:
+                break;
+            case T::BINARY_EXPRESSION: { auto* be = static_cast<const BinaryExpression*>(nd); walk(be->get_left()); walk(be->get_right()); break; }
+            case T::NULLISH_COALESCING_EXPRESSION: { auto* nc = static_cast<const NullishCoalescingExpression*>(nd); walk(nc->get_left()); walk(nc->get_right()); break; }
+            case T::UNARY_EXPRESSION: walk(static_cast<const UnaryExpression*>(nd)->get_operand()); break;
+            case T::ASSIGNMENT_EXPRESSION: { auto* ae = static_cast<const AssignmentExpression*>(nd); walk(ae->get_left()); walk(ae->get_right()); break; }
+            case T::CONDITIONAL_EXPRESSION: { auto* ce = static_cast<const ConditionalExpression*>(nd); walk(ce->get_test()); walk(ce->get_consequent()); walk(ce->get_alternate()); break; }
+            case T::CALL_EXPRESSION: { auto* ce = static_cast<const CallExpression*>(nd); walk(ce->get_callee()); for (const auto& a : ce->get_arguments()) walk(a.get()); break; }
+            case T::NEW_EXPRESSION: { auto* ne = static_cast<const NewExpression*>(nd); walk(ne->get_constructor()); for (const auto& a : ne->get_arguments()) walk(a.get()); break; }
+            case T::MEMBER_EXPRESSION: { auto* me = static_cast<const MemberExpression*>(nd); walk(me->get_object()); if (me->is_computed()) walk(me->get_property()); break; }
+            case T::OPTIONAL_CHAINING_EXPRESSION: { auto* oc = static_cast<const OptionalChainingExpression*>(nd); walk(oc->get_object()); if (oc->is_computed()) walk(oc->get_property()); break; }
+            case T::SPREAD_ELEMENT: walk(static_cast<const SpreadElement*>(nd)->get_argument()); break;
+            case T::ARRAY_LITERAL: for (const auto& e : static_cast<const ArrayLiteral*>(nd)->get_elements()) walk(e.get()); break;
+            case T::OBJECT_LITERAL: for (const auto& pr : static_cast<const ObjectLiteral*>(nd)->get_properties()) { if (pr->computed) walk(pr->key.get()); walk(pr->value.get()); } break;
+            case T::TEMPLATE_LITERAL:
+                for (const auto& el : static_cast<const TemplateLiteral*>(nd)->get_elements())
+                    if (el.type == TemplateLiteral::Element::Type::EXPRESSION) walk(el.expression.get());
+                break;
+            default: break;
+        }
+    };
+
+    for (const auto& p : params) {
+        if (!found.empty()) break;
+        if (p->has_default()) walk(p->get_default_value());
+        if (!found.empty()) break;
+        if (p->has_destructuring()) {
+            ASTNode* pat = p->get_destructuring_pattern();
+            if (pat && pat->get_type() == T::DESTRUCTURING_ASSIGNMENT) {
+                auto* da = static_cast<DestructuringAssignment*>(pat);
+                for (const auto& dv : da->get_default_values()) { walk(dv.expr.get()); if (!found.empty()) break; }
+                if (found.empty()) {
+                    for (const auto& pm : da->get_property_mappings()) { walk(pm.computed_key.get()); if (!found.empty()) break; }
+                }
+            }
+        }
+    }
+    return found;
+}
+
 bool Parser::is_valid_assignment_target(ASTNode* node) const {
     if (!node) return false;
 
@@ -4378,6 +4441,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
+    // FormalParameters[+Yield] for generator declarations: parse bare `yield` in
+    // parameter default values as YieldExpression (not Identifier) so the
+    // Contains-YieldExpression early error below can detect it (spec 15.5.1).
+    bool saved_gen_for_params_fd = options_.in_generator_body;
+    options_.in_generator_body = is_generator;
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
@@ -4396,6 +4465,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern in function parameters");
+                options_.in_generator_body = saved_gen_for_params_fd;
                 return nullptr;
             }
             static int destr_param_counter = 0;
@@ -4409,6 +4479,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                 default_value = parse_assignment_expression();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
+                    options_.in_generator_body = saved_gen_for_params_fd;
                     return nullptr;
                 }
             }
@@ -4421,6 +4492,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             if (is_rest) {
                 if (!match(TokenType::RIGHT_PAREN)) {
                     add_error("Rest parameter must be last formal parameter");
+                    options_.in_generator_body = saved_gen_for_params_fd;
                     return nullptr;
                 }
                 break;
@@ -4430,6 +4502,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                 advance();
             } else if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ',' or ')' in parameter list");
+                options_.in_generator_body = saved_gen_for_params_fd;
                 return nullptr;
             }
             continue;
@@ -4439,6 +4512,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                 const std::string& pname = current_token().get_value();
                 if (pname == "eval" || pname == "arguments") {
                     add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    options_.in_generator_body = saved_gen_for_params_fd;
                     return nullptr;
                 }
             }
@@ -4457,6 +4531,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
+            options_.in_generator_body = saved_gen_for_params_fd;
             return nullptr;
         }
 
@@ -4467,36 +4542,50 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
+                options_.in_generator_body = saved_gen_for_params_fd;
                 return nullptr;
             }
         } else if (is_rest && match(TokenType::ASSIGN)) {
             add_error("Rest parameter cannot have default value");
+            options_.in_generator_body = saved_gen_for_params_fd;
             return nullptr;
         }
-        
+
         Position param_end = get_current_position();
         auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
         params.push_back(std::move(param));
-        
+
         if (is_rest) {
             if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Rest parameter must be last formal parameter");
+                options_.in_generator_body = saved_gen_for_params_fd;
                 return nullptr;
             }
             break;
         }
-        
+
         if (match(TokenType::COMMA)) {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
             add_error("Expected ',' or ')' in parameter list");
+            options_.in_generator_body = saved_gen_for_params_fd;
             return nullptr;
         }
     }
-    
+
+    options_.in_generator_body = saved_gen_for_params_fd;
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    if (is_generator) {
+        std::string forbidden = find_forbidden_expr_in_params(params, true, false);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of generator function");
+            return nullptr;
+        }
     }
 
     int saved_loop_fn = options_.loop_depth;
@@ -5899,6 +5988,12 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
+    // FormalParameters[+Yield] for generator expressions: parse bare `yield` in
+    // parameter default values as YieldExpression so the Contains-YieldExpression
+    // early error below can detect it (spec 15.5.1).
+    bool saved_gen_for_params_fe = options_.in_generator_body;
+    options_.in_generator_body = is_generator;
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
@@ -5917,6 +6012,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern in function parameters");
+                options_.in_generator_body = saved_gen_for_params_fe;
                 return nullptr;
             }
             static int destr_param_counter = 0;
@@ -5930,6 +6026,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                 default_value = parse_assignment_expression();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
+                    options_.in_generator_body = saved_gen_for_params_fe;
                     return nullptr;
                 }
             }
@@ -5942,6 +6039,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             if (is_rest) {
                 if (!match(TokenType::RIGHT_PAREN)) {
                     add_error("Rest parameter must be last formal parameter");
+                    options_.in_generator_body = saved_gen_for_params_fe;
                     return nullptr;
                 }
                 break;
@@ -5951,6 +6049,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                 advance();
             } else if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ',' or ')' in parameter list");
+                options_.in_generator_body = saved_gen_for_params_fe;
                 return nullptr;
             }
             continue;
@@ -5960,6 +6059,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                 const std::string& pname = current_token().get_value();
                 if (pname == "eval" || pname == "arguments") {
                     add_error("'" + pname + "' cannot be used as a parameter name in strict mode");
+                    options_.in_generator_body = saved_gen_for_params_fe;
                     return nullptr;
                 }
             }
@@ -5978,6 +6078,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
+            options_.in_generator_body = saved_gen_for_params_fe;
             return nullptr;
         }
 
@@ -5988,36 +6089,50 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
+                options_.in_generator_body = saved_gen_for_params_fe;
                 return nullptr;
             }
         } else if (is_rest && match(TokenType::ASSIGN)) {
             add_error("Rest parameter cannot have default value");
+            options_.in_generator_body = saved_gen_for_params_fe;
             return nullptr;
         }
-        
+
         Position param_end = get_current_position();
         auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
         params.push_back(std::move(param));
-        
+
         if (is_rest) {
             if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Rest parameter must be last formal parameter");
+                options_.in_generator_body = saved_gen_for_params_fe;
                 return nullptr;
             }
             break;
         }
-        
+
         if (match(TokenType::COMMA)) {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
             add_error("Expected ',' or ')' in parameter list");
+            options_.in_generator_body = saved_gen_for_params_fe;
             return nullptr;
         }
     }
-    
+
+    options_.in_generator_body = saved_gen_for_params_fe;
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    if (is_generator) {
+        std::string forbidden = find_forbidden_expr_in_params(params, true, false);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of generator function");
+            return nullptr;
+        }
     }
 
     int saved_loop_fn = options_.loop_depth;
@@ -6219,6 +6334,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
+    // FormalParameters[+Yield, +Await] (async generator) / [~Yield, +Await] (async
+    // function): parse bare `yield` in parameter default values as YieldExpression
+    // when this is an async generator, so the Contains-YieldExpression early error
+    // below can detect it. `await` always parses as AwaitExpression already (spec 15.5.1).
+    bool saved_gen_for_params_afe = options_.in_generator_body;
+    options_.in_generator_body = is_generator;
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
@@ -6237,6 +6359,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern in function parameters");
+                options_.in_generator_body = saved_gen_for_params_afe;
                 return nullptr;
             }
             static int destr_param_counter = 0;
@@ -6250,6 +6373,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                 default_value = parse_assignment_expression();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
+                    options_.in_generator_body = saved_gen_for_params_afe;
                     return nullptr;
                 }
             }
@@ -6262,6 +6386,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             if (is_rest) {
                 if (!match(TokenType::RIGHT_PAREN)) {
                     add_error("Rest parameter must be last formal parameter");
+                    options_.in_generator_body = saved_gen_for_params_afe;
                     return nullptr;
                 }
                 break;
@@ -6271,6 +6396,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                 advance();
             } else if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ',' or ')' in parameter list");
+                options_.in_generator_body = saved_gen_for_params_afe;
                 return nullptr;
             }
             continue;
@@ -6279,6 +6405,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
                 const std::string& pn2 = current_token().get_value();
                 if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
                     add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    options_.in_generator_body = saved_gen_for_params_afe;
                     return nullptr;
                 }
                 param_name = std::make_unique<Identifier>(pn2,
@@ -6295,6 +6422,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
+            options_.in_generator_body = saved_gen_for_params_afe;
             return nullptr;
         }
 
@@ -6305,10 +6433,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
+                options_.in_generator_body = saved_gen_for_params_afe;
                 return nullptr;
             }
         } else if (is_rest && match(TokenType::ASSIGN)) {
             add_error("Rest parameter cannot have default value");
+            options_.in_generator_body = saved_gen_for_params_afe;
             return nullptr;
         }
 
@@ -6319,6 +6449,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
         if (is_rest) {
             if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Rest parameter must be last formal parameter");
+                options_.in_generator_body = saved_gen_for_params_afe;
                 return nullptr;
             }
             break;
@@ -6328,13 +6459,24 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
             add_error("Expected ',' or ')' in parameter list");
+            options_.in_generator_body = saved_gen_for_params_afe;
             return nullptr;
         }
     }
-    
+
+    options_.in_generator_body = saved_gen_for_params_afe;
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    {
+        std::string forbidden = find_forbidden_expr_in_params(params, is_generator, true);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of async function");
+            return nullptr;
+        }
     }
 
     // Async functions always use UniqueFormaParameters (or at least strict)
@@ -6479,6 +6621,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
 
+    // FormalParameters[+Yield, +Await] (async generator) / [~Yield, +Await] (async
+    // function): parse bare `yield` in parameter default values as YieldExpression
+    // when this is an async generator, so the Contains-YieldExpression early error
+    // below can detect it. `await` always parses as AwaitExpression already (spec 15.5.1).
+    bool saved_gen_for_params_afd = options_.in_generator_body;
+    options_.in_generator_body = is_generator;
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
@@ -6497,6 +6646,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             auto destructuring = parse_destructuring_pattern();
             if (!destructuring) {
                 add_error("Invalid destructuring pattern in function parameters");
+                options_.in_generator_body = saved_gen_for_params_afd;
                 return nullptr;
             }
             static int destr_param_counter = 0;
@@ -6510,6 +6660,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                 default_value = parse_assignment_expression();
                 if (!default_value) {
                     add_error("Invalid default parameter value");
+                    options_.in_generator_body = saved_gen_for_params_afd;
                     return nullptr;
                 }
             }
@@ -6522,6 +6673,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             if (is_rest) {
                 if (!match(TokenType::RIGHT_PAREN)) {
                     add_error("Rest parameter must be last formal parameter");
+                    options_.in_generator_body = saved_gen_for_params_afd;
                     return nullptr;
                 }
                 break;
@@ -6531,6 +6683,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                 advance();
             } else if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ',' or ')' in parameter list");
+                options_.in_generator_body = saved_gen_for_params_afd;
                 return nullptr;
             }
             continue;
@@ -6539,6 +6692,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
                 const std::string& pn2 = current_token().get_value();
                 if (options_.strict_mode && (pn2 == "eval" || pn2 == "arguments")) {
                     add_error("SyntaxError: '" + pn2 + "' cannot be a parameter name in strict mode");
+                    options_.in_generator_body = saved_gen_for_params_afd;
                     return nullptr;
                 }
                 param_name = std::make_unique<Identifier>(pn2,
@@ -6555,6 +6709,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             advance();
         } else {
             add_error("Expected parameter name or destructuring pattern");
+            options_.in_generator_body = saved_gen_for_params_afd;
             return nullptr;
         }
 
@@ -6565,10 +6720,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             default_value = parse_assignment_expression();
             if (!default_value) {
                 add_error("Invalid default parameter value");
+                options_.in_generator_body = saved_gen_for_params_afd;
                 return nullptr;
             }
         } else if (is_rest && match(TokenType::ASSIGN)) {
             add_error("Rest parameter cannot have default value");
+            options_.in_generator_body = saved_gen_for_params_afd;
             return nullptr;
         }
 
@@ -6579,6 +6736,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         if (is_rest) {
             if (!match(TokenType::RIGHT_PAREN)) {
                 add_error("Rest parameter must be last formal parameter");
+                options_.in_generator_body = saved_gen_for_params_afd;
                 return nullptr;
             }
             break;
@@ -6588,13 +6746,24 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
             advance();
         } else if (!match(TokenType::RIGHT_PAREN)) {
             add_error("Expected ',' or ')' in parameter list");
+            options_.in_generator_body = saved_gen_for_params_afd;
             return nullptr;
         }
     }
-    
+
+    options_.in_generator_body = saved_gen_for_params_afd;
+
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    {
+        std::string forbidden = find_forbidden_expr_in_params(params, is_generator, true);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of async function");
+            return nullptr;
+        }
     }
 
     // Duplicate params always forbidden in async functions (and strict mode)

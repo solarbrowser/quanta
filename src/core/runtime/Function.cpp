@@ -565,7 +565,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                                 result->set_property("value", Value());
                             } else {
                                 result->set_property("done", Value(false));
-                                result->set_property("value", args_ptr->get_element(*index));
+                                // Mapped argument indices (ES6 9.4.4) are accessor properties
+                                // backed by the parameter bindings -- get_element bypasses the
+                                // getter and returns undefined, so use get_property instead.
+                                Context* prev_ic = Object::current_context_;
+                                Object::current_context_ = &ctx2;
+                                Value elem = args_ptr->get_property(std::to_string(*index));
+                                Object::current_context_ = prev_ic;
+                                result->set_property("value", elem);
                                 (*index)++;
                             }
                             return Value(result.release());
