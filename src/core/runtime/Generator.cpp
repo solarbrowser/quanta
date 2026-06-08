@@ -627,6 +627,16 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         }
     }
 
+    // Spec 15.8.4 NamedEvaluation / FunctionDeclarationInstantiation: a named
+    // GeneratorExpression binds its own name as an immutable self-reference
+    // inside its body (assignment is silently ignored in sloppy mode, throws in strict).
+    {
+        const std::string& fn_name = this->get_name();
+        if (!fn_name.empty() && fn_name != "<anonymous>" && !gen_context.has_binding(fn_name)) {
+            gen_context.create_binding(fn_name, Value(this), false);
+        }
+    }
+
     // Create arguments object BEFORE default param evaluation (default exprs can reference arguments)
     {
         auto arguments_obj = ObjectFactory::create_array(args.size());

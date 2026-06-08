@@ -31,6 +31,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameters_(params),
       body_(std::move(body)), closure_context_(closure_context),
+      closure_environment_(closure_context ? closure_context->get_lexical_environment() : nullptr),
       prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
@@ -54,6 +55,7 @@ Function::Function(const std::string& name,
                    Context* closure_context)
     : Object(ObjectType::Function), name_(name), parameter_objects_(std::move(params)),
       body_(std::move(body)), closure_context_(closure_context),
+      closure_environment_(closure_context ? closure_context->get_lexical_environment() : nullptr),
       prototype_(nullptr), is_native_(false), is_constructor_(true), is_arrow_(false), is_class_constructor_(false), is_strict_(false), is_param_default_(false), execution_count_(0), is_hot_(false) {
     for (const auto& param : parameter_objects_) {
         parameters_.push_back(param->get_name()->get_name());
@@ -84,7 +86,7 @@ Function::Function(const std::string& name,
 Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
+    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -105,7 +107,7 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    uint32_t arity,
                    bool create_prototype)
-    : Object(ObjectType::Function), name_(name), closure_context_(nullptr),
+    : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
       prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
@@ -710,6 +712,27 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // Propagate super_called flag to parent context
         if (function_context.was_super_called()) {
             ctx.set_super_called(true);
+        }
+
+        // let/const declared at the function's top level are created while the
+        // body runs (after the pre-scan above), so a function declaration hoisted
+        // before them captured a stale/undefined __closure_ snapshot. Walk the
+        // post-execution variable environment and lexical chain (up to the
+        // variable environment) to also pick those names up for re-capture.
+        {
+            auto* post_ve = function_context.get_variable_environment();
+            if (post_ve) {
+                for (const auto& n : post_ve->get_binding_names()) {
+                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
+                }
+            }
+            Environment* lex = function_context.get_lexical_environment();
+            while (lex && lex != post_ve) {
+                for (const auto& n : lex->get_binding_names()) {
+                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
+                }
+                lex = lex->get_outer();
+            }
         }
 
         // Re-capture closure variables on function objects in this scope.

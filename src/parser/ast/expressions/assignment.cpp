@@ -1131,7 +1131,11 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                 ctx.throw_reference_error("'" + name + "' is not defined");
                 return;
             }
-            ctx.create_binding(name, value, true);
+            // ES5 8.7.2: PutValue on unresolvable reference -- always sets a property
+            // on the global object (creating an implicit global var), regardless of
+            // which scope the assignment executes in.
+            Object* global = ctx.get_global_object();
+            if (global) global->set_property(name, value);
         }
     } else if (target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         auto* member = static_cast<MemberExpression*>(target);

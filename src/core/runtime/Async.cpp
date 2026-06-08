@@ -159,6 +159,14 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         exec_ctx->create_binding(var_name, get_property(key), !is_const);
     }
 
+    // Spec 15.8.4 NamedEvaluation / FunctionDeclarationInstantiation: a named
+    // AsyncFunctionExpression binds its own name as an immutable self-reference
+    // inside its body (assignment is silently ignored in sloppy mode, throws in strict).
+    const std::string& fn_name = get_name();
+    if (!fn_name.empty() && fn_name != "<anonymous>" && !exec_ctx->has_binding(fn_name)) {
+        exec_ctx->create_binding(fn_name, Value(this), false);
+    }
+
     // Bind parameters with full AST support (defaults, destructuring, rest).
     // Errors during param evaluation must reject the promise, not propagate synchronously.
     const auto& param_objs = get_parameter_objects();
@@ -1063,6 +1071,16 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
                     gen_ctx->create_binding(var_name, closure_value, true);
                 }
             }
+        }
+    }
+
+    // Spec 15.8.4 NamedEvaluation / FunctionDeclarationInstantiation: a named
+    // AsyncGeneratorExpression binds its own name as an immutable self-reference
+    // inside its body (assignment is silently ignored in sloppy mode, throws in strict).
+    {
+        const std::string& fn_name = get_name();
+        if (!fn_name.empty() && fn_name != "<anonymous>" && !gen_ctx->has_binding(fn_name)) {
+            gen_ctx->create_binding(fn_name, Value(this), false);
         }
     }
 

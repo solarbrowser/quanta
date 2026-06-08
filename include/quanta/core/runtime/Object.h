@@ -21,6 +21,7 @@ namespace Quanta {
 class PropertyDescriptor;
 class Shape;
 class Context;
+class Environment;
 class ASTNode;
 class Parameter;
 
@@ -371,6 +372,7 @@ private:
     std::vector<std::unique_ptr<class Parameter>> parameter_objects_;
     std::unique_ptr<class ASTNode> body_;
     class Context* closure_context_;
+    class Environment* closure_environment_;  // lexical environment captured at creation time
     mutable Object* prototype_;  // Mutable to allow lazy initialization in get_property
     bool is_native_;
     bool is_constructor_;  // Whether this function has [[Construct]] internal method
@@ -417,6 +419,7 @@ public:
     void set_is_constructor(bool value) { is_constructor_ = value; }
     bool is_arrow() const { return is_arrow_; }
     class Context* get_closure_context() const { return closure_context_; }
+    class Environment* get_closure_environment() const { return closure_environment_; }
     void set_is_arrow(bool value) { is_arrow_ = value; }
     bool is_class_constructor() const { return is_class_constructor_; }
     void set_is_class_constructor(bool value) { is_class_constructor_ = value; }
