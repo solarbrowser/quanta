@@ -117,6 +117,17 @@ public:
             }
 
             Module* module = module_loader->load_module(filename, "");
+
+            // Module top-level code can schedule Promise microtasks (dynamic
+            // import().catch().then($DONE, ...), top-level await) -- drain them
+            // now, same as script top-level code, or $DONE never fires.
+            if (Context* gctx = engine_->get_global_context()) {
+                if (gctx->has_pending_microtasks()) {
+                    gctx->drain_microtasks();
+                }
+            }
+            engine_->clear_survivor_contexts();
+
             if (module) {
                 if (module->has_thrown_exception()) {
                     Value exc = module->get_thrown_exception();

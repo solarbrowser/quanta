@@ -452,7 +452,7 @@ public:
     
     std::string to_string() const;
 
-private:
+protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx);
 };
 

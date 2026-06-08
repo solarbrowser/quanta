@@ -1319,6 +1319,18 @@ Value AwaitExpression::evaluate(Context& ctx) {
     if (!obj) return arg_value;
     if (obj->get_type() == Object::ObjectType::Promise) {
         Promise* promise = static_cast<Promise*>(obj);
+        if (promise && promise->get_state() == PromiseState::PENDING) {
+            // Quanta has no suspension mechanism for top-level await in modules
+            // (no fiber executor here) -- force the promise to settle by draining
+            // the microtask queue, bounded against one that never settles.
+            Context* gctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
+            int spins = 0;
+            while (promise->get_state() == PromiseState::PENDING && spins < 100000) {
+                if (!gctx || !gctx->has_pending_microtasks()) break;
+                gctx->drain_microtasks();
+                spins++;
+            }
+        }
         if (promise && promise->get_state() == PromiseState::FULFILLED) {
             return promise->get_value();
         }
