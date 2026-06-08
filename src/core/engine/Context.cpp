@@ -461,7 +461,6 @@ void Context::queue_microtask(std::function<void()> task) {
 void Context::drain_microtasks() {
     // Spin until all microtasks are drained (with 10-second real-time limit
     // to allow setTimeout-based tests to work via flushQueue spin loops)
-    is_draining_microtasks_ = true;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!microtask_queue_.empty()) {
         auto tasks = std::move(microtask_queue_);
@@ -471,7 +470,6 @@ void Context::drain_microtasks() {
         }
         if (std::chrono::steady_clock::now() > deadline) break;
     }
-    is_draining_microtasks_ = false;
 }
 
 void Context::register_built_in_object(const std::string& name, Object* object) {
@@ -909,6 +907,10 @@ std::string Environment::debug_string() const {
 bool Environment::has_own_binding(const std::string& name) const {
     if (type_ == Type::Object && binding_object_) {
         if (!binding_object_->has_own_property(name)) return false;
+        // ES6 8.1.1.2.1 HasBinding: @@unscopables is only consulted when the
+        // withEnvironment flag is set -- i.e. for `with` statement object
+        // environments, not ordinary object environments (global object, etc).
+        if (!is_with_environment_) return true;
         // ES6: Check Symbol.unscopables (guard against re-entrancy from Proxy get trap)
         Symbol* unscopables_sym = Symbol::get_well_known(Symbol::UNSCOPABLES);
         if (unscopables_sym) {
@@ -1058,6 +1060,7 @@ void Context::run_dispose_resources() {
 void Context::push_with_scope(Object* obj) {
     // Create object environment for with statement
     auto new_env = std::make_unique<Environment>(obj, lexical_environment_);
+    new_env->set_with_environment(true);
     lexical_environment_ = new_env.release();
 }
 

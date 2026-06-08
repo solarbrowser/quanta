@@ -86,10 +86,15 @@ void Promise::reject(const Value& reason) {
 
 Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
     Context* exec_ctx = get_exec_ctx(engine_, context_);
+    // Invoke handlers on the promise's creation context (closures need the right
+    // defining scope) but always schedule on the global queue -- the only one
+    // drain_microtasks() drains; queuing elsewhere silently drops the job.
+    Context* call_ctx = context_ ? context_ : exec_ctx;
+    Context* queue_ctx = exec_ctx;
 
     // Create child promise — inherit parent's context so closure propagation works
     // correctly when promises are created inside nested function scopes.
-    auto child_obj = ObjectFactory::create_promise(context_ ? context_ : exec_ctx);
+    auto child_obj = ObjectFactory::create_promise(call_ctx);
     Promise* child = static_cast<Promise*>(child_obj.release());
 
     if (state_ == PromiseState::PENDING) {
@@ -101,72 +106,67 @@ Promise* Promise::then(Function* on_fulfilled, Function* on_rejected) {
         if (child)        set_property(pin + "c", Value(child));
         then_records_.push_back({on_fulfilled, on_rejected, child});
     } else if (state_ == PromiseState::FULFILLED) {
-        if (on_fulfilled) {
-            bool should_async = exec_ctx ? exec_ctx->should_queue_then_async() : false;
-            if (context_ && !should_async) {
-                if (exec_ctx) exec_ctx->increment_sync_then_depth();
-                std::vector<Value> args = {value_};
-                Value result = on_fulfilled->call(*context_, args);
-                if (exec_ctx) exec_ctx->decrement_sync_then_depth();
-                if (context_->has_exception()) {
-                    Value exc = context_->get_exception();
-                    context_->clear_exception();
-                    if (child) child->reject(exc);
-                } else {
-                    if (child) child->fulfill(result);
-                }
-            } else if (exec_ctx) {
-                Value val = value_;
-                Function* cb = on_fulfilled;
-                Promise* ch = child;
-                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
+        // ES2015 25.4.5.3: PromiseReactionJob is always enqueued, never run
+        // synchronously -- test262's ordering tests assert .then runs strictly
+        // after the current synchronous job, in FIFO microtask order.
+        Value val = value_;
+        Promise* self = this;
+        Function* cb = on_fulfilled;
+        Promise* ch = child;
+        if (queue_ctx && (cb || ch)) {
+            static thread_local size_t then_pin_counter = 0;
+            std::string pin = "__thenp_" + std::to_string(then_pin_counter++);
+            if (cb) self->set_property(pin + "f", Value(cb));
+            if (ch) self->set_property(pin + "c", Value(ch));
+            queue_ctx->queue_microtask([self, pin, cb, ch, val, call_ctx]() mutable {
+                self->delete_property(pin + "f");
+                self->delete_property(pin + "c");
+                if (cb) {
                     std::vector<Value> args = {val};
-                    Value result = cb->call(*exec_ctx, args);
-                    if (exec_ctx->has_exception()) {
-                        Value exc = exec_ctx->get_exception();
-                        exec_ctx->clear_exception();
+                    Value result = cb->call(*call_ctx, args);
+                    if (call_ctx->has_exception()) {
+                        Value exc = call_ctx->get_exception();
+                        call_ctx->clear_exception();
                         if (ch) ch->reject(exc);
                     } else {
                         if (ch) ch->fulfill(result);
                     }
-                });
-            }
-        } else {
-            child->fulfill(value_);
+                } else {
+                    if (ch) ch->fulfill(val);
+                }
+            });
+        } else if (ch) {
+            ch->fulfill(val);
         }
     } else { // REJECTED
-        if (on_rejected) {
-            bool should_async = exec_ctx ? exec_ctx->should_queue_then_async() : false;
-            if (context_ && !should_async) {
-                if (exec_ctx) exec_ctx->increment_sync_then_depth();
-                std::vector<Value> args = {value_};
-                Value result = on_rejected->call(*context_, args);
-                if (exec_ctx) exec_ctx->decrement_sync_then_depth();
-                if (context_->has_exception()) {
-                    Value exc = context_->get_exception();
-                    context_->clear_exception();
-                    if (child) child->reject(exc);
-                } else {
-                    if (child) child->fulfill(result);
-                }
-            } else if (exec_ctx) {
-                Value val = value_;
-                Function* cb = on_rejected;
-                Promise* ch = child;
-                exec_ctx->queue_microtask([cb, ch, val, exec_ctx]() mutable {
+        Value val = value_;
+        Promise* self = this;
+        Function* cb = on_rejected;
+        Promise* ch = child;
+        if (queue_ctx && (cb || ch)) {
+            static thread_local size_t then_pin_counter = 0;
+            std::string pin = "__thenp_" + std::to_string(then_pin_counter++);
+            if (cb) self->set_property(pin + "f", Value(cb));
+            if (ch) self->set_property(pin + "c", Value(ch));
+            queue_ctx->queue_microtask([self, pin, cb, ch, val, call_ctx]() mutable {
+                self->delete_property(pin + "f");
+                self->delete_property(pin + "c");
+                if (cb) {
                     std::vector<Value> args = {val};
-                    Value result = cb->call(*exec_ctx, args);
-                    if (exec_ctx->has_exception()) {
-                        Value exc = exec_ctx->get_exception();
-                        exec_ctx->clear_exception();
+                    Value result = cb->call(*call_ctx, args);
+                    if (call_ctx->has_exception()) {
+                        Value exc = call_ctx->get_exception();
+                        call_ctx->clear_exception();
                         if (ch) ch->reject(exc);
                     } else {
                         if (ch) ch->fulfill(result);
                     }
-                });
-            }
-        } else {
-            child->reject(value_);
+                } else {
+                    if (ch) ch->reject(val);
+                }
+            });
+        } else if (ch) {
+            ch->reject(val);
         }
     }
 
@@ -226,44 +226,77 @@ void Promise::execute_handlers() {
     // live closure variable access (shared mutable state across async boundaries).
     auto records = std::move(then_records_);
     then_records_.clear();
-    // Clear the GC-pinning properties for all handlers we're about to run.
+
+    PromiseState settled_state = state_;
+    Value settled_value = value_;
+    // call_ctx (promise's creation context) invokes handlers so closures see live
+    // state; queue_ctx (always global -- the only queue drain_microtasks() drains)
+    // schedules the job, since queuing elsewhere silently drops it.
+    Context* call_ctx = context_;
+    Context* queue_ctx = get_exec_ctx(engine_, context_);
+    Promise* self = this;
+
+    // ES2015 25.4.1.3.2/25.4.1.8: PromiseReactionJob always runs as a queued job,
+    // never inside fulfill()/reject(), so .then ordering matches what test262's
+    // interleaving tests expect relative to other microtasks.
     for (size_t i = 0; i < records.size(); i++) {
         std::string pin = "__then_" + std::to_string(i);
-        delete_property(pin + "f");
-        delete_property(pin + "r");
-        delete_property(pin + "c");
-    }
+        Function* on_fulfilled = records[i].on_fulfilled;
+        Function* on_rejected = records[i].on_rejected;
+        Promise* child = records[i].child;
 
-    for (auto& rec : records) {
-        if (state_ == PromiseState::FULFILLED) {
-            if (rec.on_fulfilled && context_) {
-                std::vector<Value> args = {value_};
-                Value result = rec.on_fulfilled->call(*context_, args);
-                if (context_->has_exception()) {
-                    Value exc = context_->get_exception();
-                    context_->clear_exception();
-                    if (rec.child) rec.child->reject(exc);
-                } else {
-                    if (rec.child) rec.child->fulfill(result);
-                }
+        if (!call_ctx || !queue_ctx) {
+            // No context to queue on (shouldn't happen) -- run synchronously as a
+            // last resort, after dropping the GC pins.
+            delete_property(pin + "f");
+            delete_property(pin + "r");
+            delete_property(pin + "c");
+            if (settled_state == PromiseState::FULFILLED) {
+                if (child) child->fulfill(settled_value);
             } else {
-                if (rec.child) rec.child->fulfill(value_);
+                if (child) child->reject(settled_value);
             }
-        } else { // REJECTED
-            if (rec.on_rejected && context_) {
-                std::vector<Value> args = {value_};
-                Value result = rec.on_rejected->call(*context_, args);
-                if (context_->has_exception()) {
-                    Value exc = context_->get_exception();
-                    context_->clear_exception();
-                    if (rec.child) rec.child->reject(exc);
-                } else {
-                    if (rec.child) rec.child->fulfill(result);
-                }
-            } else {
-                if (rec.child) rec.child->reject(value_);
-            }
+            continue;
         }
+
+        // Keep __then_ pins alive (GC root via self's properties) until the job runs.
+        Context* ctx = call_ctx;
+        queue_ctx->queue_microtask([self, pin, ctx, on_fulfilled, on_rejected, child,
+                              settled_state, settled_value]() mutable {
+            self->delete_property(pin + "f");
+            self->delete_property(pin + "r");
+            self->delete_property(pin + "c");
+
+            if (settled_state == PromiseState::FULFILLED) {
+                if (on_fulfilled) {
+                    std::vector<Value> args = {settled_value};
+                    Value result = on_fulfilled->call(*ctx, args);
+                    if (ctx->has_exception()) {
+                        Value exc = ctx->get_exception();
+                        ctx->clear_exception();
+                        if (child) child->reject(exc);
+                    } else {
+                        if (child) child->fulfill(result);
+                    }
+                } else {
+                    if (child) child->fulfill(settled_value);
+                }
+            } else { // REJECTED
+                if (on_rejected) {
+                    std::vector<Value> args = {settled_value};
+                    Value result = on_rejected->call(*ctx, args);
+                    if (ctx->has_exception()) {
+                        Value exc = ctx->get_exception();
+                        ctx->clear_exception();
+                        if (child) child->reject(exc);
+                    } else {
+                        if (child) child->fulfill(result);
+                    }
+                } else {
+                    if (child) child->reject(settled_value);
+                }
+            }
+        });
     }
 }
 

@@ -232,6 +232,14 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
     }
 
+    // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
+    // the function body, creating bindings initialized to `undefined` before
+    // the body executes (so e.g. `with` blocks resolve the local shadowing
+    // binding rather than falling through to an outer scope).
+    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body_.get(), *exec_ctx);
+    }
+
     // Clone body and start executor
     std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;
     auto executor = std::make_shared<AsyncExecutor>(
@@ -455,9 +463,8 @@ void AsyncGenerator::handle_suspension() {
             result_obj->set_property("done", Value(false));
             Promise* fulfilled = pending_promise_;
             fulfilled->fulfill(Value(result_obj.release()));
-            // fulfill() runs .then() reactions synchronously (Promise::execute_handlers),
-            // so the consumer's callback may call next()/return()/throw() reentrantly and
-            // overwrite pending_promise_ with a new in-flight promise -- only clear ours.
+            // .then reactions run as queued microtasks now, so a later one could
+            // re-enter and replace pending_promise_ before we resume -- clear only ours.
             if (pending_promise_ == fulfilled) {
                 pending_promise_ = nullptr;
                 delete_property("__pending_promise__");
@@ -1142,6 +1149,12 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
     arguments_obj->set_type(Object::ObjectType::Arguments);
     gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+
+    // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
+    // the function body before it executes (see AsyncFunction::call for rationale).
+    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body_.get(), *gen_ctx);
+    }
 
     Context* outer_ctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
     std::unique_ptr<ASTNode> body_clone = body_ ? body_->clone() : nullptr;

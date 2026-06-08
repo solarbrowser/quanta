@@ -92,8 +92,6 @@ private:
 
     // Microtask queue for Promise/async (only used on global context)
     std::vector<std::function<void()>> microtask_queue_;
-    bool is_draining_microtasks_ = false;
-    int sync_then_depth_ = 0;
     bool in_param_eval_ = false;
     bool is_direct_eval_call_ = false;
     bool eval_arguments_conflict_ = false;
@@ -120,9 +118,6 @@ public:
     void queue_microtask(std::function<void()> task);
     void drain_microtasks();
     bool has_pending_microtasks() const { return !microtask_queue_.empty(); }
-    bool should_queue_then_async() const { return is_draining_microtasks_ || sync_then_depth_ > 0; }
-    void increment_sync_then_depth() { sync_then_depth_++; }
-    void decrement_sync_then_depth() { if (sync_then_depth_ > 0) sync_then_depth_--; }
     bool is_in_param_eval() const { return in_param_eval_; }
     void set_in_param_eval(bool v) { in_param_eval_ = v; }
     bool is_direct_eval_call() const { return is_direct_eval_call_; }
@@ -346,6 +341,7 @@ private:
     std::unordered_set<std::string> lexical_names_;
     std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;
+    bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
 
 public:
     Environment(Type type, Environment* outer = nullptr);
@@ -355,6 +351,8 @@ public:
     Type get_type() const { return type_; }
     Environment* get_outer() const { return outer_environment_; }
     Object* get_binding_object() const { return binding_object_; }
+    bool is_with_environment() const { return is_with_environment_; }
+    void set_with_environment(bool value) { is_with_environment_ = value; }
 
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;

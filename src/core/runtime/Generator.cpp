@@ -697,6 +697,12 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         }
     }
 
+    // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
+    // the function body before it executes (see AsyncFunction::call for rationale).
+    if (body_ && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        scan_for_var_declarations(body_.get(), gen_context);
+    }
+
     std::unique_ptr<ASTNode> body_clone;
     if (body_) {
         body_clone = body_->clone();
