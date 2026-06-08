@@ -940,7 +940,15 @@ std::unique_ptr<Context> create_function_context(Engine* engine, Context* parent
     auto context = std::make_unique<Context>(engine, parent, Context::Type::Function);
 
     Environment* outer_env;
-    if (function && function->get_closure_context()) {
+    if (function && function->get_closure_environment()) {
+        // Prefer the lexical environment captured at function-creation time:
+        // closure_context_'s lexical_environment_ is a mutable pointer that the
+        // context reuses and reassigns as it moves through blocks/statements, so
+        // resolving it now (at call time, possibly long after creation) would
+        // yield whatever scope the context happens to be in *now* -- not the
+        // scope that was active when this closure was created.
+        outer_env = function->get_closure_environment();
+    } else if (function && function->get_closure_context()) {
         outer_env = function->get_closure_context()->get_lexical_environment();
     } else {
         outer_env = parent->get_lexical_environment();
@@ -1055,9 +1063,14 @@ void Context::push_with_scope(Object* obj) {
 
 void Context::pop_with_scope() {
     if (lexical_environment_ && lexical_environment_->get_outer()) {
-        Environment* old_env = lexical_environment_;
+        // Do not delete the with-environment: a closure created inside the
+        // with body may have captured this Environment* directly (see
+        // Function::closure_environment_), and deleting it here would leave
+        // that closure holding a dangling pointer. Block scopes are leaked
+        // for the same reason (see BlockStatement::evaluate) and environments
+        // are already swept by Context::~Context(), so leaking here is
+        // consistent.
         lexical_environment_ = lexical_environment_->get_outer();
-        delete old_env;
     }
 }
 
