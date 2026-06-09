@@ -184,6 +184,11 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
             } else {
                 std::string pname = param->get_name() ? param->get_name()->get_name() : "";
                 if (pname == "arguments") param_named_arguments = true;
+                // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
+                if (!pname.empty() && pname != "arguments" && !param->has_destructuring()) {
+                    if (exec_ctx->get_lexical_environment())
+                        exec_ctx->get_lexical_environment()->create_uninitialized_binding(pname);
+                }
                 Value arg_val;
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
@@ -206,7 +211,11 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
                         }
                     }
                 } else if (!pname.empty()) {
-                    exec_ctx->create_binding(pname, arg_val, true);
+                    // Initialize the binding (was in TDZ during default evaluation)
+                    if (exec_ctx->get_lexical_environment())
+                        exec_ctx->get_lexical_environment()->initialize_binding(pname, arg_val);
+                    else
+                        exec_ctx->create_binding(pname, arg_val, true);
                 }
             }
         }
@@ -1118,6 +1127,12 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
                 gen_ctx->create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
             } else {
+                const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
+                // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
+                if (!pname.empty() && !param->has_destructuring()) {
+                    if (gen_ctx->get_lexical_environment())
+                        gen_ctx->get_lexical_environment()->create_uninitialized_binding(pname);
+                }
                 Value arg_val;
                 if (i < args.size() && !args[i].is_undefined()) {
                     arg_val = args[i];
@@ -1140,8 +1155,12 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
                             return Value();
                         }
                     }
-                } else {
-                    gen_ctx->create_binding(param->get_name()->get_name(), arg_val, true);
+                } else if (!pname.empty()) {
+                    // Initialize the binding (was in TDZ during default evaluation)
+                    if (gen_ctx->get_lexical_environment())
+                        gen_ctx->get_lexical_environment()->initialize_binding(pname, arg_val);
+                    else
+                        gen_ctx->create_binding(pname, arg_val, true);
                 }
             }
         }

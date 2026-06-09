@@ -7096,11 +7096,23 @@ std::unique_ptr<ASTNode> Parser::parse_yield_expression() {
     if (same_line && match(TokenType::MULTIPLY)) {
         is_delegate = true;
         advance();
-        same_line = (!at_end() && current_token().get_start().line == yield_end_line);
+        // Spec: no [LT here] restriction between * and the expression -- the expression
+        // may appear on a new line after the *.
     }
 
     std::unique_ptr<ASTNode> argument = nullptr;
-    if (same_line && !at_end()) {
+    if (is_delegate) {
+        // yield * always requires an argument (on any line after the *)
+        if (!at_end()) {
+            TokenType nt = current_token().get_type();
+            if (nt != TokenType::SEMICOLON && nt != TokenType::RIGHT_BRACE &&
+                nt != TokenType::RIGHT_PAREN && nt != TokenType::RIGHT_BRACKET &&
+                nt != TokenType::COMMA && nt != TokenType::EOF_TOKEN &&
+                nt != TokenType::COLON) {
+                argument = parse_assignment_expression();
+            }
+        }
+    } else if (same_line && !at_end()) {
         TokenType nt = current_token().get_type();
         if (nt != TokenType::SEMICOLON && nt != TokenType::RIGHT_BRACE &&
             nt != TokenType::RIGHT_PAREN && nt != TokenType::RIGHT_BRACKET &&
@@ -7173,7 +7185,9 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
                     return nullptr;
                 }
                 Position end = get_current_position();
-                auto import_id = std::make_unique<Identifier>("import", start, start);
+                // Use a distinct sentinel name so the runtime handler can reject with SyntaxError
+                // per spec GetModuleSource (SourceTextModuleRecord always throws SyntaxError).
+                auto import_id = std::make_unique<Identifier>("__import_source__", start, start);
                 std::vector<std::unique_ptr<ASTNode>> args;
                 args.push_back(std::move(specifier));
                 return std::make_unique<CallExpression>(std::move(import_id), std::move(args), start, end);

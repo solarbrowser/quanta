@@ -454,6 +454,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
                 function_context.create_binding(param->get_name()->get_name(), Value(rest_array.release()), false);
             } else {
+                const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
+                // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
+                if (!pname.empty() && !param->has_destructuring()) {
+                    if (function_context.get_lexical_environment())
+                        function_context.get_lexical_environment()->create_uninitialized_binding(pname);
+                }
                 Value arg_value;
 
                 if (i < args.size() && !args[i].is_undefined()) {
@@ -480,8 +486,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                             return Value();
                         }
                     }
-                } else {
-                    function_context.create_binding(param->get_name()->get_name(), arg_value, true);
+                } else if (!pname.empty()) {
+                    // Initialize the binding (was in TDZ during default evaluation)
+                    if (function_context.get_lexical_environment())
+                        function_context.get_lexical_environment()->initialize_binding(pname, arg_value);
+                    else
+                        function_context.create_binding(pname, arg_value, true);
                 }
             }
         }

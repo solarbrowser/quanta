@@ -54,6 +54,21 @@ public:
     std::vector<std::string> get_enumerable_keys() const override {
         return get_own_property_keys();
     }
+
+    // ES2022 10.4.6.5 [[Set]]: always returns false for module namespace objects
+    bool set_property(const std::string& /*key*/, const Value& /*value*/,
+                      PropertyAttributes /*attrs*/ = PropertyAttributes::Default) override {
+        return false;
+    }
+
+    // ES2022 10.4.6.8 [[Delete]]: throw TypeError for own export names, else true
+    bool delete_property(const std::string& key) override {
+        if (module_) {
+            for (auto& n : module_->get_export_names())
+                if (n == key) return false;  // non-configurable 
+        }
+        return true;
+    }
 };
 
 Module::Module(const std::string& id, const std::string& filename)
