@@ -12,6 +12,7 @@
 #include <memory>
 #include <functional>
 #include <vector>
+#include <deque>
 #include <ucontext.h>
 
 namespace Quanta {
@@ -155,6 +156,18 @@ public:
     // The promise belonging to the currently-in-flight next()/return()/throw() call
     Promise* pending_promise_ = nullptr;
 
+    // ES2018 27.6.3.x: AsyncGenerator request queue. next()/return()/throw()
+    // calls made while a request is already in flight must queue and run
+    // strictly in order, one at a time, as the generator suspends.
+    struct Request {
+        enum class Type { Next, Return, Throw } type;
+        Value value;
+        Promise* promise;
+        std::string pin_key;  // GC-keepalive property name on `this`
+    };
+    std::deque<Request> request_queue_;
+    uint32_t request_pin_counter_ = 0;
+
 public:
     AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx = nullptr);
     virtual ~AsyncGenerator() = default;
@@ -186,6 +199,13 @@ private:
     void enter_fiber();
     // Called after fiber suspends; fulfills/rejects pending_promise_ when appropriate.
     void handle_suspension();
+
+    // Enqueue a next()/return()/throw() request and start processing it if idle.
+    AsyncGeneratorResult enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise);
+    // Pop the settled front request and kick off the next queued one, if any.
+    void advance_queue();
+    // Start processing request_queue_.front() -- assumes pending_promise_ == nullptr.
+    void process_next_request();
 
     static thread_local AsyncGenerator* current_;
     static void fiber_entry(uint32_t lo, uint32_t hi);

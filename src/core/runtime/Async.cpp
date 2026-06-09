@@ -464,10 +464,9 @@ void AsyncGenerator::handle_suspension() {
             Promise* fulfilled = pending_promise_;
             fulfilled->fulfill(Value(result_obj.release()));
             // .then reactions run as queued microtasks now, so a later one could
-            // re-enter and replace pending_promise_ before we resume -- clear only ours.
+            // re-enter and replace pending_promise_ before we resume -- advance only ours.
             if (pending_promise_ == fulfilled) {
-                pending_promise_ = nullptr;
-                delete_property("__pending_promise__");
+                advance_queue();
             }
             break;
         }
@@ -475,50 +474,79 @@ void AsyncGenerator::handle_suspension() {
             // Internal suspension — pending_promise_ stays; fiber will resume via resume_from_await()
             break;
         case SuspendReason::Done: {
+            Promise* settled = pending_promise_;
             if (has_exception_) {
                 has_exception_ = false;
-                pending_promise_->reject(exception_value_);
+                settled->reject(exception_value_);
             } else {
                 auto result_obj = ObjectFactory::create_object();
                 result_obj->set_property("value", return_value_);
                 result_obj->set_property("done", Value(true));
-                pending_promise_->fulfill(Value(result_obj.release()));
+                settled->fulfill(Value(result_obj.release()));
             }
-            pending_promise_ = nullptr;
-            delete_property("__pending_promise__");
+            if (pending_promise_ == settled) {
+                advance_queue();
+            }
             break;
         }
     }
 }
 
-void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
-    await_result_   = result;
-    await_is_throw_ = is_throw;
-    // Pin result on 'this' (a GC-managed Object) to prevent collection.
-    set_property("__rv_", result);
-    enter_fiber();
-    delete_property("__rv_");
+void AsyncGenerator::advance_queue() {
+    if (!request_queue_.empty()) {
+        Request front = std::move(request_queue_.front());
+        request_queue_.pop_front();
+        if (!front.pin_key.empty()) delete_property(front.pin_key);
+    }
+    pending_promise_ = nullptr;
+    delete_property("__pending_promise__");
+    process_next_request();
 }
 
-AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
-    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto promise_obj = ObjectFactory::create_promise(promise_ctx);
-    auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
+void AsyncGenerator::process_next_request() {
+    if (request_queue_.empty()) return;
+    Request& front = request_queue_.front();
 
-    if (state_ == State::Completed) {
-        auto result_obj = ObjectFactory::create_object();
-        result_obj->set_property("value", Value());
-        result_obj->set_property("done", Value(true));
-        promise->fulfill(Value(result_obj.release()));
-        return AsyncGeneratorResult(std::move(promise));
+    // Generator already finished (or never runs, see suspendedStart case below):
+    // settle each queued request directly, in order, without entering the fiber.
+    bool finishes_without_running =
+        state_ == State::Completed ||
+        (state_ == State::SuspendedStart && front.type != Request::Type::Next);
+
+    if (finishes_without_running) {
+        state_ = State::Completed;
+        Promise* p = front.promise;
+        switch (front.type) {
+            case Request::Type::Throw:
+                p->reject(front.value);
+                break;
+            case Request::Type::Return: {
+                auto result_obj = ObjectFactory::create_object();
+                result_obj->set_property("value", front.value);
+                result_obj->set_property("done", Value(true));
+                p->fulfill(Value(result_obj.release()));
+                break;
+            }
+            case Request::Type::Next: {
+                auto result_obj = ObjectFactory::create_object();
+                result_obj->set_property("value", Value());
+                result_obj->set_property("done", Value(true));
+                p->fulfill(Value(result_obj.release()));
+                break;
+            }
+        }
+        if (!front.pin_key.empty()) delete_property(front.pin_key);
+        request_queue_.pop_front();
+        process_next_request();
+        return;
     }
 
-    pending_promise_ = promise.get();
-    // Pin the pending promise on 'this' (an Object, GC-traced) so GC doesn't collect it.
+    pending_promise_ = front.promise;
     set_property("__pending_promise__", Value(pending_promise_));
-    sent_value_ = value;
-    throwing_ = false;
-    returning_ = false;
+    sent_value_  = front.value;
+    return_arg_  = front.value;
+    throwing_    = (front.type == Request::Type::Throw);
+    returning_   = (front.type == Request::Type::Return);
 
     if (state_ == State::SuspendedStart) {
         // Per spec: the first next() call must run the generator body synchronously
@@ -535,63 +563,48 @@ AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
             EventLoop::instance().schedule_microtask(std::move(task));
         }
     }
+}
 
+AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise) {
+    Promise* raw = promise.get();
+    std::string pin_key = "__agq_" + std::to_string(request_pin_counter_++) + "__";
+    // Pin the promise on 'this' (GC-traced) so it survives until the request settles.
+    set_property(pin_key, Value(raw));
+    request_queue_.push_back({type, value, raw, pin_key});
+    if (!pending_promise_) {
+        process_next_request();
+    }
     return AsyncGeneratorResult(std::move(promise));
+}
+
+void AsyncGenerator::resume_from_await(Value result, bool is_throw) {
+    await_result_   = result;
+    await_is_throw_ = is_throw;
+    // Pin result on 'this' (a GC-managed Object) to prevent collection.
+    set_property("__rv_", result);
+    enter_fiber();
+    delete_property("__rv_");
+}
+
+AsyncGenerator::AsyncGeneratorResult AsyncGenerator::next(const Value& value) {
+    Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
+    auto promise_obj = ObjectFactory::create_promise(promise_ctx);
+    auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
+    return enqueue_request(Request::Type::Next, value, std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::return_value(const Value& value) {
     Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
-
-    if (state_ == State::Completed) {
-        auto result_obj = ObjectFactory::create_object();
-        result_obj->set_property("value", value);
-        result_obj->set_property("done", Value(true));
-        promise->fulfill(Value(result_obj.release()));
-        return AsyncGeneratorResult(std::move(promise));
-    }
-
-    pending_promise_ = promise.get();
-    return_arg_ = value;
-    returning_ = true;
-
-    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto self = this;
-    auto task = [self]() { self->enter_fiber(); };
-    if (queue_ctx) {
-        queue_ctx->queue_microtask(std::move(task));
-    } else {
-        EventLoop::instance().schedule_microtask(std::move(task));
-    }
-
-    return AsyncGeneratorResult(std::move(promise));
+    return enqueue_request(Request::Type::Return, value, std::move(promise));
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::throw_exception(const Value& exception) {
     Context* promise_ctx = outer_context_ ? outer_context_ : generator_context_;
     auto promise_obj = ObjectFactory::create_promise(promise_ctx);
     auto promise = std::unique_ptr<Promise>(static_cast<Promise*>(promise_obj.release()));
-
-    if (state_ == State::Completed) {
-        promise->reject(exception);
-        return AsyncGeneratorResult(std::move(promise));
-    }
-
-    pending_promise_ = promise.get();
-    sent_value_ = exception;
-    throwing_ = true;
-
-    Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-    auto self = this;
-    auto task = [self]() { self->enter_fiber(); };
-    if (queue_ctx) {
-        queue_ctx->queue_microtask(std::move(task));
-    } else {
-        EventLoop::instance().schedule_microtask(std::move(task));
-    }
-
-    return AsyncGeneratorResult(std::move(promise));
+    return enqueue_request(Request::Type::Throw, exception, std::move(promise));
 }
 
 Value AsyncGenerator::get_async_iterator() {
