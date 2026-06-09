@@ -1499,17 +1499,22 @@ Value YieldExpression::evaluate(Context& ctx) {
                 // Spec 27.6.3.9: forward throw()/next(sentValue) to the inner iterator.
                 if (!first_iter && async_gen->throwing_) {
                     async_gen->throwing_ = false;
+                    Context* prev_oc_t = Object::current_context_;
+                    Object::current_context_ = &ctx;
                     Value throw_fn_v = iter_obj->get_property("throw");
+                    Object::current_context_ = prev_oc_t;
                     if (ctx.has_exception()) return Value();
                     if (throw_fn_v.is_function()) {
                         nr = throw_fn_v.as_function()->call(ctx, {async_gen->sent_value_}, iter_val);
                     } else {
-                        // No throw method -- close the inner iterator then throw
+                        // No throw method -- close inner iterator (if it has return) then throw TypeError
+                        Object::current_context_ = &ctx;
                         Value ret_fn_v = iter_obj->get_property("return");
+                        Object::current_context_ = prev_oc_t;
                         if (ret_fn_v.is_function())
                             ret_fn_v.as_function()->call(ctx, {}, iter_val);
                         ctx.clear_exception();
-                        ctx.throw_exception(async_gen->sent_value_, true);
+                        ctx.throw_type_error("The iterator does not have a 'throw' method");
                         return Value();
                     }
                 } else {
@@ -1559,9 +1564,13 @@ Value YieldExpression::evaluate(Context& ctx) {
                         async_gen->await_result_ = Value();
                     }
                 } else if (nr.is_object()) {
-                    // Thenable check: getting 'then' may throw (spec: Get(resolution, "then"))
+                    // Thenable check: getting 'then' may throw (spec: Get(resolution, "then")).
+                    // Must set current_context_ so accessor throws land on ctx, not the outer context.
                     Object* nr_obj = nr.as_object();
+                    Context* prev_oc2 = Object::current_context_;
+                    Object::current_context_ = &ctx;
                     Value then_val = nr_obj->get_property("then");
+                    Object::current_context_ = prev_oc2;
                     if (ctx.has_exception()) return Value();
                     if (then_val.is_function()) {
                         // Thenable: call then(resolve, reject) and suspend
@@ -1626,7 +1635,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                 while (async_gen->returning_) {
                     async_gen->returning_ = false;
                     Value ret_arg = async_gen->return_arg_;
+                    Context* prev_oc_r = Object::current_context_;
+                    Object::current_context_ = &ctx;
                     Value ret_fn_v = iter_obj->get_property("return");
+                    Object::current_context_ = prev_oc_r;
                     if (ctx.has_exception()) return Value();
                     if (!ret_fn_v.is_function()) {
                         // No return method: just close (return the arg directly)
@@ -1673,17 +1685,61 @@ Value YieldExpression::evaluate(Context& ctx) {
                             ret_result = async_gen->await_result_;
                             async_gen->await_result_ = Value();
                         }
+                    } else if (ret_result.is_object()) {
+                        // Custom thenable: get 'then' (may throw), call then(resolve, reject)
+                        Context* prev_oc3 = Object::current_context_;
+                        Object::current_context_ = &ctx;
+                        Value rr_then = ret_result.as_object()->get_property("then");
+                        Object::current_context_ = prev_oc3;
+                        if (ctx.has_exception()) return Value();
+                        if (rr_then.is_function()) {
+                            auto on_f3 = ObjectFactory::create_native_function("",
+                                [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value val = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([async_gen, val]() mutable { async_gen->resume_from_await(val, false); });
+                                    return Value();
+                                });
+                            auto on_r3 = ObjectFactory::create_native_function("",
+                                [async_gen, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value reason = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([async_gen, reason]() mutable { async_gen->resume_from_await(reason, true); });
+                                    return Value();
+                                });
+                            Function* rf3 = on_f3.get(); Function* rjf3 = on_r3.get();
+                            ret_result.as_object()->set_property("__th_rf3_", Value(on_f3.release()));
+                            ret_result.as_object()->set_property("__th_rjf3_", Value(on_r3.release()));
+                            rr_then.as_function()->call(ctx, {Value(rf3), Value(rjf3)}, ret_result);
+                            if (ctx.has_exception()) return Value();
+                            async_gen->await_result_ = ret_result;
+                            async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                            swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                            if (async_gen->await_is_throw_) {
+                                ctx.throw_exception(async_gen->await_result_, true);
+                                async_gen->await_is_throw_ = false;
+                                async_gen->await_result_ = Value();
+                                return Value();
+                            }
+                            ret_result = async_gen->await_result_;
+                            async_gen->await_result_ = Value();
+                        }
                     }
                     if (!ret_result.is_object()) { ctx.throw_type_error("iterator return result is not an object"); return Value(); }
-                    Value ret_done = ret_result.as_object()->get_property("done");
-                    if (ctx.has_exception()) return Value();
-                    last_val = ret_result.as_object()->get_property("value");
-                    if (ctx.has_exception()) return Value();
-                    if (ret_done.to_boolean()) {
-                        // Spec 27.6.3.9 step 8.b.iv.viii: a Return completion, not a
-                        // normal yield* result -- terminates the outer generator here.
-                        if (!await_before_yield(last_val)) return Value();
-                        throw GeneratorReturnException(last_val);
+                    {
+                        Context* prev_oc_rd = Object::current_context_;
+                        Object::current_context_ = &ctx;
+                        Value ret_done = ret_result.as_object()->get_property("done");
+                        Object::current_context_ = prev_oc_rd;
+                        if (ctx.has_exception()) return Value();
+                        Object::current_context_ = &ctx;
+                        last_val = ret_result.as_object()->get_property("value");
+                        Object::current_context_ = prev_oc_rd;
+                        if (ctx.has_exception()) return Value();
+                        if (ret_done.to_boolean()) {
+                            // Spec 27.6.3.9 step 8.b.iv.viii: a Return completion, not a
+                            // normal yield* result -- terminates the outer generator here.
+                            if (!await_before_yield(last_val)) return Value();
+                            throw GeneratorReturnException(last_val);
+                        }
                     }
                     // Not done: yield and suspend -- the `while` condition re-forwards
                     // on resume if the consumer called iter.return() again.

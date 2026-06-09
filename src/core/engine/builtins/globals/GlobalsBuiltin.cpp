@@ -1055,6 +1055,45 @@ void register_global_builtins(Context& ctx) {
         }, 1);
     ctx.get_global_object()->set_property("import", Value(import_fn.release()));
 
+    // import.source() -- spec EvaluateImportCall with phase=source:
+    // Step 6: ToString(specifier) -- IfAbruptRejectPromise if it throws.
+    // Step 9: HostLoadImportedModule -> GetModuleSource -> always SyntaxError for SourceTextModuleRecord.
+    auto import_source_fn = ObjectFactory::create_native_function("__import_source__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            auto promise_obj = ObjectFactory::create_promise(&ctx);
+            auto* promise = dynamic_cast<Quanta::Promise*>(promise_obj.get());
+            if (!promise) return Value(promise_obj.release());
+            // Step 6: ToString(specifier) -- reject with its abrupt if it throws.
+            // Use the same coercion path as the regular import() handler.
+            if (!args.empty()) {
+                Value sv = args[0];
+                if (sv.is_object() || sv.is_function()) {
+                    Object* obj = sv.is_object() ? sv.as_object() : static_cast<Object*>(sv.as_function());
+                    Value ts = obj->get_property("toString");
+                    if (ctx.has_exception()) {
+                        Value exc = ctx.get_exception();
+                        ctx.clear_exception();
+                        promise->reject(exc);
+                        return Value(promise_obj.release());
+                    }
+                    if (ts.is_function()) {
+                        ts.as_function()->call(ctx, {}, sv);
+                        if (ctx.has_exception()) {
+                            Value exc = ctx.get_exception();
+                            ctx.clear_exception();
+                            promise->reject(exc);
+                            return Value(promise_obj.release());
+                        }
+                    }
+                }
+            }
+            // Step 9: GetModuleSource for SourceTextModuleRecord always throws SyntaxError
+            auto err = Error::create_syntax_error("Module source phase imports are not supported for this module type");
+            promise->reject(Value(err.release()));
+            return Value(promise_obj.release());
+        }, 1);
+    ctx.get_global_object()->set_property("__import_source__", Value(import_source_fn.release()));
+
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
