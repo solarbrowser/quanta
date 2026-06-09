@@ -92,6 +92,10 @@ public:
     Value import_default_from_module(const std::string& module_id, const std::string& from_path = "");
     Value import_namespace_from_module(const std::string& module_id, const std::string& from_path = "");
 
+    // Build a live-binding module namespace object for `module` (used by both
+    // static namespace imports and dynamic import() resolution).
+    static Value build_module_namespace(Module* module);
+
     void register_builtin_module(const std::string& module_id, std::unique_ptr<Module> module);
 
 private:
