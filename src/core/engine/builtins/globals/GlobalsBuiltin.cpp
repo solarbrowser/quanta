@@ -1039,26 +1039,8 @@ void register_global_builtins(Context& ctx) {
                         promise->reject(mod->get_thrown_exception());
                         return Value(promise_obj.release());
                     }
-                    // Spec: GetModuleNamespace returns the same object for a given module
-                    if (mod->has_namespace()) {
-                        promise->fulfill(mod->get_namespace());
-                        return Value(promise_obj.release());
-                    }
-                    auto ns = ObjectFactory::create_object();
-                    // Spec 10.4.6: module namespace exotic objects
-                    ns->set_prototype(nullptr);
-                    // exports are non-writable, enumerable, non-configurable
-                    for (const auto& name : mod->get_export_names()) {
-                        ns->set_property(name, mod->get_export(name), PropertyAttributes::Enumerable);
-                    }
-                    // @@toStringTag = "Module" -- non-writable, non-enumerable, non-configurable
-                    Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
-                    if (tag_sym) {
-                        ns->set_property(tag_sym->to_property_key(), Value(std::string("Module")),
-                            PropertyAttributes::None);
-                    }
-                    Value ns_val(ns.release());
-                    mod->set_namespace(ns_val);
+                    // Spec 10.4.6: live-binding module namespace (same object each call)
+                    Value ns_val = ModuleLoader::build_module_namespace(mod);
                     promise->fulfill(ns_val);
                     return Value(promise_obj.release());
                 }

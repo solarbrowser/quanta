@@ -12,11 +12,49 @@
 #include "quanta/lexer/Lexer.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/Symbol.h"
 #include <fstream>
 #include <filesystem>
 #include <iostream>
 
 namespace Quanta {
+
+// ES2022 10.4.6: Module Namespace Exotic Object.
+// Reads every property live from the module's binding environment so that
+// mutations to exported variables after import are observable (live bindings).
+class ModuleNamespaceObject : public Object {
+    Module* module_;
+public:
+    explicit ModuleNamespaceObject(Module* module)
+        : Object(ObjectType::Custom), module_(module) {
+        set_prototype(nullptr);
+    }
+
+    Value get_property(const std::string& key) const override {
+        if (module_) {
+            Value v = module_->get_export(key);
+            if (!v.is_undefined()) return v;
+        }
+        return Object::get_property(key);
+    }
+
+    bool has_own_property(const std::string& key) const override {
+        if (module_) {
+            for (auto& n : module_->get_export_names())
+                if (n == key) return true;
+        }
+        return Object::has_own_property(key);
+    }
+
+    std::vector<std::string> get_own_property_keys() const override {
+        if (module_) return module_->get_export_names();
+        return Object::get_own_property_keys();
+    }
+
+    std::vector<std::string> get_enumerable_keys() const override {
+        return get_own_property_keys();
+    }
+};
 
 Module::Module(const std::string& id, const std::string& filename)
     : id_(id), filename_(filename), loaded_(false), loading_(false) {
@@ -183,30 +221,24 @@ Value ModuleLoader::import_default_from_module(const std::string& module_id, con
     return import_from_module(module_id, "default", from_path);
 }
 
+// static
+Value ModuleLoader::build_module_namespace(Module* module) {
+    if (!module) return Value();
+    if (module->has_namespace()) return module->get_namespace();
+    auto* ns = new ModuleNamespaceObject(module);
+    // @@toStringTag = "Module" per spec 10.4.6.12
+    Symbol* tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (tag) ns->Object::set_property(tag->to_property_key(), Value(std::string("Module")),
+                                       PropertyAttributes::None);
+    Value ns_val(ns);
+    module->set_namespace(ns_val);
+    return ns_val;
+}
+
 Value ModuleLoader::import_namespace_from_module(const std::string& module_id, const std::string& from_path) {
     Module* module = load_module(module_id, from_path);
-    if (!module) {
-        return Value();
-    }
-    
-    auto exports_obj = std::make_shared<Object>();
-    // Spec 10.4.6: module namespace objects have null [[Prototype]]
-    exports_obj->set_prototype(nullptr);
-    if (module->is_loading() && module->get_context()) {
-        // Partially loaded (circular/self-import): read from the in-progress exports object
-        Value partial_exports = module->get_context()->get_binding("exports");
-        if (partial_exports.is_object()) {
-            Object* pe = partial_exports.as_object();
-            for (const auto& name : pe->get_own_property_keys()) {
-                exports_obj->set_property(name, pe->get_property(name));
-            }
-        }
-    } else {
-        for (const auto& name : module->get_export_names()) {
-            exports_obj->set_property(name, module->get_export(name));
-        }
-    }
-    return Value(exports_obj.get());
+    if (!module) return Value();
+    return build_module_namespace(module);
 }
 
 void ModuleLoader::register_builtin_module(const std::string& module_id, std::unique_ptr<Module> module) {
