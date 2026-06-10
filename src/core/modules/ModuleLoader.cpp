@@ -94,6 +94,20 @@ public:
         if (has_own_property(key)) return false;
         return true;
     }
+
+    // [[GetOwnProperty]]: proper non-writable non-configurable descriptors
+    PropertyDescriptor get_property_descriptor(const std::string& key) const override {
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) {
+            // @@toStringTag: non-writable, non-enumerable, non-configurable
+            return PropertyDescriptor(Value(std::string("Module")), PropertyAttributes::None);
+        }
+        if (module_ && module_->has_export(key)) {
+            // Exports: non-writable, enumerable, non-configurable
+            return PropertyDescriptor(module_->get_export(key), PropertyAttributes::Enumerable);
+        }
+        return PropertyDescriptor();
+    }
 };
 
 Module::Module(const std::string& id, const std::string& filename)
