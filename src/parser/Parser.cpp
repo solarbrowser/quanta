@@ -758,21 +758,27 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
     if (current_token().get_type() == TokenType::AWAIT) {
-        Position start = current_token().get_start();
-        if (options_.in_class_static_block) {
-            add_error("SyntaxError: 'await' is not allowed inside class static block");
-            return nullptr;
-        }
-        advance();
+        bool is_await_ctx = options_.in_async_body ||
+                            (options_.source_type_module && options_.function_depth == 0) ||
+                            options_.in_class_static_block;
+        if (is_await_ctx) {
+            Position start = current_token().get_start();
+            if (options_.in_class_static_block) {
+                add_error("SyntaxError: 'await' is not allowed inside class static block");
+                return nullptr;
+            }
+            advance();
 
-        auto argument = parse_unary_expression();
-        if (!argument) {
-            add_error("Expected expression after 'await'");
-            return nullptr;
-        }
+            auto argument = parse_unary_expression();
+            if (!argument) {
+                add_error("Expected expression after 'await'");
+                return nullptr;
+            }
 
-        Position end = get_current_position();
-        return std::make_unique<AwaitExpression>(std::move(argument), start, end);
+            Position end = get_current_position();
+            return std::make_unique<AwaitExpression>(std::move(argument), start, end);
+        }
+        // else: await is a valid identifier outside async context -- fall through
     }
 
 
@@ -949,7 +955,13 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             return nullptr;
         }
 
-        auto constructor = parse_primary_expression();
+        // Allow nested new: `new new X()` -- inner new is itself a NewExpression
+        std::unique_ptr<ASTNode> constructor;
+        if (current_token().get_type() == TokenType::NEW) {
+            constructor = parse_call_expression();
+        } else {
+            constructor = parse_primary_expression();
+        }
         if (!constructor) {
             add_error("Expected constructor expression after 'new'");
             return nullptr;
@@ -1483,7 +1495,7 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             }
             break;
         case TokenType::OF:
-        {   // 'of' is always a contextual keyword — valid as identifier in expressions
+        {   // 'of' is always a contextual keyword -- valid as identifier in expressions
             auto id = std::make_unique<Identifier>("of",
                 current_token().get_start(), current_token().get_end());
             advance();
@@ -1517,6 +1529,16 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             return parse_regex_literal();
         case TokenType::LESS_THAN:
             return parse_jsx_element();
+        case TokenType::AWAIT:
+            // Outside async context: await is a valid identifier
+            if (!options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) {
+                auto id = std::make_unique<Identifier>("await",
+                    token.get_start(), token.get_end());
+                advance();
+                return id;
+            }
+            // Fall through to error
+            [[fallthrough]];
         default: {
             std::string tok_val = token.get_value().empty()
                 ? Token::token_type_name(token.get_type())
@@ -2206,11 +2228,14 @@ std::unique_ptr<ASTNode> Parser::parse_parenthesized_expression() {
         return nullptr;
     }
 
-    // Parentheses allow AssignmentExpression (e.g. yield/await are valid inside)
+    // Parentheses start a new AssignmentExpression context -- yield/await valid inside
     bool saved_unary = options_.in_unary_operand;
+    bool saved_binary = options_.in_binary_expr;
     options_.in_unary_operand = false;
+    options_.in_binary_expr = false;
     auto expr = parse_expression();
     options_.in_unary_operand = saved_unary;
+    options_.in_binary_expr = saved_binary;
     if (!expr) {
         add_error("Expected expression inside parentheses");
         return nullptr;
@@ -3696,9 +3721,13 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             init = std::make_unique<VariableDeclaration>(std::move(declarations), kind, decl_start, decl_end);
             
         } else {
-            // Parse init without consuming 'in' (reserved for for-in detection)
+            // Parse init without consuming 'in' (reserved for for-in detection).
+            // Skip no_in_mode for for-await (always for-of) and destructuring LHS
+            // ('{' or '[' can never start a for-in LHS, so 'in' in defaults is fine).
+            bool is_destructuring_lhs = (current_token().get_type() == TokenType::LEFT_BRACE ||
+                                         current_token().get_type() == TokenType::LEFT_BRACKET);
             bool prev_no_in = no_in_mode_;
-            no_in_mode_ = true;
+            if (!is_await_loop && !is_destructuring_lhs) no_in_mode_ = true;
             init = parse_expression();
             no_in_mode_ = prev_no_in;
             if (!init) {
@@ -4445,7 +4474,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     // parameter default values as YieldExpression (not Identifier) so the
     // Contains-YieldExpression early error below can detect it (spec 15.5.1).
     bool saved_gen_for_params_fd = options_.in_generator_body;
+    bool saved_csb_params_fd = options_.in_class_static_block;
     options_.in_generator_body = is_generator;
+    options_.in_class_static_block = false;
 
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
@@ -4574,6 +4605,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     }
 
     options_.in_generator_body = saved_gen_for_params_fd;
+    options_.in_class_static_block = saved_csb_params_fd;
 
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -4597,10 +4629,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     options_.active_labels.clear();
     options_.loop_labels.clear();
     bool saved_gen_ctx = options_.in_generator_body;
+    bool saved_async_fd = options_.in_async_body;
+    bool saved_csb_fd = options_.in_class_static_block;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
     bool saved_ic_fd = options_.in_constructor;
     options_.in_generator_body = is_generator;
+    options_.in_async_body = false;
+    options_.in_class_static_block = false;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
     options_.in_constructor = false;
@@ -4610,6 +4646,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     options_.function_depth--;
     options_.non_arrow_function_depth--;
     options_.in_generator_body = saved_gen_ctx;
+    options_.in_async_body = saved_async_fd;
+    options_.in_class_static_block = saved_csb_fd;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
     options_.in_constructor = saved_ic_fd;
@@ -5992,7 +6030,9 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     // parameter default values as YieldExpression so the Contains-YieldExpression
     // early error below can detect it (spec 15.5.1).
     bool saved_gen_for_params_fe = options_.in_generator_body;
+    bool saved_csb_params_fe = options_.in_class_static_block;
     options_.in_generator_body = is_generator;
+    options_.in_class_static_block = false;
 
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = get_current_position();
@@ -6121,6 +6161,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     }
 
     options_.in_generator_body = saved_gen_for_params_fe;
+    options_.in_class_static_block = saved_csb_params_fe;
 
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -6144,10 +6185,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     options_.active_labels.clear();
     options_.loop_labels.clear();
     bool saved_gen_ctx = options_.in_generator_body;
+    bool saved_async_fd = options_.in_async_body;
+    bool saved_csb_fd = options_.in_class_static_block;
     bool saved_cfi2 = options_.in_class_field_init;
     bool saved_cm2 = options_.in_class_method;
     bool saved_ic_fd = options_.in_constructor;
     options_.in_generator_body = is_generator;
+    options_.in_async_body = false;
+    options_.in_class_static_block = false;
     options_.in_class_field_init = false;
     options_.in_class_method = false;
     options_.in_constructor = false;
@@ -6157,6 +6202,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
     options_.function_depth--;
     options_.non_arrow_function_depth--;
     options_.in_generator_body = saved_gen_ctx;
+    options_.in_async_body = saved_async_fd;
+    options_.in_class_static_block = saved_csb_fd;
     options_.in_class_field_init = saved_cfi2;
     options_.in_class_method = saved_cm2;
     options_.in_constructor = saved_ic_fd;
@@ -8627,14 +8674,19 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
             TokenType cur = current_token().get_type();
             if (cur != TokenType::RIGHT_BRACE && cur != TokenType::EOF_TOKEN) {
                 bool has_nl = false;
+                bool prev_is_brace = false;
                 size_t i = current_token_index_;
                 while (i > 0) {
                     i--;
                     TokenType t = tokens_[i].get_type();
                     if (t == TokenType::NEWLINE) { has_nl = true; break; }
-                    if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) break;
+                    if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) {
+                        prev_is_brace = (t == TokenType::RIGHT_BRACE);
+                        break;
+                    }
                 }
-                if (!has_nl) {
+                // Class/function declarations end with '}' -- no ASI needed
+                if (!has_nl && !prev_is_brace) {
                     add_error("SyntaxError: Unexpected token after export default expression");
                     return nullptr;
                 }
