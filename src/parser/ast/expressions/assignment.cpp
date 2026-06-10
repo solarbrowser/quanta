@@ -121,12 +121,12 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     return;
                 }
                 bool ok = bobj->set_property(name, val);
-                if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                 }
             } else {
                 bool ok = ctx.set_binding(name, val);
-                if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                 }
             }
@@ -160,14 +160,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         return Value();
                     }
                     bool ok = bobj->set_property(name, right_value);
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(name))) {
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                         return Value();
                     }
                 } else {
                     bool success = ctx.set_binding(name, right_value);
                     if (!success) {
-                        if (ctx.is_strict_mode() || ctx.is_lexical_const(name)) {
+                        if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
                             ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                             return Value();
                         }
@@ -1122,7 +1122,7 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
         if (ctx.has_binding(name)) {
             bool ok = ctx.set_binding(name, value);
             if (!ok) {
-                if (ctx.is_strict_mode() || ctx.is_lexical_const(name)) {
+                if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                 }
             }
@@ -1542,7 +1542,7 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                         ctx.create_binding(var_name, element, true);
                     } else {
                         bool ok = ctx.set_binding(var_name, element);
-                        if (!ok && ctx.is_lexical_const(var_name)) {
+                        if (!ok && ctx.is_strict_const(var_name)) {
                             ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
                             return Value();
                         }

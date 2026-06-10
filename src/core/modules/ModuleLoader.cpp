@@ -16,6 +16,7 @@
 #include <fstream>
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
 
 namespace Quanta {
 
@@ -24,49 +25,73 @@ namespace Quanta {
 // mutations to exported variables after import are observable (live bindings).
 class ModuleNamespaceObject : public Object {
     Module* module_;
+
+    static std::string tag_key() {
+        Symbol* s = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        return s ? s->to_property_key() : std::string();
+    }
+
 public:
     explicit ModuleNamespaceObject(Module* module)
         : Object(ObjectType::Custom), module_(module) {
         set_prototype(nullptr);
     }
 
+    // [[Get]]: live binding for exports; "Module" for @@toStringTag
     Value get_property(const std::string& key) const override {
-        if (module_) {
-            Value v = module_->get_export(key);
-            if (!v.is_undefined()) return v;
-        }
-        return Object::get_property(key);
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) return Value(std::string("Module"));
+        if (module_ && module_->has_export(key)) return module_->get_export(key);
+        return Value();
     }
 
+    // [[HasProperty]] / [[GetOwnProperty]] presence check
     bool has_own_property(const std::string& key) const override {
+        std::string tk = tag_key();
+        if (!tk.empty() && key == tk) return true;
         if (module_) {
             for (auto& n : module_->get_export_names())
                 if (n == key) return true;
         }
-        return Object::has_own_property(key);
+        return false;
     }
 
+    // [[OwnPropertyKeys]]: sorted string export names, then @@toStringTag
     std::vector<std::string> get_own_property_keys() const override {
-        if (module_) return module_->get_export_names();
-        return Object::get_own_property_keys();
+        std::vector<std::string> keys;
+        if (module_) {
+            keys = module_->get_export_names();
+            std::sort(keys.begin(), keys.end());
+        }
+        std::string tk = tag_key();
+        if (!tk.empty()) keys.push_back(tk);
+        return keys;
     }
 
+    // Enumerable keys: only the sorted string exports (@@toStringTag is non-enumerable)
     std::vector<std::string> get_enumerable_keys() const override {
-        return get_own_property_keys();
+        std::vector<std::string> keys;
+        if (module_) {
+            keys = module_->get_export_names();
+            std::sort(keys.begin(), keys.end());
+        }
+        return keys;
     }
 
-    // ES2022 10.4.6.5 [[Set]]: always returns false for module namespace objects
+    // [[Set]]: always false per ES2022 10.4.6.5
     bool set_property(const std::string& /*key*/, const Value& /*value*/,
                       PropertyAttributes /*attrs*/ = PropertyAttributes::Default) override {
         return false;
     }
 
-    // ES2022 10.4.6.8 [[Delete]]: throw TypeError for own export names, else true
+    // [[DefineOwnProperty]]: always false per ES2022 10.4.6.4
+    bool set_property_descriptor(const std::string& /*key*/, const PropertyDescriptor& /*desc*/) override {
+        return false;
+    }
+
+    // [[Delete]]: false for any own property (all non-configurable), true otherwise
     bool delete_property(const std::string& key) override {
-        if (module_) {
-            for (auto& n : module_->get_export_names())
-                if (n == key) return false;  // non-configurable 
-        }
+        if (has_own_property(key)) return false;
         return true;
     }
 };
@@ -241,10 +266,7 @@ Value ModuleLoader::build_module_namespace(Module* module) {
     if (!module) return Value();
     if (module->has_namespace()) return module->get_namespace();
     auto* ns = new ModuleNamespaceObject(module);
-    // @@toStringTag = "Module" per spec 10.4.6.12
-    Symbol* tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
-    if (tag) ns->Object::set_property(tag->to_property_key(), Value(std::string("Module")),
-                                       PropertyAttributes::None);
+    ns->prevent_extensions();
     Value ns_val(ns);
     module->set_namespace(ns_val);
     return ns_val;

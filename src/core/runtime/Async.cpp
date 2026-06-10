@@ -136,11 +136,17 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     // Create a persistent function-level context for this execution
     auto exec_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
 
-    // Bind 'this' (use __arrow_this__ if arrow function)
+    // Propagate strict mode from the function definition
+    if (is_strict()) exec_ctx->set_strict_mode(true);
+
+    // Bind 'this' (arrow uses captured __arrow_this__; sloppy-mode undefined/null -> global)
     Value bound_this = this_value;
     Value arrow_this_val = get_property("__arrow_this__");
     if (!arrow_this_val.is_undefined()) {
         bound_this = arrow_this_val;
+    } else if (!exec_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
+        Object* global = ctx.get_global_object();
+        if (global) bound_this = Value(global);
     }
     exec_ctx->create_binding("this", bound_this, true);
 
@@ -1082,7 +1088,16 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
 Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
 
+    if (is_strict()) gen_ctx->set_strict_mode(true);
+
     Value bound_this = this_value;
+    Value arrow_this_ag = get_property("__arrow_this__");
+    if (!arrow_this_ag.is_undefined()) {
+        bound_this = arrow_this_ag;
+    } else if (!gen_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
+        Object* global = ctx.get_global_object();
+        if (global) bound_this = Value(global);
+    }
     try {
         gen_ctx->create_binding("this", bound_this, true);
     } catch (...) {

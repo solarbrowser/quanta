@@ -1028,9 +1028,13 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& 
         return Value(false);
     }
     
-    Object* proto = args[1].is_null() ? nullptr : 
+    Object* proto = args[1].is_null() ? nullptr :
                    (args[1].is_object() ? args[1].as_object() : nullptr);
-    
+    // Non-extensible: only allow if new prototype === current prototype
+    if (!target->is_extensible()) {
+        return Value(proto == target->get_prototype());
+    }
+
     target->set_prototype(proto);
     return Value(true);
 }
