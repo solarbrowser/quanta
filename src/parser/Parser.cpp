@@ -559,7 +559,7 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
         advance();
         Position start = test->get_start();
         
-        auto consequent = parse_logical_or_expression();
+        auto consequent = parse_assignment_expression();
         if (!consequent) {
             add_error("Expected expression after '?' in conditional expression");
             return nullptr;

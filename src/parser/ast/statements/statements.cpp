@@ -1017,7 +1017,7 @@ Value ForInStatement::evaluate(Context& ctx) {
             } else {
                 if (ctx.has_binding(var_name)) {
                     bool ok = ctx.set_binding(var_name, Value(key));
-                    if (!ok && (ctx.is_strict_mode() || ctx.is_lexical_const(var_name))) {
+                    if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(var_name))) {
                         ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
                         return Value();
                     }

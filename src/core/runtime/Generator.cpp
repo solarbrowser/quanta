@@ -606,11 +606,21 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     auto gen_context_ptr = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
     Context& gen_context = *gen_context_ptr;
 
-    // Bind 'this'
+    if (is_strict()) gen_context.set_strict_mode(true);
+
+    // Bind 'this' with sloppy-mode global coercion
+    Value bound_this_g = this_value;
+    Value arrow_this_g = get_property("__arrow_this__");
+    if (!arrow_this_g.is_undefined()) {
+        bound_this_g = arrow_this_g;
+    } else if (!gen_context.is_strict_mode() && (bound_this_g.is_undefined() || bound_this_g.is_null())) {
+        Object* global = ctx.get_global_object();
+        if (global) bound_this_g = Value(global);
+    }
     try {
-        gen_context.create_binding("this", this_value, true);
+        gen_context.create_binding("this", bound_this_g, true);
     } catch (...) {
-        gen_context.set_binding("this", this_value);
+        gen_context.set_binding("this", bound_this_g);
     }
 
     // Copy closure variables stored as __closure_xxx properties on this GeneratorFunction

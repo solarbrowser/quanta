@@ -175,6 +175,21 @@ bool Context::is_lexical_const(const std::string& name) const {
     return false;
 }
 
+// Only returns true for explicit `const` bindings -- NOT for named function expression name bindings which are immutable but not marked const.
+bool Context::is_strict_const(const std::string& name) const {
+    Environment* env = lexical_environment_;
+    while (env) {
+        if (env->get_type() == Environment::Type::Object) {
+            if (env->is_const_binding(name)) return true;
+            if (env->get_binding_object() && env->get_binding_object()->has_own_property(name)) return false;
+        } else if (env->has_mutable_flag(name)) {
+            return !env->is_mutable_binding(name) && env->is_const_binding(name);
+        }
+        env = env->get_outer();
+    }
+    return false;
+}
+
 bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
     if (variable_environment_) {
         return variable_environment_->create_binding(name, value, mutable_binding, deletable);

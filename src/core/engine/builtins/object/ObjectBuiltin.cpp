@@ -561,6 +561,19 @@ void register_object_builtins(Context& ctx) {
                 return obj_val;
             }
 
+            // Non-extensible: only allow if new prototype === current prototype
+            if (!obj->is_extensible()) {
+                Object* current_proto = obj->get_prototype();
+                Object* new_proto = proto_val.is_null() ? nullptr :
+                    proto_val.is_object() ? proto_val.as_object() :
+                    proto_val.is_function() ? static_cast<Object*>(proto_val.as_function()) : nullptr;
+                if (new_proto != current_proto) {
+                    ctx.throw_type_error("Object is not extensible");
+                    return Value();
+                }
+                return obj_val;
+            }
+
             if (proto_val.is_null()) {
                 obj->set_prototype(nullptr);
             } else if (proto_val.is_object()) {
