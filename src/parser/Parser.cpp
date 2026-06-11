@@ -2800,9 +2800,11 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
                             !options_.in_async_body && !options_.in_class_static_block &&
                             !options_.source_type_module);
         bool is_let_id   = (current_token().get_type() == TokenType::LET && !options_.strict_mode);
-        bool is_of_id    = (current_token().get_type() == TokenType::OF);
-        bool is_async_id = (current_token().get_type() == TokenType::ASYNC);
-        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id && !is_async_id) {
+        bool is_of_id      = (current_token().get_type() == TokenType::OF);
+        bool is_async_id   = (current_token().get_type() == TokenType::ASYNC);
+        bool is_undef_id   = (current_token().get_type() == TokenType::UNDEFINED);
+        bool is_static_id  = (current_token().get_type() == TokenType::STATIC && !options_.strict_mode);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id && !is_async_id && !is_undef_id && !is_static_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }
@@ -5759,9 +5761,11 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     bool saved_arrow_params_m = options_.in_arrow_params;
     bool saved_sb_params = options_.in_class_static_block;
     bool saved_cm_params = options_.in_class_method;
+    bool saved_async_params_m = options_.in_async_body;
     options_.in_arrow_params = true;
     options_.in_class_static_block = false;
     options_.in_class_method = true;
+    if (is_async) options_.in_async_body = true;
     while (current_token().get_type() != TokenType::RIGHT_PAREN && !at_end()) {
         Position param_start = get_current_position();
         bool is_rest = false;
@@ -5878,6 +5882,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     options_.in_arrow_params = saved_arrow_params_m;
     options_.in_class_static_block = saved_sb_params;
     options_.in_class_method = saved_cm_params;
+    options_.in_async_body = saved_async_params_m;
 
     if (!match(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -6015,6 +6020,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         }
         id = std::make_unique<Identifier>(fe_name,
                                         current_token().get_start(), current_token().get_end());
+        advance();
+    } else if (current_token().get_type() == TokenType::YIELD && !options_.strict_mode && !is_generator) {
+        // yield is a valid function expression name in sloppy non-generator context
+        id = std::make_unique<Identifier>("yield", current_token().get_start(), current_token().get_end());
+        advance();
+    } else if (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module) {
+        // await is a valid function expression name outside async context
+        id = std::make_unique<Identifier>("await", current_token().get_start(), current_token().get_end());
         advance();
     }
 
@@ -6384,9 +6397,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     // FormalParameters[+Yield, +Await] (async generator) / [~Yield, +Await] (async
     // function): parse bare `yield` in parameter default values as YieldExpression
     // when this is an async generator, so the Contains-YieldExpression early error
-    // below can detect it. `await` always parses as AwaitExpression already (spec 15.5.1).
+    // below can detect it. `await` must also be treated as AwaitExpression in async
+    // function parameters (spec: ContainsAwait early error for FormalParameters).
     bool saved_gen_for_params_afe = options_.in_generator_body;
+    bool saved_async_for_params_afe = options_.in_async_body;
     options_.in_generator_body = is_generator;
+    options_.in_async_body = true;
 
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
@@ -6512,6 +6528,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     }
 
     options_.in_generator_body = saved_gen_for_params_afe;
+    options_.in_async_body = saved_async_for_params_afe;
 
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -6671,9 +6688,12 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     // FormalParameters[+Yield, +Await] (async generator) / [~Yield, +Await] (async
     // function): parse bare `yield` in parameter default values as YieldExpression
     // when this is an async generator, so the Contains-YieldExpression early error
-    // below can detect it. `await` always parses as AwaitExpression already (spec 15.5.1).
+    // below can detect it. `await` must also be treated as AwaitExpression in async
+    // function parameters (spec: ContainsAwait early error for FormalParameters).
     bool saved_gen_for_params_afd = options_.in_generator_body;
+    bool saved_async_for_params_afd = options_.in_async_body;
     options_.in_generator_body = is_generator;
+    options_.in_async_body = true;
 
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
@@ -6799,6 +6819,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     }
 
     options_.in_generator_body = saved_gen_for_params_afd;
+    options_.in_async_body = saved_async_for_params_afd;
 
     if (!consume(TokenType::RIGHT_PAREN)) {
         add_error("Expected ')' after parameters");
@@ -7641,7 +7662,11 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             std::vector<std::unique_ptr<Parameter>> params;
             bool obj_non_simple = false;
             bool saved_oap = options_.in_arrow_params;
+            bool saved_async_obj_params = options_.in_async_body;
+            bool saved_csb_obj_params = options_.in_class_static_block;
             options_.in_arrow_params = true;
+            options_.in_class_static_block = false;
+            if (is_async) options_.in_async_body = true;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
                     Position param_start = current_token().get_start();
@@ -7757,6 +7782,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
 
             options_.in_arrow_params = saved_oap;
+            options_.in_async_body = saved_async_obj_params;
+            options_.in_class_static_block = saved_csb_obj_params;
 
             if (!consume(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ')' after parameters");
