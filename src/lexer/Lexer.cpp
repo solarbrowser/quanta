@@ -155,7 +155,7 @@ Token Lexer::next_token() {
 
     // Hashbang comment: #! at the very beginning of the source (offset 0)
     if (ch == '#' && position_ == 0 && position_ + 1 < source_.size() && source_[1] == '!') {
-        while (!at_end() && current_char() != '\n' && current_char() != '\r') advance();
+        while (!at_end() && !is_line_terminator(current_char())) advance();
         return create_token(TokenType::COMMENT, start);
     }
     
@@ -1172,6 +1172,7 @@ bool Lexer::is_regex_context() const {
 
                 TokenType prev = toks[prev_idx].get_type();
                 switch (prev) {
+                    case TokenType::SEMICOLON:
                     case TokenType::DO:
                     case TokenType::ELSE:
                     case TokenType::TRY:
