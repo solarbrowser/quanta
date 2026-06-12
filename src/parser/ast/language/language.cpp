@@ -2450,7 +2450,9 @@ std::string ImportStatement::to_string() const {
 }
 
 std::unique_ptr<ASTNode> ImportStatement::clone() const {
-    if (is_namespace_import_) {
+    if (is_namespace_import_ && is_default_import_) {
+        return std::make_unique<ImportStatement>(default_alias_, namespace_alias_, module_source_, start_, end_);
+    } else if (is_namespace_import_) {
         return std::make_unique<ImportStatement>(namespace_alias_, module_source_, start_, end_, is_deferred_);
     } else if (is_default_import_) {
         return std::make_unique<ImportStatement>(default_alias_, module_source_, true, start_, end_);
@@ -2632,8 +2634,16 @@ Value ExportStatement::evaluate(Context& ctx) {
 
                             for (const auto& name : src_mod->get_export_names()) {
                                 if (name == "default") continue;
+                                Value val = src_mod->get_export(name);
+                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
+                                    val = src_mod->get_context()->get_binding(name);
+                                }
                                 if (star_tracker && star_tracker->has_own_property(name)) {
-                                    // Same name from two export* sources -- ambiguous
+                                    // Same name from two export* sources -- only ambiguous if they resolve to different bindings
+                                    Value prev = star_tracker->get_property(name);
+                                    if (prev.is_object() && val.is_object() && prev.as_object() == val.as_object()) {
+                                        continue; // same object, unambiguous
+                                    }
                                     ctx.throw_syntax_error("Ambiguous re-export of '" + name + "'");
                                     return Value();
                                 }
@@ -2641,11 +2651,7 @@ Value ExportStatement::evaluate(Context& ctx) {
                                     // Name was set by a direct export -- direct wins, skip
                                     continue;
                                 }
-                                if (star_tracker) star_tracker->set_property(name, Value(true));
-                                Value val = src_mod->get_export(name);
-                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
-                                    val = src_mod->get_context()->get_binding(name);
-                                }
+                                if (star_tracker) star_tracker->set_property(name, val);
                                 exports_obj->set_property(name, val);
                             }
                         } else {
