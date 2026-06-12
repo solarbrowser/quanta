@@ -177,9 +177,14 @@ void register_global_builtins(Context& ctx) {
             if (!engine) return Value();
 
             bool strict = ctx.is_strict_mode();
+            // Per spec, indirect eval (0,eval)('...') is never strict from the caller's context.
+            // Only the eval source's own 'use strict' directive makes it strict.
+            if (!ctx.is_direct_eval_call()) {
+                strict = false;
+            }
 
             try {
-                // Parse with strict mode if calling context is strict
+                // Parse with strict mode if calling context is strict (or eval source has 'use strict')
                 Lexer::LexerOptions lex_opts;
                 lex_opts.strict_mode = strict;
                 Lexer lexer(code, lex_opts);
@@ -201,6 +206,16 @@ void register_global_builtins(Context& ctx) {
                                                    !ctx.is_arrow_function_context();
                 // super in eval is valid if we're inside a method/derived-class context (__super__ present)
                 parse_opts.eval_in_method_code = ctx.has_binding("__super__");
+                // Collect private names that are valid in this eval context.
+                // Only names actually declared in the enclosing class are valid (AllPrivateNamesValid).
+                if (ctx.has_binding("__eval_private_names__")) {
+                    Value brands = ctx.get_binding("__eval_private_names__");
+                    if (brands.is_object()) {
+                        for (const auto& key : brands.as_object()->get_own_property_keys()) {
+                            parse_opts.eval_private_names.insert(key);
+                        }
+                    }
+                }
                 Parser parser(tokens, parse_opts);
                 parser.set_source(code);
                 auto program = parser.parse_program();
@@ -314,32 +329,33 @@ void register_global_builtins(Context& ctx) {
                     // Non-strict eval: run in calling context's scope chain
                     auto var_names = collect_var_names(program.get());
 
-                    // EvalDeclarationInstantiation: check var names against lex bindings
+                    // Indirect eval runs in global scope, so block-scope walk between
+                    // lex_env and var_env does not apply; only direct eval checks calling context.
+                    bool is_direct = ctx.is_direct_eval_call();
                     auto* lex_env = ctx.get_lexical_environment();
                     auto* var_env = ctx.get_variable_environment();
-                    // 18.2.1 step 5a: check lex_env itself for lexical declarations
-                    // (covers global scope where lex_env == var_env)
-                    if (lex_env) {
-                        for (const auto& vname : var_names) {
-                            if (lex_env->has_lexical_declaration(vname)) {
-                                ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
-                                return Value();
-                            }
-                        }
-                    }
-                    // Also walk between lex_env and var_env for block-scope conflicts
-                    if (lex_env != var_env) {
-                        Environment* env = lex_env;
-                        while (env && env != var_env) {
-                            if (env->get_type() != Environment::Type::Object) {
-                                for (const auto& vname : var_names) {
-                                    if (env->has_own_binding(vname)) {
-                                        ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
-                                        return Value();
-                                    }
+                    if (is_direct) {
+                        if (lex_env) {
+                            for (const auto& vname : var_names) {
+                                if (lex_env->has_lexical_declaration(vname)) {
+                                    ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
+                                    return Value();
                                 }
                             }
-                            env = env->get_outer();
+                        }
+                        if (lex_env != var_env) {
+                            Environment* env = lex_env;
+                            while (env && env != var_env) {
+                                if (env->get_type() != Environment::Type::Object) {
+                                    for (const auto& vname : var_names) {
+                                        if (env->has_own_binding(vname)) {
+                                            ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
+                                            return Value();
+                                        }
+                                    }
+                                }
+                                env = env->get_outer();
+                            }
                         }
                     }
 

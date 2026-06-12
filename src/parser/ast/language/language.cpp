@@ -2639,10 +2639,12 @@ Value ExportStatement::evaluate(Context& ctx) {
                                     val = src_mod->get_context()->get_binding(name);
                                 }
                                 if (star_tracker && star_tracker->has_own_property(name)) {
-                                    // Same name from two export* sources -- only ambiguous if they resolve to different bindings
+                                    // Same name from two export* sources -- only ambiguous if they resolve to different bindings.
+                                    // Per spec, same Module+BindingName is unambiguous. As a heuristic: same non-undefined
+                                    // value means they resolved from the same binding (undefined is common across modules).
                                     Value prev = star_tracker->get_property(name);
-                                    if (prev.is_object() && val.is_object() && prev.as_object() == val.as_object()) {
-                                        continue; // same object, unambiguous
+                                    if (!prev.is_undefined() && prev.strict_equals(val)) {
+                                        continue; // same non-undefined value -- same binding, unambiguous
                                     }
                                     ctx.throw_syntax_error("Ambiguous re-export of '" + name + "'");
                                     return Value();
@@ -2655,17 +2657,11 @@ Value ExportStatement::evaluate(Context& ctx) {
                                 exports_obj->set_property(name, val);
                             }
                         } else {
-                            // export * as ns from './module.js' -- create namespace object
-                            auto ns_obj = ObjectFactory::create_object();
-                            ns_obj->set_prototype(nullptr);
-                            for (const auto& name : src_mod->get_export_names()) {
-                                Value val = src_mod->get_export(name);
-                                if (val.is_undefined() && src_mod->is_loading() && src_mod->get_context()) {
-                                    val = src_mod->get_context()->get_binding(name);
-                                }
-                                ns_obj->set_property(name, val);
-                            }
-                            exports_obj->set_property(export_name, Value(ns_obj.release()));
+                            // export * as ns from './module.js' -- use cached namespace object
+                            // (same source module must always yield the same namespace object identity
+                            //  so that star-export ambiguity checks compare correctly)
+                            Value ns_val = ModuleLoader::build_module_namespace(src_mod);
+                            exports_obj->set_property(export_name, ns_val);
                         }
                     }
                 }

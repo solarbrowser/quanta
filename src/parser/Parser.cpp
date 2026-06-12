@@ -266,8 +266,17 @@ std::unique_ptr<ASTNode> Parser::parse_statement() {
         case TokenType::FUNCTION:
             return parse_function_declaration();
             
-        case TokenType::ASYNC:
-            return parse_async_function_declaration();
+        case TokenType::ASYNC: {
+            // Only parse as async function declaration if 'function' is on the same line
+            size_t async_line = current_token().get_end().line;
+            size_t aft_idx = current_token_index_ + 1;
+            while (aft_idx < tokens_.size() && tokens_[aft_idx].get_type() == TokenType::NEWLINE)
+                aft_idx++;
+            if (aft_idx < tokens_.size() && tokens_[aft_idx].get_type() == TokenType::FUNCTION &&
+                tokens_[aft_idx].get_start().line == async_line)
+                return parse_async_function_declaration();
+            return parse_expression_statement();
+        }
             
         case TokenType::CLASS:
             return parse_class_declaration();
@@ -471,6 +480,12 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
         return parse_arrow_function();
     }
 
+    // Non-strict, non-generator: yield/async can be plain arrow params (e.g. yield => 1)
+    if (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode &&
+        peek_token(1).get_type() == TokenType::ARROW) {
+        return parse_arrow_function();
+    }
+
     if (match(TokenType::LEFT_PAREN)) {
         size_t saved_pos = current_token_index_;
         if (try_parse_arrow_function_params()) {
@@ -625,30 +640,38 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
     if (current_token().get_type() == TokenType::QUESTION) {
         advance();
         Position start = test->get_start();
-        
+
+        // Spec: consequent is AssignmentExpression[+In] -- always allow 'in'
+        // Alternate is AssignmentExpression[?In] -- inherits no_in_mode from context
+        bool saved_no_in = no_in_mode_;
+        no_in_mode_ = false;  // +In for consequent
+
         auto consequent = parse_assignment_expression();
         if (!consequent) {
+            no_in_mode_ = saved_no_in;
             add_error("Expected expression after '?' in conditional expression");
             return nullptr;
         }
-        
+
         if (current_token().get_type() != TokenType::COLON) {
+            no_in_mode_ = saved_no_in;
             add_error("Expected ':' after consequent in conditional expression");
             return nullptr;
         }
         advance();
-        
+
+        no_in_mode_ = saved_no_in;  // restore ?In for alternate
         auto alternate = parse_conditional_expression_impl(depth + 1);
         if (!alternate) {
             add_error("Expected expression after ':' in conditional expression");
             return nullptr;
         }
-        
+
         Position end = alternate->get_end();
-        return std::make_unique<ConditionalExpression>(std::move(test), std::move(consequent), 
+        return std::make_unique<ConditionalExpression>(std::move(test), std::move(consequent),
                                                       std::move(alternate), start, end);
     }
-    
+
     return test;
 }
 
@@ -813,9 +836,16 @@ std::unique_ptr<ASTNode> Parser::parse_exponentiation_expression() {
 
     if (match(TokenType::EXPONENT)) {
         // Spec: UnaryExpression ** ExponentiationExpression is SyntaxError
-        if (left->get_type() == ASTNode::Type::UNARY_EXPRESSION) {
+        // UpdateExpressions (++x, --x, x++, x--) ARE valid before **
+        // Parenthesized UnaryExpressions are valid: (-x) ** y is fine
+        if (left->get_type() == ASTNode::Type::UNARY_EXPRESSION && !last_expr_was_parenthesized_) {
             auto* ue = static_cast<UnaryExpression*>(left.get());
-            if (ue->is_prefix()) {
+            auto uop = ue->get_operator();
+            bool is_update_expr = (uop == UnaryExpression::Operator::PRE_INCREMENT ||
+                                   uop == UnaryExpression::Operator::PRE_DECREMENT ||
+                                   uop == UnaryExpression::Operator::POST_INCREMENT ||
+                                   uop == UnaryExpression::Operator::POST_DECREMENT);
+            if (ue->is_prefix() && !is_update_expr) {
                 add_error("SyntaxError: Unary operator before ** requires parentheses");
                 return left;
             }
@@ -1002,9 +1032,15 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
     if (current_token().get_type() == TokenType::NEW) {
         Position start = current_token().get_start();
 
-        if (peek_token().get_type() == TokenType::DOT) {
-            advance();
-            advance();
+        // new.target: spec allows line terminators between 'new', '.', and 'target'
+        // peek past any NEWLINE tokens to find the DOT
+        size_t new_peek_idx = current_token_index_ + 1;
+        while (new_peek_idx < tokens_.size() &&
+               tokens_[new_peek_idx].get_type() == TokenType::NEWLINE)
+            new_peek_idx++;
+        if (new_peek_idx < tokens_.size() && tokens_[new_peek_idx].get_type() == TokenType::DOT) {
+            advance();  // past NEW -> now at first NEWLINE or DOT (advance skips NEWLINEs)
+            advance();  // past DOT
 
             if (current_token().get_type() == TokenType::IDENTIFIER &&
                 current_token().get_value() == "target") {
@@ -1035,8 +1071,29 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
         advance();
 
         if (current_token().get_type() == TokenType::IMPORT) {
-            add_error("SyntaxError: 'import' cannot be used with 'new'");
-            return nullptr;
+            // new import.meta is valid (though runtime TypeError); new import(...) is SyntaxError
+            size_t peek_idx = current_token_index_ + 1;
+            while (peek_idx < tokens_.size() &&
+                   (tokens_[peek_idx].get_type() == TokenType::NEWLINE ||
+                    tokens_[peek_idx].get_type() == TokenType::WHITESPACE))
+                peek_idx++;
+            bool is_import_meta = (peek_idx < tokens_.size() &&
+                                   tokens_[peek_idx].get_type() == TokenType::DOT);
+            if (is_import_meta) {
+                size_t after_dot = peek_idx + 1;
+                while (after_dot < tokens_.size() &&
+                       (tokens_[after_dot].get_type() == TokenType::NEWLINE ||
+                        tokens_[after_dot].get_type() == TokenType::WHITESPACE))
+                    after_dot++;
+                is_import_meta = (after_dot < tokens_.size() &&
+                                  tokens_[after_dot].get_type() == TokenType::IDENTIFIER &&
+                                  tokens_[after_dot].get_value() == "meta");
+            }
+            if (!is_import_meta) {
+                add_error("SyntaxError: 'import' cannot be used with 'new'");
+                return nullptr;
+            }
+            // Fall through: parse_primary_expression will handle import.meta
         }
 
         // Allow nested new: `new new X()` -- inner new is itself a NewExpression
@@ -1062,10 +1119,6 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 Position prop_end;
 
                 if (match(TokenType::HASH)) {
-                    if (options_.class_depth == 0) {
-                        add_error("SyntaxError: Private names are not allowed outside class bodies");
-                        return nullptr;
-                    }
                     prop_start = current_token().get_start();
                     advance();
 
@@ -1077,6 +1130,18 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                     name = "#" + current_token().get_value();
                     prop_end = current_token().get_end();
                     advance();
+
+                    // Validate private name scope: allowed inside class body, or in eval if
+                    // the specific name is declared in the enclosing class's private scope.
+                    if (options_.class_depth == 0) {
+                        bool allowed = options_.in_eval_context &&
+                                       !options_.eval_private_names.empty() &&
+                                       options_.eval_private_names.count(name) > 0;
+                        if (!allowed) {
+                            add_error("SyntaxError: Private names are not allowed outside class bodies");
+                            return nullptr;
+                        }
+                    }
                 } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                     const Token& token = current_token();
                     name = token.get_value();
@@ -1172,10 +1237,6 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
             Position prop_end;
 
             if (match(TokenType::HASH)) {
-                if (options_.class_depth == 0) {
-                    add_error("SyntaxError: Private names are not allowed outside class bodies");
-                    return nullptr;
-                }
                 // super.#name is not valid
                 if (expr->get_type() == ASTNode::Type::IDENTIFIER &&
                     static_cast<Identifier*>(expr.get())->get_name() == "super") {
@@ -1199,6 +1260,18 @@ std::unique_ptr<ASTNode> Parser::parse_call_expression() {
                 name = "#" + current_token().get_value();
                 prop_end = current_token().get_end();
                 advance();
+
+                // Validate private name scope: allowed inside class body, or in eval if
+                // the specific name is declared in the enclosing class's private scope.
+                if (options_.class_depth == 0) {
+                    bool allowed = options_.in_eval_context &&
+                                   !options_.eval_private_names.empty() &&
+                                   options_.eval_private_names.count(name) > 0;
+                    if (!allowed) {
+                        add_error("SyntaxError: Private names are not allowed outside class bodies");
+                        return nullptr;
+                    }
+                }
             } else if (match(TokenType::IDENTIFIER) || is_keyword_token(current_token().get_type())) {
                 const Token& token = current_token();
                 name = token.get_value();
@@ -2282,7 +2355,7 @@ std::unique_ptr<ASTNode> Parser::parse_private_field() {
         return nullptr;
     }
 
-    if (!match(TokenType::IDENTIFIER)) {
+    if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
         add_error("Expected identifier after '#'");
         return nullptr;
     }
@@ -3580,7 +3653,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             }
         }
         // Check for 'await using' declaration in for init: for (await using x of ...)
-        if (match(TokenType::AWAIT) && options_.in_async_body) {
+        if (match(TokenType::AWAIT) && (options_.in_async_body || options_.source_type_module)) {
             size_t saved_idx = current_token_index_;
             advance(); // consume 'await'
             if (match(TokenType::IDENTIFIER) && current_token().get_value() == "using") {
@@ -3599,7 +3672,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     after_id_idx++;
                 TokenType next3 = (after_id_idx < tokens_.size())
                                   ? tokens_[after_id_idx].get_type() : TokenType::EOF_TOKEN;
-                if ((next2 == TokenType::IDENTIFIER || next2 == TokenType::STATIC) && next3 == TokenType::OF) {
+                if ((next2 == TokenType::IDENTIFIER || next2 == TokenType::STATIC || next2 == TokenType::OF) && next3 == TokenType::OF) {
                     // for (await using id of iterable) -- await-using for-of
                     advance(); // consume 'using'
                     std::string binding_name = current_token().get_value();
@@ -4098,8 +4171,10 @@ check_for_of:
             std::unordered_set<std::string> head_names;
             if (init->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
                 auto* vd = static_cast<VariableDeclaration*>(init.get());
-                for (const auto& d : vd->get_declarations())
-                    if (d->get_id()) head_names.insert(d->get_id()->get_name());
+                if (vd->get_kind() != VariableDeclarator::Kind::VAR) {
+                    for (const auto& d : vd->get_declarations())
+                        if (d->get_id()) head_names.insert(d->get_id()->get_name());
+                }
             } else {
                 auto* ud = static_cast<UsingDeclaration*>(init.get());
                 for (const auto& b : ud->get_bindings()) head_names.insert(b.name);
@@ -4551,7 +4626,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
     {
         TokenType ct = current_token().get_type();
         bool name_ok = ct == TokenType::IDENTIFIER;
-        if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode && !is_generator)
+        if (!name_ok && ct == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)
             name_ok = true;
         if (!name_ok && ct == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block)
             name_ok = true;
@@ -4985,7 +5060,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             if (tt == TokenType::LEFT_BRACE) depth++;
             else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
             else if (tt == TokenType::HASH && depth == 1 &&
-                     i + 1 < tokens_.size() && tokens_[i+1].get_type() == TokenType::IDENTIFIER &&
+                     i + 1 < tokens_.size() &&
+                     (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
                 pre_declared.insert("#" + tokens_[i+1].get_value());
             }
@@ -5066,6 +5142,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
             current_token().get_type() == TokenType::HASH ||
             current_token().get_type() == TokenType::STRING ||
             current_token().get_type() == TokenType::NUMBER ||
+            current_token().get_type() == TokenType::BIGINT_LITERAL ||
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
@@ -5378,7 +5455,8 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             if (tt == TokenType::LEFT_BRACE) depth++;
             else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
             else if (tt == TokenType::HASH && depth == 1 &&
-                     i + 1 < tokens_.size() && tokens_[i+1].get_type() == TokenType::IDENTIFIER &&
+                     i + 1 < tokens_.size() &&
+                     (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
                 pre_declared.insert("#" + tokens_[i+1].get_value());
             }
@@ -5459,6 +5537,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
             current_token().get_type() == TokenType::HASH ||
             current_token().get_type() == TokenType::STRING ||
             current_token().get_type() == TokenType::NUMBER ||
+            current_token().get_type() == TokenType::BIGINT_LITERAL ||
             is_reserved_word_as_property_name()) {
             auto method = parse_method_definition();
             if (method) {
@@ -5723,7 +5802,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         size_t hash_start = current_token().get_start().offset;
         advance();
 
-        if (current_token().get_type() != TokenType::IDENTIFIER) {
+        // Private names allow any IdentifierName (including reserved words like yield/await)
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_keyword_token(current_token().get_type())) {
             add_error("Expected identifier after '#' for private member");
             return nullptr;
         }
@@ -5761,6 +5841,8 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         key = parse_string_literal();
     } else if (current_token().get_type() == TokenType::NUMBER) {
         key = parse_number_literal();
+    } else if (current_token().get_type() == TokenType::BIGINT_LITERAL) {
+        key = parse_bigint_literal();
     } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
         computed = true;
         advance();
@@ -6522,16 +6604,25 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     }
 
     // No line terminator allowed between 'async' and 'function' (ES2017)
+    // If there IS a line terminator, 'async' is just an identifier expression, not async function
     if (match(TokenType::FUNCTION) && current_token().get_start().line != async_end_line) {
-        add_error("Unexpected token: line break between 'async' and 'function' is not allowed");
-        return nullptr;
+        return std::make_unique<Identifier>("async", start, async_end);
     }
 
     if (match(TokenType::FUNCTION)) {
         advance();
     } else if (match(TokenType::LEFT_PAREN)) {
+        // No line terminator allowed between 'async' and '(' for async arrow
+        if (current_token().get_start().line != async_end_line) {
+            add_error("SyntaxError: Unexpected token: line break between 'async' and arrow parameters");
+            return nullptr;
+        }
         return parse_async_arrow_function(start);
-    } else if (match(TokenType::IDENTIFIER)) {
+    } else if (match(TokenType::IDENTIFIER) ||
+               // Contextual keywords (of, from, static, ...) used as async arrow single param
+               (current_token().get_start().line == async_end_line &&
+                is_keyword_token(current_token().get_type()) &&
+                peek_token().get_type() == TokenType::ARROW)) {
         return parse_async_arrow_function_single_param(start);
     } else {
         // Not an async function/arrow — `async` is being used as an identifier
@@ -7081,9 +7172,11 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
     std::vector<std::unique_ptr<Parameter>> params;
     bool has_non_simple_params = false;
     
-    if (match(TokenType::IDENTIFIER)) {
+    if (match(TokenType::IDENTIFIER) ||
+        // Non-strict, non-generator: yield/await usable as plain identifier param
+        (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
         Position param_start = get_current_position();
-        const std::string& pname = current_token().get_value();
+        std::string pname = (current_token().get_type() == TokenType::YIELD) ? "yield" : current_token().get_value();
         if (options_.strict_mode && (pname == "eval" || pname == "arguments")) {
             add_error("SyntaxError: '" + pname + "' cannot be a parameter name in strict mode");
             return nullptr;
@@ -7141,6 +7234,20 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                         current_token().get_start(), current_token().get_end());
                     advance();
                     auto rp = std::make_unique<Parameter>(std::move(rp_name), nullptr, true, rp_start, get_current_position());
+                    params.push_back(std::move(rp));
+                } else if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+                           current_token().get_type() == TokenType::LEFT_BRACE) {
+                    Position rp_start = get_current_position();
+                    auto destructuring = parse_destructuring_pattern();
+                    if (!destructuring) {
+                        add_error("Invalid destructuring rest pattern in arrow function parameters");
+                        return nullptr;
+                    }
+                    static int arrow_rest_destr_counter = 0;
+                    std::string synthetic_name = "__destr_" + std::to_string(arrow_rest_destr_counter++);
+                    auto rp_name = std::make_unique<Identifier>(synthetic_name, rp_start, rp_start);
+                    auto rp = std::make_unique<Parameter>(std::move(rp_name), nullptr, true, rp_start, get_current_position());
+                    rp->set_destructuring_pattern(std::move(destructuring));
                     params.push_back(std::move(rp));
                 }
                 break;
@@ -7228,6 +7335,16 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
                     }
                 }
             }
+        }
+    }
+
+    // Arrow functions: await/yield expressions in formals are always SyntaxError
+    {
+        std::string forbidden = find_forbidden_expr_in_params(params,
+            options_.in_generator_body, options_.in_async_body);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in arrow function parameters");
+            return nullptr;
         }
     }
 
@@ -7470,13 +7587,17 @@ std::unique_ptr<ASTNode> Parser::parse_import_expression() {
         return nullptr;
     }
 
-    // Optional second argument: import attributes { assert: {...} } -- parse and ignore
+    // Optional second argument: import attributes -- parse and ignore
+    // Must reset no_in_mode_ because 'in' is valid inside call args (e.g. import(x, a in b))
     if (match(TokenType::COMMA)) {
         advance();
         if (!match(TokenType::RIGHT_PAREN)) {
+            bool saved_no_in_imp = no_in_mode_;
+            no_in_mode_ = false;
             parse_assignment_expression(); // consume and discard options argument
+            no_in_mode_ = saved_no_in_imp;
         }
-        if (match(TokenType::COMMA)) advance(); 
+        if (match(TokenType::COMMA)) advance();
     }
 
     if (!consume(TokenType::RIGHT_PAREN)) {
@@ -7624,6 +7745,12 @@ std::unique_ptr<Parser> create_module_parser(const std::string& source) {
 
 std::unique_ptr<ASTNode> Parser::parse_object_literal() {
     Position start = get_current_position();
+    // Nested property-value parses may set last_expr_was_parenthesized_; reset on exit
+    // so the object literal itself is never considered "parenthesized" by its callers.
+    struct ResetParenFlag {
+        bool& flag;
+        ~ResetParenFlag() { flag = false; }
+    } reset_guard{last_expr_was_parenthesized_};
 
     if (!consume(TokenType::LEFT_BRACE)) {
         add_error("Expected '{'");
@@ -7812,6 +7939,8 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             key = parse_string_literal();
         } else if (match(TokenType::NUMBER)) {
             key = parse_number_literal();
+        } else if (match(TokenType::BIGINT_LITERAL)) {
+            key = parse_bigint_literal();
         } else if (is_keyword_token(current_token().get_type())) {
             key = std::make_unique<Identifier>(current_token().get_value(),
                                                current_token().get_start(), current_token().get_end());
@@ -7820,7 +7949,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             add_error("Expected property key");
             return nullptr;
         }
-        
+
         if (property_type == ObjectLiteral::PropertyType::Getter || property_type == ObjectLiteral::PropertyType::Setter) {
             if (!match(TokenType::LEFT_PAREN)) {
                 add_error(property_type == ObjectLiteral::PropertyType::Getter ?
@@ -8436,7 +8565,9 @@ std::unique_ptr<ASTNode> Parser::parse_catch_clause() {
                 }
             }
             parameter_name = "__destr_pattern__";
-        } else if (match(TokenType::IDENTIFIER)) {
+        } else if (match(TokenType::IDENTIFIER) ||
+                   (match(TokenType::AWAIT) && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
+                   (match(TokenType::YIELD) && !options_.in_generator_body && !options_.strict_mode)) {
             parameter_name = current_token().get_value();
 
             // ES5: eval and arguments cannot be used as catch parameter in strict mode
@@ -8917,6 +9048,22 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         return nullptr;
     }
 
+    auto skip_export_with = [&]() {
+        if (match(TokenType::WITH)) {
+            advance();
+            if (match(TokenType::LEFT_BRACE)) {
+                advance();
+                int d_ = 1;
+                while (!at_end() && d_ > 0) {
+                    if (match(TokenType::LEFT_BRACE)) d_++;
+                    else if (match(TokenType::RIGHT_BRACE)) { if (!--d_) break; }
+                    advance();
+                }
+                if (match(TokenType::RIGHT_BRACE)) advance();
+            }
+        }
+    };
+
     advance();
     
     if (match(TokenType::DEFAULT)) {
@@ -8990,6 +9137,24 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
             return nullptr;
         }
         std::string source_module = current_token().get_value();
+        advance(); skip_export_with();
+        if (!consume_if_match(TokenType::SEMICOLON)) {
+            TokenType cur = current_token().get_type();
+            if (cur != TokenType::RIGHT_BRACE && cur != TokenType::EOF_TOKEN) {
+                bool has_nl = false;
+                size_t i = current_token_index_;
+                while (i > 0) {
+                    i--;
+                    TokenType t = tokens_[i].get_type();
+                    if (t == TokenType::NEWLINE) { has_nl = true; break; }
+                    if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) break;
+                }
+                if (!has_nl) {
+                    add_error("SyntaxError: Unexpected token after export statement");
+                    return nullptr;
+                }
+            }
+        }
         Position end = get_current_position();
         std::vector<std::unique_ptr<ExportSpecifier>> specifiers;
         specifiers.push_back(std::make_unique<ExportSpecifier>("*", exported_name, start, end));
@@ -9029,8 +9194,25 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
                 return nullptr;
             }
             std::string source_module = current_token().get_value();
-            advance();
-            
+            advance(); skip_export_with();
+            if (!consume_if_match(TokenType::SEMICOLON)) {
+                TokenType cur = current_token().get_type();
+                if (cur != TokenType::RIGHT_BRACE && cur != TokenType::EOF_TOKEN) {
+                    bool has_nl = false;
+                    size_t i = current_token_index_;
+                    while (i > 0) {
+                        i--;
+                        TokenType t = tokens_[i].get_type();
+                        if (t == TokenType::NEWLINE) { has_nl = true; break; }
+                        if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) break;
+                    }
+                    if (!has_nl) {
+                        add_error("SyntaxError: Unexpected token after export statement");
+                        return nullptr;
+                    }
+                }
+            }
+
             Position end = get_current_position();
             return std::make_unique<ExportStatement>(std::move(specifiers), source_module, start, end);
         }
@@ -9051,17 +9233,36 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
 
 std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
     Position start = current_token().get_start();
-    
-    if (!match(TokenType::IDENTIFIER) && !match(TokenType::DEFAULT) &&
+
+    // ES2022: ModuleExportName may be a StringLiteral: import { "name" as local }
+    bool imported_is_string = match(TokenType::STRING);
+    if (!imported_is_string && !match(TokenType::IDENTIFIER) && !match(TokenType::DEFAULT) &&
         !is_keyword_token(current_token().get_type())) {
         add_error("Expected identifier or 'default' in import specifier");
         return nullptr;
     }
-    
+
     std::string imported_name = current_token().get_value();
     std::string local_name = imported_name;
     advance();
-    
+
+    // String import names: check for lone surrogates (IsStringWellFormedUnicode)
+    if (imported_is_string) {
+        for (size_t i = 0; i + 2 < imported_name.size(); i++) {
+            unsigned char b0 = imported_name[i], b1 = imported_name[i+1], b2 = imported_name[i+2];
+            if (b0 == 0xED && b1 >= 0xA0 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF) {
+                add_error("SyntaxError: Module import name contains lone surrogate");
+                return nullptr;
+            }
+        }
+    }
+
+    // String import names MUST have "as localName"
+    if (imported_is_string && !(match(TokenType::IDENTIFIER) && current_token().get_value() == "as")) {
+        add_error("SyntaxError: String import name requires 'as' binding");
+        return nullptr;
+    }
+
     if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
         if (current_token().has_escaped_keyword()) {
             add_error("SyntaxError: 'as' cannot use unicode escape sequences in import specifier");
@@ -9186,7 +9387,9 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 }
                 break;
                 
-            } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            } else if (current_token().get_type() == TokenType::IDENTIFIER ||
+                       (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
+                       (current_token().get_type() == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)) {
                 auto id = std::make_unique<Identifier>(
                     current_token().get_value(),
                     current_token().get_start(),
@@ -9194,7 +9397,7 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                 );
                 targets.push_back(std::move(id));
                 advance();
-                
+
                 if (match(TokenType::ASSIGN)) {
                     advance();
                     auto default_expr = parse_assignment_expression();
@@ -9206,51 +9409,37 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                     default_exprs.emplace_back(target_index, std::move(default_expr));
                 }
             } else if (current_token().get_type() == TokenType::LEFT_BRACKET) {
-                advance();
-                
-                std::string nested_vars = "";
-                size_t elem_pos = 0;
-                bool last_was_elem = false; // true after identifier, false after comma/start
-                while (!match(TokenType::RIGHT_BRACKET) && !at_end()) {
-                    if (current_token().get_type() == TokenType::ELLIPSIS) {
-                        advance();
-                        if (current_token().get_type() == TokenType::IDENTIFIER) {
-                            if (elem_pos > 0) nested_vars += ",";
-                            nested_vars += "..." + current_token().get_value();
-                            advance();
-                        }
-                        break;
-                    } else if (current_token().get_type() == TokenType::IDENTIFIER) {
-                        if (elem_pos > 0) nested_vars += ",";
-                        nested_vars += current_token().get_value();
-                        advance();
-                        elem_pos++;
-                        last_was_elem = true;
-                    } else if (current_token().get_type() == TokenType::COMMA) {
-                        if (!last_was_elem) {
-                            // Elision: comma without preceding element
-                            if (elem_pos > 0) nested_vars += ",";
-                            nested_vars += "\x01";
-                            elem_pos++;
-                        }
-                        // else: separator after element, just advance
-                        last_was_elem = false;
-                        advance();
-                    } else {
-                        advance();
-                    }
-                }
-                
-                if (!consume(TokenType::RIGHT_BRACKET)) {
-                    add_error("Expected ']' in nested destructuring");
+                // Nested array destructuring: recurse
+                auto nested = parse_destructuring_pattern(depth + 1);
+                if (!nested) {
+                    add_error("Invalid nested array destructuring");
                     return nullptr;
                 }
-                
-                
+                // Encode all leaf variable names from the nested pattern
+                std::function<std::string(ASTNode*)> extract_vars = [&](ASTNode* nd) -> std::string {
+                    if (!nd) return "";
+                    auto* da = dynamic_cast<DestructuringAssignment*>(nd);
+                    if (!da) return "";
+                    std::string result;
+                    bool first = true;
+                    for (const auto& t : da->get_targets()) {
+                        if (!first) result += ",";
+                        const std::string& nm = t->get_name();
+                        if (nm.empty()) {
+                            result += "\x01"; // elision sentinel -- runtime advances iterator without binding
+                        } else {
+                            result += nm;
+                        }
+                        first = false;
+                    }
+                    return result;
+                };
+                std::string nested_vars = extract_vars(nested.get());
+                Position np_start = nested->get_start();
+                Position np_end = nested->get_end();
                 auto nested_placeholder = std::make_unique<Identifier>(
                     "__nested_vars:" + nested_vars,
-                    current_token().get_start(),
-                    current_token().get_end()
+                    np_start, np_end
                 );
                 targets.push_back(std::move(nested_placeholder));
 
@@ -9386,8 +9575,14 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
 
             } else if (current_token().get_type() == TokenType::IDENTIFIER ||
                        current_token().get_type() == TokenType::NUMBER ||
-                       current_token().get_type() == TokenType::STRING) {
-                bool is_literal_key = (current_token().get_type() != TokenType::IDENTIFIER);
+                       current_token().get_type() == TokenType::STRING ||
+                       current_token().get_type() == TokenType::BIGINT_LITERAL ||
+                       (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
+                       (current_token().get_type() == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)) {
+                // AWAIT/YIELD used as identifier bindings are NOT literal keys (they behave like IDENTIFIER)
+                bool is_literal_key = (current_token().get_type() == TokenType::NUMBER ||
+                                       current_token().get_type() == TokenType::STRING ||
+                                       current_token().get_type() == TokenType::BIGINT_LITERAL);
                 if (!is_literal_key && current_token().has_escaped_keyword()) {
                     add_error("SyntaxError: Unicode escape sequences are not allowed in keywords");
                     return nullptr;
@@ -9849,6 +10044,10 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         return nullptr;
     }
 
+    // Params are in async context: await is AwaitExpression (forbidden in async arrow params)
+    bool saved_async_aaf_params = options_.in_async_body;
+    options_.in_async_body = true;
+
     while (!match(TokenType::RIGHT_PAREN) && !at_end()) {
         Position param_start = current_token().get_start();
         bool is_rest = false;
@@ -9860,8 +10059,47 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         }
 
         std::unique_ptr<Identifier> param_name = nullptr;
-        if (current_token().get_type() == TokenType::IDENTIFIER) {
-            param_name = std::make_unique<Identifier>(current_token().get_value(),
+        if (current_token().get_type() == TokenType::LEFT_BRACKET ||
+            current_token().get_type() == TokenType::LEFT_BRACE) {
+            has_non_simple_params = true;
+            auto destructuring = parse_destructuring_pattern();
+            if (!destructuring) {
+                add_error("Invalid destructuring pattern in async arrow function parameters");
+                options_.in_async_body = saved_async_aaf_params;
+                return nullptr;
+            }
+            static int aaf_destr_counter = 0;
+            std::string synthetic_name = "__destr_" + std::to_string(aaf_destr_counter++);
+            Position pp = get_current_position();
+            param_name = std::make_unique<Identifier>(synthetic_name, pp, pp);
+            std::unique_ptr<ASTNode> default_value = nullptr;
+            if (!is_rest && match(TokenType::ASSIGN)) {
+                advance();
+                default_value = parse_assignment_expression();
+                if (!default_value) {
+                    add_error("Invalid default parameter value");
+                    options_.in_async_body = saved_async_aaf_params;
+                    return nullptr;
+                }
+            }
+            Position param_end = get_current_position();
+            auto param = std::make_unique<Parameter>(std::move(param_name), std::move(default_value), is_rest, param_start, param_end);
+            param->set_destructuring_pattern(std::move(destructuring));
+            params.push_back(std::move(param));
+            if (match(TokenType::COMMA)) advance();
+            else if (is_rest && !match(TokenType::RIGHT_PAREN)) {
+                add_error("Rest parameter must be last formal parameter");
+                options_.in_async_body = saved_async_aaf_params;
+                return nullptr;
+            }
+            continue;
+        } else if (current_token().get_type() == TokenType::IDENTIFIER) {
+            const std::string& pn = current_token().get_value();
+            if (options_.strict_mode && (pn == "eval" || pn == "arguments")) {
+                add_error("SyntaxError: '" + pn + "' cannot be used as parameter name in strict mode");
+                return nullptr;
+            }
+            param_name = std::make_unique<Identifier>(pn,
                                                       current_token().get_start(), current_token().get_end());
             advance();
         } else {
@@ -9901,8 +10139,20 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
     }
 
     if (!consume(TokenType::RIGHT_PAREN)) {
+        options_.in_async_body = saved_async_aaf_params;
         add_error("Expected ')' after parameters");
         return nullptr;
+    }
+
+    options_.in_async_body = saved_async_aaf_params;
+
+    // await/yield in default expressions are forbidden in async arrow formals
+    {
+        std::string forbidden = find_forbidden_expr_in_params(params, false, true);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of async arrow");
+            return nullptr;
+        }
     }
 
     // Duplicate param check: always SyntaxError for async arrow (implicitly strict)
@@ -9970,6 +10220,16 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
         return nullptr;
     }
 
+    // Early error: params and body cannot have the same lexical binding
+    if (body->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        auto* block = static_cast<BlockStatement*>(body.get());
+        std::string dup = check_params_body_lex_conflict(params, block);
+        if (!dup.empty()) {
+            add_error("SyntaxError: Identifier '" + dup + "' is already declared (parameter name shadows lexical declaration)");
+            return nullptr;
+        }
+    }
+
     Position end = get_current_position();
 
     return std::make_unique<AsyncFunctionExpression>(
@@ -9983,7 +10243,9 @@ std::unique_ptr<ASTNode> Parser::parse_async_arrow_function(Position start) {
 std::unique_ptr<ASTNode> Parser::parse_async_arrow_function_single_param(Position start) {
     std::vector<std::unique_ptr<Parameter>> params;
 
-    if (current_token().get_type() != TokenType::IDENTIFIER) {
+    if (current_token().get_type() != TokenType::IDENTIFIER &&
+        !is_keyword_token(current_token().get_type()) &&
+        current_token().get_type() != TokenType::OF) {
         add_error("Expected identifier for async arrow function parameter");
         return nullptr;
     }
