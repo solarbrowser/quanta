@@ -653,27 +653,36 @@ std::unique_ptr<ASTNode> Parser::parse_conditional_expression_impl(int depth) {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
+    size_t left_start_idx = current_token_index_;
     auto left = parse_nullish_coalescing_expression();
     if (!left) return nullptr;
 
     while (match(TokenType::LOGICAL_OR)) {
-        // ?? cannot appear as the left operand of || without parentheses
-        if (left->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION) {
+        // ?? cannot appear as the left operand of unparenthesized ||
+        bool left_is_nc = (left->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION);
+        bool left_was_paren = (left_start_idx < tokens_.size() &&
+                               tokens_[left_start_idx].get_type() == TokenType::LEFT_PAREN);
+        if (left_is_nc && !left_was_paren) {
             add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
             return nullptr;
         }
         Position op_start = current_token().get_start();
         advance();
+        size_t right_start_idx = current_token_index_;
         auto right = parse_nullish_coalescing_expression();
         if (!right) {
             add_error("Expected expression after '||'");
             return left;
         }
-        if (right->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION) {
+        bool right_is_nc = (right->get_type() == ASTNode::Type::NULLISH_COALESCING_EXPRESSION);
+        bool right_was_paren = (right_start_idx < tokens_.size() &&
+                                tokens_[right_start_idx].get_type() == TokenType::LEFT_PAREN);
+        if (right_is_nc && !right_was_paren) {
             add_error("SyntaxError: Nullish coalescing operator cannot be mixed with || operator");
             return nullptr;
         }
         Position end = right->get_end();
+        left_start_idx = current_token_index_;
         left = std::make_unique<BinaryExpression>(
             std::move(left), BinaryExpression::Operator::LOGICAL_OR, std::move(right), op_start, end);
     }
@@ -681,19 +690,26 @@ std::unique_ptr<ASTNode> Parser::parse_logical_or_expression() {
 }
 
 std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
+    // Per spec: ?? cannot mix with bare (unparenthesized) && or ||
+    // A parenthesized operand is fine: (a && b) ?? c  or  a ?? (b || c)
+    auto is_unparenthesized_logical = [this](ASTNode* n, size_t start_idx) -> bool {
+        if (!n || n->get_type() != ASTNode::Type::BINARY_EXPRESSION) return false;
+        auto op = static_cast<BinaryExpression*>(n)->get_operator();
+        if (op != BinaryExpression::Operator::LOGICAL_AND &&
+            op != BinaryExpression::Operator::LOGICAL_OR) return false;
+        // If the operand started with '(' it was parenthesized — allowed
+        if (start_idx < tokens_.size() &&
+            tokens_[start_idx].get_type() == TokenType::LEFT_PAREN) return false;
+        return true;
+    };
+
+    size_t left_start_idx = current_token_index_;
     auto left = parse_logical_and_expression();
     if (!left) return nullptr;
 
     if (!match(TokenType::NULLISH_COALESCING)) return left;
 
-    // Per spec: ?? cannot mix with || or && without parentheses
-    auto is_logical_binop = [](ASTNode* n) -> bool {
-        if (!n || n->get_type() != ASTNode::Type::BINARY_EXPRESSION) return false;
-        auto op = static_cast<BinaryExpression*>(n)->get_operator();
-        return op == BinaryExpression::Operator::LOGICAL_AND ||
-               op == BinaryExpression::Operator::LOGICAL_OR;
-    };
-    if (is_logical_binop(left.get())) {
+    if (is_unparenthesized_logical(left.get(), left_start_idx)) {
         add_error("SyntaxError: Nullish coalescing operator cannot be mixed with && or || operators");
         return nullptr;
     }
@@ -702,12 +718,13 @@ std::unique_ptr<ASTNode> Parser::parse_nullish_coalescing_expression() {
         Position start = left->get_start();
         advance();
 
+        size_t right_start_idx = current_token_index_;
         auto right = parse_logical_and_expression();
         if (!right) {
             add_error("Expected expression after '??'");
             return left;
         }
-        if (is_logical_binop(right.get())) {
+        if (is_unparenthesized_logical(right.get(), right_start_idx)) {
             add_error("SyntaxError: Nullish coalescing operator cannot be mixed with && or || operators");
             return nullptr;
         }
@@ -3536,8 +3553,11 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
-        // Early error: for (async of ...) is forbidden (lookahead restriction)
-        if (current_token().get_type() == TokenType::ASYNC && !current_token().has_escaped_keyword()) {
+        // Early error: for (async of ...) is forbidden (lookahead restriction).
+        // Does NOT apply to for-await-of, and does NOT apply when =>'async of '
+        // starts an async arrow function (the init expression).
+        if (!is_await_loop &&
+            current_token().get_type() == TokenType::ASYNC && !current_token().has_escaped_keyword()) {
             size_t next_idx = current_token_index_ + 1;
             while (next_idx < tokens_.size() &&
                    (tokens_[next_idx].get_type() == TokenType::WHITESPACE ||
@@ -3545,8 +3565,18 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                     tokens_[next_idx].get_type() == TokenType::COMMENT))
                 next_idx++;
             if (next_idx < tokens_.size() && tokens_[next_idx].get_type() == TokenType::OF) {
-                add_error("SyntaxError: 'async' is not a valid left-hand side in a for-of loop");
-                return nullptr;
+                // Check if 'of' is followed by '=>' -- then it's an async arrow function, not for-of
+                size_t arrow_idx = next_idx + 1;
+                while (arrow_idx < tokens_.size() &&
+                       (tokens_[arrow_idx].get_type() == TokenType::WHITESPACE ||
+                        tokens_[arrow_idx].get_type() == TokenType::COMMENT))
+                    arrow_idx++;
+                bool is_arrow = (arrow_idx < tokens_.size() &&
+                                 tokens_[arrow_idx].get_type() == TokenType::ARROW);
+                if (!is_arrow) {
+                    add_error("SyntaxError: 'async' is not a valid left-hand side in a for-of loop");
+                    return nullptr;
+                }
             }
         }
         // Check for 'await using' declaration in for init: for (await using x of ...)
@@ -3807,10 +3837,8 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
             // Parse init without consuming 'in' (reserved for for-in detection).
             // Skip no_in_mode for for-await (always for-of) and destructuring LHS
             // ('{' or '[' can never start a for-in LHS, so 'in' in defaults is fine).
-            bool is_destructuring_lhs = (current_token().get_type() == TokenType::LEFT_BRACE ||
-                                         current_token().get_type() == TokenType::LEFT_BRACKET);
             bool prev_no_in = no_in_mode_;
-            if (!is_await_loop && !is_destructuring_lhs) no_in_mode_ = true;
+            if (!is_await_loop) no_in_mode_ = true;
             init = parse_expression();
             no_in_mode_ = prev_no_in;
             if (!init) {
@@ -5737,7 +5765,11 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         computed = true;
         advance();
 
+        // Computed property keys always allow 'in' regardless of outer for-loop context
+        bool saved_no_in = no_in_mode_;
+        no_in_mode_ = false;
         key = parse_assignment_expression();
+        no_in_mode_ = saved_no_in;
 
         if (!key) {
             add_error("Failed to parse computed property expression");
@@ -7592,16 +7624,21 @@ std::unique_ptr<Parser> create_module_parser(const std::string& source) {
 
 std::unique_ptr<ASTNode> Parser::parse_object_literal() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::LEFT_BRACE)) {
         add_error("Expected '{'");
         return nullptr;
     }
+
+    // 'in' is always allowed inside {...} regardless of outer no_in_mode_
+    bool saved_no_in_ol = no_in_mode_;
+    no_in_mode_ = false;
     
     std::vector<std::unique_ptr<ObjectLiteral::Property>> properties;
     
     if (match(TokenType::RIGHT_BRACE)) {
         advance();
+        no_in_mode_ = saved_no_in_ol;
         Position end = get_current_position();
         return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
     }
@@ -7801,8 +7838,10 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             bool saved_oap = options_.in_arrow_params;
             bool saved_async_obj_params = options_.in_async_body;
             bool saved_csb_obj_params = options_.in_class_static_block;
+            bool saved_cm_obj_params = options_.in_class_method;
             options_.in_arrow_params = true;
             options_.in_class_static_block = false;
+            options_.in_class_method = true; // super is valid in method param defaults
             if (is_async) options_.in_async_body = true;
             if (!match(TokenType::RIGHT_PAREN)) {
                 do {
@@ -7921,6 +7960,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             options_.in_arrow_params = saved_oap;
             options_.in_async_body = saved_async_obj_params;
             options_.in_class_static_block = saved_csb_obj_params;
+            options_.in_class_method = saved_cm_obj_params;
 
             if (!consume(TokenType::RIGHT_PAREN)) {
                 add_error("Expected ')' after parameters");
@@ -8213,44 +8253,56 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
         return nullptr;
     }
 
-    // Early error: duplicate __proto__ property (non-computed, non-method, non-getter/setter)
-    int proto_count = 0;
-    for (const auto& prop : properties) {
-        if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
-            && prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
-            auto* id = static_cast<Identifier*>(prop->key.get());
-            if (id->get_name() == "__proto__") proto_count++;
-        } else if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
-            && prop->key && prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
-            auto* sl = static_cast<StringLiteral*>(prop->key.get());
-            if (sl->get_value() == "__proto__") proto_count++;
+    // Annex B early error: duplicate __proto__ in object initializer.
+    // Applies only to non-shorthand, non-computed PropertyName:AssignmentExpression form.
+    // Does NOT apply to destructuring assignment patterns (next token is '=').
+    bool is_destructuring_target = match(TokenType::ASSIGN);
+    if (!is_destructuring_target) {
+        int proto_count = 0;
+        for (const auto& prop : properties) {
+            if (prop->shorthand) continue; // shorthand __proto__ is allowed
+            if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
+                && prop->key && prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
+                auto* id = static_cast<Identifier*>(prop->key.get());
+                if (id->get_name() == "__proto__") proto_count++;
+            } else if (!prop->computed && prop->type == ObjectLiteral::PropertyType::Value
+                && prop->key && prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
+                auto* sl = static_cast<StringLiteral*>(prop->key.get());
+                if (sl->get_value() == "__proto__") proto_count++;
+            }
+        }
+        if (proto_count > 1) {
+            add_error("Duplicate __proto__ fields are not allowed in object literals");
+            return nullptr;
         }
     }
-    if (proto_count > 1) {
-        add_error("Duplicate __proto__ fields are not allowed in object literals");
-        return nullptr;
-    }
 
+    no_in_mode_ = saved_no_in_ol;
     Position end = get_current_position();
     return std::make_unique<ObjectLiteral>(std::move(properties), start, end);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_array_literal() {
     Position start = get_current_position();
-    
+
     if (!consume(TokenType::LEFT_BRACKET)) {
         add_error("Expected '['");
         return nullptr;
     }
-    
+
+    // 'in' is always allowed inside [...] regardless of outer no_in_mode_
+    bool saved_no_in_al = no_in_mode_;
+    no_in_mode_ = false;
+
     std::vector<std::unique_ptr<ASTNode>> elements;
     
     if (match(TokenType::RIGHT_BRACKET)) {
         advance();
+        no_in_mode_ = saved_no_in_al;
         Position end = get_current_position();
         return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
     }
-    
+
     do {
         if (match(TokenType::COMMA)) {
             elements.push_back(std::make_unique<UndefinedLiteral>(get_current_position(), get_current_position()));
@@ -8259,6 +8311,7 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
                 auto spread = parse_spread_element();
                 if (!spread) {
                     add_error("Invalid spread element");
+                    no_in_mode_ = saved_no_in_al;
                     return nullptr;
                 }
                 elements.push_back(std::move(spread));
@@ -8269,12 +8322,13 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
                 options_.in_array_element = saved_iae;
                 if (!element) {
                     add_error("Expected array element");
+                    no_in_mode_ = saved_no_in_al;
                     return nullptr;
                 }
                 elements.push_back(std::move(element));
             }
         }
-        
+
         if (match(TokenType::COMMA)) {
             advance();
             if (match(TokenType::RIGHT_BRACKET)) {
@@ -8289,14 +8343,16 @@ std::unique_ptr<ASTNode> Parser::parse_array_literal() {
         } else {
             break;
         }
-        
+
     } while (!at_end() && !match(TokenType::RIGHT_BRACKET));
-    
+
     if (!consume(TokenType::RIGHT_BRACKET)) {
         add_error("Expected ']' to close array literal");
+        no_in_mode_ = saved_no_in_al;
         return nullptr;
     }
-    
+
+    no_in_mode_ = saved_no_in_al;
     Position end = get_current_position();
     return std::make_unique<ArrayLiteral>(std::move(elements), start, end);
 }
@@ -8757,20 +8813,51 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
 
         if (match(TokenType::COMMA)) {
             advance();
-            
+
+            // ImportedDefaultBinding , NameSpaceImport
+            if (match(TokenType::MULTIPLY)) {
+                advance();
+                if (current_token().get_type() != TokenType::IDENTIFIER || current_token().get_value() != "as") {
+                    add_error("Expected 'as' after '*' in namespace import");
+                    return nullptr;
+                }
+                advance();
+                if (current_token().get_type() != TokenType::IDENTIFIER) {
+                    add_error("Expected identifier after '* as' in namespace import");
+                    return nullptr;
+                }
+                std::string namespace_alias = current_token().get_value();
+                advance();
+                if (current_token().get_type() != TokenType::FROM) {
+                    add_error("Expected 'from' after namespace import");
+                    return nullptr;
+                }
+                advance();
+                if (current_token().get_type() != TokenType::STRING) {
+                    add_error("Expected string literal after 'from'");
+                    return nullptr;
+                }
+                std::string module_source = current_token().get_value();
+                advance(); skip_import_with();
+                Position end = get_current_position();
+                // ImportStatement with both default alias and namespace alias
+                return std::make_unique<ImportStatement>(default_alias, namespace_alias, module_source, start, end);
+            }
+
+            // ImportedDefaultBinding , NamedImports
             if (!match(TokenType::LEFT_BRACE)) {
-                add_error("Expected '{' after ',' in mixed import statement");
+                add_error("Expected '{' or '*' after ',' in mixed import statement");
                 return nullptr;
             }
             advance();
-            
+
             std::vector<std::unique_ptr<ImportSpecifier>> specifiers;
             while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
                 auto specifier = parse_import_specifier();
                 if (specifier) {
                     specifiers.push_back(std::move(specifier));
                 }
-                
+
                 if (match(TokenType::COMMA)) {
                     advance();
                 } else if (!match(TokenType::RIGHT_BRACE)) {
@@ -8778,19 +8865,19 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
                     break;
                 }
             }
-            
+
             if (!match(TokenType::RIGHT_BRACE)) {
                 add_error("Expected '}' after import specifiers");
                 return nullptr;
             }
             advance();
-            
+
             if (current_token().get_type() != TokenType::FROM) {
                 add_error("Expected 'from' in mixed import statement");
                 return nullptr;
             }
             advance();
-            
+
             if (current_token().get_type() != TokenType::STRING) {
                 add_error("Expected string literal after 'from'");
                 return nullptr;
@@ -8875,11 +8962,22 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         std::string exported_name = "*";
         if (match(TokenType::IDENTIFIER) && current_token().get_value() == "as") {
             advance();
-            if (!match(TokenType::IDENTIFIER) && !is_reserved_word_as_property_name()) {
+            // ES2022: export name can be a StringLiteral or IdentifierName
+            bool star_as_is_string = match(TokenType::STRING);
+            if (!star_as_is_string && !match(TokenType::IDENTIFIER) && !is_reserved_word_as_property_name()) {
                 add_error("Expected identifier after 'as' in export * as");
                 return nullptr;
             }
             exported_name = current_token().get_value();
+            if (star_as_is_string) {
+                for (size_t i = 0; i + 2 < exported_name.size(); i++) {
+                    unsigned char b0 = exported_name[i], b1 = exported_name[i+1], b2 = exported_name[i+2];
+                    if (b0 == 0xED && b1 >= 0xA0 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF) {
+                        add_error("SyntaxError: Module export name contains lone surrogate");
+                        return nullptr;
+                    }
+                }
+            }
             advance();
         }
         if (current_token().get_type() != TokenType::FROM) {
@@ -8992,12 +9090,28 @@ std::unique_ptr<ImportSpecifier> Parser::parse_import_specifier() {
 std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
     Position start = current_token().get_start();
 
-    if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
+    // Helper: ES2022 ModuleExportName strings must be well-formed Unicode (no lone surrogates)
+    auto check_module_export_name = [this](const std::string& s) -> bool {
+        // Lone surrogates are encoded as 0xED 0xA0-0xBF 0x80-0xBF in our CESU-8 storage
+        for (size_t i = 0; i + 2 < s.size(); i++) {
+            unsigned char b0 = s[i], b1 = s[i+1], b2 = s[i+2];
+            if (b0 == 0xED && b1 >= 0xA0 && b1 <= 0xBF && b2 >= 0x80 && b2 <= 0xBF) {
+                add_error("SyntaxError: Module export name contains lone surrogate");
+                return false;
+            }
+        }
+        return true;
+    };
+
+    // ES2022: ModuleExportName can be a StringLiteral or IdentifierName
+    bool local_is_string = match(TokenType::STRING);
+    if (!local_is_string && !match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
         add_error("Expected identifier in export specifier");
         return nullptr;
     }
 
     std::string local_name = current_token().get_value();
+    if (local_is_string && !check_module_export_name(local_name)) return nullptr;
     std::string exported_name = local_name;
     advance();
 
@@ -9008,11 +9122,14 @@ std::unique_ptr<ExportSpecifier> Parser::parse_export_specifier() {
         }
         advance();
 
-        if (!match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
+        // exported name can also be a string literal
+        bool exp_is_string = match(TokenType::STRING);
+        if (!exp_is_string && !match(TokenType::IDENTIFIER) && !is_keyword_token(current_token().get_type())) {
             add_error("Expected identifier after 'as' in export specifier");
             return nullptr;
         }
         exported_name = current_token().get_value();
+        if (exp_is_string && !check_module_export_name(exported_name)) return nullptr;
         advance();
     }
 
