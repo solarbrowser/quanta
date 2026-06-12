@@ -140,6 +140,9 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                     fn->set_name(func_name);
                 }
             }
+            if (prop->type == ObjectLiteral::PropertyType::Method) {
+                fn->set_property("__super_constructor__", Value(true));
+            }
         }
 
         if (prop->type == ObjectLiteral::PropertyType::Getter || prop->type == ObjectLiteral::PropertyType::Setter) {

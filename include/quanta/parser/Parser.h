@@ -50,6 +50,7 @@ public:
         bool in_unary_operand = false;
         std::unordered_set<std::string> active_labels;
         std::unordered_set<std::string> loop_labels;
+        std::unordered_set<std::string> eval_private_names;
     };
 
     struct ParseError {

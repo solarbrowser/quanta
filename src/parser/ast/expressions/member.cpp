@@ -163,6 +163,9 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
             return lookup_proto->get_property(prop_name);
         }
+        // RequireObjectCoercible: null prototype base throws TypeError (spec 13.3.7.3 step 5)
+        ctx.throw_type_error("Cannot read properties of null (reading super property)");
+        return Value();
     }
 
     Value object_value = object_->evaluate(ctx);

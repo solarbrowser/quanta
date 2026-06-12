@@ -203,7 +203,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
-        // Override any null→global coercion so native fns can throw TypeError when this is null/undefined.
         if (this_value.is_null() || this_value.is_undefined()) {
             ctx.set_this_binding(nullptr);
         }
@@ -666,11 +665,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     
     if (this->has_property("__super_constructor__")) {
         Value super_constructor = this->get_property("__super_constructor__");
-        if (super_constructor.is_function()) {
+        if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
             function_context.create_binding("__super__", super_constructor, false);
         }
     }
-    
+
+    if (this->has_property("__private_brands__")) {
+        Value brands = this->get_property("__private_brands__");
+        if (!brands.is_undefined() && !brands.is_null()) {
+            function_context.create_binding("__eval_private_names__", brands, false);
+        }
+    }
+
     if (body_) {
         // ES5: Named function expressions have their name as an immutable binding
         if (!name_.empty() && name_ != "<anonymous>" && !function_context.has_binding(name_)) {

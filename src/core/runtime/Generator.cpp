@@ -467,7 +467,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     s_generator_prototype_ = gen_prototype.get();
     ctx.create_binding("@@GeneratorPrototype", Value(gen_prototype.release()));
 
-    // %GeneratorFunction.prototype% — [[Prototype]] of all generator functions
+    // %GeneratorFunction.prototype% -- [[Prototype]] of all generator functions
     // Per spec: %GeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
     auto gen_fn_proto = ObjectFactory::create_object();
     Object* func_proto = ObjectFactory::get_function_prototype();
@@ -479,7 +479,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
     s_generator_function_prototype_ = gen_fn_proto.get();
     ctx.create_binding("@@GeneratorFunctionPrototype", Value(gen_fn_proto.release()));
 
-    // GeneratorFunction constructor - parses body string to create a real generator function
+    // GeneratorFunction constructor
     auto generator_function_constructor = ObjectFactory::create_native_constructor("GeneratorFunction",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::vector<std::string> param_names;
@@ -494,7 +494,6 @@ void Generator::setup_generator_prototype(Context& ctx) {
                 body_str = args[0].to_string();
             }
 
-            // Build source: function* anonymous(params) { body }
             std::string params_str;
             for (size_t i = 0; i < param_names.size(); ++i) {
                 if (i > 0) params_str += ", ";
@@ -507,7 +506,14 @@ void Generator::setup_generator_prototype(Context& ctx) {
                 TokenSequence tokens = lexer.tokenize();
                 Parser parser(tokens);
                 auto expr = parser.parse_expression();
-                if (!parser.has_errors() && expr) {
+                if (parser.has_errors()) {
+                    auto& errors = parser.get_errors();
+                    std::string msg = errors.empty() ? "SyntaxError" : errors[0].message;
+                    if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
+                    ctx.throw_syntax_error(msg);
+                    return Value();
+                }
+                if (expr) {
                     if (expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                         FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
                         if (fe->is_generator()) {
@@ -526,17 +532,15 @@ void Generator::setup_generator_prototype(Context& ctx) {
                 }
             } catch (...) {}
 
-            // Fallback: create with no body
             auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, nullptr, &ctx);
             return Value(gen_fn.release());
         });
 
     generator_function_constructor->set_property("name", Value(std::string("GeneratorFunction")));
 
-    // %GeneratorPrototype%.constructor = GeneratorFunction
-    // This means: generator_instance.constructor === GeneratorFunction ✓
-    // Also: generator_function.constructor === GeneratorFunction ✓
-    // (since generator_function.__proto__ = %GeneratorPrototype% via set_prototype below)
+    if (s_generator_function_prototype_) {
+        s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()));
+    }
     s_generator_prototype_->set_property("constructor", Value(generator_function_constructor.get()));
 
     ctx.create_binding("GeneratorFunction", Value(generator_function_constructor.release()));

@@ -974,7 +974,7 @@ Token Lexer::read_operator() {
             
         case '?':
             advance();
-            if (current_char() == '.') {
+            if (current_char() == '.' && (position_ + 1 >= source_.size() || !std::isdigit((unsigned char)source_[position_ + 1]))) {
                 advance();
                 return create_token(TokenType::OPTIONAL_CHAINING, start);
             } else if (current_char() == '?') {
@@ -1250,6 +1250,11 @@ int Lexer::utf8_whitespace_bytes() const {
         if (b2 == 0x80 && b3 >= 0x80 && b3 <= 0x8B) return 3;
         if (b2 == 0x80 && b3 == 0xAF) return 3;
         if (b2 == 0x81 && b3 == 0x9F) return 3;
+    }
+    if (b1 == 0xE1 && position_ + 2 < source_.length()) {
+        unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
+        unsigned char b3 = static_cast<unsigned char>(source_[position_ + 2]);
+        if (b2 == 0x9A && b3 == 0x80) return 3; // U+1680 OGHAM SPACE MARK
     }
     if (b1 == 0xE3 && position_ + 2 < source_.length()) {
         unsigned char b2 = static_cast<unsigned char>(source_[position_ + 1]);
@@ -1557,14 +1562,20 @@ std::string Lexer::parse_hex_escape() {
         add_error("Invalid hex escape sequence");
         return "";
     }
-    
-    char high = advance();
-    char low = advance();
-    
-    if (!is_hex_digit(high) || !is_hex_digit(low)) {
+
+    char high = current_char();
+    if (!is_hex_digit(high)) {
         add_error("Invalid hex escape sequence");
         return "";
     }
+    advance();
+
+    char low = current_char();
+    if (!is_hex_digit(low)) {
+        add_error("Invalid hex escape sequence");
+        return "";
+    }
+    advance();
     
     int value = 0;
     if (is_digit(high)) value += (high - '0') * 16;
@@ -1653,11 +1664,11 @@ std::string Lexer::parse_unicode_escape() {
 
     char digits[4];
     for (int i = 0; i < 4; i++) {
-        digits[i] = advance();
-        if (!is_hex_digit(digits[i])) {
+        if (!is_hex_digit(current_char())) {
             add_error("Invalid unicode escape sequence");
             return "";
         }
+        digits[i] = advance();
     }
 
     // Parse 4 hex digits to get code unit
