@@ -1565,6 +1565,16 @@ public:
           default_alias_(default_alias),
           is_namespace_import_(false), is_default_import_(true), is_deferred_(false) {}
 
+    // import x, * as ns from '...' -- default + namespace
+    ImportStatement(const std::string& default_alias,
+                   const std::string& namespace_alias,
+                   const std::string& module_source,
+                   const Position& start, const Position& end)
+        : ASTNode(Type::IMPORT_STATEMENT, start, end),
+          module_source_(module_source), namespace_alias_(namespace_alias),
+          default_alias_(default_alias),
+          is_namespace_import_(true), is_default_import_(true), is_deferred_(false) {}
+
     const std::vector<std::unique_ptr<ImportSpecifier>>& get_specifiers() const { return specifiers_; }
     const std::string& get_module_source() const { return module_source_; }
     const std::string& get_namespace_alias() const { return namespace_alias_; }
