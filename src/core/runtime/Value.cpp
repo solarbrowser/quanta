@@ -513,14 +513,19 @@ Value Value::multiply(const Value& other) const {
 
 Value Value::divide(const Value& other) const {
     if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
+    if (is_bigint() && other.is_bigint()) {
+        BigInt* b = other.as_bigint();
+        if (!b || b->is_zero()) throw BigIntRangeError("Division by zero");
+        BigInt* a = as_bigint();
+        if (!a) return Value(new BigInt(0));
+        return Value(new BigInt(*a / *b));
+    }
     if (is_number() && other.is_number()) {
         double a = as_number();
         double b = other.as_number();
 
         if (b == 0.0) {
-            // NaN / 0 = NaN; 0 / 0 = NaN
             if (std::isnan(a) || a == 0.0) return Value::nan();
-            // Use IEEE 754 sign rule: sign of result = sign(a) XOR sign(b)
             bool neg = std::signbit(a) != std::signbit(b);
             return neg ? Value::negative_infinity() : Value::positive_infinity();
         }
@@ -548,21 +553,51 @@ Value Value::divide(const Value& other) const {
 
 Value Value::modulo(const Value& other) const {
     if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
+    if (is_bigint() && other.is_bigint()) {
+        BigInt* b = other.as_bigint();
+        if (!b || b->is_zero()) throw BigIntRangeError("Division by zero");
+        BigInt* a = as_bigint();
+        if (!a) return Value(new BigInt(0));
+        return Value(new BigInt(*a % *b));
+    }
     if (is_number() && other.is_number()) {
         double a = as_number();
         double b = other.as_number();
-        if (b == 0.0) return Value(std::numeric_limits<double>::quiet_NaN());
-        return Value(std::fmod(a, b));
+        double result = std::fmod(a, b);
+        if (std::isnan(result)) return Value::nan();
+        return Value(result);
     }
-    return Value(std::fmod(to_number(), other.to_number()));
+    double result = std::fmod(to_number(), other.to_number());
+    if (std::isnan(result)) return Value::nan();
+    return Value(result);
 }
 
 Value Value::power(const Value& other) const {
     if (is_bigint() != other.is_bigint()) throw BigIntTypeError("Cannot mix BigInt and other types, use explicit conversions");
-    if (is_number() && other.is_number()) {
-        return Value(std::pow(as_number(), other.as_number()));
+    if (is_bigint() && other.is_bigint()) {
+        BigInt* exp = other.as_bigint();
+        if (!exp) return Value(new BigInt(1));
+        if (exp->is_negative()) throw BigIntRangeError("Exponent must be positive");
+        BigInt* base = as_bigint();
+        if (!base) return Value(new BigInt(0));
+        return Value(new BigInt(BigInt::pow(*base, *exp)));
     }
-    return Value(std::pow(to_number(), other.to_number()));
+    if (is_number() && other.is_number()) {
+        double base = as_number();
+        double exp = other.as_number();
+        // Per spec: if |base| == 1 and exp is ±Infinity, result is NaN
+        if ((base == 1.0 || base == -1.0) && std::isinf(exp)) {
+            return Value::nan();
+        }
+        double result = std::pow(base, exp);
+        if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
+        if (std::isnan(result)) return Value::nan();
+        return Value(result);
+    }
+    double result = std::pow(to_number(), other.to_number());
+    if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
+    if (std::isnan(result)) return Value::nan();
+    return Value(result);
 }
 
 Value Value::unary_plus() const {

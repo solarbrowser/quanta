@@ -231,9 +231,119 @@ BigInt BigInt::operator*(const BigInt& other) const {
 }
 
 
+BigInt BigInt::operator/(const BigInt& other) const {
+    bool result_negative = is_negative_ != other.is_negative_;
+
+    BigInt abs_a(*this); abs_a.is_negative_ = false;
+    BigInt abs_b(other); abs_b.is_negative_ = false;
+
+    int cmp = abs_a.compare_absolute(abs_b);
+    if (cmp < 0) return BigInt(0);
+    if (cmp == 0) {
+        BigInt one(1); one.is_negative_ = result_negative; return one;
+    }
+
+    size_t total_bits = abs_a.digits_.size() * 32;
+    BigInt quotient(0);
+    quotient.digits_.assign(abs_a.digits_.size(), 0);
+    BigInt remainder(0);
+
+    for (size_t i = total_bits; i > 0; --i) {
+        size_t bit = i - 1;
+        uint32_t carry = 0;
+        for (auto& d : remainder.digits_) {
+            uint64_t val = (uint64_t)d * 2 + carry;
+            d = (uint32_t)(val & 0xFFFFFFFF);
+            carry = (uint32_t)(val >> 32);
+        }
+        if (carry) remainder.digits_.push_back(carry);
+        uint32_t a_bit = (abs_a.digits_[bit / 32] >> (bit % 32)) & 1;
+        remainder.digits_[0] |= a_bit;
+
+        if (remainder.compare_absolute(abs_b) >= 0) {
+            remainder.subtract_positive(abs_b);
+            quotient.digits_[bit / 32] |= (1u << (bit % 32));
+        }
+    }
+
+    quotient.normalize();
+    if (result_negative && !quotient.is_zero()) quotient.is_negative_ = true;
+    return quotient;
+}
+
+BigInt BigInt::operator%(const BigInt& other) const {
+    BigInt abs_a(*this); abs_a.is_negative_ = false;
+    BigInt abs_b(other); abs_b.is_negative_ = false;
+
+    int cmp = abs_a.compare_absolute(abs_b);
+    if (cmp < 0) {
+        BigInt r(*this);
+        return r;
+    }
+    if (cmp == 0) return BigInt(0);
+
+    // remainder = a - (a / b) * b using the same bit-shift loop
+    size_t total_bits = abs_a.digits_.size() * 32;
+    BigInt remainder(0);
+
+    for (size_t i = total_bits; i > 0; --i) {
+        size_t bit = i - 1;
+        uint32_t carry = 0;
+        for (auto& d : remainder.digits_) {
+            uint64_t val = (uint64_t)d * 2 + carry;
+            d = (uint32_t)(val & 0xFFFFFFFF);
+            carry = (uint32_t)(val >> 32);
+        }
+        if (carry) remainder.digits_.push_back(carry);
+        uint32_t a_bit = (abs_a.digits_[bit / 32] >> (bit % 32)) & 1;
+        remainder.digits_[0] |= a_bit;
+
+        if (remainder.compare_absolute(abs_b) >= 0) {
+            remainder.subtract_positive(abs_b);
+        }
+    }
+
+    remainder.normalize();
+    if (is_negative_ && !remainder.is_zero()) remainder.is_negative_ = true;
+    return remainder;
+}
+
+BigInt& BigInt::operator/=(const BigInt& other) {
+    *this = *this / other;
+    return *this;
+}
+
+BigInt& BigInt::operator%=(const BigInt& other) {
+    *this = *this % other;
+    return *this;
+}
+
+BigInt BigInt::pow(const BigInt& base, const BigInt& exp) {
+    if (exp.is_zero()) return BigInt(1);
+    if (base.is_zero()) return BigInt(0);
+
+    size_t highest_bit = 0;
+    for (size_t i = exp.digits_.size() * 32; i > 0; --i) {
+        if ((exp.digits_[(i-1) / 32] >> ((i-1) % 32)) & 1) {
+            highest_bit = i - 1;
+            break;
+        }
+    }
+
+    BigInt result(1);
+    BigInt b = base;
+    for (size_t i = 0; i <= highest_bit; ++i) {
+        if ((exp.digits_[i / 32] >> (i % 32)) & 1) {
+            result = result * b;
+        }
+        if (i < highest_bit) b = b * b;
+    }
+    return result;
+}
+
 BigInt BigInt::operator-() const {
     if (is_zero()) return *this;
-    
+
     BigInt result = *this;
     result.is_negative_ = !is_negative_;
     return result;

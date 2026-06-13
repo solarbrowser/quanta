@@ -1485,12 +1485,29 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             return Value();
                         }
 
-                        auto close_iterator = [&iterator_obj, &ctx]() {
-                            if (iterator_obj.is_object()) {
-                                Value return_method = iterator_obj.as_object()->get_property("return");
-                                if (return_method.is_function()) {
-                                    return_method.as_function()->call(ctx, {}, iterator_obj);
+                        // close_iterator: calls iterator.return() per spec IteratorClose.
+                        // validate_result: when called from normal completion (break), check return() returns Object.
+                        auto close_iterator = [&iterator_obj, &ctx](bool validate_result = false) {
+                            if (!iterator_obj.is_object()) return;
+                            bool had_exception = ctx.has_exception();
+                            Value saved_exception = had_exception ? ctx.get_exception() : Value();
+                            if (had_exception) ctx.clear_exception();
+
+                            Value return_method = iterator_obj.as_object()->get_property("return");
+                            bool inner_threw = ctx.has_exception();
+                            if (!inner_threw && return_method.is_function()) {
+                                Value result = return_method.as_function()->call(ctx, {}, iterator_obj);
+                                inner_threw = ctx.has_exception();
+                                if (!inner_threw && validate_result && !result.is_object()) {
+                                    ctx.throw_type_error("Iterator return() must return an Object");
+                                    return;
                                 }
+                            }
+
+                            if (had_exception) {
+                                // Suppress inner error; restore original throw completion
+                                if (ctx.has_exception()) ctx.clear_exception();
+                                ctx.throw_exception(saved_exception, true);
                             }
                         };
 
@@ -1506,7 +1523,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             // Per spec: if next() throws abruptly, do NOT close the iterator.
                             if (ctx.has_exception()) { return Value(); }
 
-                            if (result.is_object()) {
+                            // Per spec 7.4.2: iterator result must be an Object
+                            if (!result.is_object()) {
+                                ctx.throw_type_error("Iterator result is not an object");
+                                return Value();
+                            }
+
+                            {
                                 Object* result_obj = result.as_object();
                                 Value done = result_obj->get_property("done");
                                 // Propagate getter exception (may land in Object::current_context_)
@@ -1603,7 +1626,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 }
 
                                 if (loop_ctx->has_break()) {
-                                    close_iterator();
+                                    close_iterator(true);  // normal completion: validate return() result
+                                    if (loop_ctx->has_exception()) return Value();
                                     if (loop_ctx->get_break_label().empty()) {
                                         loop_ctx->clear_break_continue();
                                     }
@@ -2307,6 +2331,12 @@ Value SwitchStatement::evaluate(Context& ctx) {
     Value discriminant_value = discriminant_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
 
+    // Create block environment for switch (spec sec-switch-statement step 3-6)
+    Environment* old_env = ctx.get_lexical_environment();
+    auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_env);
+    Environment* block_env_ptr = block_env.release();
+    ctx.set_lexical_environment(block_env_ptr);
+
     int matching_case_index = -1;
     int default_case_index = -1;
 
@@ -2317,7 +2347,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
             default_case_index = static_cast<int>(i);
         } else {
             Value test_value = case_clause->get_test()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
+            if (ctx.has_exception()) { ctx.set_lexical_environment(old_env); return Value(); }
 
             if (discriminant_value.strict_equals(test_value)) {
                 matching_case_index = static_cast<int>(i);
@@ -2334,6 +2364,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
     }
 
     if (start_index < 0) {
+        ctx.set_lexical_environment(old_env);
         return Value();
     }
 
@@ -2345,21 +2376,29 @@ Value SwitchStatement::evaluate(Context& ctx) {
         for (const auto& stmt : case_clause->get_consequent()) {
             Value result = stmt->evaluate(ctx);
             if (!g_empty_completion) V = result;
-            if (ctx.has_exception()) return Value();
+            if (ctx.has_exception()) { ctx.set_lexical_environment(old_env); return Value(); }
 
             if (ctx.has_break()) {
                 ctx.clear_break_continue();
                 g_empty_completion = false;
+                ctx.set_lexical_environment(old_env);
                 return V;
             }
 
             if (ctx.has_return_value()) {
+                ctx.set_lexical_environment(old_env);
                 return ctx.get_return_value();
+            }
+
+            if (ctx.has_continue()) {
+                ctx.set_lexical_environment(old_env);
+                return V;
             }
         }
     }
 
     g_empty_completion = false;
+    ctx.set_lexical_environment(old_env);
     return V;
 }
 

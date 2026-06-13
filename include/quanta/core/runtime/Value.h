@@ -21,6 +21,10 @@ struct BigIntTypeError : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
+struct BigIntRangeError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+
 #ifdef _WIN32
     #define PLATFORM_POINTER_COMPRESSION 0
 #else 
