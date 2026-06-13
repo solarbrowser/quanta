@@ -516,26 +516,29 @@ Value Value::divide(const Value& other) const {
     if (is_number() && other.is_number()) {
         double a = as_number();
         double b = other.as_number();
-        
+
         if (b == 0.0) {
-            if (a == 0.0) return Value::nan();
-            return a > 0 ? Value::positive_infinity() : Value::negative_infinity();
+            // NaN / 0 = NaN; 0 / 0 = NaN
+            if (std::isnan(a) || a == 0.0) return Value::nan();
+            // Use IEEE 754 sign rule: sign of result = sign(a) XOR sign(b)
+            bool neg = std::signbit(a) != std::signbit(b);
+            return neg ? Value::negative_infinity() : Value::positive_infinity();
         }
-        
+
         double result = a / b;
         if (std::isinf(result)) {
-            return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+            return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
         }
         if (std::isnan(result)) {
             return Value::nan();
         }
-        
+
         return Value(result);
     }
-    
+
     double result = to_number() / other.to_number();
     if (std::isinf(result)) {
-        return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
+        return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
     }
     if (std::isnan(result)) {
         return Value::nan();

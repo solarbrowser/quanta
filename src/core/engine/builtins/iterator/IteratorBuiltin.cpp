@@ -377,9 +377,11 @@ void register_iterator_constructor(Context& ctx) {
                 if (ctx.has_exception()) break;
                 // Iterate over mapped value
                 if (mapped.is_object()) {
-                    Value iter_sym_val = mapped.as_object()->get_property("Symbol(Symbol.iterator)");
+                    Symbol* fmap_iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    Value iter_sym_val = fmap_iter_sym
+                        ? mapped.as_object()->get_property(fmap_iter_sym->to_property_key())
+                        : mapped.as_object()->get_property("@@iterator");
                     if (!iter_sym_val.is_function()) {
-                        // Try string "@@iterator"
                         iter_sym_val = mapped.as_object()->get_property("@@iterator");
                     }
                     if (iter_sym_val.is_function()) {

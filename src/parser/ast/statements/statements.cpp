@@ -915,6 +915,11 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
 
 
 Value ForInStatement::evaluate(Context& ctx) {
+    std::string this_loop_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+    std::string prev_loop_label = ctx.get_current_loop_label();
+    ctx.set_current_loop_label(this_loop_label);
+
     // ES6 13.7.5.6: TDZ bindings for let/const before evaluating the object
     Environment* pre_obj_env = nullptr;
     if (left_->get_type() == Type::VARIABLE_DECLARATION) {
@@ -936,7 +941,10 @@ Value ForInStatement::evaluate(Context& ctx) {
             Value init_val;
             if (decl->get_init()) {
                 init_val = decl->get_init()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
             }
             if (!ctx.has_binding(vname)) ctx.create_binding(vname, init_val, true);
             else if (decl->get_init()) ctx.set_binding(vname, init_val);
@@ -945,7 +953,16 @@ Value ForInStatement::evaluate(Context& ctx) {
 
     Value object = right_->evaluate(ctx);
     if (pre_obj_env) ctx.set_lexical_environment(pre_obj_env);
-    if (ctx.has_exception()) return Value();
+    if (ctx.has_exception()) {
+        ctx.set_current_loop_label(prev_loop_label);
+        return Value();
+    }
+
+    // Spec 13.7.5.6: null/undefined produce zero iterations (no error)
+    if (object.is_null() || object.is_undefined()) {
+        ctx.set_current_loop_label(prev_loop_label);
+        return Value();
+    }
 
     if (object.is_object_like()) {
         Object* obj = object.is_object() ? object.as_object() : object.as_function();
@@ -967,6 +984,7 @@ Value ForInStatement::evaluate(Context& ctx) {
         }
 
         if (var_name.empty() && !is_destructuring) {
+            ctx.set_current_loop_label(prev_loop_label);
             ctx.throw_exception(Value(std::string("For...in: Invalid loop variable")));
             return Value();
         }
@@ -1004,6 +1022,8 @@ Value ForInStatement::evaluate(Context& ctx) {
             }
         }
 
+        Value V; // completion value (spec ForIn/OfBodyEvaluation V)
+
         for (const auto& key : keys) {
             if (iteration_count >= MAX_ITERATIONS) break;
             iteration_count++;
@@ -1018,6 +1038,7 @@ Value ForInStatement::evaluate(Context& ctx) {
                 if (ctx.has_binding(var_name)) {
                     bool ok = ctx.set_binding(var_name, Value(key));
                     if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(var_name))) {
+                        ctx.set_current_loop_label(prev_loop_label);
                         ctx.throw_type_error("Assignment to constant variable '" + var_name + "'");
                         return Value();
                     }
@@ -1032,24 +1053,40 @@ Value ForInStatement::evaluate(Context& ctx) {
                 ctx.pop_block_scope();
             }
 
-            if (ctx.has_exception()) return Value();
+            // UpdateEmpty: BlockStatement returns last_value on break/continue, so
+            // result already carries the right completion value
+            if (!result.is_undefined()) V = result;
+
+            if (ctx.has_exception()) {
+                ctx.set_current_loop_label(prev_loop_label);
+                return Value();
+            }
 
             if (ctx.has_break()) {
-                ctx.clear_break_continue();
+                if (ctx.get_break_label().empty()) {
+                    ctx.clear_break_continue();
+                }
                 break;
             }
             if (ctx.has_continue()) {
-                ctx.clear_break_continue();
-                continue;
+                if (ctx.get_continue_label().empty() ||
+                        ctx.get_continue_label() == this_loop_label) {
+                    ctx.clear_break_continue();
+                    continue;
+                }
+                break;
             }
 
             if (ctx.has_return_value()) {
+                ctx.set_current_loop_label(prev_loop_label);
                 return ctx.get_return_value();
             }
         }
 
-        return Value();
+        ctx.set_current_loop_label(prev_loop_label);
+        return V;
     } else {
+        ctx.set_current_loop_label(prev_loop_label);
         ctx.throw_exception(Value(std::string("For...in: Cannot iterate over non-object")));
         return Value();
     }
@@ -1773,8 +1810,12 @@ Value WhileStatement::evaluate(Context& ctx) {
             Value test_value;
             try {
                 test_value = test_->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
             } catch (...) {
+                ctx.set_current_loop_label(prev_loop_label);
                 ctx.throw_exception(Value(std::string("Error evaluating while-loop condition")));
                 return Value();
             }
@@ -1786,7 +1827,14 @@ Value WhileStatement::evaluate(Context& ctx) {
             try {
                 Value body_result = body_->evaluate(ctx);
                 if (!g_empty_completion) V = body_result;
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
+                if (ctx.has_return_value()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return ctx.get_return_value();
+                }
 
                 if (ctx.has_break()) {
                     if (ctx.get_break_label().empty()) {
@@ -1835,6 +1883,11 @@ std::unique_ptr<ASTNode> WhileStatement::clone() const {
 
 
 Value DoWhileStatement::evaluate(Context& ctx) {
+    std::string this_loop_label = ctx.get_next_statement_label();
+    ctx.set_next_statement_label("");
+    std::string prev_loop_label = ctx.get_current_loop_label();
+    ctx.set_current_loop_label(this_loop_label);
+
     int safety_counter = 0;
     const int max_iterations = 1000000000;
     Value V;
@@ -1854,17 +1907,34 @@ Value DoWhileStatement::evaluate(Context& ctx) {
             try {
                 Value body_result = body_->evaluate(ctx);
                 if (!g_empty_completion) V = body_result;
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
+                if (ctx.has_return_value()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return ctx.get_return_value();
+                }
 
                 if (ctx.has_break()) {
-                    ctx.clear_break_continue();
-                    break;
+                    if (ctx.get_break_label().empty()) {
+                        ctx.clear_break_continue();
+                    }
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return V;
                 }
                 if (ctx.has_continue()) {
-                    ctx.clear_break_continue();
+                    if (ctx.get_continue_label().empty() ||
+                            ctx.get_continue_label() == this_loop_label) {
+                        ctx.clear_break_continue();
+                    } else {
+                        ctx.set_current_loop_label(prev_loop_label);
+                        return V;
+                    }
                 }
 
             } catch (...) {
+                ctx.set_current_loop_label(prev_loop_label);
                 ctx.throw_exception(Value(std::string("Error in do-while-loop body execution")));
                 return Value();
             }
@@ -1872,8 +1942,12 @@ Value DoWhileStatement::evaluate(Context& ctx) {
             Value test_value;
             try {
                 test_value = test_->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
             } catch (...) {
+                ctx.set_current_loop_label(prev_loop_label);
                 ctx.throw_exception(Value(std::string("Error evaluating do-while-loop condition")));
                 return Value();
             }
@@ -1885,10 +1959,12 @@ Value DoWhileStatement::evaluate(Context& ctx) {
         } while (true);
 
     } catch (...) {
+        ctx.set_current_loop_label(prev_loop_label);
         ctx.throw_exception(Value(std::string("Fatal error in do-while-loop execution")));
         return Value();
     }
 
+    ctx.set_current_loop_label(prev_loop_label);
     g_empty_completion = false;
     return V;
 }

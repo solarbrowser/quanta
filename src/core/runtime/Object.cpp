@@ -542,10 +542,12 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
     // Store non-default attrs in descriptor map (shape may use cached transitions with wrong attrs)
     if (attrs != PropertyAttributes::Default) {
+        bool is_new = !descriptors_ || !descriptors_->count(key);
         if (!descriptors_) {
             descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
         }
         (*descriptors_)[key] = PropertyDescriptor(value, attrs);
+        if (is_new) property_insertion_order_.push_back(key);
     }
 
     if (store_in_shape(key, value, attrs)) {
@@ -560,6 +562,11 @@ bool Object::set_property(const Value& key, const Value& value, PropertyAttribut
 }
 
 bool Object::delete_property(const std::string& key) {
+    // Spec: deleting a non-existent property always returns true
+    if (!has_own_property(key)) {
+        return true;
+    }
+
     PropertyDescriptor desc = get_property_descriptor(key);
     if (!desc.is_configurable()) {
         return false;
@@ -706,15 +713,17 @@ std::vector<std::string> Object::get_own_property_keys() const {
         }
     }
 
-    // Descriptor-only properties (defineProperty'd keys not in shape/overflow)
+    // Descriptor-only properties (defineProperty'd keys not in shape/overflow),
+    // iterated in insertion order via property_insertion_order_.
     if (descriptors_) {
-        for (const auto& pair : *descriptors_) {
+        for (const auto& key : property_insertion_order_) {
+            if (!descriptors_->count(key)) continue;
             bool already = false;
             for (const auto& k : raw_keys) {
-                if (k == pair.first) { already = true; break; }
+                if (k == key) { already = true; break; }
             }
             if (!already) {
-                raw_keys.push_back(pair.first);
+                raw_keys.push_back(key);
             }
         }
     }
@@ -900,6 +909,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
             if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
             (*descriptors_)[key] = merged;
+            property_insertion_order_.push_back(key);
         }
     } else {
         // When replacing with a data/accessor descriptor that doesn't specify all attribute
@@ -914,6 +924,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             (*descriptors_)[key] = merged;
         } else {
             (*descriptors_)[key] = desc;
+            property_insertion_order_.push_back(key);
         }
     }
 

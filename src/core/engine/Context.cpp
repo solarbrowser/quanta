@@ -258,7 +258,8 @@ bool Context::delete_binding(const std::string& name) {
         }
         env = env->get_outer();
     }
-    return false;
+    // Unresolvable reference: spec 13.5.1.2 step 4c -- return true
+    return true;
 }
 
 void Context::push_frame(std::unique_ptr<StackFrame> frame) {
