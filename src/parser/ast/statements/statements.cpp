@@ -970,6 +970,8 @@ Value ForInStatement::evaluate(Context& ctx) {
         std::string var_name;
         bool is_destructuring = false;
 
+        bool is_member_lhs = false;
+
         if (left_->get_type() == Type::VARIABLE_DECLARATION) {
             VariableDeclaration* var_decl = static_cast<VariableDeclaration*>(left_.get());
             if (var_decl->declaration_count() > 0) {
@@ -981,9 +983,13 @@ Value ForInStatement::evaluate(Context& ctx) {
             var_name = id->get_name();
         } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
             is_destructuring = true;
+        } else if (left_->get_type() == Type::MEMBER_EXPRESSION ||
+                   left_->get_type() == Type::ARRAY_LITERAL ||
+                   left_->get_type() == Type::OBJECT_LITERAL) {
+            is_member_lhs = true;
         }
 
-        if (var_name.empty() && !is_destructuring) {
+        if (var_name.empty() && !is_destructuring && !is_member_lhs) {
             ctx.set_current_loop_label(prev_loop_label);
             ctx.throw_exception(Value(std::string("For...in: Invalid loop variable")));
             return Value();
@@ -1031,6 +1037,10 @@ Value ForInStatement::evaluate(Context& ctx) {
             if (is_destructuring) {
                 auto* destr = static_cast<DestructuringAssignment*>(left_.get());
                 destr->evaluate_with_value(ctx, Value(key));
+                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
+            } else if (is_member_lhs) {
+                AssignmentExpression::destructuring_assign(ctx, left_.get(), Value(key));
+                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
             } else if (forin_per_iter) {
                 ctx.push_block_scope();
                 ctx.create_lexical_binding(var_name, Value(key), true);
@@ -1495,12 +1505,18 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                             Value return_method = iterator_obj.as_object()->get_property("return");
                             bool inner_threw = ctx.has_exception();
-                            if (!inner_threw && return_method.is_function()) {
-                                Value result = return_method.as_function()->call(ctx, {}, iterator_obj);
-                                inner_threw = ctx.has_exception();
-                                if (!inner_threw && validate_result && !result.is_object()) {
-                                    ctx.throw_type_error("Iterator return() must return an Object");
-                                    return;
+                            if (!inner_threw) {
+                                if (!return_method.is_undefined() && !return_method.is_null() && !return_method.is_function()) {
+                                    // GetMethod: non-callable return throws TypeError (spec 7.3.9 step 4)
+                                    ctx.throw_type_error("Iterator return method is not callable");
+                                    inner_threw = true;
+                                } else if (return_method.is_function()) {
+                                    Value result = return_method.as_function()->call(ctx, {}, iterator_obj);
+                                    inner_threw = ctx.has_exception();
+                                    if (!inner_threw && validate_result && !result.is_object()) {
+                                        ctx.throw_type_error("Iterator return() must return an Object");
+                                        return;
+                                    }
                                 }
                             }
 
@@ -1601,7 +1617,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     }
 
                                     if (loop_ctx->has_break()) {
-                                        close_iterator();
+                                        close_iterator(true);
+                                        if (loop_ctx->has_exception()) return Value();
                                         if (loop_ctx->get_break_label().empty()) {
                                             loop_ctx->clear_break_continue();
                                         }
@@ -2163,6 +2180,12 @@ Value TryStatement::evaluate(Context& ctx) {
     bool catch_param_ok = true;
     if (caught_exception && catch_clause_) {
         CatchClause* catch_node = static_cast<CatchClause*>(catch_clause_.get());
+
+        // Spec sec-runtime-semantics-catchclauseevaluation: create a new scope
+        // for the catch parameter so it doesn't shadow or pollute the outer env.
+        Environment* catch_old_env = ctx.get_lexical_environment();
+        ctx.push_block_scope();
+
         if (!catch_node->get_parameter_name().empty()) {
             std::string param_name = catch_node->get_parameter_name();
 
@@ -2184,8 +2207,7 @@ Value TryStatement::evaluate(Context& ctx) {
                     Object* arr = exception_value.as_object();
                     for (size_t vi = 0; vi < var_names.size(); vi++) {
                         Value el = arr->get_element(static_cast<uint32_t>(vi));
-                        if (!ctx.create_binding(var_names[vi], el, true))
-                            ctx.set_binding(var_names[vi], el);
+                        ctx.create_lexical_binding(var_names[vi], el, true);
                     }
                 }
             } else if (param_name.length() > 12 && param_name.substr(0, 12) == "__destr_obj:") {
@@ -2202,29 +2224,29 @@ Value TryStatement::evaluate(Context& ctx) {
                     Object* obj = exception_value.as_object();
                     for (const auto& vn : var_names) {
                         Value val = obj->get_property(vn);
-                        if (!ctx.create_binding(vn, val, true))
-                            ctx.set_binding(vn, val);
+                        ctx.create_lexical_binding(vn, val, true);
                     }
                 }
             } else {
-                if (!ctx.create_binding(param_name, exception_value, true)) {
-                    ctx.set_binding(param_name, exception_value);
-                }
+                ctx.create_lexical_binding(param_name, exception_value, true);
             }
         }
 
         if (catch_param_ok) {
             try {
                 result = catch_node->get_body()->evaluate(ctx);
-                if (ctx.has_exception()) { ctx.clear_exception(); }
             } catch (const std::exception& e) {
-                result = Value(std::string("CatchBlockError: ") + e.what());
-                if (ctx.has_exception()) { ctx.clear_exception(); }
+                if (!ctx.has_exception()) {
+                    ctx.throw_exception(Value(std::string(e.what())));
+                }
             } catch (...) {
-                result = Value(std::string("CatchBlockError: Unknown error in catch"));
-                if (ctx.has_exception()) { ctx.clear_exception(); }
+                if (!ctx.has_exception()) {
+                    ctx.throw_exception(Value(std::string("Unknown error in catch block")));
+                }
             }
         }
+
+        ctx.set_lexical_environment(catch_old_env);
     }
 
     if (finally_block_) {
@@ -2391,6 +2413,7 @@ Value SwitchStatement::evaluate(Context& ctx) {
             }
 
             if (ctx.has_continue()) {
+                g_empty_completion = false;
                 ctx.set_lexical_environment(old_env);
                 return V;
             }
