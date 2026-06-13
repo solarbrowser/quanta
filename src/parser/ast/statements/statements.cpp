@@ -1039,7 +1039,7 @@ Value ForInStatement::evaluate(Context& ctx) {
                 destr->evaluate_with_value(ctx, Value(key));
                 if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
             } else if (is_member_lhs) {
-                AssignmentExpression::destructuring_assign(ctx, left_.get(), Value(key));
+                AssignmentExpression::assign_to_target(ctx, left_.get(), Value(key));
                 if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
             } else if (forin_per_iter) {
                 ctx.push_block_scope();
@@ -1530,6 +1530,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         Context* loop_ctx = &ctx;
                         uint32_t iteration_count = 0;
                         const uint32_t MAX_ITERATIONS = 1000000000;
+                        Value V_iter;
 
                         while (iteration_count < MAX_ITERATIONS) {
                             iteration_count++;
@@ -1605,7 +1606,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         loop_ctx->create_binding(var_name, value, is_mutable);
                                     }
 
-                                    body_->evaluate(*loop_ctx);
+                                    {
+                                        Value br = body_->evaluate(*loop_ctx);
+                                        if (!g_empty_completion) V_iter = br;
+                                    }
 
                                     if (forof_per_iter) {
                                         loop_ctx->pop_block_scope();
@@ -1636,7 +1640,10 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     continue;
                                 }
 
-                                body_->evaluate(*loop_ctx);
+                                {
+                                    Value br = body_->evaluate(*loop_ctx);
+                                    if (!g_empty_completion) V_iter = br;
+                                }
                                 if (loop_ctx->has_exception()) {
                                     close_iterator();
                                     return Value();
@@ -1667,7 +1674,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             return Value();
                         }
 
-                        return Value();
+                        g_empty_completion = false;
+                        return V_iter;
                     }
                 }
             }
@@ -1712,6 +1720,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
             uint32_t iteration_count = 0;
             const uint32_t MAX_ITERATIONS = 1000000000;
+            Value V_arr;
 
             for (uint32_t i = 0; i < length && iteration_count < MAX_ITERATIONS; i++) {
                 iteration_count++;
@@ -1775,6 +1784,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                     if (body_) {
                         Value result = body_->evaluate(*loop_ctx);
+                        if (!g_empty_completion) V_arr = result;
                         if (forof_arr_per_iter) {
                             loop_ctx->pop_block_scope();
                         }
@@ -1786,6 +1796,19 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             ctx.set_return_value(loop_ctx->get_return_value());
                             return Value();
                         }
+                        if (loop_ctx->has_break()) {
+                            if (loop_ctx->get_break_label().empty()) {
+                                loop_ctx->clear_break_continue();
+                            }
+                            break;
+                        }
+                        if (loop_ctx->has_continue()) {
+                            if (loop_ctx->get_continue_label().empty()) {
+                                loop_ctx->clear_break_continue();
+                            } else {
+                                break; // labelled continue -- propagate up
+                            }
+                        }
                     } else if (forof_arr_per_iter) {
                         loop_ctx->pop_block_scope();
                     }
@@ -1796,6 +1819,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 ctx.throw_exception(Value(std::string("For...of loop exceeded iterations (50)")));
                 return Value();
             }
+            g_empty_completion = false;
+            return V_arr;
         } else {
             ctx.throw_type_error("object is not iterable");
             return Value();

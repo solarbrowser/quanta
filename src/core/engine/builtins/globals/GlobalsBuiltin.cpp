@@ -415,17 +415,28 @@ void register_global_builtins(Context& ctx) {
                     // Heap-allocate so functions created inside keep valid closure_context_
                     auto eval_ctx_ptr2 = std::make_unique<Context>(engine, &ctx, Context::Type::Eval);
                     Context& eval_ctx = *eval_ctx_ptr2;
-                    // Spec 18.2.1 step 9a: direct eval's lexEnv is a NEW declarative env
+
+                    // Indirect eval runs in the global scope; direct eval runs in calling scope.
+                    Environment* outer_env = ctx.get_lexical_environment();
+                    Environment* var_env_base = ctx.get_variable_environment();
+                    if (!is_direct && engine && engine->get_global_context()) {
+                        Context* global_ctx = engine->get_global_context();
+                        outer_env = global_ctx->get_lexical_environment();
+                        var_env_base = global_ctx->get_variable_environment();
+                    }
+
+                    // Spec 18.2.1 step 9a: eval's lexEnv is a NEW declarative env
                     auto* eval_lex_env = new Environment(
-                        Environment::Type::Declarative, ctx.get_lexical_environment());
+                        Environment::Type::Declarative, outer_env);
 
                     for (const auto& lname : collect_lex_names(program.get())) {
                         eval_lex_env->create_uninitialized_binding(lname);
                     }
 
                     eval_ctx.set_lexical_environment(eval_lex_env);
-                    eval_ctx.set_variable_environment(ctx.get_variable_environment());
-                    eval_ctx.set_this_binding(ctx.get_this_binding());
+                    eval_ctx.set_variable_environment(var_env_base);
+                    Object* this_binding = is_direct ? ctx.get_this_binding() : (engine && engine->get_global_context() ? engine->get_global_context()->get_this_binding() : ctx.get_this_binding());
+                    eval_ctx.set_this_binding(this_binding);
                     eval_ctx.set_strict_mode(false);
 
                     Value result = program->evaluate(eval_ctx);

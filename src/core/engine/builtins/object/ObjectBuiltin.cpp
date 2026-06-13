@@ -515,6 +515,11 @@ void register_object_builtins(Context& ctx) {
             }
 
             Object* proto = obj->get_prototype();
+            // Functions may not have [[Prototype]] set yet -- fall back to Function.prototype
+            if (!proto && obj_val.is_function()) {
+                proto = ObjectFactory::get_function_prototype();
+                if (proto) obj->set_prototype(proto);
+            }
             if (proto) {
                 Function* func_proto = dynamic_cast<Function*>(proto);
                 if (func_proto) {
@@ -1267,15 +1272,20 @@ void register_object_builtins(Context& ctx) {
             }
 
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
-            
+
             Object* current = obj->get_prototype();
+            // Functions may not have [[Prototype]] set yet -- trigger lazy init
+            if (!current && args[0].is_function()) {
+                current = ObjectFactory::get_function_prototype();
+                if (current) obj->set_prototype(current);
+            }
             while (current) {
                 if (current == this_obj) {
                     return Value(true);
                 }
                 current = current->get_prototype();
             }
-            
+
             return Value(false);
         });
 
