@@ -251,19 +251,31 @@ Value ArrayLiteral::evaluate(Context& ctx) {
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 if (iter_sym && !spread_obj->is_array()) {
                     Value iter_method = spread_obj->get_property(iter_sym->to_property_key());
-                    if (iter_method.is_function()) {
+                    if (ctx.has_exception()) return Value();
+                    if (!iter_method.is_undefined()) {
+                        if (!iter_method.is_null() && !iter_method.is_function()) {
+                            ctx.throw_type_error("Symbol.iterator is not callable");
+                            return Value();
+                        }
+                        if (iter_method.is_null()) {
+                            ctx.throw_type_error("Symbol.iterator is not a function");
+                            return Value();
+                        }
                         Value iter_obj = iter_method.as_function()->call(ctx, {}, spread_value);
-                        if (!ctx.has_exception() && iter_obj.is_object()) {
-                            Value next_fn = iter_obj.as_object()->get_property("next");
-                            if (next_fn.is_function()) {
-                                used_iterator = true;
-                                for (uint32_t ii = 0; ii < 100000; ii++) {
-                                    Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                    if (ctx.has_exception()) return Value();
-                                    if (!res.is_object()) break;
-                                    if (res.as_object()->get_property("done").to_boolean()) break;
-                                    array->set_element(array_index++, res.as_object()->get_property("value"));
-                                }
+                        if (ctx.has_exception()) return Value();
+                        if (!iter_obj.is_object()) {
+                            ctx.throw_type_error("Symbol.iterator must return an Object");
+                            return Value();
+                        }
+                        Value next_fn = iter_obj.as_object()->get_property("next");
+                        if (next_fn.is_function()) {
+                            used_iterator = true;
+                            for (uint32_t ii = 0; ii < 100000; ii++) {
+                                Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                if (ctx.has_exception()) return Value();
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                array->set_element(array_index++, res.as_object()->get_property("value"));
                             }
                         }
                     }
