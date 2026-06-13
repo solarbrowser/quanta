@@ -59,6 +59,44 @@ static Value toBigIntCoerce(Context& ctx, const Value& v) {
     return v;
 }
 
+// ToNumeric for ++/--, calling ToPrimitive("number") on objects with exception propagation.
+static Value postfix_to_numeric(Context& ctx, const Value& val) {
+    if (val.is_bigint()) return val;
+    if (val.is_object() || val.is_function()) {
+        Object* obj = val.is_function()
+            ? static_cast<Object*>(val.as_function())
+            : val.as_object();
+        if (!obj) return Value(std::numeric_limits<double>::quiet_NaN());
+        if (obj->has_property("[[PrimitiveValue]]")) {
+            Value pv = obj->get_property("[[PrimitiveValue]]");
+            if (pv.is_bigint()) return pv;
+            if (!pv.is_object()) return Value(pv.to_number());
+        }
+        Value valueOf_method = obj->get_property("valueOf");
+        if (ctx.has_exception()) return Value();
+        if (valueOf_method.is_function()) {
+            Value result = valueOf_method.as_function()->call(ctx, {}, val);
+            if (ctx.has_exception()) return Value();
+            if (!result.is_object() && !result.is_function()) {
+                if (result.is_bigint()) return result;
+                return Value(result.to_number());
+            }
+        }
+        Value toString_method = obj->get_property("toString");
+        if (ctx.has_exception()) return Value();
+        if (toString_method.is_function()) {
+            Value result = toString_method.as_function()->call(ctx, {}, val);
+            if (ctx.has_exception()) return Value();
+            if (!result.is_object() && !result.is_function()) {
+                return Value(result.to_number());
+            }
+        }
+        ctx.throw_type_error("Cannot convert object to primitive value");
+        return Value();
+    }
+    return Value(val.to_number());
+}
+
 Value BinaryExpression::evaluate(Context& ctx) {
     if (operator_ == Operator::ASSIGN ||
         operator_ == Operator::PLUS_ASSIGN ||
@@ -593,25 +631,47 @@ Value BinaryExpression::evaluate(Context& ctx) {
             return Value(left_value.strict_equals(right_value));
         case Operator::STRICT_NOT_EQUAL:
             return Value(!left_value.strict_equals(right_value));
-        case Operator::LESS_THAN: {
-            Value lp = toPrimitive(left_value, "number");
-            Value rp = toPrimitive(right_value, "number");
-            return Value(lp.compare(rp) < 0);
-        }
-        case Operator::GREATER_THAN: {
-            Value lp = toPrimitive(left_value, "number");
-            Value rp = toPrimitive(right_value, "number");
-            return Value(lp.compare(rp) > 0);
-        }
-        case Operator::LESS_EQUAL: {
-            Value lp = toPrimitive(left_value, "number");
-            Value rp = toPrimitive(right_value, "number");
-            return Value(lp.compare(rp) <= 0);
-        }
+        case Operator::LESS_THAN:
+        case Operator::GREATER_THAN:
+        case Operator::LESS_EQUAL:
         case Operator::GREATER_EQUAL: {
             Value lp = toPrimitive(left_value, "number");
+            if (ctx.has_exception()) return Value();
             Value rp = toPrimitive(right_value, "number");
-            return Value(lp.compare(rp) >= 0);
+            if (ctx.has_exception()) return Value();
+
+            // Abstract Relational Comparison (spec 7.2.13).
+            // Returns -1 (px < py), 0 (px >= py), INT_MIN (undefined: NaN involved).
+            auto abstract_less = [](const Value& px, const Value& py) -> int {
+                if (px.is_string() && py.is_string()) {
+                    const std::string& ls = px.as_string()->str();
+                    const std::string& rs = py.as_string()->str();
+                    return ls < rs ? -1 : 0;
+                }
+                if (px.is_bigint() && py.is_bigint()) {
+                    return (*px.as_bigint() < *py.as_bigint()) ? -1 : 0;
+                }
+                double ln = px.to_number();
+                double rn = py.to_number();
+                if (std::isnan(ln) || std::isnan(rn)) return INT_MIN;
+                return ln < rn ? -1 : 0;
+            };
+
+            // Spec 13.10: < uses ARC(lp,rp); > uses ARC(rp,lp);
+            // <= uses ARC(rp,lp)==0 (false result); >= uses ARC(lp,rp)==0.
+            if (operator_ == Operator::LESS_THAN) {
+                return Value(abstract_less(lp, rp) == -1);
+            }
+            if (operator_ == Operator::GREATER_THAN) {
+                return Value(abstract_less(rp, lp) == -1);
+            }
+            if (operator_ == Operator::LESS_EQUAL) {
+                int r = abstract_less(rp, lp);
+                return Value(r == 0);
+            }
+            // GREATER_EQUAL
+            int r = abstract_less(lp, rp);
+            return Value(r == 0);
         }
             
         case Operator::INSTANCEOF: {
@@ -831,11 +891,25 @@ Value UnaryExpression::evaluate(Context& ctx) {
         case Operator::PLUS: {
             Value operand_value = operand_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            if (operand_value.is_object() || operand_value.is_function()) {
+                Value prim = postfix_to_numeric(ctx, operand_value);
+                if (ctx.has_exception()) return Value();
+                if (prim.is_bigint()) {
+                    ctx.throw_type_error("Cannot convert a BigInt value to a number");
+                    return Value();
+                }
+                return prim;
+            }
             return operand_value.unary_plus();
         }
         case Operator::MINUS: {
             Value operand_value = operand_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            if (operand_value.is_object() || operand_value.is_function()) {
+                Value prim = postfix_to_numeric(ctx, operand_value);
+                if (ctx.has_exception()) return Value();
+                return prim.unary_minus();
+            }
             return operand_value.unary_minus();
         }
         case Operator::LOGICAL_NOT: {
@@ -846,6 +920,11 @@ Value UnaryExpression::evaluate(Context& ctx) {
         case Operator::BITWISE_NOT: {
             Value operand_value = operand_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
+            if (operand_value.is_object() || operand_value.is_function()) {
+                Value prim = postfix_to_numeric(ctx, operand_value);
+                if (ctx.has_exception()) return Value();
+                return prim.bitwise_not();
+            }
             return operand_value.bitwise_not();
         }
         case Operator::TYPEOF: {
@@ -889,6 +968,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     obj = object_value.as_function();
                 }
                 if (!obj) {
+                    // null/undefined: ToObject throws TypeError (spec 12.5.3.2 step 5b)
+                    if (object_value.is_null() || object_value.is_undefined()) {
+                        ctx.throw_type_error("Cannot convert undefined or null to object");
+                        return Value();
+                    }
+                    // Primitive wrapper: delete on temporary object always succeeds
                     return Value(true);
                 }
                 std::string property_name;
@@ -953,23 +1038,43 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
+                Environment* ref_env = ctx.find_binding_env(id->get_name());
+                if (!ref_env) {
+                    ctx.throw_reference_error(id->get_name() + " is not defined");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
-                Value incremented = Value(current.to_number() + 1.0);
-                ctx.set_binding(id->get_name(), incremented);
+                if (ctx.has_exception()) return Value();
+                Value numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value incremented;
+                if (numeric.is_bigint()) {
+                    incremented = Value(new BigInt(*numeric.as_bigint() + BigInt(1)));
+                } else {
+                    incremented = Value(numeric.to_number() + 1.0);
+                }
+                ref_env->set_binding(id->get_name(), incremented);
                 return incremented;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value current = member->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                Value incremented = Value(current.to_number() + 1.0);
-                
+                Value numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value incremented;
+                if (numeric.is_bigint()) {
+                    incremented = Value(new BigInt(*numeric.as_bigint() + BigInt(1)));
+                } else {
+                    incremented = Value(numeric.to_number() + 1.0);
+                }
+
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
                     ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
-                
+
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
@@ -1007,23 +1112,43 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
+                Environment* ref_env = ctx.find_binding_env(id->get_name());
+                if (!ref_env) {
+                    ctx.throw_reference_error(id->get_name() + " is not defined");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
-                Value incremented = Value(current.to_number() + 1.0);
-                bool success = ctx.set_binding(id->get_name(), incremented);
-                return current;
+                if (ctx.has_exception()) return Value();
+                Value old_numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value incremented;
+                if (old_numeric.is_bigint()) {
+                    incremented = Value(new BigInt(*old_numeric.as_bigint() + BigInt(1)));
+                } else {
+                    incremented = Value(old_numeric.to_number() + 1.0);
+                }
+                ref_env->set_binding(id->get_name(), incremented);
+                return old_numeric;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value current = member->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                Value incremented = Value(current.to_number() + 1.0);
-                
+                Value old_numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value incremented;
+                if (old_numeric.is_bigint()) {
+                    incremented = Value(new BigInt(*old_numeric.as_bigint() + BigInt(1)));
+                } else {
+                    incremented = Value(old_numeric.to_number() + 1.0);
+                }
+
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
                     ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
-                
+
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
@@ -1044,7 +1169,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 }
                 if (ctx.has_exception()) return Value();
                 obj.as_object()->set_property(prop_name, incremented);
-                return current;
+                return old_numeric;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();
@@ -1061,23 +1186,43 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
+                Environment* ref_env = ctx.find_binding_env(id->get_name());
+                if (!ref_env) {
+                    ctx.throw_reference_error(id->get_name() + " is not defined");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
-                Value decremented = Value(current.to_number() - 1.0);
-                ctx.set_binding(id->get_name(), decremented);
+                if (ctx.has_exception()) return Value();
+                Value numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value decremented;
+                if (numeric.is_bigint()) {
+                    decremented = Value(new BigInt(*numeric.as_bigint() - BigInt(1)));
+                } else {
+                    decremented = Value(numeric.to_number() - 1.0);
+                }
+                ref_env->set_binding(id->get_name(), decremented);
                 return decremented;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value current = member->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                Value decremented = Value(current.to_number() - 1.0);
-                
+                Value numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value decremented;
+                if (numeric.is_bigint()) {
+                    decremented = Value(new BigInt(*numeric.as_bigint() - BigInt(1)));
+                } else {
+                    decremented = Value(numeric.to_number() - 1.0);
+                }
+
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
                     ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
-                
+
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
@@ -1115,23 +1260,43 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
             if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(operand_.get());
+                Environment* ref_env = ctx.find_binding_env(id->get_name());
+                if (!ref_env) {
+                    ctx.throw_reference_error(id->get_name() + " is not defined");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
-                Value decremented = Value(current.to_number() - 1.0);
-                ctx.set_binding(id->get_name(), decremented);
-                return current;
+                if (ctx.has_exception()) return Value();
+                Value old_numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value decremented;
+                if (old_numeric.is_bigint()) {
+                    decremented = Value(new BigInt(*old_numeric.as_bigint() - BigInt(1)));
+                } else {
+                    decremented = Value(old_numeric.to_number() - 1.0);
+                }
+                ref_env->set_binding(id->get_name(), decremented);
+                return old_numeric;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
                 Value current = member->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                Value decremented = Value(current.to_number() - 1.0);
-                
+                Value old_numeric = postfix_to_numeric(ctx, current);
+                if (ctx.has_exception()) return Value();
+                Value decremented;
+                if (old_numeric.is_bigint()) {
+                    decremented = Value(new BigInt(*old_numeric.as_bigint() - BigInt(1)));
+                } else {
+                    decremented = Value(old_numeric.to_number() - 1.0);
+                }
+
                 Value obj = member->get_object()->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
                 if (!obj.is_object()) {
                     ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
                     return Value();
                 }
-                
+
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value prop_value = member->get_property()->evaluate(ctx);
@@ -1152,7 +1317,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 }
                 if (ctx.has_exception()) return Value();
                 obj.as_object()->set_property(prop_name, decremented);
-                return current;
+                return old_numeric;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
                 return Value();

@@ -433,22 +433,22 @@ bool is_iterable(const Value& value) {
         return false;
     }
     
-    return obj->has_property(iterator_symbol->to_string());
+    return obj->has_property(iterator_symbol->to_property_key());
 }
 
 std::unique_ptr<Iterator> get_iterator(const Value& value, Context& ctx) {
     if (!value.is_object()) {
         return nullptr;
     }
-    
+
     Object* obj = value.as_object();
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-    
+
     if (!iterator_symbol) {
         return nullptr;
     }
-    
-    Value iterator_method = obj->get_property(iterator_symbol->to_string());
+
+    Value iterator_method = obj->get_property(iterator_symbol->to_property_key());
     if (!iterator_method.is_function()) {
         return nullptr;
     }
@@ -573,7 +573,7 @@ void setup_array_iterator_methods(Context& ctx) {
                 return Value(iterator.release());
             });
         
-        array_proto->set_property(iterator_symbol->to_string(), Value(default_iterator_fn.release()));
+        array_proto->set_property(iterator_symbol->to_property_key(), Value(default_iterator_fn.release()));
     }
 }
 
@@ -603,7 +603,7 @@ void setup_string_iterator_methods(Context& ctx) {
                 return Value(iterator.release());
             });
         
-        string_proto->set_property(iterator_symbol->to_string(), Value(string_iterator_fn.release()));
+        string_proto->set_property(iterator_symbol->to_property_key(), Value(string_iterator_fn.release()));
     }
 }
 

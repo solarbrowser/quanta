@@ -769,7 +769,7 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
                 (void)args;
                 return ctx.get_binding("this");
             });
-        async_iterator_prototype->set_property(async_iterator_symbol->to_string(), Value(self_async_iterator_fn.release()));
+        async_iterator_prototype->set_property(async_iterator_symbol->to_property_key(), Value(self_async_iterator_fn.release()));
     }
     
     ctx.create_binding("AsyncIteratorPrototype", Value(async_iterator_prototype.release()));

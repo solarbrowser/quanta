@@ -1762,24 +1762,26 @@ bool Lexer::is_reserved_word(const std::string& word) const {
 }
 
 bool Lexer::can_be_regex_literal() const {
-    
     if (position_ == 0) return true;
-    
+
     size_t pos = position_ - 1;
     while (pos > 0 && (is_whitespace(source_[pos]) || is_line_terminator(source_[pos]))) {
         pos--;
     }
-    
-    if (pos == 0) return true;
-    
+
     char prev_char = source_[pos];
-    
-    return prev_char == '=' || prev_char == '(' || prev_char == '[' || 
-           prev_char == '{' || prev_char == ',' || prev_char == ';' || 
-           prev_char == ':' || prev_char == '!' || prev_char == '&' || 
-           prev_char == '|' || prev_char == '?' || prev_char == '+' || 
-           prev_char == '-' || prev_char == '*' || prev_char == '%' || 
-           prev_char == '<' || prev_char == '>' || prev_char == '^' || 
+
+    // All preceding characters were whitespace -- start of source, regex is valid
+    if (is_whitespace(prev_char) || is_line_terminator(prev_char)) {
+        return true;
+    }
+
+    return prev_char == '=' || prev_char == '(' || prev_char == '[' ||
+           prev_char == '{' || prev_char == ',' || prev_char == ';' ||
+           prev_char == ':' || prev_char == '!' || prev_char == '&' ||
+           prev_char == '|' || prev_char == '?' || prev_char == '+' ||
+           prev_char == '-' || prev_char == '*' || prev_char == '%' ||
+           prev_char == '<' || prev_char == '>' || prev_char == '^' ||
            prev_char == '~';
 }
 
