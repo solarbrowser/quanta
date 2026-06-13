@@ -951,8 +951,11 @@ Value Function::get_property(const std::string& key) const {
         return Value(static_cast<double>(parameters_.size()));
     }
     if (key == "prototype") {
-        if (prototype_ == nullptr) return Value();  
-        return Value(prototype_);
+        if (prototype_ != nullptr) return Value(prototype_);
+        // Check base property table (e.g. prototype set to a non-object like a number)
+        Value base_val = get_own_property(key);
+        if (!base_val.is_undefined()) return base_val;
+        return Value();
     }
 
     Value result = get_own_property(key);
@@ -1018,16 +1021,20 @@ bool Function::set_property(const std::string& key, const Value& value, Property
     if (key == "prototype") {
         if (value.is_object()) {
             prototype_ = value.as_object();
+            // Remove from base property table if present
+            Object::delete_property(key);
             return true;
         }
         if (value.is_function()) {
             prototype_ = value.as_function();
+            Object::delete_property(key);
             return true;
         }
+        // Non-object: clear internal pointer, store in base property table so typeof works
         prototype_ = nullptr;
-        return true;
+        return Object::set_property(key, value, attrs);
     }
-    
+
     return Object::set_property(key, value, attrs);
 }
 

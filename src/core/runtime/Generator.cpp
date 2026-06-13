@@ -476,6 +476,10 @@ void Generator::setup_generator_prototype(Context& ctx) {
         PropertyDescriptor gf_tag(Value(std::string("GeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), gf_tag);
     }
+    // %GeneratorFunction.prototype%.prototype = %GeneratorPrototype% (non-writable, non-enumerable, non-configurable per spec 25.2.3.3)
+    PropertyDescriptor gfp_proto_desc(Value(s_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::None));
+    gen_fn_proto->set_property_descriptor("prototype", gfp_proto_desc);
+
     s_generator_function_prototype_ = gen_fn_proto.get();
     ctx.create_binding("@@GeneratorFunctionPrototype", Value(gen_fn_proto.release()));
 
@@ -572,8 +576,9 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->set_prototype(Generator::s_generator_prototype_);
-        fn_proto->set_property("constructor", Value(static_cast<Function*>(this)));
-        this->set_property("prototype", Value(fn_proto.release()));
+        // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
         if (Generator::s_generator_function_prototype_) {
             this->set_prototype(Generator::s_generator_function_prototype_);
         }
@@ -590,10 +595,10 @@ GeneratorFunction::GeneratorFunction(const std::string& name,
     if (Generator::s_generator_prototype_) {
         auto fn_proto = ObjectFactory::create_object();
         fn_proto->set_prototype(Generator::s_generator_prototype_);
-        fn_proto->set_property("constructor", Value(static_cast<Function*>(this)));
-        this->set_property("prototype", Value(fn_proto.release()));
+        // Spec 25.2.4.2: no own properties; 25.2.4.3: writable, non-enumerable, non-configurable
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
 
-        // Set this GeneratorFunction's __proto__ to %GeneratorFunction.prototype%
         if (Generator::s_generator_function_prototype_) {
             this->set_prototype(Generator::s_generator_function_prototype_);
         }

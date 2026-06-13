@@ -142,6 +142,11 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             }
             if (prop->type == ObjectLiteral::PropertyType::Method) {
                 fn->set_property("__super_constructor__", Value(true));
+                // Spec 14.3.9: non-generator methods are not constructors and have no .prototype
+                if (fn->is_constructor()) {
+                    fn->set_is_constructor(false);
+                    fn->set_function_prototype(nullptr);
+                }
             }
         }
 
