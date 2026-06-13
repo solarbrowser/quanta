@@ -132,6 +132,37 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         };
 
+        // ToPrimitive for compound += (spec 13.15.3 via 13.8.1)
+        auto to_primitive_add = [&ctx](Value v) -> Value {
+            if (!v.is_object()) return v;
+            Object* obj = v.as_object();
+            if (!obj) return v;
+            Symbol* tp_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+            if (tp_sym) {
+                Value tp = obj->get_property(tp_sym->to_property_key());
+                if (tp.is_function()) {
+                    Value r = tp.as_function()->call(ctx, {Value(std::string("default"))}, v);
+                    if (!r.is_object()) return r;
+                    return v;
+                }
+            }
+            Value vof = obj->get_property("valueOf");
+            if (vof.is_function()) {
+                try {
+                    Value r = vof.as_function()->call(ctx, {}, v);
+                    if (!r.is_object()) return r;
+                } catch (...) {}
+            }
+            Value ts = obj->get_property("toString");
+            if (ts.is_function()) {
+                try {
+                    Value r = ts.as_function()->call(ctx, {}, v);
+                    if (!r.is_object()) return r;
+                } catch (...) {}
+            }
+            return v;
+        };
+
         switch (operator_) {
             case Operator::ASSIGN: {
                 // SetFunctionName: x = (function(){}) -> x.name = 'x'
@@ -176,7 +207,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return right_value;
             }
             case Operator::PLUS_ASSIGN: {
-                Value result = left_value.add(right_value);
+                Value lp = to_primitive_add(left_value);
+                if (ctx.has_exception()) return Value();
+                Value rp = to_primitive_add(right_value);
+                if (ctx.has_exception()) return Value();
+                Value result = lp.add(rp);
                 put_value(result); if (ctx.has_exception()) return Value();
                 return result;
             }

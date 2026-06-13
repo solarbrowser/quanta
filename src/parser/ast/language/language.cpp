@@ -61,7 +61,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         // always reachable via the env chain at call time; no closure capture needed.
         auto is_global_obj_binding = [&](const std::string& n) -> bool {
             Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+            return e && e->get_type() == Environment::Type::Object;
         };
 
         auto var_env = ctx.get_variable_environment();
@@ -80,13 +80,15 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
         while (walk && walk != var_env) {
-            auto lex_binding_names = walk->get_binding_names();
-            for (const auto& name : lex_binding_names) {
-                if (name != "this" && name != "arguments") {
-                    if (!function_obj->has_property("__closure_" + name) && !is_global_obj_binding(name)) {
-                        Value value = ctx.get_binding(name);
-                        if (!value.is_undefined()) {
-                            function_obj->set_property("__closure_" + name, value);
+            if (walk->get_type() != Environment::Type::Object) {
+                auto lex_binding_names = walk->get_binding_names();
+                for (const auto& name : lex_binding_names) {
+                    if (name != "this" && name != "arguments") {
+                        if (!function_obj->has_property("__closure_" + name) && !is_global_obj_binding(name)) {
+                            Value value = ctx.get_binding(name);
+                            if (!value.is_undefined()) {
+                                function_obj->set_property("__closure_" + name, value);
+                            }
                         }
                     }
                 }
@@ -820,7 +822,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
         auto is_global_obj_binding_fe = [&](const std::string& n) -> bool {
             Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+            return e && e->get_type() == Environment::Type::Object;
         };
 
         auto var_env = ctx.get_variable_environment();
@@ -839,13 +841,15 @@ Value FunctionExpression::evaluate(Context& ctx) {
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
         while (walk && walk != var_env) {
-            auto lex_binding_names = walk->get_binding_names();
-            for (const auto& name : lex_binding_names) {
-                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
-                    if (!function->has_property("__closure_" + name) && !is_global_obj_binding_fe(name)) {
-                        Value value = ctx.get_binding(name);
-                        if (!value.is_undefined()) {
-                            function->set_property("__closure_" + name, value);
+            if (walk->get_type() != Environment::Type::Object) {
+                auto lex_binding_names = walk->get_binding_names();
+                for (const auto& name : lex_binding_names) {
+                    if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
+                        if (!function->has_property("__closure_" + name) && !is_global_obj_binding_fe(name)) {
+                            Value value = ctx.get_binding(name);
+                            if (!value.is_undefined()) {
+                                function->set_property("__closure_" + name, value);
+                            }
                         }
                     }
                 }
@@ -971,7 +975,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         for (const auto& p : params_) async_param_set.insert(p->get_name()->get_name());
         auto is_global_obj_binding_af = [&](const std::string& n) -> bool {
             Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+            return e && e->get_type() == Environment::Type::Object;
         };
         auto var_env = ctx.get_variable_environment();
         if (var_env && var_env->get_type() != Environment::Type::Object) {
@@ -987,12 +991,14 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
         while (walk && walk != var_env) {
-            for (const auto& bname : walk->get_binding_names()) {
-                if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
-                    if (!async_fn->has_property("__closure_" + bname) && !is_global_obj_binding_af(bname)) {
-                        Value value = ctx.get_binding(bname);
-                        if (!value.is_undefined()) {
-                            async_fn->set_property("__closure_" + bname, value);
+            if (walk->get_type() != Environment::Type::Object) {
+                for (const auto& bname : walk->get_binding_names()) {
+                    if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
+                        if (!async_fn->has_property("__closure_" + bname) && !is_global_obj_binding_af(bname)) {
+                            Value value = ctx.get_binding(bname);
+                            if (!value.is_undefined()) {
+                                async_fn->set_property("__closure_" + bname, value);
+                            }
                         }
                     }
                 }
@@ -1041,7 +1047,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
     auto is_global_obj_binding_ar = [&](const std::string& n) -> bool {
         Environment* e = ctx.find_binding_env(n);
-        return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+        return e && e->get_type() == Environment::Type::Object;
     };
 
     auto var_env = ctx.get_variable_environment();
@@ -1060,13 +1066,15 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
     while (walk && walk != var_env) {
-        auto lex_binding_names = walk->get_binding_names();
-        for (const auto& name : lex_binding_names) {
-            if (name != "this" && param_names.find(name) == param_names.end()) {
-                if (!arrow_function->has_property("__closure_" + name) && !is_global_obj_binding_ar(name)) {
-                    Value value = ctx.get_binding(name);
-                    if (!value.is_undefined()) {
-                        arrow_function->set_property("__closure_" + name, value);
+        if (walk->get_type() != Environment::Type::Object) {
+            auto lex_binding_names = walk->get_binding_names();
+            for (const auto& name : lex_binding_names) {
+                if (name != "this" && param_names.find(name) == param_names.end()) {
+                    if (!arrow_function->has_property("__closure_" + name) && !is_global_obj_binding_ar(name)) {
+                        Value value = ctx.get_binding(name);
+                        if (!value.is_undefined()) {
+                            arrow_function->set_property("__closure_" + name, value);
+                        }
                     }
                 }
             }
@@ -2192,7 +2200,7 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     }
     auto is_global_obj = [&](const std::string& n) -> bool {
         Environment* e = ctx.find_binding_env(n);
-        return e && e->get_type() == Environment::Type::Object && e->get_outer() == nullptr;
+        return e && e->get_type() == Environment::Type::Object;
     };
     auto var_env = ctx.get_variable_environment();
     if (var_env && var_env->get_type() != Environment::Type::Object) {
@@ -2208,12 +2216,14 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
     while (walk && walk != var_env) {
-        for (const auto& bname : walk->get_binding_names()) {
-            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
-                if (!fn->has_property("__closure_" + bname) && !is_global_obj(bname)) {
-                    Value value = ctx.get_binding(bname);
-                    if (!value.is_undefined()) {
-                        fn->set_property("__closure_" + bname, value);
+        if (walk->get_type() != Environment::Type::Object) {
+            for (const auto& bname : walk->get_binding_names()) {
+                if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
+                    if (!fn->has_property("__closure_" + bname) && !is_global_obj(bname)) {
+                        Value value = ctx.get_binding(bname);
+                        if (!value.is_undefined()) {
+                            fn->set_property("__closure_" + bname, value);
+                        }
                     }
                 }
             }
