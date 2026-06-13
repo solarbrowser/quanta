@@ -451,25 +451,18 @@ Value BinaryExpression::evaluate(Context& ctx) {
             }
             case Operator::DIVIDE: {
                 if (right_num == 0.0) {
-                    if (left_num == 0.0) {
-                        return Value::nan();
-                    }
-                    return left_num > 0 ? Value::positive_infinity() : Value::negative_infinity();
+                    if (std::isnan(left_num) || left_num == 0.0) return Value::nan();
+                    bool neg = std::signbit(left_num) != std::signbit(right_num);
+                    return neg ? Value::negative_infinity() : Value::positive_infinity();
                 }
-                
                 double result = left_num / right_num;
-                
-                if (std::isinf(result)) {
-                    return result > 0 ? Value::positive_infinity() : Value::negative_infinity();
-                }
-                if (std::isnan(result)) {
-                    return Value::nan();
-                }
-                
+                if (std::isinf(result)) return std::signbit(result) ? Value::negative_infinity() : Value::positive_infinity();
+                if (std::isnan(result)) return Value::nan();
                 return Value(result);
             }
             case Operator::MODULO: {
-                double result = left_num - static_cast<long long>(left_num / right_num) * right_num;
+                double result = std::fmod(left_num, right_num);
+                if (std::isnan(result)) return Value::nan();
                 return Value(result);
             }
             default:
@@ -614,7 +607,8 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 if (operator_ == Operator::DIVIDE) return lv.divide(rv);
                 if (operator_ == Operator::MODULO) return lv.modulo(rv);
                 return lv.power(rv);
-            } catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
+            } catch (const BigIntRangeError& e) { ctx.throw_range_error(e.what()); return Value(); }
+              catch (const BigIntTypeError& e) { ctx.throw_type_error(e.what()); return Value(); }
         }
             
         case Operator::EQUAL: {
