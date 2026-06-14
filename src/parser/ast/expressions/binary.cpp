@@ -1037,6 +1037,10 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
+                if (ctx.is_in_tdz(id->get_name())) {
+                    ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
                 if (ctx.has_exception()) return Value();
                 Value numeric = postfix_to_numeric(ctx, current);
@@ -1047,7 +1051,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(numeric.to_number() + 1.0);
                 }
-                ref_env->set_binding(id->get_name(), incremented);
+                if (!ref_env->set_binding(id->get_name(), incremented)) {
+                    if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
+                        ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
+                        return Value();
+                    }
+                }
                 return incremented;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
@@ -1111,6 +1120,10 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
+                if (ctx.is_in_tdz(id->get_name())) {
+                    ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
                 if (ctx.has_exception()) return Value();
                 Value old_numeric = postfix_to_numeric(ctx, current);
@@ -1121,7 +1134,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(old_numeric.to_number() + 1.0);
                 }
-                ref_env->set_binding(id->get_name(), incremented);
+                if (!ref_env->set_binding(id->get_name(), incremented)) {
+                    if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
+                        ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
+                        return Value();
+                    }
+                }
                 return old_numeric;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
@@ -1185,6 +1203,10 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
+                if (ctx.is_in_tdz(id->get_name())) {
+                    ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
                 if (ctx.has_exception()) return Value();
                 Value numeric = postfix_to_numeric(ctx, current);
@@ -1195,7 +1217,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(numeric.to_number() - 1.0);
                 }
-                ref_env->set_binding(id->get_name(), decremented);
+                if (!ref_env->set_binding(id->get_name(), decremented)) {
+                    if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
+                        ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
+                        return Value();
+                    }
+                }
                 return decremented;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());
@@ -1259,6 +1286,10 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error(id->get_name() + " is not defined");
                     return Value();
                 }
+                if (ctx.is_in_tdz(id->get_name())) {
+                    ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
+                    return Value();
+                }
                 Value current = ctx.get_binding(id->get_name());
                 if (ctx.has_exception()) return Value();
                 Value old_numeric = postfix_to_numeric(ctx, current);
@@ -1269,7 +1300,12 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(old_numeric.to_number() - 1.0);
                 }
-                ref_env->set_binding(id->get_name(), decremented);
+                if (!ref_env->set_binding(id->get_name(), decremented)) {
+                    if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
+                        ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
+                        return Value();
+                    }
+                }
                 return old_numeric;
             } else if (operand_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                 MemberExpression* member = static_cast<MemberExpression*>(operand_.get());

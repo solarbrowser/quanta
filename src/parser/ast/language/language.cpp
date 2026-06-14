@@ -20,6 +20,55 @@
 
 namespace Quanta {
 
+// Spec 7.1.1 ToPrimitive + 7.1.19 ToPropertyKey for computed class/object keys.
+// Unlike Value::to_property_key(), this throws TypeError when @@toPrimitive is
+// non-callable or when OrdinaryToPrimitive finds neither toString nor valueOf.
+static std::string computed_key_to_property_key(Context& ctx, const Value& val) {
+    if (val.is_symbol()) return val.as_symbol()->to_property_key();
+    if (!val.is_object() && !val.is_function()) return val.to_string();
+
+    Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+
+    Symbol* tp_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    if (tp_sym) {
+        Value tp = obj->get_property(tp_sym->to_property_key());
+        if (ctx.has_exception()) return "";
+        if (!tp.is_undefined()) {
+            if (!tp.is_function()) {
+                ctx.throw_type_error("Cannot convert object to primitive value");
+                return "";
+            }
+            Value result = tp.as_function()->call(ctx, {Value(std::string("string"))}, val);
+            if (ctx.has_exception()) return "";
+            if (result.is_object() || result.is_function()) {
+                ctx.throw_type_error("Cannot convert object to primitive value");
+                return "";
+            }
+            return result.to_string();
+        }
+    }
+
+    // OrdinaryToPrimitive with hint "string": toString first, then valueOf
+    Value ts = obj->get_property("toString");
+    if (ctx.has_exception()) return "";
+    if (ts.is_function()) {
+        Value r = ts.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+
+    Value vof = obj->get_property("valueOf");
+    if (ctx.has_exception()) return "";
+    if (vof.is_function()) {
+        Value r = vof.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return "";
+}
+
 Value FunctionDeclaration::evaluate(Context& ctx) {
     const std::string& function_name = id_->get_name();
 
@@ -249,7 +298,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 if (method->is_computed()) {
                     Value key_val = method->get_key()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
-                    method_name = key_val.to_property_key();
+                    method_name = computed_key_to_property_key(ctx, key_val);
+                    if (ctx.has_exception()) return Value();
                 } else if (Identifier* id = dynamic_cast<Identifier*>(method->get_key())) {
                     method_name = id->get_name();
                 } else if (StringLiteral* str = dynamic_cast<StringLiteral*>(method->get_key())) {
@@ -305,9 +355,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
                     }
                     instance_method->set_is_strict(true);
-                    // Getter/setter functions must not have [[Construct]] or prototype.
-                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
+                    // Class methods are non-constructors; non-generator methods have no prototype.
+                    if (!method_is_gen) {
+                        instance_method->set_is_constructor(false);
                         instance_method->set_function_prototype(nullptr);
+                    }
                     instance_method->set_property("__private_class_brand__", Value(prototype.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
@@ -393,7 +445,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     Object* proto_ptr = prototype.get();
     if (constructor_fn.get() && proto_ptr) {
-        constructor_fn->set_property("prototype", Value(proto_ptr));
+        // Spec 15.7.14: class prototype is non-writable, non-enumerable, non-configurable
+        PropertyDescriptor proto_desc(Value(proto_ptr), static_cast<PropertyAttributes>(0));
+        constructor_fn->set_property_descriptor("prototype", proto_desc);
         // Add constructor first so it appears first in getOwnPropertyNames per spec.
         {
             PropertyDescriptor ctor_desc(Value(constructor_fn.get()),
@@ -441,7 +495,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (method->is_computed()) {
                         Value key_val = method->get_key()->evaluate(ctx);
                         if (ctx.has_exception()) return Value();
-                        method_name = key_val.to_property_key();
+                        method_name = computed_key_to_property_key(ctx, key_val);
+                        if (ctx.has_exception()) return Value();
                         // Computed static method named 'prototype' is a runtime TypeError
                         if (method_name == "prototype") {
                             ctx.throw_type_error("Class may not have a static property named 'prototype'");
@@ -488,8 +543,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
                     }
                     static_method->set_is_strict(true);
-                    if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER)
+                    // Class static methods are non-constructors; non-generator methods have no prototype.
+                    if (!static_is_gen) {
+                        static_method->set_is_constructor(false);
                         static_method->set_function_prototype(nullptr);
+                    }
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
@@ -524,6 +582,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (proto_ptr) {
                 proto_ptr->set_prototype(nullptr);
             }
+            // Mark constructor so super() throws TypeError (spec: superclass null -> FunctionPrototype, not a constructor)
+            constructor_fn->set_property("__super_is_null__", Value(true));
         } else if (!super_constructor.is_object_like()) {
             // extends non-object (number, string, boolean, etc.) -> TypeError
             ctx.throw_type_error("Class extends value " + super_constructor.to_string() + " is not a constructor or null");
@@ -597,6 +657,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         fn->set_property(closure_key, ctor_val);
         fn->set_property(const_marker, Value(true));
     };
+    if (!class_name.empty()) {
+        // The constructor itself must see the class name as const (spec 15.7.14 step 7)
+        mark_class_name_closure(constructor_fn.get());
+    }
     if (proto_ptr) {
         auto proto_keys = proto_ptr->get_own_property_keys();
         for (const auto& key : proto_keys) {
@@ -955,6 +1019,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         auto* async_fn = new AsyncFunction(name, std::move(async_params), body_->clone(), &ctx);
         async_fn->set_is_arrow(true);
         async_fn->set_is_constructor(false);
+        async_fn->set_function_prototype(nullptr);
         if (ctx.is_strict_mode()) async_fn->set_is_strict(true);
 
         if (ctx.has_binding("this")) {
@@ -1025,6 +1090,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
     );
 
     arrow_function->set_is_constructor(false);
+    arrow_function->set_function_prototype(nullptr);
     arrow_function->set_is_arrow(true);
     if (ctx.is_strict_mode()) {
         arrow_function->set_is_strict(true);

@@ -307,11 +307,22 @@ Value VariableDeclaration::evaluate(Context& ctx) {
             continue;
         }
 
+        bool mutable_binding = (declarator->get_kind() != VariableDeclarator::Kind::CONST);
+        VariableDeclarator::Kind kind = declarator->get_kind();
+
+        // Spec: ResolveBinding(name) before evaluating initializer (binding-resolution rule).
+        // Capture the environment containing this binding so that initializers that
+        // modify the scope (eval, delete in with-scope) don't change the write target.
+        Environment* ref_env = nullptr;
+        if (kind == VariableDeclarator::Kind::VAR && declarator->get_init() && ctx.has_binding(name)) {
+            ref_env = ctx.find_binding_env(name);
+        }
+
         Value init_value;
         if (declarator->get_init()) {
             init_value = declarator->get_init()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            if (init_value.is_function()) {
+            if (init_value.is_function() && is_anon_func_def(declarator->get_init())) {
                 Function* fn = init_value.as_function();
                 if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                     fn->set_name(name);
@@ -320,9 +331,6 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         } else {
             init_value = Value();
         }
-
-        bool mutable_binding = (declarator->get_kind() != VariableDeclarator::Kind::CONST);
-        VariableDeclarator::Kind kind = declarator->get_kind();
 
         bool has_local = false;
         if (kind == VariableDeclarator::Kind::VAR) {
@@ -334,7 +342,13 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         if (has_local) {
             if (kind == VariableDeclarator::Kind::VAR) {
                 if (declarator->get_init()) {
-                    ctx.set_binding(name, init_value);
+                    if (ref_env && ref_env->get_type() == Environment::Type::Object &&
+                        ref_env->get_binding_object()) {
+                        // PutValue to original object env binding object (even if property was deleted)
+                        ref_env->get_binding_object()->set_property(name, init_value);
+                    } else {
+                        ctx.set_binding(name, init_value);
+                    }
                 }
             } else {
                 ctx.throw_exception(Value("SyntaxError: Identifier '" + name + "' has already been declared"));
@@ -504,6 +518,28 @@ Value BlockStatement::evaluate(Context& ctx) {
     auto block_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lexical_env);
     Environment* block_env_ptr = block_env.release();
     ctx.set_lexical_environment(block_env_ptr);
+
+    // Pre-create TDZ bindings for let/const at the top level of this block (spec 14.2.2).
+    // Without this, closures defined before a let/const declaration would bypass TDZ
+    // because the binding wouldn't exist yet when they run.
+    for (const auto& stmt : statements_) {
+        if (stmt->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+            if (vd->get_kind() == VariableDeclarator::Kind::LET ||
+                    vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                for (const auto& decl : vd->get_declarations()) {
+                    if (decl->get_id() && !decl->get_id()->get_name().empty()) {
+                        const std::string& bname = decl->get_id()->get_name();
+                        block_env_ptr->create_uninitialized_binding(bname);
+                        block_env_ptr->mark_lexical_declaration(bname);
+                        if (vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                            block_env_ptr->mark_const_binding(bname);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     if (has_using) ctx.push_dispose_scope();
 
@@ -701,14 +737,30 @@ Value ForStatement::evaluate(Context& ctx) {
     std::vector<std::string> iter_var_names;
     if (init_ && init_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* var_decl = static_cast<VariableDeclaration*>(init_.get());
-        if (var_decl->get_kind() == VariableDeclarator::Kind::LET ||
-            var_decl->get_kind() == VariableDeclarator::Kind::CONST) {
+        // Spec 14.7.4.2: only let (not const) gets per-iteration environments.
+        // for (const i = 0; ...) has no per-iter scope -- update hits the original const
+        // binding directly, causing TypeError as expected.
+        if (var_decl->get_kind() == VariableDeclarator::Kind::LET) {
             has_per_iteration_scope = true;
             for (const auto& decl : var_decl->get_declarations()) {
                 iter_var_names.push_back(decl->get_id()->get_name());
             }
         }
     }
+
+    // Spec 14.7.4.4: CreatePerIterationEnvironment before the first test (initial).
+    auto create_per_iter_env = [&]() {
+        std::vector<Value> iter_values;
+        for (const auto& vname : iter_var_names) {
+            iter_values.push_back(ctx.get_binding(vname));
+        }
+        ctx.push_block_scope();
+        for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
+            ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
+        }
+    };
+
+    if (has_per_iteration_scope) create_per_iter_env();
 
     while (true) {
         if (UNLIKELY((safety_counter & 0xFFFFF) == 0)) {
@@ -722,6 +774,7 @@ Value ForStatement::evaluate(Context& ctx) {
         if (test_) {
             Value test_value = test_->evaluate(ctx);
             if (ctx.has_exception()) {
+                if (has_per_iteration_scope) ctx.pop_block_scope();
                 FOR_CLEANUP();
                 return Value();
             }
@@ -730,33 +783,12 @@ Value ForStatement::evaluate(Context& ctx) {
             }
         }
 
-        if (has_per_iteration_scope) {
-            std::vector<Value> iter_values;
-            for (const auto& vname : iter_var_names) {
-                iter_values.push_back(ctx.get_binding(vname));
-            }
-            ctx.push_block_scope();
-            for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
-                ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
-            }
-        }
-
         if (body_) {
             Value body_result = body_->evaluate(ctx);
             if (!g_empty_completion) V = body_result;
 
-            if (has_per_iteration_scope) {
-                std::vector<Value> updated_values;
-                for (const auto& vname : iter_var_names) {
-                    updated_values.push_back(ctx.get_binding(vname));
-                }
-                ctx.pop_block_scope();
-                for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
-                    ctx.set_binding(iter_var_names[vi], updated_values[vi]);
-                }
-            }
-
             if (ctx.has_exception()) {
+                if (has_per_iteration_scope) ctx.pop_block_scope();
                 FOR_CLEANUP();
                 return Value();
             }
@@ -768,34 +800,48 @@ Value ForStatement::evaluate(Context& ctx) {
                 }
                 break;
             }
-            if (ctx.has_continue()) {
-                if (ctx.get_continue_label().empty()) {
-                    ctx.clear_break_continue();
-                    goto continue_loop;
-                }
-                if (ctx.get_continue_label() == ctx.get_current_loop_label()) {
-                    ctx.clear_break_continue();
-                    goto continue_loop;
-                }
-                break;
-            }
             if (ctx.has_return_value()) {
+                if (has_per_iteration_scope) ctx.pop_block_scope();
                 FOR_CLEANUP();
                 return ctx.get_return_value();
             }
-        } else if (has_per_iteration_scope) {
-            ctx.pop_block_scope();
+
+            bool is_continue = ctx.has_continue();
+            bool continue_matches = is_continue && (ctx.get_continue_label().empty() ||
+                                    ctx.get_continue_label() == ctx.get_current_loop_label());
+            if (is_continue && !continue_matches) {
+                break;
+            }
+            if (is_continue && continue_matches) {
+                ctx.clear_break_continue();
+            }
         }
 
-        continue_loop:
+        // Spec 14.7.4.4 step 3e: update runs in the CURRENT per-iteration env.
         if (update_) {
             update_->evaluate(ctx);
             if (ctx.has_exception()) {
+                if (has_per_iteration_scope) ctx.pop_block_scope();
                 FOR_CLEANUP();
                 return Value();
             }
         }
+
+        // Spec 14.7.4.4 step 3f: CreatePerIterationEnvironment AFTER update.
+        // Read the post-update values from the current per-iter env, then replace it.
+        if (has_per_iteration_scope) {
+            std::vector<Value> iter_values;
+            for (const auto& vname : iter_var_names) {
+                iter_values.push_back(ctx.get_binding(vname));
+            }
+            ctx.pop_block_scope();
+            ctx.push_block_scope();
+            for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
+                ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
+            }
+        }
     }
+    if (has_per_iteration_scope) ctx.pop_block_scope();
 
         result = V;
     } catch (...) {
@@ -1043,7 +1089,9 @@ Value ForInStatement::evaluate(Context& ctx) {
                 if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
             } else if (forin_per_iter) {
                 ctx.push_block_scope();
-                ctx.create_lexical_binding(var_name, Value(key), true);
+                auto* vd2 = static_cast<VariableDeclaration*>(left_.get());
+                bool is_mutable_iter = (vd2->get_kind() != VariableDeclarator::Kind::CONST);
+                ctx.create_lexical_binding(var_name, Value(key), is_mutable_iter);
             } else {
                 if (ctx.has_binding(var_name)) {
                     bool ok = ctx.set_binding(var_name, Value(key));

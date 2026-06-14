@@ -415,7 +415,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 early_args->set_property_descriptor("length", ld);
             }
             early_args->set_type(Object::ObjectType::Arguments);
-            function_context.create_binding("arguments", Value(early_args.release()), false);
+            function_context.create_binding("arguments", Value(early_args.release()), true, false);
         }
     }
 
@@ -657,7 +657,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 arguments_obj->set_property_descriptor(std::to_string(mi), map_desc);
             }
         }
-        function_context.create_binding("arguments", Value(arguments_obj.release()), false);
+        function_context.create_binding("arguments", Value(arguments_obj.release()), true, false);
     }
 
     // Use actual_this which respects strict mode (can be undefined in strict mode)
@@ -668,6 +668,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
             function_context.create_binding("__super__", super_constructor, false);
         }
+    }
+    if (this->has_property("__super_is_null__")) {
+        function_context.create_binding("__super_is_null__", Value(true), false);
     }
 
     if (this->has_property("__private_brands__")) {
