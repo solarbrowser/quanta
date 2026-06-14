@@ -123,7 +123,22 @@ Value ObjectLiteral::evaluate(Context& ctx) {
 
         if (value.is_function()) {
             Function* fn = value.as_function();
-            if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
+            // Spec 12.2.6.9 step 6: only set name for IsAnonymousFunctionDefinition
+            // (not comma expressions, parenthesized non-anon, etc.)
+            auto is_anon_fn_def = [](const ASTNode* n) {
+                if (!n) return false;
+                auto t = n->get_type();
+                return t == ASTNode::Type::FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION ||
+                       t == ASTNode::Type::CLASS_DECLARATION;
+            };
+            // Getters/setters are always named; for other properties, only if IsAnonymousFunctionDefinition
+            bool is_getter_setter = prop->type == ObjectLiteral::PropertyType::Getter ||
+                                    prop->type == ObjectLiteral::PropertyType::Setter;
+            bool should_name = is_getter_setter ||
+                               (prop->value && is_anon_fn_def(prop->value.get()));
+            if (should_name && (fn->get_name().empty() || fn->get_name() == "<arrow>")) {
                 std::string func_name = key;
                 if (prop->computed) {
                     Value key_check = prop->key->evaluate(ctx);
@@ -180,6 +195,10 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             } else if (value.is_null()) {
                 object->set_prototype(nullptr);
             }
+        } else if (key == "__proto__" && (prop->shorthand || prop->computed)) {
+            // Shorthand/computed __proto__ creates an own data property, not set [[Prototype]]
+            PropertyDescriptor own_desc(value, PropertyAttributes::Default);
+            object->set_property_descriptor(key, own_desc);
         } else {
             object->set_property(key, value);
         }

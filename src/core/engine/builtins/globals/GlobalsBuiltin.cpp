@@ -372,8 +372,13 @@ void register_global_builtins(Context& ctx) {
 
                     // EvalDeclarationInstantiation CanDeclareGlobalFunction pre-flight check.
                     // Must run before the eval body so bindings are never created on TypeError.
-                    if (var_env && var_env->get_type() == Environment::Type::Object && var_env->get_binding_object()) {
-                        Object* global_obj = var_env->get_binding_object();
+                    // For indirect eval, check the global var env (not the caller's).
+                    Environment* check_var_env = var_env;
+                    if (!is_direct && engine && engine->get_global_context()) {
+                        check_var_env = engine->get_global_context()->get_variable_environment();
+                    }
+                    if (check_var_env && check_var_env->get_type() == Environment::Type::Object && check_var_env->get_binding_object()) {
+                        Object* global_obj = check_var_env->get_binding_object();
                         std::unordered_set<std::string> checked_func_names;
                         for (auto it = program->get_statements().rbegin(); it != program->get_statements().rend(); ++it) {
                             const ASTNode* nd = it->get();

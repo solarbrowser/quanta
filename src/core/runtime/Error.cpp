@@ -35,8 +35,11 @@ void Error::set_error_name() {
 void Error::initialize_properties() {
     set_property("name", Value(name_));
 
-    // Always set message property, even if empty (required for proper toString)
-    set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    // Only set message as own property when non-empty; when message is "" it means
+    // no argument was passed (the native constructor does not pass "" for undefined args).
+    if (!message_.empty()) {
+        set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    }
 
     if (!stack_trace_.empty()) {
         set_property("stack", Value(stack_trace_));

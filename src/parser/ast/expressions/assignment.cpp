@@ -112,6 +112,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // binding object that was captured before GetValue - even if the property was
         // deleted by the getter.  Strict mode + deleted property -> ReferenceError.
         auto put_value = [&](const Value& val) {
+            if (ctx.is_in_tdz(name)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                return;
+            }
             if (ref_env && ref_env->get_type() == Environment::Type::Object &&
                 ref_env->get_binding_object()) {
                 Object* bobj = ref_env->get_binding_object();
@@ -121,6 +125,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     return;
                 }
                 bool ok = bobj->set_property(name, val);
+                if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
+                    ctx.throw_type_error("Assignment to constant variable '" + name + "'");
+                }
+            } else if (ref_env && ref_env->get_type() != Environment::Type::Object &&
+                       ref_env->has_own_binding(name)) {
+                // Write directly to the captured env (not the current chain) so that
+                // eval-introduced inner bindings don't shadow the original reference.
+                bool ok = ref_env->set_binding(name, val);
                 if (!ok && (ctx.is_strict_mode() || ctx.is_strict_const(name))) {
                     ctx.throw_type_error("Assignment to constant variable '" + name + "'");
                 }
@@ -165,6 +177,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         switch (operator_) {
             case Operator::ASSIGN: {
+                if (ctx.is_in_tdz(name)) {
+                    ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                    return Value();
+                }
                 // SetFunctionName: x = (function(){}) -> x.name = 'x'
                 if (right_value.is_function() && is_anonymous_function_def(right_.get())) {
                     const std::string& fname = right_value.as_function()->get_name();
@@ -422,6 +438,13 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // For super.x = val: write to 'this', not to super's prototype
         Value effective_object = is_super_assignment ? write_target : object_value;
 
+        // PutValue step 5a: ToObject(base) throws TypeError for null/undefined (always, not just strict)
+        if (effective_object.is_null() || effective_object.is_undefined()) {
+            ctx.throw_type_error(std::string("Cannot set properties of ") +
+                (effective_object.is_null() ? "null" : "undefined"));
+            return Value();
+        }
+
         if (effective_object.is_object()) {
             obj = effective_object.as_object();
         } else if (effective_object.is_function()) {
@@ -574,19 +597,31 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         if (obj && !is_string_object) {
             // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-            if (!desc.is_accessor_descriptor()) {
-                // Walk prototype chain for accessor descriptor
+            bool found_inherited = false;
+            if (!desc.is_accessor_descriptor() && !obj->has_own_property(prop_name)) {
+                // Walk prototype chain for accessor or non-writable data descriptor
                 Object* proto = obj->get_prototype();
                 while (proto) {
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
                     if (proto_desc.is_accessor_descriptor()) {
                         desc = proto_desc;
+                        found_inherited = true;
                         break;
                     }
-                    if (proto_desc.has_value()) break;
+                    if (proto_desc.has_value()) {
+                        // Inherited non-writable data property blocks shadowing (spec 10.1.9 step 3b)
+                        if (!proto_desc.is_writable() && ctx.is_strict_mode()) {
+                            ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
+                            return Value();
+                        }
+                        found_inherited = !proto_desc.is_writable();
+                        if (!found_inherited) desc = proto_desc;
+                        break;
+                    }
                     proto = proto->get_prototype();
                 }
             }
+            (void)found_inherited;
             // For plain assignment only: invoke setter directly here.
             // Compound assignments (+=, &= etc.) need to read the current value first,
             // so they go through the switch and call set_property (which invokes setters).
@@ -823,6 +858,10 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 auto* wrapper = ObjectFactory::create_object().release();
                 source_obj = wrapper;
             }
+        } else if (source_value.is_symbol()) {
+            // Symbols are object-coercible; ToObject(symbol) succeeds
+            auto sym_wrapper = ObjectFactory::create_object();
+            source_obj = sym_wrapper.release();
         }
         if (!source_obj) {
             ctx.throw_type_error("Cannot destructure non-object value");
@@ -894,7 +933,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 if (prop_value.is_undefined()) {
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
-                    if (prop_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                    if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
+                            lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
                         Function* fn = prop_value.as_function();
                         if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                             fn->set_name(static_cast<Identifier*>(lhs)->get_name());
@@ -912,7 +952,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 if (prop_value.is_undefined()) {
                     prop_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
-                    if (prop_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                    if (prop_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
+                            lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
                         Function* fn = prop_value.as_function();
                         if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                             fn->set_name(static_cast<Identifier*>(lhs)->get_name());
@@ -1132,7 +1173,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 if (elem_value.is_undefined()) {
                     elem_value = assign->right_->evaluate(ctx);
                     if (ctx.has_exception()) return;
-                    if (elem_value.is_function() && lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
+                    if (elem_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
+                            lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
                         Function* fn = elem_value.as_function();
                         if (fn->get_name().empty() || fn->get_name() == "<arrow>") {
                             fn->set_name(static_cast<Identifier*>(lhs)->get_name());
@@ -1155,6 +1197,10 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
         std::string name = static_cast<Identifier*>(target)->get_name();
         if (ctx.has_binding(name)) {
+            if (ctx.is_in_tdz(name)) {
+                ctx.throw_reference_error("Cannot access '" + name + "' before initialization");
+                return;
+            }
             bool ok = ctx.set_binding(name, value);
             if (!ok) {
                 if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
@@ -1176,6 +1222,11 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
         auto* member = static_cast<MemberExpression*>(target);
         Value obj_val = member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return;
+        if (obj_val.is_null() || obj_val.is_undefined()) {
+            ctx.throw_type_error(std::string("Cannot set properties of ") +
+                (obj_val.is_null() ? "null" : "undefined"));
+            return;
+        }
         if (obj_val.is_object_like()) {
             Object* obj = obj_val.is_object() ? obj_val.as_object()
                                               : static_cast<Object*>(obj_val.as_function());
@@ -1591,6 +1642,12 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
                                                     : static_cast<Object*>(source_value.as_function());
 
             if (!handle_complex_object_destructuring(obj, ctx)) {
+                return Value();
+            }
+        } else if (source_value.is_symbol()) {
+            // Symbols are object-coercible; empty object wrapper is sufficient
+            auto sym_wrapper = ObjectFactory::create_object();
+            if (!handle_complex_object_destructuring(sym_wrapper.get(), ctx)) {
                 return Value();
             }
         } else if (source_value.is_number() || source_value.is_string() || source_value.is_boolean()) {

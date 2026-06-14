@@ -185,18 +185,31 @@ Value CallExpression::evaluate(Context& ctx) {
     if (callee_->get_type() == ASTNode::Type::IDENTIFIER) {
         Identifier* identifier = static_cast<Identifier*>(callee_.get());
         if (identifier->get_name() == "super") {
+            // Second super() call: this is already initialized -> ReferenceError
+            if (ctx.was_super_called()) {
+                ctx.throw_reference_error("Super constructor called twice");
+                return Value();
+            }
+
+            // Check for class extends null -- super() always throws TypeError
+            Value super_is_null = ctx.get_binding("__super_is_null__");
+            if (super_is_null.to_boolean()) {
+                ctx.throw_type_error("Super constructor is not a constructor");
+                return Value();
+            }
+
             Value parent_constructor = ctx.get_binding("__super__");
 
             if (parent_constructor.is_undefined()) {
                 parent_constructor = ctx.get_binding("__super_constructor__");
             }
 
-            
-            if ((parent_constructor.is_undefined() && parent_constructor.is_function()) || 
+
+            if ((parent_constructor.is_undefined() && parent_constructor.is_function()) ||
                 (parent_constructor.is_function() && parent_constructor.as_function() == nullptr)) {
                 return Value();
             }
-            
+
             if (parent_constructor.is_function()) {
                 std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
                 if (ctx.has_exception()) return Value();
@@ -204,6 +217,12 @@ Value CallExpression::evaluate(Context& ctx) {
                 try {
                     Function* parent_func = parent_constructor.as_function();
                     if (!parent_func) {
+                        return Value();
+                    }
+
+                    // IsConstructor check: calling super() with a non-constructor throws TypeError
+                    if (!parent_func->is_constructor()) {
+                        ctx.throw_type_error("Super constructor is not a constructor");
                         return Value();
                     }
 

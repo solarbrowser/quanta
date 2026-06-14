@@ -120,13 +120,19 @@ AsyncFunction::AsyncFunction(const std::string& name,
                            const std::vector<std::string>& params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {}
+    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
+    set_function_prototype(nullptr);
+}
 
 AsyncFunction::AsyncFunction(const std::string& name,
                            std::vector<std::unique_ptr<Parameter>> params,
                            std::unique_ptr<ASTNode> body,
                            Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {}
+    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
+    set_function_prototype(nullptr);
+}
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto promise_obj = ObjectFactory::create_promise(&ctx);

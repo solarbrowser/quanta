@@ -1052,8 +1052,11 @@ void register_object_builtins(Context& ctx) {
     auto isExtensible_fn = ObjectFactory::create_native_function("isExtensible",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty() || !args[0].is_object()) return Value(false);
-            Object* obj = args[0].as_object();
+            if (args.empty()) return Value(false);
+            Object* obj = nullptr;
+            if (args[0].is_object()) obj = args[0].as_object();
+            else if (args[0].is_function()) obj = static_cast<Object*>(args[0].as_function());
+            else return Value(false);
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 return Value(static_cast<Proxy*>(obj)->is_extensible_trap());
             }
