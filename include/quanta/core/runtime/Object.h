@@ -75,6 +75,8 @@ private:
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
 
     std::vector<std::string> property_insertion_order_;
+    // Shape properties that were deleted then re-added must enumerate at the end.
+    std::vector<std::string> readded_shape_properties_order_;
 
 public:
     Object(ObjectType type = ObjectType::Ordinary);

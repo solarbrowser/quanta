@@ -3606,12 +3606,15 @@ std::unique_ptr<ASTNode> Parser::parse_if_statement() {
 
 std::unique_ptr<ASTNode> Parser::parse_for_statement() {
     Position start = get_current_position();
-    
-    
+
     if (!consume(TokenType::FOR)) {
         add_error("Expected 'for'");
         return nullptr;
     }
+
+    // Tracks the declaration kind when `for (let/const/var [pattern] of ...)` is parsed.
+    // Used to pass per-iteration lexical scope info to ForOfStatement.
+    int for_of_decl_kind = -1;
 
     bool is_await_loop = false;
     if (match(TokenType::AWAIT)) {
@@ -3801,6 +3804,7 @@ std::unique_ptr<ASTNode> Parser::parse_for_statement() {
                 } else {
                     init = std::move(destructuring);
                 }
+                for_of_decl_kind = static_cast<int>(kind);
 
                 goto check_for_of;
             }
@@ -4081,7 +4085,7 @@ check_for_of:
         }
 
         Position end = get_current_position();
-        return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end);
+        return std::make_unique<ForInStatement>(std::move(init), std::move(object), std::move(body), start, end, for_of_decl_kind);
     }
 
     if (current_token().get_type() == TokenType::OF) {
@@ -4209,7 +4213,7 @@ check_for_of:
         }
 
         Position end = get_current_position();
-        return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), is_await_loop, start, end);
+        return std::make_unique<ForOfStatement>(std::move(init), std::move(iterable), std::move(body), is_await_loop, start, end, for_of_decl_kind);
     }
     
 for_semicolon:

@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Math.h"
@@ -975,6 +976,9 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
         uint32_t source_len = 0;
         bool is_string_source = false;
         std::string str_source;
+        // Deferred IteratorClose: must happen AFTER default value evaluation (not before).
+        Value deferred_iter_close_obj;
+        bool deferred_iter_close_needed = false;
 
         // For codepoint-aware string destructuring
         std::vector<std::string> str_codepoints;
@@ -1117,7 +1121,11 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
                                     }
-                                    if (!iter_done) { close_iter(); }
+                                    if (!iter_done) {
+                                        // Defer IteratorClose until after default value evaluation.
+                                        deferred_iter_close_needed = true;
+                                        deferred_iter_close_obj = iter_obj;
+                                    }
                                     temp->set_length(cnt);
                                     source_arr = temp.release();
                                 }
@@ -1171,7 +1179,31 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 auto* assign = static_cast<AssignmentExpression*>(target);
                 ASTNode* lhs = assign->left_.get();
                 if (elem_value.is_undefined()) {
-                    elem_value = assign->right_->evaluate(ctx);
+                    // Default may yield/return. On GeneratorReturnException, close iter first.
+                    if (deferred_iter_close_needed) {
+                        try {
+                            elem_value = assign->right_->evaluate(ctx);
+                        } catch (const GeneratorReturnException&) {
+                            // Spec 7.4.6 IteratorClose with return completion:
+                            // Call iterator.return(); propagate its throw or TypeError for non-Object.
+                            // If it succeeds and returns Object, propagate the original return.
+                            Value ret_m = deferred_iter_close_obj.as_object()->get_property("return");
+                            if (ret_m.is_function()) {
+                                Value inner = ret_m.as_function()->call(ctx, {}, deferred_iter_close_obj);
+                                if (ctx.has_exception()) {
+                                    // iterator.return() threw -- propagate that throw.
+                                    return;
+                                }
+                                if (!inner.is_object()) {
+                                    ctx.throw_type_error("Iterator return() result must be an Object");
+                                    return;
+                                }
+                            }
+                            throw; // iterator.return() ok -- propagate original return
+                        }
+                    } else {
+                        elem_value = assign->right_->evaluate(ctx);
+                    }
                     if (ctx.has_exception()) return;
                     if (elem_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
                             lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -1186,6 +1218,25 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
 
             assign_to_target(ctx, target, elem_value);
             if (ctx.has_exception()) return;
+        }
+        // Spec ArrayAssignmentPattern step 5: IteratorClose if iterator not exhausted.
+        if (deferred_iter_close_needed && deferred_iter_close_obj.is_object()) {
+            bool had_exc = ctx.has_exception();
+            Value saved_exc = had_exc ? ctx.get_exception() : Value();
+            if (had_exc) ctx.clear_exception();
+            Value ret_m = deferred_iter_close_obj.as_object()->get_property("return");
+            if (ret_m.is_function()) {
+                Value inner = ret_m.as_function()->call(ctx, {}, deferred_iter_close_obj);
+                if (had_exc) {
+                    // Throw completion: suppress inner errors, restore original.
+                    ctx.clear_exception();
+                    ctx.throw_exception(saved_exc, true);
+                } else if (!ctx.has_exception() && !inner.is_object()) {
+                    ctx.throw_type_error("Iterator return() result must be an Object");
+                }
+            } else if (had_exc) {
+                ctx.throw_exception(saved_exc, true);
+            }
         }
     }
 }

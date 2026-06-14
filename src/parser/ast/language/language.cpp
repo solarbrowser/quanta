@@ -1871,29 +1871,117 @@ Value YieldExpression::evaluate(Context& ctx) {
             if (!next_fn.is_function()) { ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
 
             Value final_val;
+            Value next_arg; // undefined for first call; updated to sent_value_ after each resume
             while (true) {
-                Value result = next_fn.as_function()->call(ctx, {}, iter_val);
+                Value result = next_fn.as_function()->call(ctx, {next_arg}, iter_val);
                 if (ctx.has_exception()) return Value();
                 if (!result.is_object()) {
                     ctx.throw_type_error("Iterator result is not an object");
                     return Value();
                 }
                 Value done = result.as_object()->get_property("done");
-                Value val  = result.as_object()->get_property("value");
                 if (ctx.has_exception()) return Value();
-                if (done.to_boolean()) { final_val = val; break; }
+                if (done.to_boolean()) {
+                    Value val = result.as_object()->get_property("value");
+                    if (ctx.has_exception()) return Value();
+                    final_val = val;
+                    break;
+                }
+                Value val = result.as_object()->get_property("value");
+                if (ctx.has_exception()) return Value();
                 // yield* propagates the WHOLE inner result object (spec 14.4.14)
                 current_gen->yielded_result_ = result;
                 current_gen->yield_raw_result_ = true;
                 current_gen->yielded_value_ = val; // fallback
                 current_gen->set_state(Generator::State::SuspendedYield);
                 swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
-                // Resumed
-                if (current_gen->returning_) { current_gen->returning_ = false; return Value(); }
+                // Resumed -- forward the value sent to outer generator into inner next()
+                next_arg = current_gen->sent_value_;
+                if (current_gen->returning_) {
+                    current_gen->returning_ = false;
+                    // Spec 27.5.3.7 step c: delegate return completion to inner iterator.
+                    Value ret_fn = iter_obj->get_property("return");
+                    if (ctx.has_exception()) return Value();
+                    if (!ret_fn.is_function()) {
+                        // No return method: propagate the return with original argument.
+                        throw GeneratorReturnException(current_gen->return_argument_);
+                    }
+                    Value ret_result = ret_fn.as_function()->call(ctx, {current_gen->return_argument_}, iter_val);
+                    if (ctx.has_exception()) return Value();
+                    if (!ret_result.is_object()) {
+                        ctx.throw_type_error("Iterator return() result is not an Object");
+                        return Value();
+                    }
+                    Value ret_done = ret_result.as_object()->get_property("done");
+                    if (ctx.has_exception()) return Value();
+                    Value ret_val = ret_result.as_object()->get_property("value");
+                    if (ctx.has_exception()) return Value();
+                    if (ret_done.to_boolean()) {
+                        // Inner done: complete outer generator with inner result's value.
+                        current_gen->return_argument_ = ret_val;
+                        throw GeneratorReturnException(ret_val);
+                    }
+                    // done=false: yield the inner result to outer, then continue iteration.
+                    current_gen->yielded_result_ = ret_result;
+                    current_gen->yield_raw_result_ = true;
+                    current_gen->yielded_value_ = ret_val;
+                    current_gen->set_state(Generator::State::SuspendedYield);
+                    swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                    next_arg = current_gen->sent_value_;
+                    if (current_gen->returning_) {
+                        current_gen->returning_ = false;
+                        throw GeneratorReturnException(current_gen->return_argument_);
+                    }
+                    if (current_gen->throwing_) {
+                        current_gen->throwing_ = false;
+                        ctx.throw_exception(current_gen->throw_value_, true);
+                        return Value();
+                    }
+                }
                 if (current_gen->throwing_) {
                     current_gen->throwing_ = false;
-                    ctx.throw_exception(current_gen->throw_value_, true);
-                    return Value();
+                    // Spec 27.5.3.7 step b: delegate throw completion to inner iterator.
+                    Value throw_fn = iter_obj->get_property("throw");
+                    if (ctx.has_exception()) return Value();
+                    if (!throw_fn.is_function()) {
+                        // No throw method: close inner iterator then throw TypeError.
+                        Value close_fn = iter_obj->get_property("return");
+                        if (!ctx.has_exception() && close_fn.is_function())
+                            close_fn.as_function()->call(ctx, {}, iter_val);
+                        ctx.clear_exception();
+                        ctx.throw_type_error("The iterator does not provide a throw method");
+                        return Value();
+                    }
+                    Value thr_result = throw_fn.as_function()->call(ctx, {current_gen->throw_value_}, iter_val);
+                    if (ctx.has_exception()) return Value();
+                    if (!thr_result.is_object()) {
+                        ctx.throw_type_error("Iterator throw() result is not an Object");
+                        return Value();
+                    }
+                    Value thr_done = thr_result.as_object()->get_property("done");
+                    if (ctx.has_exception()) return Value();
+                    Value thr_val = thr_result.as_object()->get_property("value");
+                    if (ctx.has_exception()) return Value();
+                    if (thr_done.to_boolean()) {
+                        final_val = thr_val;
+                        break;
+                    }
+                    // done=false: yield the result and continue.
+                    current_gen->yielded_result_ = thr_result;
+                    current_gen->yield_raw_result_ = true;
+                    current_gen->yielded_value_ = thr_val;
+                    current_gen->set_state(Generator::State::SuspendedYield);
+                    swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                    next_arg = current_gen->sent_value_;
+                    if (current_gen->returning_) {
+                        current_gen->returning_ = false;
+                        throw GeneratorReturnException(current_gen->return_argument_);
+                    }
+                    if (current_gen->throwing_) {
+                        current_gen->throwing_ = false;
+                        ctx.throw_exception(current_gen->throw_value_, true);
+                        return Value();
+                    }
                 }
             }
             return final_val;
