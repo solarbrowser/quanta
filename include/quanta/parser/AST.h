@@ -824,16 +824,20 @@ private:
     std::unique_ptr<ASTNode> left_;
     std::unique_ptr<ASTNode> right_;
     std::unique_ptr<ASTNode> body_;
+    int left_decl_kind_; // -1=none, 0=var, 1=let, 2=const (for destructuring left side)
 public:
     ForInStatement(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
-                   std::unique_ptr<ASTNode> body, const Position& start, const Position& end)
-        : ASTNode(Type::FOR_IN_STATEMENT, start, end), 
-          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)) {}
-    
+                   std::unique_ptr<ASTNode> body, const Position& start, const Position& end,
+                   int left_decl_kind = -1)
+        : ASTNode(Type::FOR_IN_STATEMENT, start, end),
+          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)),
+          left_decl_kind_(left_decl_kind) {}
+
     ASTNode* get_left() const { return left_.get(); }
     ASTNode* get_right() const { return right_.get(); }
     ASTNode* get_body() const { return body_.get(); }
-    
+    int get_left_decl_kind() const { return left_decl_kind_; }
+
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
     std::unique_ptr<ASTNode> clone() const override;
@@ -845,16 +849,20 @@ private:
     std::unique_ptr<ASTNode> right_;
     std::unique_ptr<ASTNode> body_;
     bool is_await_;
+    int left_decl_kind_; // -1=none, 0=var, 1=let, 2=const (for destructuring left side)
 public:
     ForOfStatement(std::unique_ptr<ASTNode> left, std::unique_ptr<ASTNode> right,
-                   std::unique_ptr<ASTNode> body, bool is_await, const Position& start, const Position& end)
+                   std::unique_ptr<ASTNode> body, bool is_await, const Position& start, const Position& end,
+                   int left_decl_kind = -1)
         : ASTNode(Type::FOR_OF_STATEMENT, start, end),
-          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)), is_await_(is_await) {}
+          left_(std::move(left)), right_(std::move(right)), body_(std::move(body)),
+          is_await_(is_await), left_decl_kind_(left_decl_kind) {}
 
     ASTNode* get_left() const { return left_.get(); }
     ASTNode* get_right() const { return right_.get(); }
     ASTNode* get_body() const { return body_.get(); }
     bool is_await() const { return is_await_; }
+    int get_left_decl_kind() const { return left_decl_kind_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

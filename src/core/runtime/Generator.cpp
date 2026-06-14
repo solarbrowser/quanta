@@ -116,7 +116,15 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     swapcontext(&caller_ctx_, &fiber_ctx_);
     current_generator_ = prev;
 
-    return GeneratorResult(value, true);
+    // Check if the fiber propagated an exception (e.g. IteratorClose threw TypeError).
+    if (generator_context_->has_exception()) {
+        Value exc = generator_context_->get_exception();
+        generator_context_->clear_exception();
+        return GeneratorResult::make_exception(exc);
+    }
+    // The fiber may have updated return_argument_ (e.g. yield* delegating to inner
+    // iterator whose return() returns a different value). Use it as the return value.
+    return GeneratorResult(return_argument_, true);
 }
 
 Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
@@ -390,6 +398,11 @@ Value Generator::generator_return(Context& ctx, const std::vector<Value>& args) 
     Value return_val = args.empty() ? Value() : args[0];
 
     auto result = generator->return_value(return_val);
+
+    if (result.has_exception) {
+        ctx.throw_exception(result.exception, true);
+        return Value();
+    }
 
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("value", result.value);

@@ -359,9 +359,11 @@ Value Object::get_own_property(const std::string& key) const {
     }
 
     if (header_.shape && header_.shape->has_property(key)) {
-        auto info = header_.shape->get_property_info(key);
-        if (info.offset < properties_.size()) {
-            return properties_[info.offset];
+        if (!(deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0)) {
+            auto info = header_.shape->get_property_info(key);
+            if (info.offset < properties_.size()) {
+                return properties_[info.offset];
+            }
         }
     }
 
@@ -513,7 +515,15 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             auto info = header_.shape->get_property_info(key);
             if (info.offset < properties_.size()) {
                 properties_[info.offset] = value;
-                if (deleted_shape_properties_) deleted_shape_properties_->erase(key);
+                if (deleted_shape_properties_ && deleted_shape_properties_->count(key)) {
+                    deleted_shape_properties_->erase(key);
+                    // Re-inserted after deletion: move to end of enumeration order.
+                    readded_shape_properties_order_.erase(
+                        std::remove(readded_shape_properties_order_.begin(),
+                                    readded_shape_properties_order_.end(), key),
+                        readded_shape_properties_order_.end());
+                    readded_shape_properties_order_.push_back(key);
+                }
                 if (descriptors_) {
                     auto dit = descriptors_->find(key);
                     if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
@@ -609,6 +619,10 @@ bool Object::delete_property(const std::string& key) {
                 deleted_shape_properties_ = std::make_unique<std::unordered_set<std::string>>();
             }
             deleted_shape_properties_->insert(key);
+            readded_shape_properties_order_.erase(
+                std::remove(readded_shape_properties_order_.begin(),
+                            readded_shape_properties_order_.end(), key),
+                readded_shape_properties_order_.end());
 
             header_.property_count--;
             update_hash_code();
@@ -691,10 +705,17 @@ std::vector<std::string> Object::get_own_property_keys() const {
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
 
-    // Shape properties first (these preserve insertion order)
+    // Shape properties first (these preserve insertion order).
+    // Skip re-added shape properties here; they are appended at the end.
     if (header_.shape) {
         auto shape_properties = header_.shape->get_property_keys();
         for (const auto& prop_name : shape_properties) {
+            if (deleted_shape_properties_ && deleted_shape_properties_->count(prop_name) > 0) continue;
+            bool readded = false;
+            for (const auto& rk : readded_shape_properties_order_) {
+                if (rk == prop_name) { readded = true; break; }
+            }
+            if (readded) continue;
             raw_keys.push_back(prop_name);
         }
     }
@@ -725,6 +746,17 @@ std::vector<std::string> Object::get_own_property_keys() const {
             if (!already) {
                 raw_keys.push_back(key);
             }
+        }
+    }
+
+    // Re-added shape properties: appended in their re-insertion order after all others.
+    for (const auto& key : readded_shape_properties_order_) {
+        bool already = false;
+        for (const auto& k : raw_keys) {
+            if (k == key) { already = true; break; }
+        }
+        if (!already) {
+            raw_keys.push_back(key);
         }
     }
 

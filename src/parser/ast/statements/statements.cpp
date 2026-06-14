@@ -995,6 +995,22 @@ Value ForInStatement::evaluate(Context& ctx) {
             if (!ctx.has_binding(vname)) ctx.create_binding(vname, init_val, true);
             else if (decl->get_init()) ctx.set_binding(vname, init_val);
         }
+    } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT &&
+               (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
+        // for (let/const [x, y] in obj) -- TDZ for bound names during object evaluation
+        auto* da = static_cast<DestructuringAssignment*>(left_.get());
+        pre_obj_env = ctx.get_lexical_environment();
+        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_obj_env);
+        Environment* tdz_ptr = tdz_env.release();
+        ctx.set_lexical_environment(tdz_ptr);
+        for (const auto& target : da->get_targets()) {
+            if (target && !target->get_name().empty())
+                tdz_ptr->create_uninitialized_binding(target->get_name());
+        }
+        for (const auto& pm : da->get_property_mappings()) {
+            if (!pm.variable_name.empty())
+                tdz_ptr->create_uninitialized_binding(pm.variable_name);
+        }
     }
 
     Value object = right_->evaluate(ctx);
@@ -1073,6 +1089,8 @@ Value ForInStatement::evaluate(Context& ctx) {
                 forin_per_iter = true;
             }
         }
+        // for (let/const [x] in obj) also gets per-iteration scope
+        bool forin_destr_per_iter = (is_destructuring && (left_decl_kind_ == 1 || left_decl_kind_ == 2));
 
         Value V; // completion value (spec ForIn/OfBodyEvaluation V)
 
@@ -1080,7 +1098,48 @@ Value ForInStatement::evaluate(Context& ctx) {
             if (iteration_count >= MAX_ITERATIONS) break;
             iteration_count++;
 
-            if (is_destructuring) {
+            // Skip properties deleted during enumeration (spec allows this).
+            {
+                bool still_exists = false;
+                Object* cur_check = obj;
+                while (cur_check) {
+                    if (cur_check->has_own_property(key)) { still_exists = true; break; }
+                    cur_check = cur_check->get_prototype();
+                }
+                if (!still_exists) continue;
+            }
+
+            if (forin_destr_per_iter) {
+                auto* destr = static_cast<DestructuringAssignment*>(left_.get());
+                ctx.push_block_scope();
+                for (const auto& target : destr->get_targets()) {
+                    if (target && !target->get_name().empty())
+                        ctx.create_lexical_binding(target->get_name(), Value(), true);
+                }
+                for (const auto& pm : destr->get_property_mappings()) {
+                    if (!pm.variable_name.empty())
+                        ctx.create_lexical_binding(pm.variable_name, Value(), true);
+                }
+                destr->evaluate_with_value(ctx, Value(key));
+                if (!ctx.has_exception()) {
+                    Value body_result = body_->evaluate(ctx);
+                    if (!body_result.is_undefined()) V = body_result;
+                }
+                ctx.pop_block_scope();
+                if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
+                if (ctx.has_break()) {
+                    if (ctx.get_break_label().empty()) ctx.clear_break_continue();
+                    break;
+                }
+                if (ctx.has_continue()) {
+                    if (ctx.get_continue_label().empty() || ctx.get_continue_label() == this_loop_label)
+                        ctx.clear_break_continue();
+                    else break;
+                    continue;
+                }
+                if (ctx.has_return_value()) { ctx.set_current_loop_label(prev_loop_label); return ctx.get_return_value(); }
+                continue;
+            } else if (is_destructuring) {
                 auto* destr = static_cast<DestructuringAssignment*>(left_.get());
                 destr->evaluate_with_value(ctx, Value(key));
                 if (ctx.has_exception()) { ctx.set_current_loop_label(prev_loop_label); return Value(); }
@@ -1144,8 +1203,10 @@ Value ForInStatement::evaluate(Context& ctx) {
         ctx.set_current_loop_label(prev_loop_label);
         return V;
     } else {
+        // Spec 13.7.5.11: primitives are ToObject'd -- number/boolean have no enumerable props.
+        // Strings should iterate character indices, but that's handled via is_object_like for boxed strings.
+        // For unboxed primitives (number, boolean, symbol), zero iterations, no error.
         ctx.set_current_loop_label(prev_loop_label);
-        ctx.throw_exception(Value(std::string("For...in: Cannot iterate over non-object")));
         return Value();
     }
 }
@@ -1155,7 +1216,7 @@ std::string ForInStatement::to_string() const {
 }
 
 std::unique_ptr<ASTNode> ForInStatement::clone() const {
-    return std::make_unique<ForInStatement>(left_->clone(), right_->clone(), body_->clone(), start_, end_);
+    return std::make_unique<ForInStatement>(left_->clone(), right_->clone(), body_->clone(), start_, end_, left_decl_kind_);
 }
 
 Value ForOfStatement::evaluate(Context& ctx) {
@@ -1180,6 +1241,22 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         tdz_ptr->create_uninitialized_binding(bname);
                 }
             }
+        }
+    } else if (left_->get_type() == ASTNode::Type::DESTRUCTURING_ASSIGNMENT &&
+               (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
+        // for (let/const [x, y] of ...) -- TDZ for bound names during iterable evaluation
+        auto* da = static_cast<DestructuringAssignment*>(left_.get());
+        pre_iter_env = ctx.get_lexical_environment();
+        auto tdz_env = std::make_unique<Environment>(Environment::Type::Declarative, pre_iter_env);
+        Environment* tdz_ptr = tdz_env.release();
+        ctx.set_lexical_environment(tdz_ptr);
+        for (const auto& target : da->get_targets()) {
+            if (target && !target->get_name().empty())
+                tdz_ptr->create_uninitialized_binding(target->get_name());
+        }
+        for (const auto& pm : da->get_property_mappings()) {
+            if (!pm.variable_name.empty())
+                tdz_ptr->create_uninitialized_binding(pm.variable_name);
         }
     } else if (left_->get_type() == ASTNode::Type::USING_DECLARATION) {
         auto* ud = static_cast<UsingDeclaration*>(left_.get());
@@ -1637,6 +1714,40 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                            left_->get_type() == Type::OBJECT_LITERAL) {
                                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
                                     if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
+                                } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT &&
+                                           (left_decl_kind_ == 1 || left_decl_kind_ == 2)) {
+                                    // for (let/const [x, y] of ...) -- per-iteration lexical scope
+                                    auto* da = static_cast<DestructuringAssignment*>(left_.get());
+                                    loop_ctx->push_block_scope();
+                                    // Pre-declare bindings so evaluate_with_value uses the inner scope
+                                    for (const auto& target : da->get_targets()) {
+                                        if (target && !target->get_name().empty())
+                                            loop_ctx->create_lexical_binding(target->get_name(), Value(), true);
+                                    }
+                                    for (const auto& pm : da->get_property_mappings()) {
+                                        if (!pm.variable_name.empty())
+                                            loop_ctx->create_lexical_binding(pm.variable_name, Value(), true);
+                                    }
+                                    da->evaluate_with_value(*loop_ctx, value);
+                                    if (!loop_ctx->has_exception()) {
+                                        Value br = body_->evaluate(*loop_ctx);
+                                        if (!g_empty_completion) V_iter = br;
+                                    }
+                                    loop_ctx->pop_block_scope();
+                                    if (loop_ctx->has_exception()) { close_iterator(); return Value(); }
+                                    if (loop_ctx->has_break()) {
+                                        close_iterator(true);
+                                        if (loop_ctx->has_exception()) return Value();
+                                        if (loop_ctx->get_break_label().empty()) loop_ctx->clear_break_continue();
+                                        break;
+                                    }
+                                    if (loop_ctx->has_continue()) {
+                                        if (loop_ctx->get_continue_label().empty()) { continue; }
+                                        close_iterator();
+                                        return Value();
+                                    }
+                                    if (loop_ctx->has_return_value()) { close_iterator(); return Value(); }
+                                    continue;
                                 } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
                                     destructuring->evaluate_with_value(*loop_ctx, value);
@@ -1796,6 +1907,35 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     if (loop_ctx->has_exception()) return Value();
                 } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                     DestructuringAssignment* destructuring = static_cast<DestructuringAssignment*>(left_.get());
+                    bool da_per_iter = (left_decl_kind_ == 1 || left_decl_kind_ == 2);
+                    if (da_per_iter) {
+                        loop_ctx->push_block_scope();
+                        for (const auto& target : destructuring->get_targets()) {
+                            if (target && !target->get_name().empty())
+                                loop_ctx->create_lexical_binding(target->get_name(), Value(), true);
+                        }
+                        for (const auto& pm : destructuring->get_property_mappings()) {
+                            if (!pm.variable_name.empty())
+                                loop_ctx->create_lexical_binding(pm.variable_name, Value(), true);
+                        }
+                        destructuring->evaluate_with_value(*loop_ctx, element);
+                        if (!loop_ctx->has_exception() && body_) {
+                            Value result = body_->evaluate(*loop_ctx);
+                            if (!g_empty_completion) V_arr = result;
+                        }
+                        loop_ctx->pop_block_scope();
+                        if (loop_ctx->has_exception()) { ctx.throw_exception(loop_ctx->get_exception(), true); return Value(); }
+                        if (loop_ctx->has_return_value()) { ctx.set_return_value(loop_ctx->get_return_value()); return Value(); }
+                        if (loop_ctx->has_break()) {
+                            if (loop_ctx->get_break_label().empty()) loop_ctx->clear_break_continue();
+                            break;
+                        }
+                        if (loop_ctx->has_continue()) {
+                            if (loop_ctx->get_continue_label().empty()) loop_ctx->clear_break_continue();
+                            else break;
+                        }
+                        continue;
+                    }
 
                     std::unique_ptr<ASTNode> temp_literal;
                     Position dummy_pos(0, 0);
@@ -1893,7 +2033,7 @@ std::string ForOfStatement::to_string() const {
 
 std::unique_ptr<ASTNode> ForOfStatement::clone() const {
     return std::make_unique<ForOfStatement>(
-        left_->clone(), right_->clone(), body_->clone(), is_await_, start_, end_
+        left_->clone(), right_->clone(), body_->clone(), is_await_, start_, end_, left_decl_kind_
     );
 }
 
@@ -2235,6 +2375,19 @@ Value TryStatement::evaluate(Context& ctx) {
     } catch (const YieldException&) {
         try_recursion_depth--;
         throw;
+    } catch (const GeneratorReturnException&) {
+        // Generator return: run finally (if any), then re-throw.
+        // Return here to prevent the normal finally block below from running twice.
+        try_recursion_depth--;
+        if (!finally_block_) {
+            throw;
+        }
+        finally_block_->evaluate(ctx);
+        // If finally had an abrupt completion, it takes precedence over the return.
+        if (ctx.has_exception() || ctx.has_return_value() || ctx.has_break() || ctx.has_continue()) {
+            return Value(); // propagate finally's completion via ctx
+        }
+        throw; // finally completed normally -- re-throw the generator return
     } catch (const std::exception& e) {
         caught_exception = true;
         if (ctx.has_exception()) {
