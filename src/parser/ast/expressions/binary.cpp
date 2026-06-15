@@ -484,36 +484,41 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Value result = toPrim.as_function()->call(ctx, {Value(hint)}, val);
             if (ctx.has_exception()) return Value();
             if (!result.is_object_like()) return result;
-            return val;
+            ctx.throw_type_error("Cannot convert object to primitive value");
+            return Value();
         }
-        bool prefer_string = obj->has_property("_isDate");
+        bool prefer_string = obj->has_property("_isDate") || hint == "string";
 
         if (prefer_string) {
             Value toString_method = obj->get_property("toString");
             if (toString_method.is_function()) {
-                try {
-                    Value result = toString_method.as_function()->call(ctx, {}, val);
-                    if (!result.is_object()) return result;
-                } catch (...) {}
+                Value result = toString_method.as_function()->call(ctx, {}, val);
+                if (ctx.has_exception()) return Value();
+                if (!result.is_object_like()) return result;
             }
-        }
-        Value valueOf_method = obj->get_property("valueOf");
-        if (valueOf_method.is_function()) {
-            try {
+            Value valueOf_method = obj->get_property("valueOf");
+            if (valueOf_method.is_function()) {
                 Value result = valueOf_method.as_function()->call(ctx, {}, val);
-                if (!result.is_object()) return result;
-            } catch (...) {}
-        }
-        if (!prefer_string) {
+                if (ctx.has_exception()) return Value();
+                if (!result.is_object_like()) return result;
+            }
+        } else {
+            Value valueOf_method = obj->get_property("valueOf");
+            if (valueOf_method.is_function()) {
+                Value result = valueOf_method.as_function()->call(ctx, {}, val);
+                if (ctx.has_exception()) return Value();
+                if (!result.is_object_like()) return result;
+            }
             Value toString_method = obj->get_property("toString");
             if (toString_method.is_function()) {
-                try {
-                    Value result = toString_method.as_function()->call(ctx, {}, val);
-                    if (!result.is_object()) return result;
-                } catch (...) {}
+                Value result = toString_method.as_function()->call(ctx, {}, val);
+                if (ctx.has_exception()) return Value();
+                if (!result.is_object_like()) return result;
             }
         }
-        return val;
+        // Both valueOf and toString returned objects — spec requires TypeError
+        ctx.throw_type_error("Cannot convert object to primitive value");
+        return Value();
     };
 
     switch (operator_) {
@@ -544,43 +549,10 @@ Value BinaryExpression::evaluate(Context& ctx) {
         }
         case Operator::SUBTRACT:
         case Operator::MULTIPLY: {
-            Value left_coerced = left_value;
-            Value right_coerced = right_value;
-
-            if (left_value.is_object() && !left_value.is_string()) {
-                Object* obj = left_value.as_object();
-                if (obj && obj->has_property("valueOf")) {
-                    Value valueOf_method = obj->get_property("valueOf");
-                    if (valueOf_method.is_function()) {
-                        try {
-                            Function* valueOf_fn = valueOf_method.as_function();
-                            Value coerced = valueOf_fn->call(ctx, {}, left_value);
-                            if (!coerced.is_object()) {
-                                left_coerced = coerced;
-                            }
-                        } catch (...) {
-                        }
-                    }
-                }
-            }
-
-            if (right_value.is_object() && !right_value.is_string()) {
-                Object* obj = right_value.as_object();
-                if (obj && obj->has_property("valueOf")) {
-                    Value valueOf_method = obj->get_property("valueOf");
-                    if (valueOf_method.is_function()) {
-                        try {
-                            Function* valueOf_fn = valueOf_method.as_function();
-                            Value coerced = valueOf_fn->call(ctx, {}, right_value);
-                            if (!coerced.is_object()) {
-                                right_coerced = coerced;
-                            }
-                        } catch (...) {
-                        }
-                    }
-                }
-            }
-
+            Value left_coerced = toPrimitive(left_value, "number");
+            if (ctx.has_exception()) return Value();
+            Value right_coerced = toPrimitive(right_value, "number");
+            if (ctx.has_exception()) return Value();
             try {
                 if (operator_ == Operator::SUBTRACT) {
                     return left_coerced.subtract(right_coerced);
@@ -613,12 +585,16 @@ Value BinaryExpression::evaluate(Context& ctx) {
             
         case Operator::EQUAL: {
             Value lp = toPrimitive(left_value, "default");
+            if (ctx.has_exception()) return Value();
             Value rp = toPrimitive(right_value, "default");
+            if (ctx.has_exception()) return Value();
             return Value(lp.loose_equals(rp));
         }
         case Operator::NOT_EQUAL: {
             Value lp = toPrimitive(left_value, "default");
+            if (ctx.has_exception()) return Value();
             Value rp = toPrimitive(right_value, "default");
+            if (ctx.has_exception()) return Value();
             return Value(!lp.loose_equals(rp));
         }
         case Operator::STRICT_EQUAL:
@@ -693,6 +669,14 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 }
                 ctx.throw_type_error("Right-hand side of instanceof is not callable");
                 return Value(false);
+            }
+            // ES5 15.3.5.3 step 3: if F.prototype is not an object, throw TypeError
+            {
+                Value proto_prop = right_value.as_function()->get_property("prototype");
+                if (!proto_prop.is_object()) {
+                    ctx.throw_type_error("Function has non-object prototype in instanceof check");
+                    return Value(false);
+                }
             }
             return Value(left_value.instanceof_check(right_value));
         }

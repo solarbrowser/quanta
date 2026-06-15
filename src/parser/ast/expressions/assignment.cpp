@@ -349,7 +349,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             right_value = right_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             if (lobj) {
-                bool ok = lobj->set_property(lprop, right_value);
+                bool ok = lobj->ordinary_set(lprop, right_value);
                 if (!ok && ctx.is_strict_mode()) {
                     ctx.throw_type_error("Cannot assign to read only property '" + lprop + "'");
                     return Value();
@@ -554,12 +554,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
                 return Value();
             }
-            // For any assignment (including =), check if target is a private method
+            // For any assignment (including =), check if target is a private method or uninitialized field
             if (!obj->has_private_slot(prop_name)) {
+                bool found_on_proto = false;
                 Object* proto = obj->get_prototype();
                 while (proto) {
                     PropertyDescriptor pd = proto->get_property_descriptor(prop_name);
                     if (pd.has_value()) {
+                        found_on_proto = true;
                         // It's a data property on prototype -- could be a private method
                         if (!pd.is_accessor_descriptor() && pd.get_value().is_function()) {
                             ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
@@ -568,6 +570,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         break;
                     }
                     if (pd.is_accessor_descriptor()) {
+                        found_on_proto = true;
                         if (!pd.has_setter()) {
                             ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
                             return Value();
@@ -575,6 +578,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         break;
                     }
                     proto = proto->get_prototype();
+                }
+                // Private instance field not yet initialized on this object
+                if (!found_on_proto) {
+                    ctx.throw_type_error("Cannot set private field " + prop_name + " on an object that has not been initialized");
+                    return Value();
                 }
             }
             if (operator_ != Operator::ASSIGN && !obj->has_private_slot(prop_name)) {
@@ -669,7 +677,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 } else {
                     if (obj) {
-                        bool success = obj->set_property(prop_name, right_value);
+                        bool success = obj->ordinary_set(prop_name, right_value);
                         if (!success && ctx.is_strict_mode()) {
                             ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
                             return Value();
@@ -743,7 +751,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     } else {
                         computed = Value(current_value.to_number() + right_value.to_number());
                     }
-                    bool ok = obj->set_property(prop_name, computed);
+                    bool ok = obj->ordinary_set(prop_name, computed);
                     if (!ok && ctx.is_strict_mode()) {
                         ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
                         return Value();
@@ -781,7 +789,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN:result = static_cast<double>(static_cast<uint32_t>(l) >> (static_cast<uint32_t>(r) & 0x1F)); break;
                     default: result = l; break;
                 }
-                bool success = obj->set_property(prop_name, Value(result));
+                bool success = obj->ordinary_set(prop_name, Value(result));
                 if (!success && ctx.is_strict_mode()) {
                     ctx.throw_type_error("Cannot assign to read only property '" + prop_name + "'");
                     return Value();
@@ -878,16 +886,50 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 prop->value && prop->value->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
                 auto* spread = static_cast<SpreadElement*>(prop->value.get());
                 ASTNode* rest_target = spread->get_argument();
-                // Create object with remaining properties
+                // Create object with remaining enumerable own properties.
+                // Use set_property_descriptor with explicit WEC attrs so that numeric keys
+                // whose getter returns undefined still appear in Object.keys (they'd be lost
+                // as "holes" if stored via set_property/set_element with undefined value).
                 auto rest_obj = ObjectFactory::create_object();
-                auto keys = source_obj->get_own_property_keys();
-                for (const auto& k : keys) {
-                    bool already_assigned = false;
-                    for (const auto& ak : assigned_keys) {
-                        if (ak == k) { already_assigned = true; break; }
+                if (source_value.is_string()) {
+                    // For strings, create indexed char properties (spec 12.15.5.2).
+                    const std::string& raw = source_value.as_string()->str();
+                    uint32_t char_idx = 0;
+                    size_t pos = 0;
+                    while (pos < raw.size()) {
+                        unsigned char c = static_cast<unsigned char>(raw[pos]);
+                        size_t cl = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
+                        if (pos + cl > raw.size()) cl = 1;
+                        std::string char_key = std::to_string(char_idx);
+                        bool already_assigned = false;
+                        for (const auto& ak : assigned_keys) {
+                            if (ak == char_key) { already_assigned = true; break; }
+                        }
+                        if (!already_assigned) {
+                            PropertyDescriptor cdesc(Value(raw.substr(pos, cl)),
+                                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                            rest_obj->set_property_descriptor(char_key, cdesc);
+                        }
+                        pos += cl;
+                        char_idx++;
                     }
-                    if (!already_assigned) {
-                        rest_obj->set_property(k, source_obj->get_property(k));
+                } else {
+                    // For objects: use enumerable keys only (spec excludes non-enumerable).
+                    auto keys = source_obj->get_enumerable_keys();
+                    for (const auto& k : keys) {
+                        bool already_assigned = false;
+                        for (const auto& ak : assigned_keys) {
+                            if (ak == k) { already_assigned = true; break; }
+                        }
+                        if (!already_assigned) {
+                            Value val = source_obj->get_property(k);
+                            if (ctx.has_exception()) return;
+                            PropertyDescriptor rdesc(val,
+                                static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                    PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                            rest_obj->set_property_descriptor(k, rdesc);
+                        }
                     }
                 }
                 assign_to_target(ctx, rest_target, Value(rest_obj.release()));
@@ -910,7 +952,14 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             } else if (prop->key->get_type() == ASTNode::Type::STRING_LITERAL) {
                 prop_name = static_cast<StringLiteral*>(prop->key.get())->get_value();
             } else if (prop->key->get_type() == ASTNode::Type::NUMBER_LITERAL) {
-                prop_name = prop->key->to_string();
+                double kv = static_cast<NumberLiteral*>(prop->key.get())->get_value();
+                if (kv == std::floor(kv) && kv >= static_cast<double>(LLONG_MIN) && kv <= static_cast<double>(LLONG_MAX)) {
+                    prop_name = std::to_string(static_cast<long long>(kv));
+                } else {
+                    std::ostringstream koss;
+                    koss << kv;
+                    prop_name = koss.str();
+                }
             }
             assigned_keys.push_back(prop_name);
 
@@ -1063,6 +1112,26 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                 };
 
                                 if (has_rest) {
+                                    // Spec AssignmentRestElement step 1: for MemberExpression targets,
+                                    // evaluate the reference (object + key) BEFORE consuming the iterator.
+                                    // ReturnIfAbrupt: if evaluation throws, IteratorClose and propagate.
+                                    const auto& elems_r = arr_lit_check->get_elements();
+                                    for (size_t ri = 0; ri < elems_r.size(); ri++) {
+                                        if (elems_r[ri] && elems_r[ri]->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                                            auto* sp = static_cast<SpreadElement*>(elems_r[ri].get());
+                                            ASTNode* rt = sp->get_argument();
+                                            if (rt && rt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                                                auto* mem = static_cast<MemberExpression*>(rt);
+                                                mem->get_object()->evaluate(ctx);
+                                                if (ctx.has_exception()) { close_iter(); return; }
+                                                if (mem->is_computed()) {
+                                                    mem->get_property()->evaluate(ctx);
+                                                    if (ctx.has_exception()) { close_iter(); return; }
+                                                }
+                                            }
+                                            break;
+                                        }
+                                    }
                                     // Rest: collect all remaining into temp array
                                     auto temp = ObjectFactory::create_array(0);
                                     uint32_t cnt = 0;
@@ -1293,7 +1362,7 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
             } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(member->get_property())->get_name();
             }
-            obj->set_property(prop_name, value);
+            obj->ordinary_set(prop_name, value);
         }
     } else if (target->get_type() == ASTNode::Type::OBJECT_LITERAL ||
                target->get_type() == ASTNode::Type::ARRAY_LITERAL) {

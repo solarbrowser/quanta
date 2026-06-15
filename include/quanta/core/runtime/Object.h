@@ -115,6 +115,7 @@ public:
     virtual bool has_property(const std::string& key) const;
     virtual bool has_own_property(const std::string& key) const;
     bool has_private_slot(const std::string& key) const;
+    void add_private_field(const std::string& key, const Value& value = Value());
 
     virtual Value get_property(const std::string& key) const;
     Value get_property(const Value& key) const;
@@ -122,6 +123,7 @@ public:
 
     virtual bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
+    bool ordinary_set(const std::string& key, const Value& value);
     virtual bool delete_property(const std::string& key);
     
     virtual Value get_element(uint32_t index) const;

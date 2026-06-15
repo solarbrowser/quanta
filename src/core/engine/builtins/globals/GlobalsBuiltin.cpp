@@ -1126,6 +1126,19 @@ void register_global_builtins(Context& ctx) {
         }, 1);
     ctx.get_global_object()->set_property("__import_source__", Value(import_source_fn.release()));
 
+    // __pfadd__(obj, name [, value]): PrivateFieldAdd - adds a private field slot to obj.
+    // Used by class field declarations so the slot exists before user assignments check it.
+    auto pfadd_fn = ObjectFactory::create_native_function("__pfadd__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.size() < 2 || !args[0].is_object()) return Value();
+            Object* obj = args[0].as_object();
+            std::string name = args[1].to_string();
+            Value val = args.size() >= 3 ? args[2] : Value();
+            obj->add_private_field(name, val);
+            return Value();
+        }, 2);
+    ctx.get_global_object()->set_property("__pfadd__", Value(pfadd_fn.release()));
+
     // print()
     auto print_fn = ObjectFactory::create_native_function("print",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

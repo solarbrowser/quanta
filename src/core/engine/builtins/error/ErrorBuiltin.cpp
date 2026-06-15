@@ -552,6 +552,47 @@ void register_error_builtins(Context& ctx) {
     }
 
     ctx.register_built_in_object("AggregateError", aggregate_error_constructor.release());
+
+    // SuppressedError: wraps two errors when both a body and disposal throw
+    Object* error_prototype_ptr2 = nullptr;
+    {
+        Value ep = ctx.get_global_object()->get_property("Error");
+        if (ep.is_function()) {
+            Value proto = ep.as_function()->get_property("prototype");
+            if (proto.is_object()) error_prototype_ptr2 = proto.as_object();
+        }
+    }
+
+    auto suppressed_error_prototype = ObjectFactory::create_object(error_prototype_ptr2);
+    suppressed_error_prototype->set_property("name", Value(std::string("SuppressedError")));
+    suppressed_error_prototype->set_property("message", Value(std::string("")));
+    Object* suppressed_proto_ptr = suppressed_error_prototype.get();
+
+    auto suppressed_error_constructor = ObjectFactory::create_native_constructor("SuppressedError",
+        [suppressed_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::string message = (args.size() >= 3 && !args[2].is_undefined()) ? args[2].to_string() : "";
+            auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
+            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("name", Value(std::string("SuppressedError")));
+            error_obj->set_prototype(suppressed_proto_ptr);
+            if (args.size() >= 1) error_obj->set_property("error", args[0]);
+            if (args.size() >= 2) error_obj->set_property("suppressed", args[1]);
+            if (!message.empty()) error_obj->set_property("message", Value(message));
+            return Value(error_obj.release());
+        }, 3);
+
+    PropertyDescriptor se_constructor_desc(Value(suppressed_error_constructor.get()), PropertyAttributes::BuiltinFunction);
+    suppressed_error_prototype->set_property_descriptor("constructor", se_constructor_desc);
+    suppressed_error_constructor->set_property("prototype", Value(suppressed_error_prototype.release()));
+
+    Object* error_ctor2 = nullptr;
+    {
+        Value ep = ctx.get_global_object()->get_property("Error");
+        if (ep.is_function()) error_ctor2 = static_cast<Object*>(ep.as_function());
+    }
+    if (error_ctor2) suppressed_error_constructor->set_prototype(error_ctor2);
+
+    ctx.register_built_in_object("SuppressedError", suppressed_error_constructor.release());
 }
 
 } // namespace Quanta

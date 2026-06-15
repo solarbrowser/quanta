@@ -128,7 +128,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
 
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env) {
+        while (walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 auto lex_binding_names = walk->get_binding_names();
                 for (const auto& name : lex_binding_names) {
@@ -403,23 +403,57 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (field_init->get_type() == Type::CLASS_FIELD) {
                 ClassField* cf = static_cast<ClassField*>(field_init.get());
                 Position fstart = cf->get_start();
-                auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
-                // String/number literal keys must be computed (this["a"] not this.a)
-                bool field_computed = cf->is_computed() ||
-                    cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL ||
-                    cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL;
-                auto member_expr = std::make_unique<MemberExpression>(
-                    std::move(this_id), cf->get_key()->clone(), field_computed, fstart, fstart);
-                std::unique_ptr<ASTNode> init_val;
-                if (cf->get_value()) {
-                    init_val = cf->get_value()->clone();
+
+                // Check if this is a private field declaration (name starts with #)
+                bool is_private = !cf->is_computed() &&
+                    cf->get_key()->get_type() == ASTNode::Type::IDENTIFIER &&
+                    !static_cast<Identifier*>(cf->get_key())->get_name().empty() &&
+                    static_cast<Identifier*>(cf->get_key())->get_name()[0] == '#';
+
+                if (is_private) {
+                    // Private field: use __pfadd__(this, "#name") to create the slot first
+                    // (PrivateFieldAdd semantics), then assign the value if there is one.
+                    const std::string& pname = static_cast<Identifier*>(cf->get_key())->get_name();
+                    auto pfadd_id = std::make_unique<Identifier>("__pfadd__", fstart, fstart);
+                    auto this_id0 = std::make_unique<Identifier>("this", fstart, fstart);
+                    auto pname_lit = std::make_unique<StringLiteral>(pname, fstart, fstart);
+                    std::vector<std::unique_ptr<ASTNode>> pfadd_args;
+                    pfadd_args.push_back(std::move(this_id0));
+                    pfadd_args.push_back(std::move(pname_lit));
+                    auto pfadd_call = std::make_unique<CallExpression>(
+                        std::move(pfadd_id), std::move(pfadd_args), fstart, fstart, false);
+                    new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), fstart, fstart));
+
+                    if (cf->get_value()) {
+                        // Now assign the initializer value via regular assignment (slot exists)
+                        auto this_id2 = std::make_unique<Identifier>("this", fstart, fstart);
+                        auto key_clone = cf->get_key()->clone();
+                        auto member_expr = std::make_unique<MemberExpression>(
+                            std::move(this_id2), std::move(key_clone), false, fstart, fstart);
+                        auto assign = std::make_unique<AssignmentExpression>(
+                            std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
+                            cf->get_value()->clone(), fstart, fstart);
+                        new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
+                    }
                 } else {
-                    init_val = std::make_unique<Identifier>("undefined", fstart, fstart);
+                    auto this_id = std::make_unique<Identifier>("this", fstart, fstart);
+                    // String/number literal keys must be computed (this["a"] not this.a)
+                    bool field_computed = cf->is_computed() ||
+                        cf->get_key()->get_type() == ASTNode::Type::STRING_LITERAL ||
+                        cf->get_key()->get_type() == ASTNode::Type::NUMBER_LITERAL;
+                    auto member_expr = std::make_unique<MemberExpression>(
+                        std::move(this_id), cf->get_key()->clone(), field_computed, fstart, fstart);
+                    std::unique_ptr<ASTNode> init_val;
+                    if (cf->get_value()) {
+                        init_val = cf->get_value()->clone();
+                    } else {
+                        init_val = std::make_unique<Identifier>("undefined", fstart, fstart);
+                    }
+                    auto assign = std::make_unique<AssignmentExpression>(
+                        std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
+                        std::move(init_val), fstart, fstart);
+                    new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
                 }
-                auto assign = std::make_unique<AssignmentExpression>(
-                    std::move(member_expr), AssignmentExpression::Operator::ASSIGN,
-                    std::move(init_val), fstart, fstart);
-                new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(assign), fstart, fstart));
             } else {
                 new_statements.push_back(std::move(field_init));
             }
@@ -904,7 +938,7 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env) {
+        while (walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 auto lex_binding_names = walk->get_binding_names();
                 for (const auto& name : lex_binding_names) {
@@ -1055,7 +1089,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         }
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env) {
+        while (walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 for (const auto& bname : walk->get_binding_names()) {
                     if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
@@ -1131,7 +1165,7 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
-    while (walk && walk != var_env) {
+    while (walk && walk != var_env && !walk->is_closure_boundary()) {
         if (walk->get_type() != Environment::Type::Object) {
             auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
@@ -2369,7 +2403,7 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     }
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
-    while (walk && walk != var_env) {
+    while (walk && walk != var_env && !walk->is_closure_boundary()) {
         if (walk->get_type() != Environment::Type::Object) {
             for (const auto& bname : walk->get_binding_names()) {
                 if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
