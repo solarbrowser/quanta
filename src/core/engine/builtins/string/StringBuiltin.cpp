@@ -22,7 +22,40 @@ namespace Quanta {
 void register_string_builtins(Context& ctx) {
     auto string_constructor = ObjectFactory::create_native_constructor("String",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str_value = args.empty() ? "" : args[0].to_string();
+            std::string str_value;
+            if (args.empty()) {
+                str_value = "";
+            } else {
+                const Value& arg = args[0];
+                if (arg.is_symbol()) {
+                    str_value = arg.as_symbol()->to_string();
+                } else if (arg.is_object() || arg.is_function()) {
+                    // Spec: ToString for objects calls ToPrimitive("string") -> toString then valueOf
+                    Object* obj = arg.is_function() ? static_cast<Object*>(arg.as_function()) : arg.as_object();
+                    Value ts = obj->get_property("toString");
+                    if (!ctx.has_exception() && ts.is_function()) {
+                        Value r = ts.as_function()->call(ctx, {}, arg);
+                        if (!ctx.has_exception() && !r.is_object() && !r.is_function()) {
+                            str_value = r.to_string();
+                        } else if (!ctx.has_exception()) {
+                            Value vof = obj->get_property("valueOf");
+                            if (!ctx.has_exception() && vof.is_function()) {
+                                Value r2 = vof.as_function()->call(ctx, {}, arg);
+                                if (!ctx.has_exception() && !r2.is_object() && !r2.is_function()) {
+                                    str_value = r2.to_string();
+                                } else if (!ctx.has_exception()) {
+                                    ctx.throw_type_error("Cannot convert object to string");
+                                }
+                            }
+                        }
+                    } else if (!ctx.has_exception()) {
+                        str_value = arg.to_string();
+                    }
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    str_value = arg.to_string();
+                }
+            }
 
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {

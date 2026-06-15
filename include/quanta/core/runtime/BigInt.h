@@ -67,6 +67,13 @@ public:
     
     static BigInt from_string(const std::string& str);
     static BigInt pow(const BigInt& base, const BigInt& exponent);
+
+    BigInt bitwise_not() const;
+    BigInt bitwise_and(const BigInt& other) const;
+    BigInt bitwise_or(const BigInt& other) const;
+    BigInt bitwise_xor(const BigInt& other) const;
+    BigInt left_shift(const BigInt& n) const;
+    BigInt right_shift(const BigInt& n) const;
 };
 
 }

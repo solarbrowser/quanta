@@ -16,6 +16,33 @@
 
 namespace Quanta {
 
+// ToPropertyKey for object literal computed keys: calls JS toString then valueOf for objects.
+static std::string literal_to_property_key(Context& ctx, const Value& val) {
+    if (val.is_symbol()) return val.as_symbol()->to_property_key();
+    if (!val.is_object() && !val.is_function()) return val.to_string();
+
+    Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+
+    Value ts = obj->get_property("toString");
+    if (!ctx.has_exception() && ts.is_function()) {
+        Value r = ts.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    Value vof = obj->get_property("valueOf");
+    if (!ctx.has_exception() && vof.is_function()) {
+        Value r = vof.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return "";
+}
+
 Value ObjectLiteral::evaluate(Context& ctx) {
     auto object = ObjectFactory::create_object();
     if (!object) {
@@ -78,11 +105,8 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         if (prop->computed) {
             Value key_value = prop->key->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            if (key_value.is_symbol()) {
-                key = key_value.as_symbol()->to_property_key();
-            } else {
-                key = key_value.to_string();
-            }
+            key = literal_to_property_key(ctx, key_value);
+            if (ctx.has_exception()) return Value();
         } else {
             if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* id = static_cast<Identifier*>(prop->key.get());

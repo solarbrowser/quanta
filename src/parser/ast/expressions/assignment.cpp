@@ -521,20 +521,34 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (prop_value.is_symbol()) {
                 prop_name = prop_value.as_symbol()->to_property_key();
             } else if (prop_value.is_object() || prop_value.is_function()) {
+                // ToPropertyKey uses ToPrimitive(hint="string"): toString first, then valueOf
                 Object* pobj = prop_value.is_function()
                     ? static_cast<Object*>(prop_value.as_function())
                     : prop_value.as_object();
-                Value vo = pobj ? pobj->get_property("valueOf") : Value();
-                if (vo.is_function()) {
-                    Value prim = vo.as_function()->call(ctx, {}, prop_value);
+                Value ts = pobj ? pobj->get_property("toString") : Value();
+                bool resolved = false;
+                if (!ctx.has_exception() && ts.is_function()) {
+                    Value prim = ts.as_function()->call(ctx, {}, prop_value);
                     if (ctx.has_exception()) return Value();
-                    if (prim.is_symbol()) {
-                        ctx.throw_type_error("Cannot convert a Symbol value to a string");
-                        return Value();
+                    if (!prim.is_object() && !prim.is_function()) {
+                        prop_name = prim.to_string();
+                        resolved = true;
                     }
-                    prop_name = prim.is_object() ? prop_value.to_string() : prim.to_string();
-                } else {
-                    prop_name = prop_value.to_string();
+                }
+                if (ctx.has_exception()) return Value();
+                if (!resolved) {
+                    Value vo = pobj ? pobj->get_property("valueOf") : Value();
+                    if (!ctx.has_exception() && vo.is_function()) {
+                        Value prim = vo.as_function()->call(ctx, {}, prop_value);
+                        if (ctx.has_exception()) return Value();
+                        if (prim.is_symbol()) {
+                            ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                            return Value();
+                        }
+                        prop_name = prim.is_object() ? prop_value.to_string() : prim.to_string();
+                    } else {
+                        prop_name = prop_value.to_string();
+                    }
                 }
             } else {
                 prop_name = prop_value.to_string();

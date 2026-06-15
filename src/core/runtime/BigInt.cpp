@@ -444,4 +444,243 @@ BigInt BigInt::from_string(const std::string& str) {
     return BigInt(str);
 }
 
+// Arbitrary-precision two's complement bitwise operations.
+// Negative BigInt -A has infinite-precision two's complement = NOT(A-1).
+
+BigInt BigInt::bitwise_not() const {
+    // ~a = -(a+1) for positive; ~(-a) = a-1 for negative
+    if (!is_negative_) {
+        BigInt result = *this + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+        return result;
+    } else {
+        BigInt mag = *this;
+        mag.is_negative_ = false;
+        return mag - BigInt(1);
+    }
+}
+
+BigInt BigInt::bitwise_and(const BigInt& other) const {
+    if (!is_negative_ && !other.is_negative_) {
+        // (+A) & (+B) = A & B (magnitudes, min size)
+        size_t sz = std::min(digits_.size(), other.digits_.size());
+        BigInt result;
+        result.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++)
+            result.digits_[i] = digits_[i] & other.digits_[i];
+        result.normalize();
+        return result;
+    } else if (is_negative_ && other.is_negative_) {
+        // (-A) & (-B) = -(((A-1) | (B-1)) + 1)
+        BigInt A = *this; A.is_negative_ = false;
+        BigInt B = other; B.is_negative_ = false;
+        BigInt a1 = A - BigInt(1);
+        BigInt b1 = B - BigInt(1);
+        size_t sz = std::max(a1.digits_.size(), b1.digits_.size());
+        BigInt orr;
+        orr.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < a1.digits_.size()) ? a1.digits_[i] : 0;
+            uint32_t bv = (i < b1.digits_.size()) ? b1.digits_[i] : 0;
+            orr.digits_[i] = av | bv;
+        }
+        orr.normalize();
+        BigInt result = orr + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+        return result;
+    } else {
+        // (+A) & (-B) = A & ~(B-1)  [beyond B-1's range, ~(B-1) is all 1s → just A's bits]
+        const BigInt* pos = !is_negative_ ? this : &other;
+        const BigInt* neg = !is_negative_ ? &other : this;
+        BigInt neg_mag = *neg; neg_mag.is_negative_ = false;
+        BigInt b1 = neg_mag - BigInt(1);
+        BigInt result;
+        result.digits_.assign(pos->digits_.size(), 0);
+        for (size_t i = 0; i < pos->digits_.size(); i++) {
+            uint32_t bv = (i < b1.digits_.size()) ? b1.digits_[i] : 0u;
+            result.digits_[i] = pos->digits_[i] & ~bv;
+        }
+        result.normalize();
+        return result;
+    }
+}
+
+BigInt BigInt::bitwise_or(const BigInt& other) const {
+    if (!is_negative_ && !other.is_negative_) {
+        // (+A) | (+B) = A | B (max size)
+        size_t sz = std::max(digits_.size(), other.digits_.size());
+        BigInt result;
+        result.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < digits_.size()) ? digits_[i] : 0;
+            uint32_t bv = (i < other.digits_.size()) ? other.digits_[i] : 0;
+            result.digits_[i] = av | bv;
+        }
+        result.normalize();
+        return result;
+    } else if (is_negative_ && other.is_negative_) {
+        // (-A) | (-B) = -(((A-1) & (B-1)) + 1)
+        BigInt A = *this; A.is_negative_ = false;
+        BigInt B = other; B.is_negative_ = false;
+        BigInt a1 = A - BigInt(1);
+        BigInt b1 = B - BigInt(1);
+        size_t sz = std::min(a1.digits_.size(), b1.digits_.size());
+        BigInt andd;
+        andd.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++)
+            andd.digits_[i] = a1.digits_[i] & b1.digits_[i];
+        andd.normalize();
+        BigInt result = andd + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+        return result;
+    } else {
+        // (+A) | (-B) = -((~A & (B-1)) + 1)  [~A has infinite 1s beyond A's range]
+        const BigInt* pos = !is_negative_ ? this : &other;
+        const BigInt* neg = !is_negative_ ? &other : this;
+        BigInt neg_mag = *neg; neg_mag.is_negative_ = false;
+        BigInt b1 = neg_mag - BigInt(1);
+        size_t sz = b1.digits_.size();
+        BigInt notandb;
+        notandb.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < pos->digits_.size()) ? pos->digits_[i] : 0xFFFFFFFFu;
+            notandb.digits_[i] = (~av) & b1.digits_[i];
+        }
+        notandb.normalize();
+        BigInt result = notandb + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+        return result;
+    }
+}
+
+BigInt BigInt::bitwise_xor(const BigInt& other) const {
+    if (!is_negative_ && !other.is_negative_) {
+        // (+A) ^ (+B) = A ^ B (max size, positive)
+        size_t sz = std::max(digits_.size(), other.digits_.size());
+        BigInt result;
+        result.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < digits_.size()) ? digits_[i] : 0;
+            uint32_t bv = (i < other.digits_.size()) ? other.digits_[i] : 0;
+            result.digits_[i] = av ^ bv;
+        }
+        result.normalize();
+        return result;
+    } else if (is_negative_ && other.is_negative_) {
+        // (-A) ^ (-B) = (A-1) ^ (B-1)  [NOT(A-1) XOR NOT(B-1) = (A-1) XOR (B-1), positive]
+        BigInt A = *this; A.is_negative_ = false;
+        BigInt B = other; B.is_negative_ = false;
+        BigInt a1 = A - BigInt(1);
+        BigInt b1 = B - BigInt(1);
+        size_t sz = std::max(a1.digits_.size(), b1.digits_.size());
+        BigInt result;
+        result.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < a1.digits_.size()) ? a1.digits_[i] : 0;
+            uint32_t bv = (i < b1.digits_.size()) ? b1.digits_[i] : 0;
+            result.digits_[i] = av ^ bv;
+        }
+        result.normalize();
+        return result;
+    } else {
+        // (+A) ^ (-B) = -((A ^ (B-1)) + 1)  [negative result]
+        const BigInt* pos = !is_negative_ ? this : &other;
+        const BigInt* neg = !is_negative_ ? &other : this;
+        BigInt neg_mag = *neg; neg_mag.is_negative_ = false;
+        BigInt b1 = neg_mag - BigInt(1);
+        size_t sz = std::max(pos->digits_.size(), b1.digits_.size());
+        BigInt c;
+        c.digits_.assign(sz, 0);
+        for (size_t i = 0; i < sz; i++) {
+            uint32_t av = (i < pos->digits_.size()) ? pos->digits_[i] : 0;
+            uint32_t bv = (i < b1.digits_.size()) ? b1.digits_[i] : 0;
+            c.digits_[i] = av ^ bv;
+        }
+        c.normalize();
+        BigInt result = c + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+        return result;
+    }
+}
+
+BigInt BigInt::left_shift(const BigInt& n) const {
+    if (n.is_zero()) return *this;
+    if (n.is_negative_) return right_shift(-n);
+
+    uint64_t shift = (uint64_t)n.digits_[0];
+    if (n.digits_.size() > 1) shift |= (uint64_t)n.digits_[1] << 32;
+    if (n.digits_.size() > 2) shift = UINT64_MAX;  // astronomically large
+
+    size_t word_shift = (size_t)(shift / 32);
+    size_t bit_shift  = (size_t)(shift % 32);
+
+    BigInt result;
+    result.is_negative_ = is_negative_;
+    result.digits_.assign(digits_.size() + word_shift + 1, 0);
+
+    for (size_t i = 0; i < digits_.size(); i++) {
+        result.digits_[i + word_shift] |= digits_[i] << bit_shift;
+        if (bit_shift > 0)
+            result.digits_[i + word_shift + 1] |= digits_[i] >> (32 - bit_shift);
+    }
+
+    result.normalize();
+    return result;
+}
+
+BigInt BigInt::right_shift(const BigInt& n) const {
+    if (n.is_zero()) return *this;
+    if (n.is_negative_) return left_shift(-n);
+
+    if (n.digits_.size() > 2)
+        return is_negative_ ? BigInt(-1) : BigInt(0);
+
+    uint64_t shift = (uint64_t)n.digits_[0];
+    if (n.digits_.size() > 1) shift |= (uint64_t)n.digits_[1] << 32;
+
+    size_t word_shift = (size_t)(shift / 32);
+    size_t bit_shift  = (size_t)(shift % 32);
+
+    if (word_shift >= digits_.size())
+        return is_negative_ ? BigInt(-1) : BigInt(0);
+
+    // For negative: check if any bits are discarded (floor toward -inf)
+    bool has_remainder = false;
+    if (is_negative_) {
+        for (size_t i = 0; i < word_shift && !has_remainder; i++)
+            if (digits_[i]) has_remainder = true;
+        if (!has_remainder && bit_shift > 0) {
+            uint32_t mask = (1u << bit_shift) - 1;
+            if (digits_[word_shift] & mask) has_remainder = true;
+        }
+    }
+
+    size_t new_size = digits_.size() - word_shift;
+    BigInt result;
+    result.is_negative_ = is_negative_;
+    result.digits_.assign(new_size, 0);
+
+    for (size_t i = 0; i < new_size; i++) {
+        result.digits_[i] = digits_[i + word_shift] >> bit_shift;
+        if (bit_shift > 0 && i + word_shift + 1 < digits_.size())
+            result.digits_[i] |= digits_[i + word_shift + 1] << (32 - bit_shift);
+    }
+
+    result.normalize();
+
+    if (is_negative_ && has_remainder) {
+        result.is_negative_ = false;
+        result = result + BigInt(1);
+        result.is_negative_ = true;
+        result.normalize();
+    }
+
+    return result;
+}
+
 }
