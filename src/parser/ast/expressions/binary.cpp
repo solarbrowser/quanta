@@ -670,10 +670,14 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 ctx.throw_type_error("Right-hand side of instanceof is not callable");
                 return Value(false);
             }
+            // OrdinaryHasInstance step 3: if O is not Object, return false (no prototype check needed)
+            if (!left_value.is_object() && !left_value.is_function()) {
+                return Value(false);
+            }
             // ES5 15.3.5.3 step 3: if F.prototype is not an object, throw TypeError
             {
                 Value proto_prop = right_value.as_function()->get_property("prototype");
-                if (!proto_prop.is_object()) {
+                if (!proto_prop.is_object() && !proto_prop.is_function()) {
                     ctx.throw_type_error("Function has non-object prototype in instanceof check");
                     return Value(false);
                 }
