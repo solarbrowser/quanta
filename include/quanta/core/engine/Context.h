@@ -343,6 +343,7 @@ private:
     std::unordered_set<std::string> const_binding_names_; // tracks const declarations in Object envs
     Object* binding_object_;
     bool is_with_environment_ = false; // ES6 8.1.1.2.1 HasBinding: only `with` object environments consult @@unscopables
+    bool is_closure_boundary_ = false; // marks script-level env: stop snapshot loops here
 
 public:
     Environment(Type type, Environment* outer = nullptr);
@@ -354,6 +355,8 @@ public:
     Object* get_binding_object() const { return binding_object_; }
     bool is_with_environment() const { return is_with_environment_; }
     void set_with_environment(bool value) { is_with_environment_ = value; }
+    bool is_closure_boundary() const { return is_closure_boundary_; }
+    void mark_closure_boundary() { is_closure_boundary_ = true; }
 
     bool has_binding(const std::string& name) const;
     Value get_binding(const std::string& name) const;
@@ -380,7 +383,7 @@ public:
     bool is_const_binding(const std::string& name) const { return const_binding_names_.count(name) > 0; }
     void mark_const_binding(const std::string& name) { const_binding_names_.insert(name); }
     void create_global_function_binding(const std::string& name, const Value& value);
-    void create_uninitialized_binding(const std::string& name);
+    void create_uninitialized_binding(const std::string& name, bool is_mutable = true);
 };
 
 /**

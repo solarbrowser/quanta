@@ -808,10 +808,10 @@ void Environment::force_set_binding(const std::string& name, const Value& value)
     }
 }
 
-void Environment::create_uninitialized_binding(const std::string& name) {
+void Environment::create_uninitialized_binding(const std::string& name, bool is_mutable) {
     if (has_own_binding(name)) return;
     bindings_[name] = Value();
-    mutable_flags_[name] = true;
+    mutable_flags_[name] = is_mutable;
     initialized_flags_[name] = false;
 }
 
@@ -1046,30 +1046,44 @@ void Context::run_dispose_resources() {
     Value saved_exception = current_exception_;
     if (had_exception) clear_exception();
 
-    Value dispose_exception;
-    bool dispose_threw = false;
+    // current_error tracks the "pending" throw completion (starts as the saved body exception)
+    Value current_error = had_exception ? saved_exception : Value();
+    bool has_current_error = had_exception;
 
     // Dispose in reverse order (spec: reverse list order)
     for (auto it = resources.rbegin(); it != resources.rend(); ++it) {
-        // Use stored method (looked up once at initialization per spec)
         if (!it->dispose_method.is_function()) continue;
         Function* fn = it->dispose_method.as_function();
         fn->call(*this, {}, it->resource_value);
 
         if (has_exception_) {
-            if (!dispose_threw) {
-                dispose_threw = true;
-                dispose_exception = current_exception_;
-            }
+            Value new_error = current_exception_;
             clear_exception();
+            if (has_current_error) {
+                // Spec: create SuppressedError(newError, existingError)
+                Value suppressed_ctor = get_global_object()
+                    ? get_global_object()->get_property("SuppressedError") : Value();
+                if (suppressed_ctor.is_function()) {
+                    std::vector<Value> se_args = {new_error, current_error};
+                    Value se = suppressed_ctor.as_function()->call(*this, se_args, Value());
+                    if (!has_exception_) {
+                        current_error = se;
+                        has_current_error = true;
+                        continue;
+                    }
+                    clear_exception();
+                }
+                // Fallback: just use new_error
+                current_error = new_error;
+            } else {
+                current_error = new_error;
+            }
+            has_current_error = true;
         }
     }
 
-    if (dispose_threw) {
-        throw_exception(dispose_exception, true);
-    } else if (had_exception) {
-        has_exception_ = true;
-        current_exception_ = saved_exception;
+    if (has_current_error) {
+        throw_exception(current_error, true);
     }
 }
 

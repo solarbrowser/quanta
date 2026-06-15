@@ -93,6 +93,24 @@ bool Object::has_property(const std::string& key) const {
     return false;
 }
 
+void Object::add_private_field(const std::string& key, const Value& value) {
+    // PrivateFieldAdd: creates the private field slot on this instance.
+    // Spec: if object is not extensible, throw TypeError.
+    if (!is_extensible()) {
+        if (current_context_) {
+            current_context_->throw_type_error("Cannot add private field to a non-extensible object");
+        }
+        return;
+    }
+    if (!overflow_properties_) {
+        overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
+    }
+    if (overflow_properties_->find(key) == overflow_properties_->end()) {
+        (*overflow_properties_)[key] = value;
+        property_insertion_order_.push_back(key);
+    }
+}
+
 bool Object::has_private_slot(const std::string& key) const {
     // Check if object has a private field/method without the # filter
     if (descriptors_) {
@@ -571,6 +589,24 @@ bool Object::set_property(const Value& key, const Value& value, PropertyAttribut
     return set_property(key.to_property_key(), value, attrs);
 }
 
+// OrdinarySet semantics: if prototype chain has non-writable data property, silently fail
+bool Object::ordinary_set(const std::string& key, const Value& value) {
+    if (!has_own_property(key)) {
+        Object* cur = header_.prototype;
+        while (cur) {
+            if (cur->has_own_property(key)) {
+                PropertyDescriptor desc = cur->get_property_descriptor(key);
+                if (desc.is_data_descriptor() && !desc.is_writable()) {
+                    return false;
+                }
+                break;
+            }
+            cur = cur->get_prototype();
+        }
+    }
+    return set_property(key, value);
+}
+
 bool Object::delete_property(const std::string& key) {
     // Spec: deleting a non-existent property always returns true
     if (!has_own_property(key)) {
@@ -910,8 +946,17 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         // Ensure the property exists in shape so has_own_property works
         uint32_t index;
         if (is_array_index(key, &index)) {
+            uint32_t new_size = index + 1;
             if (index >= elements_.size()) {
-                elements_.resize(index + 1);
+                elements_.resize(new_size);
+            }
+            if (header_.type == ObjectType::Array && new_size > get_length()) {
+                if (overflow_properties_) {
+                    auto it = overflow_properties_->find("length");
+                    if (it != overflow_properties_->end()) {
+                        it->second = Value(static_cast<double>(new_size));
+                    }
+                }
             }
         } else if (!has_own_property(key)) {
             if (store_in_shape(key, Value(), desc.get_attributes())) {
@@ -955,7 +1000,19 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (!desc.has_configurable()) { if (existing.has_configurable()) merged.set_configurable(existing.is_configurable()); }
             (*descriptors_)[key] = merged;
         } else {
-            (*descriptors_)[key] = desc;
+            // No existing descriptor entry. For a property already in shape/overflow,
+            // preserve the unspecified attributes (shape default is WEC=true) so that
+            // defineProperty({value:X}) on an existing enumerable prop keeps it enumerable.
+            if (has_own_property(key)) {
+                PropertyDescriptor current = get_property_descriptor(key);
+                PropertyDescriptor merged = desc;
+                if (!desc.has_writable()     && current.has_writable())     merged.set_writable(current.is_writable());
+                if (!desc.has_enumerable()   && current.has_enumerable())   merged.set_enumerable(current.is_enumerable());
+                if (!desc.has_configurable() && current.has_configurable()) merged.set_configurable(current.is_configurable());
+                (*descriptors_)[key] = merged;
+            } else {
+                (*descriptors_)[key] = desc;
+            }
             property_insertion_order_.push_back(key);
         }
     }
@@ -1574,6 +1631,12 @@ bool Object::store_in_shape(const std::string& key, const Value& value, Property
 
         if (was_deleted) {
             deleted_shape_properties_->erase(key);
+            // Re-inserted after deletion: must enumerate at end per [[OwnPropertyKeys]] order.
+            readded_shape_properties_order_.erase(
+                std::remove(readded_shape_properties_order_.begin(),
+                            readded_shape_properties_order_.end(), key),
+                readded_shape_properties_order_.end());
+            readded_shape_properties_order_.push_back(key);
         }
 
         if (is_new_property || was_deleted) {

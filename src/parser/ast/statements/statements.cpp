@@ -114,6 +114,15 @@ Value Program::evaluate(Context& ctx) {
     }
     check_use_strict_directive(ctx);
 
+    hoist_var_declarations(ctx);
+    // Eval contexts have their lexical env set up by the caller (GlobalsBuiltin);
+    // only hoist for top-level scripts and module code.
+    if (ctx.get_type() != Context::Type::Eval) {
+        hoist_lexical_declarations(ctx);
+    }
+
+    // Hoist function declarations AFTER pushing the script-level lexical env so
+    // that function closures can access let/const bindings from the same script.
     for (const auto& statement : statements_) {
         if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
             last_value = statement->evaluate(ctx);
@@ -122,8 +131,6 @@ Value Program::evaluate(Context& ctx) {
             }
         }
     }
-
-    hoist_var_declarations(ctx);
 
     for (const auto& statement : statements_) {
         if (statement->get_type() != ASTNode::Type::FUNCTION_DECLARATION) {
@@ -142,6 +149,38 @@ Value Program::evaluate(Context& ctx) {
 void Program::hoist_var_declarations(Context& ctx) {
     for (const auto& statement : statements_) {
         scan_for_var_declarations(statement.get(), ctx);
+    }
+}
+
+void Program::hoist_lexical_declarations(Context& ctx) {
+    // Create a script-level declarative environment for let/const TDZ bindings.
+    // ES6 spec: global let/const live in a separate declarative environment, not
+    // on the global object. This allows TDZ to work for let/const declared later
+    // in the script that are accessed before their declaration point.
+    Environment* old_lex = ctx.get_lexical_environment();
+    auto script_env = std::make_unique<Environment>(Environment::Type::Declarative, old_lex);
+    Environment* script_env_ptr = script_env.release();
+    script_env_ptr->mark_closure_boundary();
+    ctx.set_lexical_environment(script_env_ptr);
+
+    for (const auto& statement : statements_) {
+        if (statement->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+            auto* vd = static_cast<VariableDeclaration*>(statement.get());
+            if (vd->get_kind() == VariableDeclarator::Kind::LET ||
+                    vd->get_kind() == VariableDeclarator::Kind::CONST) {
+                for (const auto& decl : vd->get_declarations()) {
+                    if (decl->get_id() && !decl->get_id()->get_name().empty()) {
+                        const std::string& bname = decl->get_id()->get_name();
+                        bool is_const = (vd->get_kind() == VariableDeclarator::Kind::CONST);
+                        script_env_ptr->create_uninitialized_binding(bname, !is_const);
+                        script_env_ptr->mark_lexical_declaration(bname);
+                        if (is_const) {
+                            script_env_ptr->mark_const_binding(bname);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -221,6 +260,10 @@ void Program::scan_for_var_declarations(ASTNode* node, Context& ctx) {
         ForOfStatement* forof = static_cast<ForOfStatement*>(node);
         if (forof->get_left()) scan_for_var_declarations(forof->get_left(), ctx);
         scan_for_var_declarations(forof->get_body(), ctx);
+    }
+    else if (node->get_type() == ASTNode::Type::CATCH_CLAUSE) {
+        CatchClause* cc = static_cast<CatchClause*>(node);
+        scan_for_var_declarations(cc->get_body(), ctx);
     }
 }
 
@@ -1113,8 +1156,14 @@ Value ForInStatement::evaluate(Context& ctx) {
                 auto* destr = static_cast<DestructuringAssignment*>(left_.get());
                 ctx.push_block_scope();
                 for (const auto& target : destr->get_targets()) {
-                    if (target && !target->get_name().empty())
-                        ctx.create_lexical_binding(target->get_name(), Value(), true);
+                    if (!target || target->get_name().empty()) continue;
+                    const std::string& tname = target->get_name();
+                    bool is_key = false;
+                    for (const auto& pm : destr->get_property_mappings()) {
+                        if (pm.property_name == tname) { is_key = true; break; }
+                    }
+                    if (!is_key)
+                        ctx.create_lexical_binding(tname, Value(), true);
                 }
                 for (const auto& pm : destr->get_property_mappings()) {
                     if (!pm.variable_name.empty())
@@ -1708,8 +1757,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         Identifier* prop_id = static_cast<Identifier*>(member->get_property());
                                         prop_key = prop_id->get_name();
                                     }
-                                    if (obj_val.is_object()) obj_val.as_object()->set_property(prop_key, value);
-                                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->set_property(prop_key, value);
+                                    if (obj_val.is_object()) obj_val.as_object()->ordinary_set(prop_key, value);
+                                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->ordinary_set(prop_key, value);
                                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                                            left_->get_type() == Type::OBJECT_LITERAL) {
                                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
@@ -1719,10 +1768,18 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     // for (let/const [x, y] of ...) -- per-iteration lexical scope
                                     auto* da = static_cast<DestructuringAssignment*>(left_.get());
                                     loop_ctx->push_block_scope();
-                                    // Pre-declare bindings so evaluate_with_value uses the inner scope
+                                    // Pre-declare bindings so evaluate_with_value uses the inner scope.
+                                    // Skip targets that are property keys (appear as property_name in
+                                    // property_mappings) -- they are destructuring keys, not binding vars.
                                     for (const auto& target : da->get_targets()) {
-                                        if (target && !target->get_name().empty())
-                                            loop_ctx->create_lexical_binding(target->get_name(), Value(), true);
+                                        if (!target || target->get_name().empty()) continue;
+                                        const std::string& tname = target->get_name();
+                                        bool is_key = false;
+                                        for (const auto& pm : da->get_property_mappings()) {
+                                            if (pm.property_name == tname) { is_key = true; break; }
+                                        }
+                                        if (!is_key)
+                                            loop_ctx->create_lexical_binding(tname, Value(), true);
                                     }
                                     for (const auto& pm : da->get_property_mappings()) {
                                         if (!pm.variable_name.empty())
@@ -1744,7 +1801,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     if (loop_ctx->has_continue()) {
                                         if (loop_ctx->get_continue_label().empty()) { continue; }
                                         close_iterator();
-                                        return Value();
+                                        g_empty_completion = false;
+                                        return V_iter;
                                     }
                                     if (loop_ctx->has_return_value()) { close_iterator(); return Value(); }
                                     continue;
@@ -1790,7 +1848,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                     if (loop_ctx->has_continue()) {
                                         if (loop_ctx->get_continue_label().empty()) { continue; }
                                         close_iterator();
-                                        return Value(); // labelled continue -- propagate up
+                                        g_empty_completion = false;
+                                        return V_iter;
                                     }
                                     if (loop_ctx->has_return_value()) {
                                         close_iterator();
@@ -1819,7 +1878,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 if (loop_ctx->has_continue()) {
                                     if (loop_ctx->get_continue_label().empty()) { continue; }
                                     close_iterator();
-                                    return Value(); // labelled continue -- propagate up
+                                    g_empty_completion = false;
+                                    return V_iter;
                                 }
                                 if (loop_ctx->has_return_value()) {
                                     close_iterator();
@@ -1899,8 +1959,8 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         Identifier* prop_id = static_cast<Identifier*>(member->get_property());
                         prop_key = prop_id->get_name();
                     }
-                    if (obj_val.is_object()) obj_val.as_object()->set_property(prop_key, element);
-                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->set_property(prop_key, element);
+                    if (obj_val.is_object()) obj_val.as_object()->ordinary_set(prop_key, element);
+                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->ordinary_set(prop_key, element);
                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                            left_->get_type() == Type::OBJECT_LITERAL) {
                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), element);
@@ -1911,8 +1971,14 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     if (da_per_iter) {
                         loop_ctx->push_block_scope();
                         for (const auto& target : destructuring->get_targets()) {
-                            if (target && !target->get_name().empty())
-                                loop_ctx->create_lexical_binding(target->get_name(), Value(), true);
+                            if (!target || target->get_name().empty()) continue;
+                            const std::string& tname = target->get_name();
+                            bool is_key = false;
+                            for (const auto& pm : destructuring->get_property_mappings()) {
+                                if (pm.property_name == tname) { is_key = true; break; }
+                            }
+                            if (!is_key)
+                                loop_ctx->create_lexical_binding(tname, Value(), true);
                         }
                         for (const auto& pm : destructuring->get_property_mappings()) {
                             if (!pm.variable_name.empty())
@@ -2510,8 +2576,6 @@ Value TryStatement::evaluate(Context& ctx) {
         }
     } else if (ctx.has_exception() && !catch_param_ok) {
         // Destructuring threw -- let exception propagate (don't clear it)
-    } else if (ctx.has_exception()) {
-        ctx.clear_exception();
     }
 
     try_recursion_depth--;

@@ -1810,6 +1810,15 @@ Token Lexer::read_regex() {
                     add_error("SyntaxError: Invalid regular expression: line terminator in backslash sequence");
                     return create_token(TokenType::INVALID, start);
                 }
+                // Check for U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR (UTF-8: E2 80 A8/A9)
+                if ((unsigned char)next == 0xE2 && position_ + 2 < source_.size()) {
+                    unsigned char b1 = (unsigned char)source_[position_ + 1];
+                    unsigned char b2 = (unsigned char)source_[position_ + 2];
+                    if (b1 == 0x80 && (b2 == 0xA8 || b2 == 0xA9)) {
+                        add_error("SyntaxError: Invalid regular expression: line terminator in backslash sequence");
+                        return create_token(TokenType::INVALID, start);
+                    }
+                }
                 pattern += next;
                 advance();
             }
