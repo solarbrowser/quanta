@@ -840,6 +840,10 @@ std::vector<std::string> Object::get_own_property_keys() const {
     return keys;
 }
 
+std::vector<std::string> Object::get_internal_property_keys() const {
+    return get_own_property_keys();
+}
+
 std::vector<std::string> Object::get_enumerable_keys() const {
     std::vector<std::string> keys;
     auto all_keys = get_own_property_keys();

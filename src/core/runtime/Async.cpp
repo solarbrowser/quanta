@@ -163,7 +163,7 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     }
 
     // Restore captured closure variables
-    for (const auto& key : get_own_property_keys()) {
+    for (const auto& key : get_internal_property_keys()) {
         if (key.size() <= 10 || key.substr(0, 10) != "__closure_") continue;
         std::string var_name = key.substr(10);
         if (var_name == "this") continue;
@@ -1111,7 +1111,7 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     }
 
     // Apply closures
-    auto prop_keys = get_own_property_keys();
+    auto prop_keys = get_internal_property_keys();
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);

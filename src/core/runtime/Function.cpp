@@ -316,7 +316,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         function_context.set_binding("this", actual_this);
     }
 
-    auto prop_keys = this->get_own_property_keys();
+    auto prop_keys = this->get_internal_property_keys();
 
     // Pre-pull: refresh own closure values from sibling closure functions before loading.
     // This handles async/microtask scenarios where a sibling ran before us (e.g., in a
@@ -330,7 +330,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (!pval.is_function()) continue;
             Function* pfn = pval.as_function();
             if (pfn == this) continue;
-            auto sib_keys = pfn->get_own_property_keys();
+            auto sib_keys = pfn->get_internal_property_keys();
             for (const auto& sk : sib_keys) {
                 if (sk.length() <= 10 || sk.substr(0, 10) != "__closure_") continue;
                 Value sv = pfn->get_property(sk);
@@ -828,7 +828,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // Write back modified closure variables to this function object,
         // propagate to parent context, and update sibling closures
         std::vector<std::pair<std::string, Value>> modified_closures;
-        auto prop_keys2 = this->get_own_property_keys();
+        auto prop_keys2 = this->get_internal_property_keys();
         for (const auto& key : prop_keys2) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
                 std::string var_name = key.substr(10);
@@ -888,7 +888,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     }
                 }
             }
-            auto own_keys = this->get_own_property_keys();
+            auto own_keys = this->get_internal_property_keys();
             for (const auto& okey : own_keys) {
                 if (okey.length() > 10 && okey.substr(0, 10) == "__closure_") {
                     Value sval = this->get_property(okey);
@@ -1018,6 +1018,21 @@ void Function::set_name(const std::string& name) {
             properties_[info.offset] = Value(name_);
         }
     }
+}
+
+std::vector<std::string> Function::get_internal_property_keys() const {
+    return Object::get_own_property_keys();
+}
+
+std::vector<std::string> Function::get_own_property_keys() const {
+    auto all = Object::get_own_property_keys();
+    std::vector<std::string> result;
+    result.reserve(all.size());
+    for (const auto& k : all) {
+        if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
+        result.push_back(k);
+    }
+    return result;
 }
 
 bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
