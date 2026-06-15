@@ -16,12 +16,31 @@
 
 namespace Quanta {
 
-// ToPropertyKey for object literal computed keys: calls JS toString then valueOf for objects.
 static std::string literal_to_property_key(Context& ctx, const Value& val) {
     if (val.is_symbol()) return val.as_symbol()->to_property_key();
     if (!val.is_object() && !val.is_function()) return val.to_string();
 
     Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+
+    Symbol* tp_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    if (tp_sym) {
+        Value tp = obj->get_property(tp_sym->to_property_key());
+        if (ctx.has_exception()) return "";
+        if (!tp.is_undefined()) {
+            if (!tp.is_function()) {
+                ctx.throw_type_error("Cannot convert object to primitive value");
+                return "";
+            }
+            Value result = tp.as_function()->call(ctx, {Value(std::string("string"))}, val);
+            if (ctx.has_exception()) return "";
+            if (result.is_symbol()) return result.as_symbol()->to_property_key();
+            if (result.is_object() || result.is_function()) {
+                ctx.throw_type_error("Cannot convert object to primitive value");
+                return "";
+            }
+            return result.to_string();
+        }
+    }
 
     Value ts = obj->get_property("toString");
     if (!ctx.has_exception() && ts.is_function()) {

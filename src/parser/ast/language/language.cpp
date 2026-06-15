@@ -759,7 +759,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 if (cf->is_computed()) {
                     Value kv = cf->get_key()->evaluate(ctx);
                     if (ctx.has_exception()) break;
-                    key_name = kv.to_string();
+                    key_name = computed_key_to_property_key(ctx, kv);
+                    if (ctx.has_exception()) break;
                     // Static computed field named "prototype" or "constructor" -> TypeError
                     if (key_name == "prototype" || key_name == "constructor") {
                         ctx.throw_type_error("Class static field cannot be named '" + key_name + "'");
@@ -773,14 +774,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 Value val;
                 if (cf->get_value()) {
                     // Spec: static field initializers run with this = class constructor.
-                    auto sfield_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, constructor_fn.get());
-                    sfield_ctx->create_binding("this", Value(constructor_fn.get()), true);
-                    sfield_ctx->set_this_binding(constructor_fn.get());
-                    val = cf->get_value()->evaluate(*sfield_ctx);
-                    if (sfield_ctx->has_exception()) {
-                        ctx.throw_exception(sfield_ctx->get_exception());
-                        break;
-                    }
+                    // Evaluate in outer ctx (so closures stay valid) but swap this temporarily.
+                    Object* saved_this_binding = ctx.get_this_binding();
+                    Value saved_this_val = ctx.get_binding("this");
+                    ctx.set_this_binding(constructor_fn.get());
+                    ctx.create_binding_force("this", Value(constructor_fn.get()));
+                    val = cf->get_value()->evaluate(ctx);
+                    ctx.set_this_binding(saved_this_binding);
+                    ctx.create_binding_force("this", saved_this_val);
+                    if (ctx.has_exception()) break;
                 }
                 PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
                 constructor_fn->set_property_descriptor(key_name, fdesc);
@@ -984,8 +986,29 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
         if (is_strict) {
             function->set_is_strict(true);
-            // Spec: strict mode functions must NOT have own "caller"/"arguments" properties.
-            // They inherit the ThrowTypeError accessor from Function.prototype.
+
+            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    (void)args;
+                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
+                    return Value();
+                });
+
+            PropertyDescriptor caller_desc;
+            caller_desc.set_getter(thrower.get());
+            caller_desc.set_setter(thrower.get());
+            caller_desc.set_configurable(false);
+            caller_desc.set_enumerable(false);
+            function->set_property_descriptor("caller", caller_desc);
+
+            PropertyDescriptor arguments_desc;
+            arguments_desc.set_getter(thrower.get());
+            arguments_desc.set_setter(thrower.get());
+            arguments_desc.set_configurable(false);
+            arguments_desc.set_enumerable(false);
+            function->set_property_descriptor("arguments", arguments_desc);
+
+            thrower.release();
         }
     }
 
@@ -1855,6 +1878,10 @@ Value YieldExpression::evaluate(Context& ctx) {
         // Fiber-based generators: yield* directly swaps context for each element
         // (target_yield_index_ stays 0 since fiber doesn't use replay)
         if (current_gen->fiber_ctx_.uc_stack.ss_size > 0) {
+            // Set current_context_ so accessor getters (poisoned properties in tests) can execute.
+            Context* prev_ctx = Object::current_context_;
+            Object::current_context_ = &ctx;
+
             // Get iterator from iterable
             Value iter_val;
             if (iterable.is_string()) {
@@ -1870,6 +1897,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                             Value iter_fn = proto.as_object()->get_property(iter_sym->to_property_key());
                             if (iter_fn.is_function()) {
                                 iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
+                                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                             }
                         }
                     }
@@ -1879,9 +1907,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
                 if (iter_sym) {
                     Value iter_fn = itbl->get_property(iter_sym->to_property_key());
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (iter_fn.is_function()) {
                         iter_val = iter_fn.as_function()->call(ctx, {}, iterable);
-                        if (ctx.has_exception()) return Value();
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     }
                 }
                 if (iter_val.is_undefined() || iter_val.is_null()) iter_val = iterable;
@@ -1890,34 +1919,34 @@ Value YieldExpression::evaluate(Context& ctx) {
             }
             Object* iter_obj = iter_val.is_object() ? iter_val.as_object()
                 : (iter_val.is_function() ? iter_val.as_function() : nullptr);
-            if (!iter_obj) { ctx.throw_type_error("yield* requires iterable"); return Value(); }
+            if (!iter_obj) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* requires iterable"); return Value(); }
 
             Value next_fn = iter_obj->get_property("next");
-            if (!next_fn.is_function()) { ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
+            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+            if (!next_fn.is_function()) { Object::current_context_ = prev_ctx; ctx.throw_type_error("yield* iterator missing next()"); return Value(); }
 
             Value final_val;
             Value next_arg; // undefined for first call; updated to sent_value_ after each resume
             while (true) {
                 Value result = next_fn.as_function()->call(ctx, {next_arg}, iter_val);
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                 if (!result.is_object()) {
+                    Object::current_context_ = prev_ctx;
                     ctx.throw_type_error("Iterator result is not an object");
                     return Value();
                 }
                 Value done = result.as_object()->get_property("done");
-                if (ctx.has_exception()) return Value();
+                if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                 if (done.to_boolean()) {
+                    // done=true: access value to return from yield* expression
                     Value val = result.as_object()->get_property("value");
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     final_val = val;
                     break;
                 }
-                Value val = result.as_object()->get_property("value");
-                if (ctx.has_exception()) return Value();
-                // yield* propagates the WHOLE inner result object (spec 14.4.14)
+                // done=false: yield the WHOLE inner result object without accessing value (spec 14.4.14)
                 current_gen->yielded_result_ = result;
                 current_gen->yield_raw_result_ = true;
-                current_gen->yielded_value_ = val; // fallback
                 current_gen->set_state(Generator::State::SuspendedYield);
                 swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
                 // Resumed -- forward the value sent to outer generator into inner next()
@@ -1926,39 +1955,43 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->returning_ = false;
                     // Spec 27.5.3.7 step c: delegate return completion to inner iterator.
                     Value ret_fn = iter_obj->get_property("return");
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (!ret_fn.is_function()) {
                         // No return method: propagate the return with original argument.
+                        Object::current_context_ = prev_ctx;
                         throw GeneratorReturnException(current_gen->return_argument_);
                     }
                     Value ret_result = ret_fn.as_function()->call(ctx, {current_gen->return_argument_}, iter_val);
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (!ret_result.is_object()) {
+                        Object::current_context_ = prev_ctx;
                         ctx.throw_type_error("Iterator return() result is not an Object");
                         return Value();
                     }
                     Value ret_done = ret_result.as_object()->get_property("done");
-                    if (ctx.has_exception()) return Value();
-                    Value ret_val = ret_result.as_object()->get_property("value");
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (ret_done.to_boolean()) {
-                        // Inner done: complete outer generator with inner result's value.
+                        // done=true: access value and complete outer generator
+                        Value ret_val = ret_result.as_object()->get_property("value");
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                         current_gen->return_argument_ = ret_val;
+                        Object::current_context_ = prev_ctx;
                         throw GeneratorReturnException(ret_val);
                     }
-                    // done=false: yield the inner result to outer, then continue iteration.
+                    // done=false: yield the inner result without accessing value
                     current_gen->yielded_result_ = ret_result;
                     current_gen->yield_raw_result_ = true;
-                    current_gen->yielded_value_ = ret_val;
                     current_gen->set_state(Generator::State::SuspendedYield);
                     swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
                     next_arg = current_gen->sent_value_;
                     if (current_gen->returning_) {
                         current_gen->returning_ = false;
+                        Object::current_context_ = prev_ctx;
                         throw GeneratorReturnException(current_gen->return_argument_);
                     }
                     if (current_gen->throwing_) {
                         current_gen->throwing_ = false;
+                        Object::current_context_ = prev_ctx;
                         ctx.throw_exception(current_gen->throw_value_, true);
                         return Value();
                     }
@@ -1967,48 +2000,55 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->throwing_ = false;
                     // Spec 27.5.3.7 step b: delegate throw completion to inner iterator.
                     Value throw_fn = iter_obj->get_property("throw");
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (!throw_fn.is_function()) {
-                        // No throw method: close inner iterator then throw TypeError.
+                        // No throw method: IteratorClose, then throw TypeError.
                         Value close_fn = iter_obj->get_property("return");
-                        if (!ctx.has_exception() && close_fn.is_function())
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                        if (close_fn.is_function()) {
                             close_fn.as_function()->call(ctx, {}, iter_val);
-                        ctx.clear_exception();
+                            if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
+                        }
+                        Object::current_context_ = prev_ctx;
                         ctx.throw_type_error("The iterator does not provide a throw method");
                         return Value();
                     }
                     Value thr_result = throw_fn.as_function()->call(ctx, {current_gen->throw_value_}, iter_val);
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (!thr_result.is_object()) {
+                        Object::current_context_ = prev_ctx;
                         ctx.throw_type_error("Iterator throw() result is not an Object");
                         return Value();
                     }
                     Value thr_done = thr_result.as_object()->get_property("done");
-                    if (ctx.has_exception()) return Value();
-                    Value thr_val = thr_result.as_object()->get_property("value");
-                    if (ctx.has_exception()) return Value();
+                    if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                     if (thr_done.to_boolean()) {
+                        // done=true: access value and complete
+                        Value thr_val = thr_result.as_object()->get_property("value");
+                        if (ctx.has_exception()) { Object::current_context_ = prev_ctx; return Value(); }
                         final_val = thr_val;
                         break;
                     }
-                    // done=false: yield the result and continue.
+                    // done=false: yield the result without accessing value
                     current_gen->yielded_result_ = thr_result;
                     current_gen->yield_raw_result_ = true;
-                    current_gen->yielded_value_ = thr_val;
                     current_gen->set_state(Generator::State::SuspendedYield);
                     swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
                     next_arg = current_gen->sent_value_;
                     if (current_gen->returning_) {
                         current_gen->returning_ = false;
+                        Object::current_context_ = prev_ctx;
                         throw GeneratorReturnException(current_gen->return_argument_);
                     }
                     if (current_gen->throwing_) {
                         current_gen->throwing_ = false;
+                        Object::current_context_ = prev_ctx;
                         ctx.throw_exception(current_gen->throw_value_, true);
                         return Value();
                     }
                 }
             }
+            Object::current_context_ = prev_ctx;
             return final_val;
         }
 

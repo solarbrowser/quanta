@@ -221,7 +221,7 @@ bool Context::create_var_binding(const std::string& name, const Value& value, bo
 
 bool Context::create_lexical_binding(const std::string& name, const Value& value, bool mutable_binding) {
     if (lexical_environment_) {
-        bool ok = lexical_environment_->create_binding(name, value, mutable_binding);
+        bool ok = lexical_environment_->create_binding(name, value, mutable_binding, false); // lexical bindings are never deletable
         if (ok) {
             lexical_environment_->mark_lexical_declaration(name);
             if (!mutable_binding) lexical_environment_->mark_const_binding(name);
