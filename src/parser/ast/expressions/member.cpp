@@ -40,6 +40,33 @@
 
 namespace Quanta {
 
+// ToPropertyKey with ctx: for objects calls JS toString (hint: "string"), then valueOf.
+static std::string to_js_property_key(Context& ctx, const Value& val) {
+    if (val.is_symbol()) return val.as_symbol()->to_property_key();
+    if (!val.is_object() && !val.is_function()) return val.to_string();
+
+    Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+
+    Value ts = obj->get_property("toString");
+    if (!ctx.has_exception() && ts.is_function()) {
+        Value r = ts.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    Value vof = obj->get_property("valueOf");
+    if (!ctx.has_exception() && vof.is_function()) {
+        Value r = vof.as_function()->call(ctx, {}, val);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    if (ctx.has_exception()) return "";
+
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return "";
+}
+
 static bool do_brand_check(Object* obj, Object* expected) {
     if (obj->is_function() && static_cast<Function*>(obj)->is_class_constructor()) {
         return obj == expected;
@@ -148,7 +175,8 @@ Value MemberExpression::evaluate(Context& ctx) {
             if (computed_) {
                 Value key_val = property_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                prop_name = key_val.is_symbol() ? key_val.as_symbol()->to_property_key() : key_val.to_string();
+                prop_name = to_js_property_key(ctx, key_val);
+                if (ctx.has_exception()) return Value();
             } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(property_.get())->get_name();
             }
@@ -361,12 +389,8 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
         }
 
-        std::string prop_name;
-        if (prop_value.is_symbol()) {
-            prop_name = prop_value.as_symbol()->to_property_key();
-        } else {
-            prop_name = prop_value.to_string();
-        }
+        std::string prop_name = to_js_property_key(ctx, prop_value);
+        if (ctx.has_exception()) return Value();
 
         PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
         if (desc.is_accessor_descriptor() && desc.has_getter()) {
@@ -424,11 +448,8 @@ Value MemberExpression::evaluate(Context& ctx) {
     if (computed_) {
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        if (prop_value.is_symbol()) {
-            prop_name = prop_value.as_symbol()->to_property_key();
-        } else {
-            prop_name = prop_value.to_string();
-        }
+        prop_name = to_js_property_key(ctx, prop_value);
+        if (ctx.has_exception()) return Value();
     } else {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());

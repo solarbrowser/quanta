@@ -20,6 +20,9 @@
 
 namespace Quanta {
 
+// Shared with statements.cpp for "empty completion" tracking (eval completion value).
+extern thread_local bool g_empty_completion;
+
 // Spec 7.1.1 ToPrimitive + 7.1.19 ToPropertyKey for computed class/object keys.
 // Unlike Value::to_property_key(), this throws TypeError when @@toPrimitive is
 // non-callable or when OrdinaryToPrimitive finds neither toString nor valueOf.
@@ -769,8 +772,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 }
                 Value val;
                 if (cf->get_value()) {
-                    val = cf->get_value()->evaluate(ctx);
-                    if (ctx.has_exception()) break;
+                    // Spec: static field initializers run with this = class constructor.
+                    auto sfield_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, constructor_fn.get());
+                    sfield_ctx->create_binding("this", Value(constructor_fn.get()), true);
+                    sfield_ctx->set_this_binding(constructor_fn.get());
+                    val = cf->get_value()->evaluate(*sfield_ctx);
+                    if (sfield_ctx->has_exception()) {
+                        ctx.throw_exception(sfield_ctx->get_exception());
+                        break;
+                    }
                 }
                 PropertyDescriptor fdesc(val, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable | PropertyAttributes::Enumerable));
                 constructor_fn->set_property_descriptor(key_name, fdesc);
@@ -782,6 +792,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     constructor_fn.release();
 
+    // Class declarations have empty completion (spec 15.7.14 step 2: NormalCompletion(empty)).
+    g_empty_completion = true;
     return Value(constructor_ptr);
 }
 
@@ -972,29 +984,8 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
         if (is_strict) {
             function->set_is_strict(true);
-
-            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    ctx.throw_type_error("'caller', 'callee', and 'arguments' properties may not be accessed on strict mode functions or the arguments objects for calls to them");
-                    return Value();
-                });
-
-            PropertyDescriptor caller_desc;
-            caller_desc.set_getter(thrower.get());
-            caller_desc.set_setter(thrower.get());
-            caller_desc.set_configurable(false);
-            caller_desc.set_enumerable(false);
-            function->set_property_descriptor("caller", caller_desc);
-
-            PropertyDescriptor arguments_desc;
-            arguments_desc.set_getter(thrower.get());
-            arguments_desc.set_setter(thrower.get());
-            arguments_desc.set_configurable(false);
-            arguments_desc.set_enumerable(false);
-            function->set_property_descriptor("arguments", arguments_desc);
-
-            thrower.release();
+            // Spec: strict mode functions must NOT have own "caller"/"arguments" properties.
+            // They inherit the ThrowTypeError accessor from Function.prototype.
         }
     }
 
@@ -2758,6 +2749,16 @@ Value ExportStatement::evaluate(Context& ctx) {
                 ctx.set_binding(default_local_name, default_value);
             }
             record_local_name("default", default_local_name);
+        } else {
+            // Spec: anonymous default export (class/function) gets name "default" (SetFunctionName).
+            if (default_value.is_function()) {
+                Function* fn = default_value.as_function();
+                Value nm = fn->get_property("name");
+                if (nm.to_string().empty()) {
+                    PropertyDescriptor nm_desc(Value(std::string("default")), PropertyAttributes::Configurable);
+                    fn->set_property_descriptor("name", nm_desc);
+                }
+            }
         }
 
         exports_obj->set_property("default", default_value);

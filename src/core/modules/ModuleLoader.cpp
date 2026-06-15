@@ -103,8 +103,8 @@ public:
             return PropertyDescriptor(Value(std::string("Module")), PropertyAttributes::None);
         }
         if (module_ && module_->has_export(key)) {
-            // Exports: non-writable, enumerable, non-configurable
-            return PropertyDescriptor(module_->get_export(key), PropertyAttributes::Enumerable);
+            // Spec 10.4.6.8: exports are {writable: true, enumerable: true, configurable: false}
+            return PropertyDescriptor(module_->get_export(key), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable));
         }
         return PropertyDescriptor();
     }
