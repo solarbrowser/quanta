@@ -429,6 +429,11 @@ Value Generator::generator_throw(Context& ctx, const std::vector<Value>& args) {
 
     auto result = generator->throw_exception(exception);
 
+    if (result.has_exception) {
+        ctx.throw_exception(result.exception);
+        return Value();
+    }
+
     // If the generator context has an uncaught exception, propagate to outer context
     if (generator->generator_context_->has_exception()) {
         Value ex = generator->generator_context_->get_exception();
