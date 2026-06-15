@@ -281,7 +281,7 @@ void Generator::writeback_closures() {
     if (!generator_function_) return;
     Context* cc = generator_function_->get_closure_context();
     if (!cc) return;
-    auto pk = generator_function_->get_own_property_keys();
+    auto pk = generator_function_->get_internal_property_keys();
     for (const auto& k : pk) {
         if (k.length() <= 10 || k.substr(0, 10) != "__closure_") continue;
         std::string vn = k.substr(10);
@@ -651,7 +651,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     }
 
     // Copy closure variables stored as __closure_xxx properties on this GeneratorFunction
-    auto prop_keys = this->get_own_property_keys();
+    auto prop_keys = this->get_internal_property_keys();
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
             std::string var_name = key.substr(10);

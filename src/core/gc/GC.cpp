@@ -387,7 +387,7 @@ void GarbageCollector::mark_from_object(Object* obj) {
 
     mark_object(obj);
 
-    std::vector<std::string> keys = obj->get_own_property_keys();
+    std::vector<std::string> keys = obj->get_internal_property_keys();
     for (const std::string& key : keys) {
         Value prop = obj->get_property(key);
         if (prop.is_object()) {
@@ -797,7 +797,7 @@ void GarbageCollector::mark_object_ultra_fast(Object* obj) {
         managed->is_marked = true;
         managed->access_count += 2;
         
-        std::vector<std::string> keys = obj->get_own_property_keys();
+        std::vector<std::string> keys = obj->get_internal_property_keys();
         for (const std::string& key : keys) {
             Value prop = obj->get_property(key);
             if (prop.is_object()) {

@@ -138,6 +138,7 @@ public:
     
     virtual std::vector<std::string> get_own_property_keys() const;
     virtual std::vector<std::string> get_enumerable_keys() const;
+    virtual std::vector<std::string> get_internal_property_keys() const;
     std::vector<uint32_t> get_element_indices() const;
     
     virtual PropertyDescriptor get_property_descriptor(const std::string& key) const;
@@ -444,6 +445,8 @@ public:
     
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    std::vector<std::string> get_own_property_keys() const override;
+    std::vector<std::string> get_internal_property_keys() const override;
     bool has_own_property(const std::string& key) const {
         if (key == "prototype" && prototype_ != nullptr) return true;
         return Object::has_own_property(key);
