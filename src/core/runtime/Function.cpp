@@ -1120,6 +1120,16 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
             ctx.set_in_constructor_call(false);
             ctx.set_new_target(Value());
             if (!super_result.is_undefined()) result = super_result;
+            // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
+            {
+                Value pm_slot_val = get_property("__pm_brand_slot__");
+                if (pm_slot_val.is_string()) {
+                    std::string pm_slot = pm_slot_val.to_string();
+                    Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
+                    if (!pm_this) pm_this = ctx.get_this_binding();
+                    if (pm_this) pm_this->add_private_field(pm_slot);
+                }
+            }
         } else {
             // Explicit constructor that didn't call super() -- ReferenceError
             ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");

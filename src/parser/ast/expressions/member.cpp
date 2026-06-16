@@ -110,8 +110,6 @@ static bool do_brand_check(Object* obj, Object* expected) {
 bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists) {
     (void)ctx;
     CallStack& cs = CallStack::instance();
-    // Walk the call stack from top to find a frame whose function has the private name in its brands.
-    // This handles eval() inside a method: the enclosing method's brands are deeper in the stack.
     for (size_t i = cs.depth(); i > 0; --i) {
         Function* fn = cs.at(i - 1).function_ptr;
         if (!fn) continue;
@@ -126,6 +124,19 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                     : name_brand.as_object();
                 if (!do_brand_check(obj, expected)) return false;
                 if (!require_exists) return true;
+                // Check if this is a private method: must also have the per-instance brand slot
+                // (added after super() returns) to enforce the "private methods not installed
+                // before super returns" invariant.
+                Value pm_names_val = fn->get_property("__private_method_names__");
+                if (pm_names_val.is_object()) {
+                    Value is_method = pm_names_val.as_object()->get_property(prop_name);
+                    if (is_method.to_boolean()) {
+                        Value pm_slot_val = fn->get_property("__pm_brand_slot__");
+                        if (pm_slot_val.is_string()) {
+                            return obj->has_private_slot(pm_slot_val.to_string());
+                        }
+                    }
+                }
                 bool found = obj->has_private_slot(prop_name);
                 if (!found) {
                     Object* p = obj->get_prototype();
@@ -1430,6 +1441,10 @@ std::unique_ptr<ASTNode> NewExpression::clone() const {
 Value MetaProperty::evaluate(Context& ctx) {
     if (meta_ == "new" && property_ == "target") {
         return ctx.get_new_target();
+    }
+
+    if (meta_ == "import" && property_ == "meta") {
+        return ctx.get_import_meta();
     }
 
     ctx.throw_exception(Value("ReferenceError: Unknown meta property: " + meta_ + "." + property_));

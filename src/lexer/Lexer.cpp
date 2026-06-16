@@ -1486,18 +1486,16 @@ std::string Lexer::parse_escape_sequence(bool in_template) {
 
     // ES1: Octal escape sequences \0-\377 (up to 3 octal digits)
     if (ch >= '0' && ch <= '7') {
-        // ES5: Octal escapes not allowed in strict mode (except \0 not followed by any decimal digit)
-        if (options_.strict_mode) {
-            char next = peek_char(1);
-            bool next_is_digit = (next >= '0' && next <= '9');
-            if (ch != '0' || next_is_digit) {
+        // \0 not followed by a decimal digit is valid; all other octal forms are legacy
+        char next = peek_char(1);
+        bool next_is_digit = (next >= '0' && next <= '9');
+        bool is_legacy_octal = (ch != '0' || next_is_digit);
+        if (is_legacy_octal) {
+            if (in_template) {
+                add_error("SyntaxError: Octal escape sequences are not allowed in template literals");
+            } else if (options_.strict_mode) {
                 add_error("SyntaxError: Octal escape sequences are not allowed in strict mode");
-            }
-        } else {
-            // Track legacy octal for retroactive strict-mode check in directive prologues
-            char next = peek_char(1);
-            bool next_is_digit = (next >= '0' && next <= '9');
-            if (ch != '0' || next_is_digit) {
+            } else {
                 current_string_has_legacy_octal_ = true;
             }
         }

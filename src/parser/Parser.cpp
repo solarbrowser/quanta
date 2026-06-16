@@ -796,17 +796,72 @@ std::unique_ptr<ASTNode> Parser::parse_equality_expression() {
     );
 }
 
+static bool is_private_identifier(const ASTNode* n) {
+    if (!n || n->get_type() != ASTNode::Type::IDENTIFIER) return false;
+    const auto& nm = static_cast<const Identifier*>(n)->get_name();
+    return !nm.empty() && nm[0] == '#';
+}
+
 std::unique_ptr<ASTNode> Parser::parse_relational_expression() {
-    if (no_in_mode_) {
-        return parse_binary_expression(
-            [this]() { return parse_shift_expression(); },
-            {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF}
-        );
+    auto left = parse_shift_expression();
+    if (!left) return nullptr;
+
+    if (is_private_identifier(left.get())) {
+        if (no_in_mode_ || !match(TokenType::IN)) {
+            add_error("SyntaxError: Private identifier '" +
+                      static_cast<Identifier*>(left.get())->get_name() +
+                      "' is not valid here");
+            return nullptr;
+        }
+        Position op_start = current_token().get_start();
+        advance();
+        bool saved_bin = options_.in_binary_expr;
+        options_.in_binary_expr = true;
+        auto right = parse_shift_expression();
+        options_.in_binary_expr = saved_bin;
+        if (!right) {
+            add_error("Expected expression after 'in'");
+            return left;
+        }
+        if (is_private_identifier(right.get())) {
+            add_error("SyntaxError: Private identifier '" +
+                      static_cast<Identifier*>(right.get())->get_name() +
+                      "' is not valid here");
+            return nullptr;
+        }
+        Position end = right->get_end();
+        left = std::make_unique<BinaryExpression>(
+            std::move(left), BinaryExpression::Operator::IN, std::move(right), op_start, end);
     }
-    return parse_binary_expression(
-        [this]() { return parse_shift_expression(); },
-        {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF, TokenType::IN}
-    );
+
+    static const std::vector<TokenType> relops_no_in  = {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF};
+    static const std::vector<TokenType> relops_with_in = {TokenType::LESS_THAN, TokenType::GREATER_THAN, TokenType::LESS_EQUAL, TokenType::GREATER_EQUAL, TokenType::INSTANCEOF, TokenType::IN};
+    const std::vector<TokenType>& ops = no_in_mode_ ? relops_no_in : relops_with_in;
+
+    while (match_any(ops)) {
+        TokenType op_token = current_token().get_type();
+        Position op_start = current_token().get_start();
+        advance();
+        bool saved_bin = options_.in_binary_expr;
+        options_.in_binary_expr = true;
+        auto right = parse_shift_expression();
+        options_.in_binary_expr = saved_bin;
+        if (!right) {
+            add_error("Expected expression after binary operator");
+            return left;
+        }
+        if (is_private_identifier(right.get())) {
+            add_error("SyntaxError: Private identifier '" +
+                      static_cast<Identifier*>(right.get())->get_name() +
+                      "' is not valid here");
+            return nullptr;
+        }
+        Position end = right->get_end();
+        left = std::make_unique<BinaryExpression>(
+            std::move(left), token_to_binary_operator(op_token), std::move(right), op_start, end);
+    }
+
+    return left;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_shift_expression() {
@@ -945,7 +1000,15 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
                                    et == ASTNode::Type::YIELD_EXPRESSION ||
                                    et == ASTNode::Type::CALL_EXPRESSION ||
                                    et == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
-                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION);
+                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
+                                   et == ASTNode::Type::NUMBER_LITERAL ||
+                                   et == ASTNode::Type::STRING_LITERAL ||
+                                   et == ASTNode::Type::BOOLEAN_LITERAL ||
+                                   et == ASTNode::Type::NULL_LITERAL ||
+                                   et == ASTNode::Type::REGEX_LITERAL ||
+                                   et == ASTNode::Type::TEMPLATE_LITERAL ||
+                                   et == ASTNode::Type::ARRAY_LITERAL ||
+                                   et == ASTNode::Type::OBJECT_LITERAL);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(operand.get());
                 always_invalid = (id->get_name() == "this");
@@ -986,14 +1049,22 @@ std::unique_ptr<ASTNode> Parser::parse_postfix_expression() {
             break;
         }
 
-        // CallExpression, arrow, optional-chaining etc. are always-invalid update targets
+        // CallExpression, arrow, optional-chaining, literals etc. are always-invalid update targets
         {
             ASTNode::Type et = expr->get_type();
             bool always_invalid = (et == ASTNode::Type::META_PROPERTY ||
                                    et == ASTNode::Type::YIELD_EXPRESSION ||
                                    et == ASTNode::Type::CALL_EXPRESSION ||
                                    et == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
-                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION);
+                                   et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
+                                   et == ASTNode::Type::NUMBER_LITERAL ||
+                                   et == ASTNode::Type::STRING_LITERAL ||
+                                   et == ASTNode::Type::BOOLEAN_LITERAL ||
+                                   et == ASTNode::Type::NULL_LITERAL ||
+                                   et == ASTNode::Type::REGEX_LITERAL ||
+                                   et == ASTNode::Type::TEMPLATE_LITERAL ||
+                                   et == ASTNode::Type::ARRAY_LITERAL ||
+                                   et == ASTNode::Type::OBJECT_LITERAL);
             if (!always_invalid && et == ASTNode::Type::IDENTIFIER) {
                 auto* id = static_cast<Identifier*>(expr.get());
                 always_invalid = (id->get_name() == "this");
@@ -5059,16 +5130,19 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
     {
         std::unordered_set<std::string> pre_declared;
         size_t depth = 1;
+        TokenType prev_tt = TokenType::LEFT_BRACE;
         for (size_t i = current_token_index_; i < tokens_.size() && depth > 0; i++) {
             auto tt = tokens_[i].get_type();
-            if (tt == TokenType::LEFT_BRACE) depth++;
-            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
+            if (tt == TokenType::LEFT_BRACE) { prev_tt = tt; depth++; continue; }
+            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; prev_tt = tt; continue; }
             else if (tt == TokenType::HASH && depth == 1 &&
+                     prev_tt != TokenType::DOT && prev_tt != TokenType::OPTIONAL_CHAINING &&
                      i + 1 < tokens_.size() &&
                      (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
                 pre_declared.insert("#" + tokens_[i+1].get_value());
             }
+            prev_tt = tt;
         }
         private_scope_stack_.push_back(std::move(pre_declared));
     }
@@ -5454,16 +5528,19 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
     {
         std::unordered_set<std::string> pre_declared;
         size_t depth = 1;
+        TokenType prev_tt = TokenType::LEFT_BRACE;
         for (size_t i = current_token_index_; i < tokens_.size() && depth > 0; i++) {
             auto tt = tokens_[i].get_type();
-            if (tt == TokenType::LEFT_BRACE) depth++;
-            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; }
+            if (tt == TokenType::LEFT_BRACE) { prev_tt = tt; depth++; continue; }
+            else if (tt == TokenType::RIGHT_BRACE) { depth--; if (depth == 0) break; prev_tt = tt; continue; }
             else if (tt == TokenType::HASH && depth == 1 &&
+                     prev_tt != TokenType::DOT && prev_tt != TokenType::OPTIONAL_CHAINING &&
                      i + 1 < tokens_.size() &&
                      (tokens_[i+1].get_type() == TokenType::IDENTIFIER || is_keyword_token(tokens_[i+1].get_type())) &&
                      tokens_[i+1].get_start().offset == tokens_[i].get_start().offset + 1) {
                 pre_declared.insert("#" + tokens_[i+1].get_value());
             }
+            prev_tt = tt;
         }
         private_scope_stack_.push_back(std::move(pre_declared));
     }
