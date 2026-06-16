@@ -110,8 +110,11 @@ static bool do_brand_check(Object* obj, Object* expected) {
 bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists) {
     (void)ctx;
     CallStack& cs = CallStack::instance();
-    if (!cs.is_empty() && cs.top().function_ptr) {
-        Function* fn = cs.top().function_ptr;
+    // Walk the call stack from top to find a frame whose function has the private name in its brands.
+    // This handles eval() inside a method: the enclosing method's brands are deeper in the stack.
+    for (size_t i = cs.depth(); i > 0; --i) {
+        Function* fn = cs.at(i - 1).function_ptr;
+        if (!fn) continue;
 
         Value brands_val = fn->get_property("__private_brands__");
         if (brands_val.is_object()) {

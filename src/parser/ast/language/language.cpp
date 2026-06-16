@@ -267,6 +267,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (ob_.is_object()) outer_brands_ptr = ob_.as_object();
     }
     std::vector<std::string> private_instance_names;
+    std::vector<std::string> private_static_names;
     Object* instance_brands_raw = nullptr;
 
     auto prototype = ObjectFactory::create_object();
@@ -284,6 +285,12 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 ClassField* cf = static_cast<ClassField*>(stmt.get());
                 if (cf->is_static()) {
                     static_field_initializers.push_back(stmt->clone());
+                    if (!cf->is_computed()) {
+                        if (Identifier* kid = dynamic_cast<Identifier*>(cf->get_key())) {
+                            if (!kid->get_name().empty() && kid->get_name()[0] == '#')
+                                private_static_names.push_back(kid->get_name());
+                        }
+                    }
                 } else {
                     field_initializers.push_back(stmt->clone());
                     if (!cf->is_computed()) {
@@ -335,6 +342,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                     }
                 } else if (method->is_static()) {
+                    if (!method_name.empty() && method_name[0] == '#')
+                        private_static_names.push_back(method_name);
                 } else {
                     if (!method_name.empty() && method_name[0] == '#')
                         private_instance_names.push_back(method_name);
@@ -521,6 +530,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             }
             for (const auto& pn : private_instance_names)
                 instance_brands->set_property(pn, Value(proto_ptr));
+            for (const auto& pn : private_static_names)
+                instance_brands->set_property(pn, Value(constructor_fn.get()));
             instance_brands_raw = instance_brands.release();
             constructor_fn->set_property("__private_brands__", Value(instance_brands_raw));
         }
@@ -601,6 +612,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         static_method->set_function_prototype(nullptr);
                     }
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
+                    if (instance_brands_raw)
+                        static_method->set_property("__private_brands__", Value(instance_brands_raw));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         bool is_getter = method->get_kind() == MethodDefinition::GETTER;
@@ -799,7 +812,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     Value saved_this_val = ctx.get_binding("this");
                     ctx.set_this_binding(constructor_fn.get());
                     ctx.create_binding_force("this", Value(constructor_fn.get()));
-                    val = cf->get_value()->evaluate(ctx);
+                    // Push constructor onto call stack so inner class declarations inherit outer brands.
+                    {
+                        CallStackFrameGuard frame_guard(CallStack::instance(), class_name, "", Position(), constructor_fn.get());
+                        val = cf->get_value()->evaluate(ctx);
+                    }
                     ctx.set_this_binding(saved_this_binding);
                     ctx.create_binding_force("this", saved_this_val);
                     if (ctx.has_exception()) break;

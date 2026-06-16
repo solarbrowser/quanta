@@ -301,7 +301,21 @@ void register_global_builtins(Context& ctx) {
                         Environment::Type::Declarative, ctx.get_lexical_environment());
                     eval_ctx.set_lexical_environment(eval_env);
                     eval_ctx.set_variable_environment(eval_env);
-                    eval_ctx.set_this_binding(ctx.get_this_binding());
+                    // Native call machinery temporarily overwrites "this" in the calling env.
+                    // Recover the caller's real "this" from the backup set before the overwrite.
+                    Value caller_this_val;
+                    if (ctx.is_direct_eval_call() && ctx.has_binding("__eval_caller_this__")) {
+                        caller_this_val = ctx.get_binding("__eval_caller_this__");
+                    } else {
+                        caller_this_val = ctx.get_binding("this");
+                    }
+                    {
+                        Object* this_obj = caller_this_val.is_object() ? caller_this_val.as_object()
+                                         : caller_this_val.is_function() ? caller_this_val.as_function()
+                                         : ctx.get_this_binding();
+                        eval_ctx.set_this_binding(this_obj);
+                        eval_env->create_binding("this", caller_this_val, true, false);
+                    }
 
                     // Pre-create var bindings in isolated env so hoist doesn't find them in
                     // the outer scope chain and skip creation (which would cause them to leak)
