@@ -556,33 +556,29 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_prototype(obj_proto);
         }
 
-        // ES6: arguments[Symbol.iterator] - own property, array-like iterator
+        // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] -- own iterator using get_property
+        // so mapped argument slots (accessor descriptors) are correctly read through their getters.
         {
             Object* args_ptr = arguments_obj.get();
             auto iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-                [args_ptr](Context& ctx, const std::vector<Value>& fn_args) -> Value {
-                    (void)fn_args;
+                [args_ptr](Context& ctx, const std::vector<Value>&) -> Value {
                     uint32_t length = 0;
                     Value len_val = args_ptr->get_property("length");
                     if (!len_val.is_undefined()) length = static_cast<uint32_t>(len_val.to_number());
                     auto index = std::make_shared<uint32_t>(0);
                     auto iterator = ObjectFactory::create_object();
                     auto next_fn = ObjectFactory::create_native_function("next",
-                        [args_ptr, length, index](Context& ctx2, const std::vector<Value>& a) -> Value {
-                            (void)a;
+                        [args_ptr, length, index](Context& ctx2, const std::vector<Value>&) -> Value {
                             auto result = ObjectFactory::create_object();
                             if (*index >= length) {
                                 result->set_property("done", Value(true));
                                 result->set_property("value", Value());
                             } else {
                                 result->set_property("done", Value(false));
-                                // Mapped argument indices (ES6 9.4.4) are accessor properties
-                                // backed by the parameter bindings -- get_element bypasses the
-                                // getter and returns undefined, so use get_property instead.
-                                Context* prev_ic = Object::current_context_;
+                                Context* prev = Object::current_context_;
                                 Object::current_context_ = &ctx2;
                                 Value elem = args_ptr->get_property(std::to_string(*index));
-                                Object::current_context_ = prev_ic;
+                                Object::current_context_ = prev;
                                 result->set_property("value", elem);
                                 (*index)++;
                             }
@@ -591,7 +587,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     iterator->set_property("next", Value(next_fn.release()));
                     return Value(iterator.release());
                 }, 0);
-            arguments_obj->set_property("Symbol.iterator", Value(iter_fn.release()), PropertyAttributes::BuiltinFunction);
+            PropertyDescriptor iter_desc(Value(iter_fn.release()),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            iter_desc.set_enumerable(false);
+            arguments_obj->set_property_descriptor("Symbol.iterator", iter_desc);
         }
 
         // In strict mode, arguments has no 'caller' own property (ES2017+).
@@ -642,6 +641,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                         (void)ctx;
                         return fc_ptr->get_binding(*name);
                     });
+                // Mark getter so get_property_descriptor can synthesize a DATA descriptor
+                getter_fn->set_property("__param_map__", Value(true));
                 auto setter_fn = ObjectFactory::create_native_function("set",
                     [fc_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
                         (void)ctx;
@@ -938,10 +939,20 @@ Value Function::get_property(const std::string& key) const {
     if (key == "name") {
         if (descriptors_) {
             auto it = descriptors_->find("name");
-            if (it != descriptors_->end() && it->second.is_data_descriptor()) {
-                Value v = it->second.get_value();
-                if (v.is_string() && v.to_string() == "<arrow>") return Value(std::string(""));
-                return v;
+            if (it != descriptors_->end()) {
+                if (it->second.is_data_descriptor()) {
+                    Value v = it->second.get_value();
+                    if (v.is_string() && v.to_string() == "<arrow>") return Value(std::string(""));
+                    return v;
+                }
+                if (it->second.is_accessor_descriptor()) {
+                    Object* getter = it->second.get_getter();
+                    if (getter && current_context_) {
+                        Function* gfn = dynamic_cast<Function*>(getter);
+                        if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
+                    }
+                    return Value();
+                }
             }
         }
         return Value(name_ == "<arrow>" ? std::string("") : name_);
@@ -1028,8 +1039,17 @@ std::vector<std::string> Function::get_own_property_keys() const {
     auto all = Object::get_own_property_keys();
     std::vector<std::string> result;
     result.reserve(all.size());
+
+    // Spec-mandated order for function own properties: length, name, prototype, then others.
+    static const char* const kPriority[] = { "length", "name", "prototype" };
+    for (const char* pkey : kPriority) {
+        for (const auto& k : all) {
+            if (k == pkey) { result.push_back(k); break; }
+        }
+    }
     for (const auto& k : all) {
         if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;
+        if (k == "length" || k == "name" || k == "prototype") continue;
         result.push_back(k);
     }
     return result;

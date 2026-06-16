@@ -183,7 +183,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     return Value();
                 }
                 // SetFunctionName: x = (function(){}) -> x.name = 'x'
-                if (right_value.is_function() && is_anonymous_function_def(right_.get())) {
+                // Spec: only when IsIdentifierRef(LHS) -- parenthesized LHS is not an IdentifierRef.
+                if (!lhs_is_paren_ && right_value.is_function() && is_anonymous_function_def(right_.get())) {
                     const std::string& fname = right_value.as_function()->get_name();
                     if (fname.empty() || fname == "<arrow>") {
                         right_value.as_function()->set_name(name);
@@ -1404,7 +1405,7 @@ std::string AssignmentExpression::to_string() const {
 
 std::unique_ptr<ASTNode> AssignmentExpression::clone() const {
     return std::make_unique<AssignmentExpression>(
-        left_->clone(), operator_, right_->clone(), start_, end_
+        left_->clone(), operator_, right_->clone(), start_, end_, lhs_is_paren_
     );
 }
 

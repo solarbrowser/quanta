@@ -23,6 +23,16 @@ namespace Quanta {
 // Shared with statements.cpp for "empty completion" tracking (eval completion value).
 extern thread_local bool g_empty_completion;
 
+// Spec SetFunctionName prefix: convert a property key to the "get key" / "set key" form.
+static std::string accessor_function_name(const std::string& prop_key, const std::string& prefix) {
+    if (prop_key.find("@@sym:") == 0 || prop_key.find("Symbol.") == 0) {
+        Symbol* sym = Symbol::find_by_property_key(prop_key);
+        std::string desc = (sym && sym->get_has_description()) ? sym->get_description() : "";
+        return prefix + (desc.empty() ? "" : "[" + desc + "]");
+    }
+    return prefix + prop_key;
+}
+
 // Spec 7.1.1 ToPrimitive + 7.1.19 ToPropertyKey for computed class/object keys.
 // Unlike Value::to_property_key(), this throws TypeError when @@toPrimitive is
 // non-callable or when OrdinaryToPrimitive finds neither toString nor valueOf.
@@ -366,6 +376,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     instance_method->set_property("__private_class_brand__", Value(prototype.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
+                        bool is_getter = method->get_kind() == MethodDefinition::GETTER;
+                        instance_method->set_name(accessor_function_name(method_name, is_getter ? "get " : "set "));
                         // Find existing deferred entry or create new one
                         PropertyDescriptor* existing_deferred = nullptr;
                         for (auto& dp : deferred_instance_methods) {
@@ -373,13 +385,16 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         }
                         PropertyDescriptor desc;
                         if (existing_deferred && existing_deferred->is_accessor_descriptor()) desc = *existing_deferred;
-                        if (method->get_kind() == MethodDefinition::GETTER) desc.set_getter(instance_method.release());
+                        if (is_getter) desc.set_getter(instance_method.release());
                         else desc.set_setter(instance_method.release());
                         desc.set_enumerable(false);
                         desc.set_configurable(true);
                         if (existing_deferred) *existing_deferred = desc;
                         else deferred_instance_methods.push_back({method_name, desc});
                     } else {
+                        if (method_name.find("@@sym:") == 0 || method_name.find("Symbol.") == 0) {
+                            instance_method->set_name(accessor_function_name(method_name, ""));
+                        }
                         PropertyDescriptor method_desc(Value(instance_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
                         deferred_instance_methods.push_back({method_name, method_desc});
@@ -588,12 +603,14 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
+                        bool is_getter = method->get_kind() == MethodDefinition::GETTER;
+                        static_method->set_name(accessor_function_name(method_name, is_getter ? "get " : "set "));
                         PropertyDescriptor existing = constructor_fn->get_property_descriptor(method_name);
                         PropertyDescriptor desc;
                         if (existing.is_accessor_descriptor() || existing.has_getter() || existing.has_setter()) {
                             desc = existing;
                         }
-                        if (method->get_kind() == MethodDefinition::GETTER) {
+                        if (is_getter) {
                             desc.set_getter(static_method.release());
                         } else {
                             desc.set_setter(static_method.release());
@@ -602,6 +619,9 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         desc.set_configurable(true);
                         constructor_fn->set_property_descriptor(method_name, desc);
                     } else {
+                        if (method_name.find("@@sym:") == 0 || method_name.find("Symbol.") == 0) {
+                            static_method->set_name(accessor_function_name(method_name, ""));
+                        }
                         PropertyDescriptor method_desc(Value(static_method.release()),
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
                         constructor_fn->set_property_descriptor(method_name, method_desc);
@@ -1057,7 +1077,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
 
 
 Value ArrowFunctionExpression::evaluate(Context& ctx) {
-    std::string name = "<arrow>";
+    std::string name = "";
 
     if (is_async_) {
         std::vector<std::unique_ptr<Parameter>> async_params;
