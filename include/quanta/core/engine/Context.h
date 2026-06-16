@@ -96,6 +96,8 @@ private:
     bool is_direct_eval_call_ = false;
     bool eval_arguments_conflict_ = false;
     bool is_arrow_function_context_ = false;
+    bool in_class_field_init_ = false;
+    Value import_meta_;
 
     // Dispose scope stack for 'using' declarations (Explicit Resource Management)
     struct DisposableResource {
@@ -126,6 +128,10 @@ public:
     void set_arrow_function_context(bool v) { is_arrow_function_context_ = v; }
     bool has_eval_arguments_conflict() const { return eval_arguments_conflict_; }
     void set_eval_arguments_conflict(bool v) { eval_arguments_conflict_ = v; }
+    bool is_in_class_field_init() const { return in_class_field_init_; }
+    void set_in_class_field_init(bool v) { in_class_field_init_ = v; }
+    Value get_import_meta();
+    void set_import_meta(const Value& v) { import_meta_ = v; }
     
     const std::string& get_current_filename() const { return current_filename_; }
     void set_current_filename(const std::string& filename) { current_filename_ = filename; }

@@ -470,6 +470,16 @@ void Context::throw_uri_error(const std::string& message) {
     throw_exception(Value(error.release()));
 }
 
+Value Context::get_import_meta() {
+    if (import_meta_.is_undefined()) {
+        auto meta_obj = ObjectFactory::create_object();
+        meta_obj->set_property("url", Value(std::string("file://") + current_filename_));
+        import_meta_ = Value(meta_obj.release());
+        register_object(import_meta_.as_object());
+    }
+    return import_meta_;
+}
+
 void Context::queue_microtask(std::function<void()> task) {
     microtask_queue_.push_back(std::move(task));
 }

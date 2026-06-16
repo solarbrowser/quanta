@@ -206,6 +206,9 @@ void register_global_builtins(Context& ctx) {
                                                    !ctx.is_arrow_function_context();
                 // super in eval is valid if we're inside a method/derived-class context (__super__ present)
                 parse_opts.eval_in_method_code = ctx.has_binding("__super__");
+                // Propagate class field initializer context so eval enforces ContainsArguments early error.
+                // Only direct eval inherits this flag -- indirect eval is a fresh context per spec.
+                parse_opts.in_class_field_init = ctx.is_direct_eval_call() && ctx.is_in_class_field_init();
                 // Collect private names that are valid in this eval context.
                 // Only names actually declared in the enclosing class are valid (AllPrivateNamesValid).
                 if (ctx.has_binding("__eval_private_names__")) {
@@ -1139,6 +1142,22 @@ void register_global_builtins(Context& ctx) {
             return Value(promise_obj.release());
         }, 1);
     ctx.get_global_object()->set_property("__import_source__", Value(import_source_fn.release()));
+
+    // Class field init context flags -- set/clear in_class_field_init_ around each field initializer
+    // so that direct eval inside a class field initializer enforces the ContainsArguments early error.
+    auto cfi_enter_fn = ObjectFactory::create_native_function("__cfi_enter__",
+        [](Context& ctx, const std::vector<Value>&) -> Value {
+            ctx.set_in_class_field_init(true);
+            return Value();
+        }, 0);
+    ctx.get_global_object()->set_property("__cfi_enter__", Value(cfi_enter_fn.release()));
+
+    auto cfi_exit_fn = ObjectFactory::create_native_function("__cfi_exit__",
+        [](Context& ctx, const std::vector<Value>&) -> Value {
+            ctx.set_in_class_field_init(false);
+            return Value();
+        }, 0);
+    ctx.get_global_object()->set_property("__cfi_exit__", Value(cfi_exit_fn.release()));
 
     // __pfadd__(obj, name [, value]): PrivateFieldAdd - adds a private field slot to obj.
     // Used by class field declarations so the slot exists before user assignments check it.

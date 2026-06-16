@@ -250,6 +250,21 @@ Value CallExpression::evaluate(Context& ctx) {
                     ctx.set_super_called(true);
                     ctx.set_this_needs_super(false);
 
+                    // InitializeInstanceElements: add per-instance private method brand slot.
+                    // This must happen after super() returns so that accessing private methods
+                    // before super() correctly throws TypeError (brand slot not yet present).
+                    {
+                        CallStack& pm_cs = CallStack::instance();
+                        if (!pm_cs.is_empty() && pm_cs.top().function_ptr) {
+                            Value pm_slot_val = pm_cs.top().function_ptr->get_property("__pm_brand_slot__");
+                            if (pm_slot_val.is_string()) {
+                                std::string pm_slot = pm_slot_val.to_string();
+                                Object* pm_this = this_obj ? this_obj : ctx.get_this_binding();
+                                if (pm_this) pm_this->add_private_field(pm_slot);
+                            }
+                        }
+                    }
+
                     // If parent constructor explicitly returned an object, use that as new this
                     if ((result.is_object() || result.is_function()) && this_obj) {
                         Object* new_this = result.as_object();

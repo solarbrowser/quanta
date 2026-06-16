@@ -17,6 +17,7 @@
 #include "quanta/core/engine/CallStack.h"
 #include <sstream>
 #include <set>
+#include <unordered_set>
 
 namespace Quanta {
 
@@ -197,22 +198,37 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     Function* func_ptr = function_obj.release();
     Value function_value(func_ptr);
 
-    bool use_lexical = ctx.is_strict_mode() &&
-        ctx.get_lexical_environment() != ctx.get_variable_environment();
-    if (use_lexical) {
-        if (!ctx.create_lexical_binding(function_name, function_value, true)) {
-            ctx.create_lexical_binding_force(function_name, function_value);
-        }
+    // At the script top level the variable environment is the global Object env.
+    // Function declarations there must become own properties of the global object regardless of strict mode.
+    // HOWEVER, inside a block (lex env was pushed by a BlockStatement), the lex env's outer is the
+    // script-hoist Declarative env (not the global Object env directly). Use that to distinguish
+    // top-level from block-level so block-scoped strict-mode function decls stay in the block.
+    Environment* var_env = ctx.get_variable_environment();
+    Environment* lex_env = ctx.get_lexical_environment();
+    bool var_env_is_global = var_env &&
+        var_env->get_type() == Environment::Type::Object;
+    // True only when lex_env is a DIRECT child of var_env (script-hoist env) or IS var_env.
+    bool at_script_toplevel = var_env_is_global &&
+        (lex_env == var_env || (lex_env && lex_env->get_outer() == var_env));
+
+    if (at_script_toplevel) {
+        ctx.create_global_function_binding(function_name, function_value);
     } else {
-        // Try the variable environment first; if it fails (already exists from closure capture),
-        // use the lexical environment so the write-back won't propagate to the outer scope.
-        // Exception: in non-strict eval, duplicate function declarations must update var_env
-        // (spec 18.2.1.3 step 15 -- the last declaration wins and is visible after eval returns).
-        if (!ctx.create_binding(function_name, function_value, true)) {
-            if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
-                ctx.create_global_function_binding(function_name, function_value);
-            } else {
+        // In strict mode inside a block/function where lex != var env, use lexical binding
+        // so block-scoped function declarations don't bleed into the outer function scope.
+        bool use_lexical = ctx.is_strict_mode() &&
+            ctx.get_lexical_environment() != ctx.get_variable_environment();
+        if (use_lexical) {
+            if (!ctx.create_lexical_binding(function_name, function_value, true)) {
                 ctx.create_lexical_binding_force(function_name, function_value);
+            }
+        } else {
+            if (!ctx.create_binding(function_name, function_value, true)) {
+                if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
+                    ctx.create_global_function_binding(function_name, function_value);
+                } else {
+                    ctx.create_lexical_binding_force(function_name, function_value);
+                }
             }
         }
     }
@@ -267,6 +283,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         if (ob_.is_object()) outer_brands_ptr = ob_.as_object();
     }
     std::vector<std::string> private_instance_names;
+    std::vector<std::string> private_instance_method_names;
     std::vector<std::string> private_static_names;
     Object* instance_brands_raw = nullptr;
 
@@ -345,8 +362,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     if (!method_name.empty() && method_name[0] == '#')
                         private_static_names.push_back(method_name);
                 } else {
-                    if (!method_name.empty() && method_name[0] == '#')
+                    if (!method_name.empty() && method_name[0] == '#') {
                         private_instance_names.push_back(method_name);
+                        private_instance_method_names.push_back(method_name);
+                    }
                     bool method_is_gen = false;
                     bool method_is_async = false;
                     std::vector<std::unique_ptr<Parameter>> method_params;
@@ -422,10 +441,39 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         );
     }
 
-    if (!field_initializers.empty()) {
+    // Base classes with private methods need the brand slot added in the constructor.
+    // Derived classes get it after super() returns (handled in call.cpp / Function.cpp).
+    bool needs_pm_brand_in_ctor = !private_instance_method_names.empty() && !has_superclass();
+    if (!field_initializers.empty() || needs_pm_brand_in_ctor) {
         BlockStatement* body_block = static_cast<BlockStatement*>(constructor_body.get());
         std::vector<std::unique_ptr<ASTNode>> new_statements;
 
+        // For base classes with private methods, add the per-class brand slot in the constructor.
+        // The slot name encodes the prototype address so each class evaluation gets a unique slot.
+        if (needs_pm_brand_in_ctor) {
+            std::string pm_slot = "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(prototype.get())) + "]]";
+            Position z{0,0};
+            auto pfadd_id = std::make_unique<Identifier>("__pfadd__", z, z);
+            auto this_id  = std::make_unique<Identifier>("this", z, z);
+            auto slot_lit = std::make_unique<StringLiteral>(pm_slot, z, z);
+            std::vector<std::unique_ptr<ASTNode>> pfadd_args;
+            pfadd_args.push_back(std::move(this_id));
+            pfadd_args.push_back(std::move(slot_lit));
+            auto pfadd_call = std::make_unique<CallExpression>(
+                std::move(pfadd_id), std::move(pfadd_args), z, z, false);
+            new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(pfadd_call), z, z));
+        }
+
+        // Mark we're executing class field initializers so direct eval enforces ContainsArguments.
+        if (!field_initializers.empty()) {
+        Position z{0,0};
+        auto enter_id = std::make_unique<Identifier>("__cfi_enter__", z, z);
+        std::vector<std::unique_ptr<ASTNode>> no_args;
+        auto enter_call = std::make_unique<CallExpression>(std::move(enter_id), std::move(no_args), z, z, false);
+        new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(enter_call), z, z));
+        }
+
+        if (!field_initializers.empty()) {
         for (auto& field_init : field_initializers) {
             if (field_init->get_type() == Type::CLASS_FIELD) {
                 ClassField* cf = static_cast<ClassField*>(field_init.get());
@@ -486,6 +534,15 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             }
         }
 
+        {
+            Position z{0,0};
+            auto exit_id = std::make_unique<Identifier>("__cfi_exit__", z, z);
+            std::vector<std::unique_ptr<ASTNode>> no_args;
+            auto exit_call = std::make_unique<CallExpression>(std::move(exit_id), std::move(no_args), z, z, false);
+            new_statements.push_back(std::make_unique<ExpressionStatement>(std::move(exit_call), z, z));
+        }
+        } // end if (!field_initializers.empty())
+
         for (auto& stmt : body_block->get_statements()) {
             new_statements.push_back(stmt->clone());
         }
@@ -534,6 +591,19 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                 instance_brands->set_property(pn, Value(constructor_fn.get()));
             instance_brands_raw = instance_brands.release();
             constructor_fn->set_property("__private_brands__", Value(instance_brands_raw));
+            if (!private_instance_method_names.empty()) {
+                // Per-class unique brand slot: use prototype address so each class evaluation
+                // gets its own slot name. This prevents cross-class brand confusion when
+                // multiple evaluations of the same class body produce different brands.
+                std::string pm_slot = "#[[pm:" + std::to_string(reinterpret_cast<uintptr_t>(proto_ptr)) + "]]";
+                constructor_fn->set_property("__pm_brand_slot__", Value(pm_slot));
+                // Mark which private names are methods (not fields) so the brand check
+                // can distinguish "must have per-instance slot" from "must have method slot".
+                auto method_names_obj = ObjectFactory::create_object();
+                for (const auto& mn : private_instance_method_names)
+                    method_names_obj->set_property(mn, Value(true));
+                constructor_fn->set_property("__private_method_names__", Value(method_names_obj.release()));
+            }
         }
 
         if (!has_explicit_constructor) {
