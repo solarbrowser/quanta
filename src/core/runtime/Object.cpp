@@ -464,23 +464,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        // Mapped arguments: index slots are accessor descriptors whose setter updates the param binding.
-        // must go through the descriptor path, not set_element, to trigger the setter.
-        if (header_.type == ObjectType::Arguments && descriptors_) {
-            auto it = descriptors_->find(key);
-            if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
-                if (it->second.has_setter()) {
-                    Object* setter = it->second.get_setter();
-                    if (setter && current_context_) {
-                        Function* setter_fn = dynamic_cast<Function*>(setter);
-                        if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
-                    }
-                    return true;
-                }
-                // accessor with no setter -- non-writable
-                return false;
-            }
-        }
         return set_element(index, value);
     }
 
@@ -699,6 +682,21 @@ bool Object::delete_property(const std::string& key) {
 }
 
 Value Object::get_element(uint32_t index) const {
+    // Arguments exotic: index slots may be accessor (param-mapped) or data descriptors.
+    // Must go through descriptors_ to honour the live binding and non-writable severing.
+    if (header_.type == ObjectType::Arguments && descriptors_) {
+        auto it = descriptors_->find(std::to_string(index));
+        if (it != descriptors_->end()) {
+            if (it->second.is_accessor_descriptor() && it->second.has_getter()) {
+                Object* getter = it->second.get_getter();
+                if (getter && current_context_) {
+                    Function* gfn = dynamic_cast<Function*>(getter);
+                    if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                }
+            }
+            if (it->second.is_data_descriptor()) return it->second.get_value();
+        }
+    }
     if (index < elements_.size()) {
         return elements_[index];
     }
@@ -706,6 +704,23 @@ Value Object::get_element(uint32_t index) const {
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {
+    // Arguments exotic: check descriptor before writing raw element.
+    if (header_.type == ObjectType::Arguments && descriptors_) {
+        auto it = descriptors_->find(std::to_string(index));
+        if (it != descriptors_->end()) {
+            if (it->second.is_accessor_descriptor()) {
+                if (it->second.has_setter()) {
+                    Object* setter = it->second.get_setter();
+                    if (setter && current_context_) {
+                        Function* setter_fn = dynamic_cast<Function*>(setter);
+                        if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
+                    }
+                }
+                return true;
+            }
+            if (it->second.is_data_descriptor() && !it->second.is_writable()) return false;
+        }
+    }
     if (__builtin_expect(index >= elements_.size(), 0)) {
         if (__builtin_expect(index > 10000000, 0)) {
             return false;
@@ -939,16 +954,42 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     }
 
     if (desc.is_data_descriptor()) {
-        // ES5 10.6: if Arguments object has a mapped accessor for this index,
-        // setting a value via defineProperty must sync to the parameter binding.
+        // ES6 9.4.4.3: if Arguments has a live param-mapped accessor for this index,
+        // {value:V} updates the binding and keeps the mapping active (do not replace the accessor).
+        // Only sever when desc explicitly sets writable:false.
         if (header_.type == ObjectType::Arguments && desc.has_value() && descriptors_) {
             auto it = descriptors_->find(key);
-            if (it != descriptors_->end() && it->second.is_accessor_descriptor() &&
-                    it->second.has_setter() && current_context_) {
-                Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
-                if (setter_fn) {
-                    std::vector<Value> sargs = {desc.get_value()};
-                    setter_fn->call(*current_context_, sargs, Value(this));
+            if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
+                Function* gfn = it->second.get_getter()
+                    ? dynamic_cast<Function*>(it->second.get_getter()) : nullptr;
+                if (gfn && gfn->has_property("__param_map__") && current_context_) {
+                    // Update param binding
+                    if (it->second.has_setter()) {
+                        Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
+                        if (setter_fn) setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
+                    }
+                    // Apply any attribute changes to the accessor descriptor
+                    if (desc.has_enumerable())   it->second.set_enumerable(desc.is_enumerable());
+                    if (desc.has_configurable()) it->second.set_configurable(desc.is_configurable());
+                    // Sever only when explicitly non-writable
+                    if (desc.has_writable() && !desc.is_writable()) {
+                        PropertyDescriptor data(desc.get_value());
+                        data.set_writable(false);
+                        data.set_enumerable(it->second.is_enumerable());
+                        data.set_configurable(it->second.is_configurable());
+                        (*descriptors_)[key] = data;
+                        uint32_t idx;
+                        if (is_array_index(key, &idx)) {
+                            if (idx >= elements_.size()) elements_.resize(idx + 1);
+                            elements_[idx] = desc.get_value();
+                        }
+                    }
+                    return true;
+                }
+                // Non-param accessor (user-installed): just call its setter if present
+                if (it->second.has_setter() && current_context_) {
+                    Function* setter_fn = dynamic_cast<Function*>(it->second.get_setter());
+                    if (setter_fn) setter_fn->call(*current_context_, {desc.get_value()}, Value(this));
                 }
             }
         }
@@ -1013,6 +1054,18 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     if (is_attr_only) {
         if (descriptors_->count(key)) {
             PropertyDescriptor& existing = (*descriptors_)[key];
+            // ES6 9.4.4.3 for Arguments: reject impossible attribute changes.
+            if (header_.type == ObjectType::Arguments) {
+                // Get the effective configurable value (accessor = its configurable; severed = data's configurable).
+                bool effective_configurable = existing.is_configurable();
+                if (!effective_configurable) {
+                    if (desc.has_configurable() && desc.is_configurable()) {
+                        if (current_context_) current_context_->throw_type_error(
+                            "Cannot redefine property: " + key);
+                        return false;
+                    }
+                }
+            }
             // ES6 9.4.4.3: if defineProperty makes a mapped arg non-writable, sever the mapping.
             if (header_.type == ObjectType::Arguments && existing.is_accessor_descriptor() &&
                     desc.has_writable() && !desc.is_writable()) {
@@ -1081,7 +1134,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
 }
 
 uint32_t Object::get_length() const {
-    if (header_.type == ObjectType::Array) {
+    if (header_.type == ObjectType::Array || header_.type == ObjectType::Arguments) {
         Value length_val = get_own_property("length");
         if (length_val.is_number()) {
             return static_cast<uint32_t>(length_val.as_number());

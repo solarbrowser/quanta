@@ -191,6 +191,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.set_this_binding(this_obj);
         }
 
+        // Preserve caller's "this" for direct eval inside native functions.
+        // Native function call sets "this" to the native's receiver, but eval must
+        // inherit the calling function's "this" (the value that existed before this overwrite).
+        bool saved_caller_this = false;
+        if (had_this_binding && !old_this_value.is_undefined() && !ctx.has_binding("__eval_caller_this__")) {
+            ctx.create_binding("__eval_caller_this__", old_this_value, true);
+            saved_caller_this = true;
+        }
+
         ctx.set_binding("this", actual_this);
 
         if (actual_this.is_number() || actual_this.is_string() || actual_this.is_boolean() ||
@@ -221,6 +230,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 ctx.delete_binding("this");
             } catch (...) {
             }
+        }
+
+        if (saved_caller_this) {
+            try { ctx.delete_binding("__eval_caller_this__"); } catch (...) {}
         }
 
         return result;
@@ -556,38 +569,21 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_prototype(obj_proto);
         }
 
-        // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] -- own iterator using get_property
-        // so mapped argument slots (accessor descriptors) are correctly read through their getters.
+        // ES6 9.4.4.6/9.4.4.7: arguments[Symbol.iterator] must be %ArrayPrototype%.values.
+        // get_element now routes through descriptors_ for Arguments so the aliasing works.
         {
-            Object* args_ptr = arguments_obj.get();
-            auto iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-                [args_ptr](Context& ctx, const std::vector<Value>&) -> Value {
-                    uint32_t length = 0;
-                    Value len_val = args_ptr->get_property("length");
-                    if (!len_val.is_undefined()) length = static_cast<uint32_t>(len_val.to_number());
-                    auto index = std::make_shared<uint32_t>(0);
-                    auto iterator = ObjectFactory::create_object();
-                    auto next_fn = ObjectFactory::create_native_function("next",
-                        [args_ptr, length, index](Context& ctx2, const std::vector<Value>&) -> Value {
-                            auto result = ObjectFactory::create_object();
-                            if (*index >= length) {
-                                result->set_property("done", Value(true));
-                                result->set_property("value", Value());
-                            } else {
-                                result->set_property("done", Value(false));
-                                Context* prev = Object::current_context_;
-                                Object::current_context_ = &ctx2;
-                                Value elem = args_ptr->get_property(std::to_string(*index));
-                                Object::current_context_ = prev;
-                                result->set_property("value", elem);
-                                (*index)++;
-                            }
-                            return Value(result.release());
-                        }, 0);
-                    iterator->set_property("next", Value(next_fn.release()));
-                    return Value(iterator.release());
-                }, 0);
-            PropertyDescriptor iter_desc(Value(iter_fn.release()),
+            Value arr_iter_fn;
+            Object* global = function_context.get_global_object();
+            if (global) {
+                Value arr_val = global->get_property("Array");
+                if (arr_val.is_function()) {
+                    Value arr_proto = arr_val.as_function()->get_property("prototype");
+                    if (arr_proto.is_object()) {
+                        arr_iter_fn = arr_proto.as_object()->get_property("Symbol.iterator");
+                    }
+                }
+            }
+            PropertyDescriptor iter_desc(arr_iter_fn,
                 static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             iter_desc.set_enumerable(false);
             arguments_obj->set_property_descriptor("Symbol.iterator", iter_desc);

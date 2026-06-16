@@ -570,7 +570,22 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 return Value();
             }
             // For any assignment (including =), check if target is a private method or uninitialized field
-            if (!obj->has_private_slot(prop_name)) {
+            if (obj->has_private_slot(prop_name)) {
+                // Slot is directly on obj (e.g. static private members on the class constructor).
+                PropertyDescriptor own_pd = obj->get_property_descriptor(prop_name);
+                if (own_pd.is_accessor_descriptor()) {
+                    if (!own_pd.has_setter()) {
+                        ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
+                        return Value();
+                    }
+                } else if (own_pd.has_value() && own_pd.get_value().is_function()) {
+                    Function* mfn = own_pd.get_value().as_function();
+                    if (mfn && mfn->has_property("__private_class_brand__")) {
+                        ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
+                        return Value();
+                    }
+                }
+            } else {
                 bool found_on_proto = false;
                 Object* proto = obj->get_prototype();
                 while (proto) {
