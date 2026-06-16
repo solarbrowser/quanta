@@ -617,7 +617,7 @@ std::unique_ptr<ASTNode> Parser::parse_assignment_expression() {
         Position end = right->get_end();
 
         return std::make_unique<AssignmentExpression>(
-            std::move(left), assign_op, std::move(right), op_start, end
+            std::move(left), assign_op, std::move(right), op_start, end, lhs_was_paren
         );
     }
 

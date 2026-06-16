@@ -464,6 +464,23 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
     uint32_t index;
     if (is_array_index(key, &index)) {
+        // Mapped arguments: index slots are accessor descriptors whose setter updates the param binding.
+        // must go through the descriptor path, not set_element, to trigger the setter.
+        if (header_.type == ObjectType::Arguments && descriptors_) {
+            auto it = descriptors_->find(key);
+            if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
+                if (it->second.has_setter()) {
+                    Object* setter = it->second.get_setter();
+                    if (setter && current_context_) {
+                        Function* setter_fn = dynamic_cast<Function*>(setter);
+                        if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
+                    }
+                    return true;
+                }
+                // accessor with no setter -- non-writable
+                return false;
+            }
+        }
         return set_element(index, value);
     }
 
@@ -873,6 +890,23 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
     if (descriptors_) {
         auto it = descriptors_->find(key);
         if (it != descriptors_->end()) {
+            // ES6 9.4.4: mapped arguments slots appear as DATA descriptors to callers.
+            // Internally we use accessor descriptors for the param aliasing, but expose
+            // {value, writable, enumerable, configurable} to [[GetOwnProperty]].
+            if (header_.type == ObjectType::Arguments && it->second.is_accessor_descriptor()) {
+                Function* gfn = it->second.get_getter()
+                    ? dynamic_cast<Function*>(it->second.get_getter()) : nullptr;
+                if (gfn && gfn->has_property("__param_map__")) {
+                    Value cur = (current_context_ && !gfn->has_property("__param_map_severed__"))
+                        ? gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)))
+                        : Value();
+                    PropertyDescriptor data(cur);
+                    data.set_writable(true);
+                    data.set_enumerable(it->second.is_enumerable());
+                    data.set_configurable(it->second.is_configurable());
+                    return data;
+                }
+            }
             return it->second;
         }
     }
@@ -979,6 +1013,28 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     if (is_attr_only) {
         if (descriptors_->count(key)) {
             PropertyDescriptor& existing = (*descriptors_)[key];
+            // ES6 9.4.4.3: if defineProperty makes a mapped arg non-writable, sever the mapping.
+            if (header_.type == ObjectType::Arguments && existing.is_accessor_descriptor() &&
+                    desc.has_writable() && !desc.is_writable()) {
+                Function* gfn = existing.get_getter()
+                    ? dynamic_cast<Function*>(existing.get_getter()) : nullptr;
+                if (gfn && gfn->has_property("__param_map__") && current_context_) {
+                    Value cur = gfn->call(*current_context_, {}, Value(this));
+                    PropertyDescriptor data(cur);
+                    data.set_writable(false);
+                    data.set_enumerable(existing.is_enumerable());
+                    data.set_configurable(existing.is_configurable());
+                    if (desc.has_enumerable())   data.set_enumerable(desc.is_enumerable());
+                    if (desc.has_configurable()) data.set_configurable(desc.is_configurable());
+                    existing = data;
+                    uint32_t idx;
+                    if (is_array_index(key, &idx)) {
+                        if (idx >= elements_.size()) elements_.resize(idx + 1);
+                        elements_[idx] = cur;
+                    }
+                    return true;
+                }
+            }
             if (desc.has_writable())     existing.set_writable(desc.is_writable());
             if (desc.has_enumerable())   existing.set_enumerable(desc.is_enumerable());
             if (desc.has_configurable()) existing.set_configurable(desc.is_configurable());

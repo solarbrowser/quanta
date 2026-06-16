@@ -421,12 +421,15 @@ private:
     std::unique_ptr<ASTNode> left_;
     std::unique_ptr<ASTNode> right_;
     Operator operator_;
+    bool lhs_is_paren_ = false;
 
 public:
     AssignmentExpression(std::unique_ptr<ASTNode> left, Operator op, std::unique_ptr<ASTNode> right,
-                        const Position& start, const Position& end)
+                        const Position& start, const Position& end, bool lhs_is_paren = false)
         : ASTNode(Type::ASSIGNMENT_EXPRESSION, start, end),
-          left_(std::move(left)), right_(std::move(right)), operator_(op) {}
+          left_(std::move(left)), right_(std::move(right)), operator_(op), lhs_is_paren_(lhs_is_paren) {}
+
+    bool is_lhs_paren() const { return lhs_is_paren_; }
     
     ASTNode* get_left() const { return left_.get(); }
     ASTNode* get_right() const { return right_.get(); }
