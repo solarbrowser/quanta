@@ -1072,7 +1072,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
-                Value current = ctx.get_binding(id->get_name());
+                Value current = ref_env->get_binding_direct(id->get_name(), &ctx);
                 if (ctx.has_exception()) return Value();
                 Value numeric = postfix_to_numeric(ctx, current);
                 if (ctx.has_exception()) return Value();
@@ -1082,7 +1082,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(numeric.to_number() + 1.0);
                 }
-                if (!ref_env->set_binding(id->get_name(), incremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), incremented)) {
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1155,7 +1155,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
-                Value current = ctx.get_binding(id->get_name());
+                Value current = ref_env->get_binding_direct(id->get_name(), &ctx);
                 if (ctx.has_exception()) return Value();
                 Value old_numeric = postfix_to_numeric(ctx, current);
                 if (ctx.has_exception()) return Value();
@@ -1165,7 +1165,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(old_numeric.to_number() + 1.0);
                 }
-                if (!ref_env->set_binding(id->get_name(), incremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), incremented)) {
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1238,7 +1238,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
-                Value current = ctx.get_binding(id->get_name());
+                Value current = ref_env->get_binding_direct(id->get_name(), &ctx);
                 if (ctx.has_exception()) return Value();
                 Value numeric = postfix_to_numeric(ctx, current);
                 if (ctx.has_exception()) return Value();
@@ -1248,7 +1248,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(numeric.to_number() - 1.0);
                 }
-                if (!ref_env->set_binding(id->get_name(), decremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), decremented)) {
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1321,7 +1321,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     ctx.throw_reference_error("Cannot access '" + id->get_name() + "' before initialization");
                     return Value();
                 }
-                Value current = ctx.get_binding(id->get_name());
+                Value current = ref_env->get_binding_direct(id->get_name(), &ctx);
                 if (ctx.has_exception()) return Value();
                 Value old_numeric = postfix_to_numeric(ctx, current);
                 if (ctx.has_exception()) return Value();
@@ -1331,7 +1331,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(old_numeric.to_number() - 1.0);
                 }
-                if (!ref_env->set_binding(id->get_name(), decremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), decremented)) {
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();

@@ -109,6 +109,9 @@ public:
     virtual bool is_wasm_instance() const { return false; }
 
     virtual Object* get_prototype() const { return header_.prototype; }
+    // Non-virtual: reads the internal [[Prototype]] slot directly, bypassing Proxy's getPrototypeOf trap.
+    // For internal bookkeeping (e.g. checking whether a freshly-constructed object already has a prototype) where invoking a user trap would be observably wrong.
+    Object* get_prototype_raw() const { return header_.prototype; }
     void set_prototype(Object* prototype);
     bool has_prototype(Object* prototype) const;
     

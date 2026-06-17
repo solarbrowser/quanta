@@ -1159,7 +1159,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         // so `new Derived() instanceof Derived` works even when super is a built-in
         if (is_derived && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
-        } else if (!ret_obj->get_prototype() && constructor_prototype.is_object()) {
+        } else if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
         return result;

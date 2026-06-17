@@ -280,7 +280,13 @@ Value Identifier::evaluate(Context& ctx) {
         return Value();
     }
 
-    if (!ctx.has_binding(name_)) {
+    // find_binding_env walks the scope chain exactly once (checking @@unscopables/Proxy traps at most once per env);
+    // avoid has_binding + get_binding which would each re-walk the chain and double-fire traps.
+    Environment* ref_env = ctx.find_binding_env(name_);
+    // A Proxy `has` trap consulted while walking the scope chain may have thrown (e.g. a with-statement binding object backed by a Proxy).
+    // Don't clobber that pending exception with a synthesized ReferenceError below.
+    if (ctx.has_exception()) return Value();
+    if (!ref_env) {
         static const std::set<std::string> known_globals = {
             "console", "Math", "JSON", "Date", "Array", "Object", "String", "Number",
             "Boolean", "RegExp", "Error", "TypeError", "ReferenceError", "SyntaxError",
@@ -295,7 +301,8 @@ Value Identifier::evaluate(Context& ctx) {
         }
     }
 
-    Value result = ctx.get_binding(name_);
+    Value result = ref_env ? ref_env->get_binding_direct(name_, &ctx) : ctx.get_binding(name_);
+    if (ctx.has_exception()) return Value();
 
     // Only cache immutable globals
     if (cacheable_globals.find(name_) != cacheable_globals.end() && !cache_valid_) {
