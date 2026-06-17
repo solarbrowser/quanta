@@ -1385,6 +1385,21 @@ Value ForOfStatement::evaluate(Context& ctx) {
             return Value();
         }
 
+        // AsyncIteratorClose (spec 27.7.4): called when the loop exits via `break`
+        // before the iterator naturally finished. GetMethod(iterator, "return") is
+        // accessed (and any getter exception/non-callable value surfaces) even
+        // though `return` is frequently absent and there is nothing further to call.
+        auto close_async_iterator_on_break = [&ctx](Object* iter_obj) {
+            Value return_method = iter_obj->get_property("return");
+            if (ctx.has_exception()) return;
+            if (return_method.is_null() || return_method.is_undefined()) return;
+            if (!return_method.is_function()) {
+                ctx.throw_type_error("iterator return method is not callable");
+                return;
+            }
+            return_method.as_function()->call(ctx, {}, Value(iter_obj));
+        };
+
         const uint32_t MAX_ITER = 1000000;
         for (uint32_t i = 0; i < MAX_ITER; i++) {
             Value awaited;
@@ -1566,7 +1581,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 body_->evaluate(ctx);
                 if (ctx.has_exception()) return Value();
-                if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+                if (ctx.has_break()) {
+                    ctx.clear_break_continue();
+                    close_async_iterator_on_break(iterator_obj);
+                    if (ctx.has_exception()) return Value();
+                    break;
+                }
                 if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
                 if (ctx.has_return_value()) return Value();
                 continue;
@@ -1585,7 +1605,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
             body_->evaluate(ctx);
             if (per_iter) ctx.pop_block_scope();
             if (ctx.has_exception()) return Value();
-            if (ctx.has_break()) { ctx.clear_break_continue(); break; }
+            if (ctx.has_break()) {
+                ctx.clear_break_continue();
+                close_async_iterator_on_break(iterator_obj);
+                if (ctx.has_exception()) return Value();
+                break;
+            }
             if (ctx.has_continue()) { ctx.clear_break_continue(); continue; }
             if (ctx.has_return_value()) return Value();
         }
