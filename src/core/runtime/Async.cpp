@@ -311,9 +311,11 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
 
         // Pin expr_val on outer_promise_ IMMEDIATELY (before any allocations that
         // could trigger GC and collect the awaited Promise while it's only on the
-        // fiber's stack — which GC does not scan).
-        static thread_local size_t pin_counter = 0;
-        std::string pin_key = "__ap_" + std::to_string(pin_counter++);
+        // fiber's stack -- which GC does not scan). Fixed key, not a counter: only one
+        // await is ever in flight on a given outer_promise_ at a time (set here, always
+        // deleted below before the next await's pin), so reusing the same key keeps
+        // property_insertion_order_ bounded instead of growing once per await.
+        const std::string pin_key = "__ap_";
         exec->outer_promise_->set_property(pin_key, expr_val);
 
         // Now resolve awaited value / register pending callbacks
@@ -377,6 +379,7 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
 
         // Resumed by resume() — await_result_ holds the settled value
         exec->outer_promise_->delete_property(pin_key);
+        exec->outer_promise_->delete_property(pin_key + "_v");
 
         if (exec->await_is_throw_) {
             ctx.throw_exception(exec->await_result_, true);

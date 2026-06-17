@@ -19,7 +19,6 @@
 namespace Quanta {
 
 class PropertyDescriptor;
-class Shape;
 class Context;
 class Environment;
 class ASTNode;
@@ -56,7 +55,6 @@ public:
 
 private:
     struct ObjectHeader {
-        Shape* shape;
         Object* prototype;
         ObjectType type;
         uint8_t flags;
@@ -64,19 +62,17 @@ private:
         uint32_t hash_code;
     } header_;
 
-    std::vector<Value> properties_;
     std::vector<Value> elements_;
-    
+
     std::unique_ptr<std::unordered_map<std::string, Value>> overflow_properties_;
 
     std::unique_ptr<std::unordered_map<std::string, PropertyDescriptor>> descriptors_;
 
-    std::unique_ptr<std::unordered_set<std::string>> deleted_shape_properties_;
     std::unique_ptr<std::unordered_set<uint32_t>> deleted_elements_;
 
+    // Creation order for overflow/descriptor-tracked properties; overflow_properties_ is
+    // an unordered_map and has no enumeration order of its own (see get_own_property_keys).
     std::vector<std::string> property_insertion_order_;
-    // Shape properties that were deleted then re-added must enumerate at the end.
-    std::vector<std::string> readded_shape_properties_order_;
 
 public:
     Object(ObjectType type = ObjectType::Ordinary);
@@ -196,22 +192,9 @@ public:
     void mark_references() const;
     size_t memory_usage() const;
     
-    Shape* get_shape() const { return header_.shape; }
     const std::unordered_map<std::string, PropertyDescriptor>* get_descriptors() const { return descriptors_.get(); }
     const std::unordered_map<std::string, Value>* get_overflow_properties() const { return overflow_properties_.get(); }
-    void transition_shape(const std::string& key, PropertyAttributes attrs);
 
-    inline Value get_property_by_offset_unchecked(uint32_t offset) const {
-        return properties_[offset];
-    }
-
-    inline Value get_property_by_offset(uint32_t offset) const {
-        if (offset < properties_.size()) {
-            return properties_[offset];
-        }
-        return Value();
-    }
-    
     Value get_internal_property(const std::string& key) const;
     void set_internal_property(const std::string& key, const Value& value);
 
@@ -225,24 +208,13 @@ protected:
     void compact_elements();
     
     void ensure_property_capacity(size_t capacity);
-    bool store_in_shape(const std::string& key, const Value& value, PropertyAttributes attrs);
     bool store_in_overflow(const std::string& key, const Value& value);
 
 public:
     void clear_properties();
-    struct ShapeTransitionHash {
-        std::size_t operator()(const std::tuple<Shape*, std::string, PropertyAttributes>& t) const {
-            std::size_t h1 = std::hash<void*>{}(std::get<0>(t));
-            std::size_t h2 = std::hash<std::string>{}(std::get<1>(t));
-            std::size_t h3 = std::hash<uint8_t>{}(static_cast<uint8_t>(std::get<2>(t)));
-            return h1 ^ (h2 << 1) ^ (h3 << 2);
-        }
-    };
-
-    static std::unordered_map<std::tuple<Shape*, std::string, PropertyAttributes>, Shape*, ShapeTransitionHash> shape_transition_cache_;
 
 private:
-    
+
     static std::unordered_map<std::string, std::string> interned_keys_;
     static const std::string& intern_key(const std::string& key);
     
@@ -315,52 +287,6 @@ public:
     PropertyDescriptor merge_with(const PropertyDescriptor& other) const;
     
     std::string to_string() const;
-};
-
-/**
- * Hidden Classes (Shapes) for property layout optimization
- */
-class Shape {
-public:
-    struct PropertyInfo {
-        uint32_t offset;
-        PropertyAttributes attributes;
-        uint32_t hash;
-    };
-
-private:
-    Shape* parent_;
-    std::string transition_key_;
-    PropertyAttributes transition_attrs_;
-    std::unordered_map<std::string, PropertyInfo> properties_;
-    uint32_t property_count_;
-    uint32_t id_;
-    
-    static uint32_t next_shape_id_;
-
-public:
-    Shape();
-    Shape(Shape* parent, const std::string& key, PropertyAttributes attrs);
-    ~Shape() = default;
-
-    uint32_t get_id() const { return id_; }
-    uint32_t get_property_count() const { return property_count_; }
-    Shape* get_parent() const { return parent_; }
-    
-    bool has_property(const std::string& key) const;
-    PropertyInfo get_property_info(const std::string& key) const;
-    
-    Shape* add_property(const std::string& key, PropertyAttributes attrs);
-    Shape* remove_property(const std::string& key);
-    
-    std::vector<std::string> get_property_keys() const;
-    
-    std::string debug_string() const;
-    
-    static Shape* get_root_shape();
-
-private:
-    void rebuild_property_map();
 };
 
 /**

@@ -1017,7 +1017,7 @@ Value Function::get_property(const std::string& key) const {
 
 void Function::set_name(const std::string& name) {
     name_ = name;
-    // Force-update the name in descriptors and shape (bypasses writable check)
+    // Force-update the name in descriptors (bypasses writable check)
     // But don't overwrite if the descriptor was explicitly set to a function (e.g. static name())
     if (descriptors_) {
         auto it = descriptors_->find("name");
@@ -1025,12 +1025,6 @@ void Function::set_name(const std::string& name) {
             if (!it->second.get_value().is_function()) {
                 it->second = PropertyDescriptor(Value(name_), it->second.get_attributes());
             }
-        }
-    }
-    if (header_.shape && header_.shape->has_property("name")) {
-        auto info = header_.shape->get_property_info("name");
-        if (info.offset < properties_.size()) {
-            properties_[info.offset] = Value(name_);
         }
     }
 }

@@ -22,12 +22,7 @@ namespace Quanta {
 
 thread_local Context* Object::current_context_ = nullptr;
 
-std::unordered_map<std::tuple<Shape*, std::string, PropertyAttributes>, Shape*, Object::ShapeTransitionHash> Object::shape_transition_cache_;
 std::unordered_map<std::string, std::string> Object::interned_keys_;
-uint32_t Shape::next_shape_id_ = 1;
-
-
-static Shape* g_root_shape = nullptr;
 
 static Value make_prop_key_value(const std::string& key) {
     if (key.find("Symbol.") == 0) {
@@ -39,19 +34,15 @@ static Value make_prop_key_value(const std::string& key) {
 
 
 Object::Object(ObjectType type) {
-    header_.shape = new Shape();
-    
     header_.prototype = nullptr;
     header_.type = type;
     header_.flags = 0;
     header_.property_count = 0;
     header_.hash_code = reinterpret_cast<uintptr_t>(this) & 0xFFFFFFFF;
-    
-    properties_.reserve(8);
+
     if (type == ObjectType::Array) {
         elements_.reserve(8);
     }
-    
 }
 
 Object::Object(Object* prototype, ObjectType type) : Object(type) {
@@ -117,10 +108,6 @@ bool Object::has_private_slot(const std::string& key) const {
         auto it = descriptors_->find(key);
         if (it != descriptors_->end()) return true;
     }
-    if (header_.shape && header_.shape->has_property(key)) {
-        if (deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0) return false;
-        return true;
-    }
     if (overflow_properties_) {
         if (overflow_properties_->find(key) != overflow_properties_->end()) return true;
     }
@@ -146,14 +133,6 @@ bool Object::has_own_property(const std::string& key) const {
     if (is_array_index(key, &index)) {
         if (index >= elements_.size()) return false;
         if (deleted_elements_ && deleted_elements_->count(index) > 0) return false;
-        return true;
-    }
-
-    if (header_.shape && header_.shape->has_property(key)) {
-        // Check if the property was explicitly deleted
-        if (deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0) {
-            return false;
-        }
         return true;
     }
 
@@ -376,15 +355,6 @@ Value Object::get_own_property(const std::string& key) const {
         }
     }
 
-    if (header_.shape && header_.shape->has_property(key)) {
-        if (!(deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0)) {
-            auto info = header_.shape->get_property_info(key);
-            if (info.offset < properties_.size()) {
-                return properties_[info.offset];
-            }
-        }
-    }
-
     if (overflow_properties_) {
         auto it = overflow_properties_->find(key);
         if (it != overflow_properties_->end()) {
@@ -446,14 +416,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         }
 
         Value length_value(static_cast<double>(new_length));
-
-        if (header_.shape && header_.shape->has_property("length")) {
-            auto info = header_.shape->get_property_info("length");
-            if (info.offset < properties_.size()) {
-                properties_[info.offset] = length_value;
-                return true;
-            }
-        }
 
         if (!overflow_properties_) {
             overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
@@ -529,29 +491,6 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             return false;
         }
 
-        if (header_.shape->has_property(key)) {
-            auto info = header_.shape->get_property_info(key);
-            if (info.offset < properties_.size()) {
-                properties_[info.offset] = value;
-                if (deleted_shape_properties_ && deleted_shape_properties_->count(key)) {
-                    deleted_shape_properties_->erase(key);
-                    // Re-inserted after deletion: move to end of enumeration order.
-                    readded_shape_properties_order_.erase(
-                        std::remove(readded_shape_properties_order_.begin(),
-                                    readded_shape_properties_order_.end(), key),
-                        readded_shape_properties_order_.end());
-                    readded_shape_properties_order_.push_back(key);
-                }
-                if (descriptors_) {
-                    auto dit = descriptors_->find(key);
-                    if (dit != descriptors_->end() && dit->second.is_data_descriptor()) {
-                        dit->second.set_value(value);
-                    }
-                }
-                return true;
-            }
-        }
-
         if (overflow_properties_) {
             (*overflow_properties_)[key] = value;
             if (descriptors_) {
@@ -568,18 +507,14 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         return false;
     }
 
-    // Store non-default attrs in descriptor map (shape may use cached transitions with wrong attrs)
+    // Store non-default attrs in descriptor map. Insertion-order tracking happens in
+    // store_in_overflow below (which always runs for a new key now), not here -- pushing
+    // here too would double-insert the key into property_insertion_order_.
     if (attrs != PropertyAttributes::Default) {
-        bool is_new = !descriptors_ || !descriptors_->count(key);
         if (!descriptors_) {
             descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
         }
         (*descriptors_)[key] = PropertyDescriptor(value, attrs);
-        if (is_new) property_insertion_order_.push_back(key);
-    }
-
-    if (store_in_shape(key, value, attrs)) {
-        return true;
     }
 
     return store_in_overflow(key, value);
@@ -635,30 +570,11 @@ bool Object::delete_property(const std::string& key) {
                 descriptors_->erase(key);
             }
 
-            header_.property_count--;
-            update_hash_code();
-            return true;
-        }
-    }
-
-    if (header_.shape->has_property(key)) {
-        auto info = header_.shape->get_property_info(key);
-        if (info.offset < properties_.size()) {
-            properties_[info.offset] = Value();
-
-            if (descriptors_) {
-                descriptors_->erase(key);
-            }
-
-            // Track deleted shape properties
-            if (!deleted_shape_properties_) {
-                deleted_shape_properties_ = std::make_unique<std::unordered_set<std::string>>();
-            }
-            deleted_shape_properties_->insert(key);
-            readded_shape_properties_order_.erase(
-                std::remove(readded_shape_properties_order_.begin(),
-                            readded_shape_properties_order_.end(), key),
-                readded_shape_properties_order_.end());
+            // Mirrors the push in store_in_overflow -- without this, a set/delete/set
+            // cycle on the same key would grow property_insertion_order_ unboundedly.
+            property_insertion_order_.erase(
+                std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
+                property_insertion_order_.end());
 
             header_.property_count--;
             update_hash_code();
@@ -773,52 +689,12 @@ std::vector<std::string> Object::get_own_property_keys() const {
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
 
-    // Shape properties first (these preserve insertion order).
-    // Skip re-added shape properties here; they are appended at the end.
-    if (header_.shape) {
-        auto shape_properties = header_.shape->get_property_keys();
-        for (const auto& prop_name : shape_properties) {
-            if (deleted_shape_properties_ && deleted_shape_properties_->count(prop_name) > 0) continue;
-            bool readded = false;
-            for (const auto& rk : readded_shape_properties_order_) {
-                if (rk == prop_name) { readded = true; break; }
-            }
-            if (readded) continue;
-            raw_keys.push_back(prop_name);
-        }
-    }
-
-    // Overflow properties next
-    if (overflow_properties_) {
-        for (const auto& pair : *overflow_properties_) {
-            // Skip if already in shape
-            bool in_shape = false;
-            if (header_.shape) {
-                in_shape = header_.shape->has_property(pair.first);
-            }
-            if (!in_shape) {
-                raw_keys.push_back(pair.first);
-            }
-        }
-    }
-
-    // Descriptor-only properties (defineProperty'd keys not in shape/overflow),
-    // iterated in insertion order via property_insertion_order_.
-    if (descriptors_) {
-        for (const auto& key : property_insertion_order_) {
-            if (!descriptors_->count(key)) continue;
-            bool already = false;
-            for (const auto& k : raw_keys) {
-                if (k == key) { already = true; break; }
-            }
-            if (!already) {
-                raw_keys.push_back(key);
-            }
-        }
-    }
-
-    // Re-added shape properties: appended in their re-insertion order after all others.
-    for (const auto& key : readded_shape_properties_order_) {
+    // Overflow and descriptor-only properties, in creation order via property_insertion_order_
+    // -- overflow_properties_ is an unordered_map and has no enumeration order of its own.
+    for (const auto& key : property_insertion_order_) {
+        bool in_overflow = overflow_properties_ && overflow_properties_->count(key) > 0;
+        bool in_descriptors = descriptors_ && descriptors_->count(key) > 0;
+        if (!in_overflow && !in_descriptors) continue;
         bool already = false;
         for (const auto& k : raw_keys) {
             if (k == key) { already = true; break; }
@@ -926,18 +802,11 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
         }
     }
 
-    // Property not in descriptor map, check if it exists and get attrs from shape
+    // Property not in descriptor map but exists (e.g. plain overflow-stored data property):
+    // default attrs.
     if (has_own_property(key)) {
         Value value = get_own_property(key);
-        PropertyAttributes attrs = PropertyAttributes::Default;
-
-        // Check shape for attrs (for properties stored in shape)
-        if (header_.shape->has_property(key)) {
-            auto info = header_.shape->get_property_info(key);
-            attrs = info.attributes;
-        }
-
-        return PropertyDescriptor(value, attrs);
+        return PropertyDescriptor(value, PropertyAttributes::Default);
     }
 
     return PropertyDescriptor();
@@ -1002,27 +871,17 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 elements_[index] = desc.get_value();
             }
         } else {
-            // Directly update shape/overflow to bypass writable check on existing props
-            bool updated = false;
-            if (desc.has_value() && header_.shape && header_.shape->has_property(key)) {
-                auto info = header_.shape->get_property_info(key);
-                if (info.offset < properties_.size()) {
-                    properties_[info.offset] = desc.get_value();
-                    updated = true;
-                }
-            }
+            // Directly update overflow to bypass writable check on existing props
             if (desc.has_value()) {
-                if (!updated && overflow_properties_ && overflow_properties_->count(key)) {
+                if (overflow_properties_ && overflow_properties_->count(key)) {
                     (*overflow_properties_)[key] = desc.get_value();
-                    updated = true;
-                }
-                if (!updated) {
+                } else {
                     set_property(key, desc.get_value(), desc.get_attributes());
                 }
             }
         }
     } else if (desc.is_accessor_descriptor() || desc.is_generic_descriptor()) {
-        // Ensure the property exists in shape so has_own_property works
+        // Ensure the property exists (in overflow) so has_own_property works
         uint32_t index;
         if (is_array_index(key, &index)) {
             uint32_t new_size = index + 1;
@@ -1038,11 +897,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 }
             }
         } else if (!has_own_property(key)) {
-            if (store_in_shape(key, Value(), desc.get_attributes())) {
-                // stored in shape
-            } else {
-                store_in_overflow(key, Value());
-            }
+            store_in_overflow(key, Value());
         }
     }
 
@@ -1729,53 +1584,21 @@ bool Object::is_array_index(const std::string& key, uint32_t* index) const {
     return false;
 }
 
-bool Object::store_in_shape(const std::string& key, const Value& value, PropertyAttributes attrs) {
-    if (header_.property_count < 32) {
-        bool is_new_property = !header_.shape->has_property(key);
-        bool was_deleted = !is_new_property && deleted_shape_properties_ && deleted_shape_properties_->count(key) > 0;
-
-        transition_shape(key, attrs);
-
-        auto info = header_.shape->get_property_info(key);
-        if (info.offset >= properties_.size()) {
-            properties_.resize(info.offset + 1);
-        }
-        properties_[info.offset] = value;
-
-        if (was_deleted) {
-            deleted_shape_properties_->erase(key);
-            // Re-inserted after deletion: must enumerate at end per [[OwnPropertyKeys]] order.
-            readded_shape_properties_order_.erase(
-                std::remove(readded_shape_properties_order_.begin(),
-                            readded_shape_properties_order_.end(), key),
-                readded_shape_properties_order_.end());
-            readded_shape_properties_order_.push_back(key);
-        }
-
-        if (is_new_property || was_deleted) {
-            header_.property_count++;
-        }
-
-        update_hash_code();
-
-
-        return true;
-    }
-    
-    return false;
-}
-
 bool Object::store_in_overflow(const std::string& key, const Value& value) {
     if (!overflow_properties_) {
         overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
     }
     
     bool is_new_property = overflow_properties_->find(key) == overflow_properties_->end();
-    
+
     (*overflow_properties_)[key] = value;
-    
+
     if (is_new_property) {
         header_.property_count++;
+        // overflow_properties_ is an unordered_map (no enumeration order of its own) --
+        // property_insertion_order_ is what get_own_property_keys() relies on for spec
+        // creation-order enumeration. Mirrored back out in delete_property below.
+        property_insertion_order_.push_back(key);
     }
     
     update_hash_code();
@@ -1785,30 +1608,23 @@ bool Object::store_in_overflow(const std::string& key, const Value& value) {
 }
 
 void Object::clear_properties() {
-    properties_.clear();
     elements_.clear();
-    
+
     if (overflow_properties_) {
         overflow_properties_->clear();
     }
     if (descriptors_) {
         descriptors_->clear();
     }
-    
+
     property_insertion_order_.clear();
-    
-    header_.shape = Shape::get_root_shape();
+
     header_.property_count = 0;
-    
+
     header_.type = ObjectType::Ordinary;
     header_.flags = 0;
-    
-    update_hash_code();
-}
 
-void Object::transition_shape(const std::string& key, PropertyAttributes attrs) {
-    Shape* new_shape = header_.shape->add_property(key, attrs);
-    header_.shape = new_shape;
+    update_hash_code();
 }
 
 void Object::update_hash_code() {
@@ -2009,82 +1825,6 @@ void PropertyDescriptor::set_configurable(bool configurable) {
         attributes_ = static_cast<PropertyAttributes>(attributes_ & ~PropertyAttributes::Configurable);
     }
     has_configurable_ = true;
-}
-
-
-Shape::Shape() : parent_(nullptr), property_count_(0), id_(next_shape_id_++) {
-}
-
-Shape::Shape(Shape* parent, const std::string& key, PropertyAttributes attrs)
-    : parent_(parent), transition_key_(key), transition_attrs_(attrs),
-      property_count_(parent ? parent->property_count_ + 1 : 1),
-      id_(next_shape_id_++) {
-    
-    if (parent_) {
-        properties_ = parent_->properties_;
-    }
-    
-    PropertyInfo info;
-    info.offset = property_count_ - 1;
-    info.attributes = attrs;
-    info.hash = std::hash<std::string>{}(key);
-    
-    properties_[key] = info;
-}
-
-bool Shape::has_property(const std::string& key) const {
-    return properties_.find(key) != properties_.end();
-}
-
-Shape::PropertyInfo Shape::get_property_info(const std::string& key) const {
-    auto it = properties_.find(key);
-    if (it != properties_.end()) {
-        return it->second;
-    }
-    return PropertyInfo{0, PropertyAttributes::None, 0};
-}
-
-Shape* Shape::add_property(const std::string& key, PropertyAttributes attrs) {
-    std::tuple<Shape*, std::string, PropertyAttributes> cache_key = {this, key, attrs};
-    auto cache_it = Object::shape_transition_cache_.find(cache_key);
-    if (cache_it != Object::shape_transition_cache_.end()) {
-        return cache_it->second;
-    }
-
-    Shape* new_shape = new Shape(this, key, attrs);
-
-    Object::shape_transition_cache_[cache_key] = new_shape;
-
-    return new_shape;
-}
-
-std::vector<std::string> Shape::get_property_keys() const {
-    std::vector<std::string> keys;
-    keys.reserve(properties_.size());
-    
-    std::vector<std::string> reverse_keys;
-    const Shape* current = this;
-    
-    while (current && current->parent_) {
-        if (!current->transition_key_.empty()) {
-            reverse_keys.push_back(current->transition_key_);
-        }
-        current = current->parent_;
-    }
-    
-    keys.reserve(reverse_keys.size());
-    for (auto it = reverse_keys.rbegin(); it != reverse_keys.rend(); ++it) {
-        keys.push_back(*it);
-    }
-    
-    return keys;
-}
-
-Shape* Shape::get_root_shape() {
-    if (!g_root_shape) {
-        g_root_shape = new Shape();
-    }
-    return g_root_shape;
 }
 
 
