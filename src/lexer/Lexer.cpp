@@ -322,6 +322,7 @@ Token Lexer::create_token(TokenType type, double numeric_value, const Position& 
     return Token(type, numeric_value, start, current_position_);
 }
 
+static uint32_t decode_utf8_at(const std::string& src, size_t pos);
 static bool is_unicode_id_start(uint32_t cp);
 static bool is_invalid_id_start_cp(uint32_t cp);
 static bool is_invalid_id_continue_cp(uint32_t cp);
@@ -511,10 +512,18 @@ Token Lexer::read_identifier() {
                 }
             }
         } else {
+            unsigned char uch = static_cast<unsigned char>(current_char());
+            if (uch >= 0xC0) {
+                uint32_t cp = decode_utf8_at(source_, position_);
+                if (is_invalid_id_continue_cp(cp)) {
+                    add_error("Invalid character in identifier");
+                    return create_token(TokenType::INVALID, value, start);
+                }
+            }
             value += advance();
         }
     }
-    
+
     TokenType type = lookup_keyword(value);
 
     if (contains_unicode_escapes) {
@@ -1020,6 +1029,7 @@ static uint32_t decode_utf8_at(const std::string& src, size_t pos) {
 
 static bool is_unicode_id_start(uint32_t cp) {
     if (cp > 0xFFFF) return true;
+    if (cp == 0x180E) return false; // Mongolian Vowel Separator: Cf, not ID_Start
     if (cp >= 0x00C0 && cp < 0x2000) return true;
     if (cp < 0x2070) return false;
     if (cp == 0x2071 || cp == 0x207F) return true;
@@ -1053,7 +1063,9 @@ static bool is_invalid_id_start_cp(uint32_t cp) {
 
 static bool is_invalid_id_continue_cp(uint32_t cp) {
     if (cp == 0x0A || cp == 0x0D || cp == 0x2028 || cp == 0x2029) return true;
-    if (cp == 0x2E2F) return true;
+    if (cp == 0x180E) return true; // Mongolian Vowel Separator: Cf, not ID_Continue
+    if (cp == 0x2E2F) return true; // Vertical Tilde: Lm + Pattern_Syntax, not ID_Continue
+    if (cp == 0x00A0) return true; // NO-BREAK SPACE: WhiteSpace, not ID_Continue
     if (cp < 0x80) return !(std::isalnum((int)cp) || cp == '_' || cp == '$');
     return false;
 }

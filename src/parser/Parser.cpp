@@ -189,6 +189,64 @@ std::unique_ptr<Program> Parser::parse_program() {
                     goto export_dup_done;
                 }
         export_dup_done:;
+
+        // Module early error: export { x } without 'from' -- x must be a locally declared binding
+        {
+            std::unordered_set<std::string> local_bindings;
+            for (const auto& stmt : statements) {
+                if (!stmt) continue;
+                auto t = stmt->get_type();
+                if (t == ASTNode::Type::FUNCTION_DECLARATION) {
+                    auto* fn = static_cast<FunctionDeclaration*>(stmt.get());
+                    if (fn->get_id()) local_bindings.insert(fn->get_id()->get_name());
+                } else if (t == ASTNode::Type::CLASS_DECLARATION) {
+                    auto* cls = static_cast<ClassDeclaration*>(stmt.get());
+                    if (cls->get_id()) local_bindings.insert(cls->get_id()->get_name());
+                } else if (t == ASTNode::Type::VARIABLE_DECLARATION) {
+                    auto* vd = static_cast<VariableDeclaration*>(stmt.get());
+                    for (const auto& d : vd->get_declarations())
+                        if (d->get_id()) local_bindings.insert(d->get_id()->get_name());
+                } else if (t == ASTNode::Type::IMPORT_STATEMENT) {
+                    auto* imp = static_cast<ImportStatement*>(stmt.get());
+                    if (!imp->get_default_alias().empty()) local_bindings.insert(imp->get_default_alias());
+                    if (!imp->get_namespace_alias().empty()) local_bindings.insert(imp->get_namespace_alias());
+                    for (const auto& spec : imp->get_specifiers()) local_bindings.insert(spec->get_local_name());
+                } else if (t == ASTNode::Type::EXPORT_STATEMENT) {
+                    auto* exp = static_cast<ExportStatement*>(stmt.get());
+                    if (exp->is_declaration_export()) {
+                        ASTNode* decl = exp->get_declaration();
+                        if (decl) {
+                            if (decl->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                                auto* fn = static_cast<FunctionDeclaration*>(decl);
+                                if (fn->get_id()) local_bindings.insert(fn->get_id()->get_name());
+                            } else if (decl->get_type() == ASTNode::Type::CLASS_DECLARATION) {
+                                auto* cls = static_cast<ClassDeclaration*>(decl);
+                                if (cls->get_id()) local_bindings.insert(cls->get_id()->get_name());
+                            } else if (decl->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+                                auto* vd = static_cast<VariableDeclaration*>(decl);
+                                for (const auto& d : vd->get_declarations())
+                                    if (d->get_id()) local_bindings.insert(d->get_id()->get_name());
+                            }
+                        }
+                    }
+                }
+            }
+            for (const auto& stmt : statements) {
+                if (!stmt || stmt->get_type() != ASTNode::Type::EXPORT_STATEMENT) continue;
+                auto* exp = static_cast<ExportStatement*>(stmt.get());
+                // Only check non-re-export named exports (no source module)
+                if (exp->is_default_export() || exp->is_declaration_export() || !exp->get_source_module().empty()) continue;
+                for (const auto& spec : exp->get_specifiers()) {
+                    const std::string& lname = spec->get_local_name();
+                    if (lname == "*") continue;
+                    if (local_bindings.find(lname) == local_bindings.end()) {
+                        add_error("SyntaxError: Export of undeclared binding '" + lname + "'");
+                        goto export_binding_done;
+                    }
+                }
+            }
+            export_binding_done:;
+        }
     }
 
     Position end = get_current_position();
@@ -1001,6 +1059,7 @@ std::unique_ptr<ASTNode> Parser::parse_unary_expression() {
                                    et == ASTNode::Type::CALL_EXPRESSION ||
                                    et == ASTNode::Type::ARROW_FUNCTION_EXPRESSION ||
                                    et == ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION ||
+                                   et == ASTNode::Type::UNARY_EXPRESSION ||
                                    et == ASTNode::Type::NUMBER_LITERAL ||
                                    et == ASTNode::Type::STRING_LITERAL ||
                                    et == ASTNode::Type::BOOLEAN_LITERAL ||
@@ -2411,6 +2470,11 @@ std::unique_ptr<ASTNode> Parser::parse_identifier() {
         return nullptr;
     }
 
+    if (options_.in_class_static_block && name == "arguments") {
+        add_error("SyntaxError: 'arguments' is not valid in class static block");
+        return nullptr;
+    }
+
     advance();
     auto id = std::make_unique<Identifier>(name, start, end);
     if (escaped_kw) id->set_escaped_keyword(true);
@@ -3242,6 +3306,9 @@ static std::string find_block_lexical_duplicate(const std::vector<std::unique_pt
                     else lexical.push_back(decl->get_id()->get_name());
                 }
             }
+        } else if (stmt->get_type() == ASTNode::Type::USING_DECLARATION) {
+            auto* ud = static_cast<UsingDeclaration*>(stmt.get());
+            for (const auto& b : ud->get_bindings()) lexical.push_back(b.name);
         } else {
             collect_var_declared_names(stmt.get(), vars);
         }
@@ -3430,6 +3497,11 @@ bool Parser::validate_array_destructuring(ArrayLiteral* arr) {
                         return false;
                     }
                 }
+                // import.meta / new.target are not valid rest targets
+                if (arg->get_type() == ASTNode::Type::META_PROPERTY) {
+                    add_error("SyntaxError: Invalid destructuring assignment target");
+                    return false;
+                }
             }
             // rest element must be last
             for (size_t j = ei + 1; j < elems.size(); j++) {
@@ -3538,6 +3610,14 @@ bool Parser::validate_object_destructuring(ObjectLiteral* obj) {
             if (val->get_type() == ASTNode::Type::META_PROPERTY) {
                 add_error("SyntaxError: Invalid destructuring assignment target");
                 return false;
+            }
+            // spread rest: {...import.meta} -- check argument
+            if (val->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                auto* se = static_cast<SpreadElement*>(val);
+                if (se->get_argument() && se->get_argument()->get_type() == ASTNode::Type::META_PROPERTY) {
+                    add_error("SyntaxError: Invalid destructuring assignment target");
+                    return false;
+                }
             }
             if (val->get_type() == ASTNode::Type::ARRAY_LITERAL) {
                 if (!validate_array_destructuring(static_cast<ArrayLiteral*>(val)))
@@ -4877,6 +4957,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         std::string forbidden = find_forbidden_expr_in_params(params, true, false);
         if (!forbidden.empty()) {
             add_error("SyntaxError: " + forbidden + " expression not allowed in formal parameters of generator function");
+            return nullptr;
+        }
+    }
+
+    if (!is_generator && options_.source_type_module) {
+        std::string forbidden = find_forbidden_expr_in_params(params, false, true);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: await expression not allowed in formal parameters of function in module context");
             return nullptr;
         }
     }
@@ -6521,6 +6609,14 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         }
     }
 
+    if (!is_generator && options_.source_type_module) {
+        std::string forbidden = find_forbidden_expr_in_params(params, false, true);
+        if (!forbidden.empty()) {
+            add_error("SyntaxError: await expression not allowed in formal parameters of function in module context");
+            return nullptr;
+        }
+    }
+
     int saved_loop_fn = options_.loop_depth;
     int saved_sw_fn = options_.switch_depth;
     auto saved_al_fn = options_.active_labels;
@@ -7347,6 +7443,12 @@ std::unique_ptr<ASTNode> Parser::parse_arrow_function() {
             } else if (current_token().get_type() == TokenType::YIELD && options_.strict_mode) {
                 add_error("SyntaxError: 'yield' cannot be used as parameter name in strict mode");
                 return nullptr;
+            } else if (current_token().get_type() == TokenType::AWAIT) {
+                if (options_.in_async_body || options_.source_type_module) {
+                    add_error("SyntaxError: 'await' cannot be used as parameter name in async context");
+                    return nullptr;
+                }
+                // outside async context: await is a valid identifier param
             } else {
                 advance();
                 continue;
@@ -8258,6 +8360,27 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     }
                 }
             }
+            if (!options_.strict_mode) {
+                auto* blk = static_cast<BlockStatement*>(body.get());
+                bool body_strict = blk && !blk->get_statements().empty() && [&] {
+                    auto* es = dynamic_cast<ExpressionStatement*>(blk->get_statements()[0].get());
+                    if (es) {
+                        auto* sl = dynamic_cast<StringLiteral*>(es->get_expression());
+                        return sl && sl->get_value() == "use strict";
+                    }
+                    return false;
+                }();
+                if (body_strict) {
+                    for (const auto& p : params) {
+                        if (!p->get_name()) continue;
+                        const std::string& pn = p->get_name()->get_name();
+                        if (pn == "eval" || pn == "arguments") {
+                            add_error("SyntaxError: '" + pn + "' cannot be a parameter name in strict mode");
+                            return nullptr;
+                        }
+                    }
+                }
+            }
             {
                 auto* blk = static_cast<BlockStatement*>(body.get());
                 std::string dup = check_params_body_lex_conflict(params, blk);
@@ -8872,21 +8995,39 @@ std::unique_ptr<ASTNode> Parser::parse_import_statement() {
     }
     advance();
 
-    // Skip optional 'with { ... }' import attributes clause
+    // Parse optional 'with { ... }' import attributes clause; validate no duplicate keys
     auto skip_import_with = [&]() {
-        if (match(TokenType::WITH)) {
-            advance();
-            if (match(TokenType::LEFT_BRACE)) {
+        if (!match(TokenType::WITH)) return;
+        advance();
+        if (!match(TokenType::LEFT_BRACE)) return;
+        advance();
+        std::unordered_set<std::string> seen_keys;
+        while (!at_end() && !match(TokenType::RIGHT_BRACE)) {
+            // key is identifier or string literal
+            std::string key;
+            if (match(TokenType::IDENTIFIER) || is_reserved_word_as_property_name()) {
+                key = current_token().get_value();
                 advance();
-                int d_ = 1;
-                while (!at_end() && d_ > 0) {
-                    if (match(TokenType::LEFT_BRACE)) d_++;
-                    else if (match(TokenType::RIGHT_BRACE)) { if (!--d_) break; }
-                    advance();
-                }
-                if (match(TokenType::RIGHT_BRACE)) advance();
+            } else if (match(TokenType::STRING)) {
+                key = current_token().get_value();
+                advance();
+            } else {
+                advance();
+                continue;
             }
+            if (!seen_keys.insert(key).second) {
+                add_error("SyntaxError: Duplicate import attribute key '" + key + "'");
+                return;
+            }
+            // skip ':' and value
+            if (match(TokenType::COLON)) {
+                advance();
+                if (!at_end() && !match(TokenType::RIGHT_BRACE) && !match(TokenType::COMMA))
+                    advance();
+            }
+            if (match(TokenType::COMMA)) advance();
         }
+        if (match(TokenType::RIGHT_BRACE)) advance();
     };
 
     // Side-effect import: import "module"
@@ -9130,30 +9271,72 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
     }
 
     auto skip_export_with = [&]() {
-        if (match(TokenType::WITH)) {
-            advance();
-            if (match(TokenType::LEFT_BRACE)) {
-                advance();
-                int d_ = 1;
-                while (!at_end() && d_ > 0) {
-                    if (match(TokenType::LEFT_BRACE)) d_++;
-                    else if (match(TokenType::RIGHT_BRACE)) { if (!--d_) break; }
-                    advance();
-                }
-                if (match(TokenType::RIGHT_BRACE)) advance();
+        if (!match(TokenType::WITH)) return;
+        advance();
+        if (!match(TokenType::LEFT_BRACE)) return;
+        advance();
+        std::unordered_set<std::string> seen_keys;
+        while (!at_end() && !match(TokenType::RIGHT_BRACE)) {
+            std::string key;
+            if (match(TokenType::IDENTIFIER) || is_reserved_word_as_property_name()) {
+                key = current_token().get_value(); advance();
+            } else if (match(TokenType::STRING)) {
+                key = current_token().get_value(); advance();
+            } else { advance(); continue; }
+            if (!seen_keys.insert(key).second) {
+                add_error("SyntaxError: Duplicate import attribute key '" + key + "'");
+                return;
             }
+            if (match(TokenType::COLON)) {
+                advance();
+                if (!at_end() && !match(TokenType::RIGHT_BRACE) && !match(TokenType::COMMA)) advance();
+            }
+            if (match(TokenType::COMMA)) advance();
         }
+        if (match(TokenType::RIGHT_BRACE)) advance();
     };
 
     advance();
     
     if (match(TokenType::DEFAULT)) {
         advance();
-        
-        auto default_export = parse_assignment_expression();
-        if (!default_export) {
-            add_error("Expected expression after 'export default'");
-            return nullptr;
+
+        // export default function/function*/async function/class -> HoistableDeclaration/ClassDeclaration.
+        // Per spec: only AssignmentExpression is allowed when lookahead is NOT {function, async [no LT] function, class}.
+        // After a decl body, any `(` is a SyntaxError (can't invoke a declaration).
+        bool is_decl_form = match(TokenType::FUNCTION) || match(TokenType::CLASS);
+        if (!is_decl_form && match(TokenType::IDENTIFIER) && current_token().get_value() == "async") {
+            size_t saved_idx = current_token_index_;
+            size_t async_line = current_token().get_end().line;
+            advance();
+            if (match(TokenType::FUNCTION) && current_token().get_start().line == async_line) {
+                is_decl_form = true;
+            }
+            current_token_index_ = saved_idx;
+        }
+
+        std::unique_ptr<ASTNode> default_export;
+        if (is_decl_form) {
+            // Parse only the declaration node (not call expressions after it)
+            if (match(TokenType::CLASS)) {
+                default_export = parse_class_expression();
+            } else {
+                default_export = parse_function_expression();
+            }
+            if (!default_export) {
+                add_error("Expected declaration after 'export default'");
+                return nullptr;
+            }
+            if (match(TokenType::LEFT_PAREN)) {
+                add_error("SyntaxError: Anonymous function declaration cannot be immediately invoked");
+                return nullptr;
+            }
+        } else {
+            default_export = parse_assignment_expression();
+            if (!default_export) {
+                add_error("Expected expression after 'export default'");
+                return nullptr;
+            }
         }
 
         // Consume optional semicolon (ASI applies here)
@@ -9246,13 +9429,16 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
         advance();
 
         std::vector<std::unique_ptr<ExportSpecifier>> specifiers;
+        std::vector<bool> spec_local_is_string;
 
         while (!match(TokenType::RIGHT_BRACE) && !at_end()) {
+            bool local_is_str = match(TokenType::STRING);
             auto specifier = parse_export_specifier();
             if (specifier) {
                 specifiers.push_back(std::move(specifier));
+                spec_local_is_string.push_back(local_is_str);
             }
-            
+
             if (match(TokenType::COMMA)) {
                 advance();
             } else if (!match(TokenType::RIGHT_BRACE)) {
@@ -9260,13 +9446,13 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
                 break;
             }
         }
-        
+
         if (!match(TokenType::RIGHT_BRACE)) {
             add_error("Expected '}' after export specifiers");
             return nullptr;
         }
         advance();
-        
+
         if (match(TokenType::FROM)) {
             advance();
             
@@ -9298,10 +9484,37 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
             return std::make_unique<ExportStatement>(std::move(specifiers), source_module, start, end);
         }
         
+        // export NamedExports without 'from': string local names are not allowed
+        for (size_t i = 0; i < spec_local_is_string.size(); i++) {
+            if (spec_local_is_string[i]) {
+                add_error("SyntaxError: String literal cannot be used as local binding name in export specifier without 'from'");
+                return nullptr;
+            }
+        }
+
+        // export NamedExports; -- must be followed by semicolon or line terminator
+        if (!consume_if_match(TokenType::SEMICOLON)) {
+            TokenType cur = current_token().get_type();
+            if (cur != TokenType::EOF_TOKEN) {
+                bool has_nl = false;
+                size_t i = current_token_index_;
+                while (i > 0) {
+                    i--;
+                    TokenType t = tokens_[i].get_type();
+                    if (t == TokenType::NEWLINE) { has_nl = true; break; }
+                    if (t != TokenType::WHITESPACE && t != TokenType::COMMENT) break;
+                }
+                if (!has_nl) {
+                    add_error("SyntaxError: Unexpected token after export specifier list");
+                    return nullptr;
+                }
+            }
+        }
+
         Position end = get_current_position();
         return std::make_unique<ExportStatement>(std::move(specifiers), start, end);
     }
-    
+
     auto declaration = parse_statement();
     if (!declaration) {
         add_error("Expected declaration after 'export'");

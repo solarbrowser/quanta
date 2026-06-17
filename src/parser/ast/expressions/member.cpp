@@ -336,17 +336,6 @@ Value MemberExpression::evaluate(Context& ctx) {
                 }
             }
 
-            Shape* shape = obj->get_shape();
-
-
-            if (__builtin_expect(!obj->is_function() && (prop_name.empty() || prop_name[0] != '#'), 1)) {
-                for (uint8_t i = 0; i < ic_size_; i++) {
-                    if (__builtin_expect(ic_cache_[i].shape_ptr == shape, 1)) {
-                        return obj->get_property_by_offset_unchecked(ic_cache_[i].offset);
-                    }
-                }
-            }
-
             PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
             if (desc.is_accessor_descriptor() && desc.has_getter()) {
                 Object* getter = desc.get_getter();
@@ -375,20 +364,6 @@ Value MemberExpression::evaluate(Context& ctx) {
                     }
                     if (proto_desc.has_value()) break;  // Found as data property, stop
                     proto = proto->get_prototype();
-                }
-            }
-
-            if (__builtin_expect(shape != nullptr && (prop_name.empty() || prop_name[0] != '#'), 1)) {
-                auto info = shape->get_property_info(prop_name);
-                if (__builtin_expect(info.offset != UINT32_MAX, 1)) {
-                    if (ic_size_ < 4) {
-                        ic_cache_[ic_size_].shape_ptr = shape;
-                        ic_cache_[ic_size_].offset = info.offset;
-                        ic_size_++;
-                    } else {
-                        ic_cache_[3].shape_ptr = shape;
-                        ic_cache_[3].offset = info.offset;
-                    }
                 }
             }
 

@@ -95,6 +95,7 @@ private:
     bool in_param_eval_ = false;
     bool is_direct_eval_call_ = false;
     bool eval_arguments_conflict_ = false;
+    std::unordered_set<std::string> eval_param_names_;
     bool is_arrow_function_context_ = false;
     bool in_class_field_init_ = false;
     Value import_meta_;
@@ -128,6 +129,8 @@ public:
     void set_arrow_function_context(bool v) { is_arrow_function_context_ = v; }
     bool has_eval_arguments_conflict() const { return eval_arguments_conflict_; }
     void set_eval_arguments_conflict(bool v) { eval_arguments_conflict_ = v; }
+    const std::unordered_set<std::string>& get_eval_param_names() const { return eval_param_names_; }
+    void set_eval_param_names(std::unordered_set<std::string> names) { eval_param_names_ = std::move(names); }
     bool is_in_class_field_init() const { return in_class_field_init_; }
     void set_in_class_field_init(bool v) { in_class_field_init_ = v; }
     Value get_import_meta();

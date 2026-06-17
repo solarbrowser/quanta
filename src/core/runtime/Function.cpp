@@ -453,6 +453,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
             function_context.set_eval_arguments_conflict(args_conflict);
         }
+        {
+            std::unordered_set<std::string> pnames;
+            for (const auto& p : parameter_objects_) {
+                if (p->get_name() && !p->get_name()->get_name().empty())
+                    pnames.insert(p->get_name()->get_name());
+            }
+            function_context.set_eval_param_names(std::move(pnames));
+        }
         function_context.set_in_param_eval(true);
         for (size_t i = 0; i < parameter_objects_.size(); ++i) {
             const auto& param = parameter_objects_[i];
