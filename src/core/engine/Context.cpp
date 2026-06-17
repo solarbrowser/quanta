@@ -485,8 +485,7 @@ void Context::queue_microtask(std::function<void()> task) {
 }
 
 void Context::drain_microtasks() {
-    // Spin until all microtasks are drained (with 10-second real-time limit
-    // to allow setTimeout-based tests to work via flushQueue spin loops)
+    // Loops until empty (a job can enqueue more). The 10s cap guards against a runaway microtask chain -- unrelated to setTimeout/setInterval, which run through EventLoop's timer heap instead.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (!microtask_queue_.empty()) {
         auto tasks = std::move(microtask_queue_);

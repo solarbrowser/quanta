@@ -118,15 +118,10 @@ public:
 
             Module* module = module_loader->load_module(filename, "");
 
-            // Module top-level code can schedule Promise microtasks (dynamic
-            // import().catch().then($DONE, ...), top-level await) -- drain them
-            // now, same as script top-level code, or $DONE never fires.
+            // Module top-level code can schedule microtasks and timers (dynamic import, top-level await) -- run them now or $DONE never fires.
             if (Context* gctx = engine_->get_global_context()) {
-                if (gctx->has_pending_microtasks()) {
-                    gctx->drain_microtasks();
-                }
+                engine_->run_event_loop_to_completion(*gctx);
             }
-            engine_->clear_survivor_contexts();
 
             if (module) {
                 if (module->has_thrown_exception()) {
@@ -360,9 +355,6 @@ int main(int argc, char* argv[]) {
 
         if (execute_code) {
             bool success = console.evaluate_expression(code_to_execute, false, true);
-
-            EventLoop::instance().process_microtasks();
-
             return success ? 0 : 1;
         }
 
@@ -385,8 +377,6 @@ int main(int argc, char* argv[]) {
             } else {
                 success = console.evaluate_expression(content, false, false, filename);
             }
-
-            EventLoop::instance().process_microtasks();
 
             return success ? 0 : 1;
         }

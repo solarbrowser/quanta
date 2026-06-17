@@ -48,13 +48,8 @@ private:
 
 public:
     explicit Promise(Context* ctx = nullptr);
+    virtual ~Promise();
 
-    virtual ~Promise() {
-        then_records_.clear();
-        context_ = nullptr;
-        engine_ = nullptr;
-    }
-    
     void fulfill(const Value& value);
     void reject(const Value& reason);
     

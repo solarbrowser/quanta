@@ -153,12 +153,7 @@ Engine::Result Engine::evaluate(const std::string& expression, bool strict_mode)
         if (program_ast && program_ast->get_statements().size() > 0) {
             Value result = program_ast->evaluate(*global_context_);
 
-            // Drain microtask queue (Promise .then() callbacks, etc.)
-            if (global_context_->has_pending_microtasks()) {
-                global_context_->drain_microtasks();
-            }
-            // Release survivor contexts after async callbacks are done
-            clear_survivor_contexts();
+            run_event_loop_to_completion(*global_context_);
 
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
@@ -305,8 +300,32 @@ void Engine::add_survivor_context(Context* ctx) {
 }
 
 void Engine::clear_survivor_contexts() {
-    for (auto* ctx : survivor_contexts_) delete ctx;
-    survivor_contexts_.clear();
+    // Skip contexts still referenced by a pending timer, Promise, or suspended async fiber (see EventLoop::context_use_count_).
+    std::vector<Context*> still_in_use;
+    for (auto* ctx : survivor_contexts_) {
+        if (EventLoop::instance().is_context_in_use(ctx)) {
+            still_in_use.push_back(ctx);
+        } else {
+            delete ctx;
+        }
+    }
+    survivor_contexts_ = std::move(still_in_use);
+}
+
+void Engine::run_event_loop_to_completion(Context& ctx) {
+    if (ctx.has_pending_microtasks()) {
+        ctx.drain_microtasks();
+    }
+    clear_survivor_contexts();
+
+    if (EventLoop::instance().has_pending_timers()) {
+        EventLoop::instance().run_pending_timers(ctx);
+        // Safety net in case run_pending_timers exited early via its cap mid-iteration.
+        if (ctx.has_pending_microtasks()) {
+            ctx.drain_microtasks();
+        }
+        clear_survivor_contexts();
+    }
 }
 
 void Engine::collect_garbage() {
@@ -493,12 +512,7 @@ Engine::Result Engine::execute_internal(const std::string& source, const std::st
 
             Value result = program->evaluate(*global_context_);
 
-            // Drain microtask queue (Promise .then() callbacks, async ops, etc.)
-            if (global_context_->has_pending_microtasks()) {
-                global_context_->drain_microtasks();
-            }
-            // Release survivor contexts after async callbacks are done
-            clear_survivor_contexts();
+            run_event_loop_to_completion(*global_context_);
 
             if (global_context_->has_exception()) {
                 Value exception = global_context_->get_exception();
