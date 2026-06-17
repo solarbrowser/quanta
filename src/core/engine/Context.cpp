@@ -808,6 +808,38 @@ bool Environment::set_binding(const std::string& name, const Value& value) {
     return false;
 }
 
+Value Environment::get_binding_direct(const std::string& name, Context* ctx) const {
+    if (type_ == Type::Object && binding_object_) {
+        // GetBindingValue step 2: its own HasProperty check, independent of (and without re-checking @@unscopables like) the HasBinding call that already resolved this environment.
+        // A side effect of that earlier @@unscopables  getter (or other code) may have deleted the property in the meantime
+        // step 3a: strict mode throws ReferenceError, otherwise return undefined.
+        if (!binding_object_->has_own_property(name)) {
+            if (ctx && ctx->is_strict_mode()) {
+                ctx->throw_reference_error("'" + name + "' is not defined");
+            }
+            return Value();
+        }
+        return binding_object_->get_property(name);
+    }
+    auto it = bindings_.find(name);
+    if (it != bindings_.end()) return it->second;
+    return Value();
+}
+
+bool Environment::set_binding_direct(const std::string& name, const Value& value) {
+    if (type_ == Type::Object && binding_object_) {
+        // SetMutableBinding step 2: its own HasProperty check (no @@unscopables).
+        // Per spec, Set is still attempted in non-strict mode even if this is false -- callers needing the strict-mode ReferenceError check the property first.
+        binding_object_->has_own_property(name);
+        return binding_object_->set_property(name, value);
+    }
+    if (is_mutable_binding(name)) {
+        bindings_[name] = value;
+        return true;
+    }
+    return false;
+}
+
 void Environment::force_set_binding(const std::string& name, const Value& value) {
     if (type_ == Type::Object && binding_object_) {
         binding_object_->set_property(name, value);
@@ -930,8 +962,16 @@ std::string Environment::debug_string() const {
     return oss.str();
 }
 
+// Internal engine bookkeeping bindings (this, __super__, __eval_caller_this__, ...) are never realized as actual object-environment-record properties per spec
+static bool is_internal_binding_name(const std::string& name) {
+    if (name == "this") return true;
+    return name.size() > 4 && name[0] == '_' && name[1] == '_' &&
+           name[name.size() - 1] == '_' && name[name.size() - 2] == '_';
+}
+
 bool Environment::has_own_binding(const std::string& name) const {
     if (type_ == Type::Object && binding_object_) {
+        if (is_with_environment_ && is_internal_binding_name(name)) return false;
         if (!binding_object_->has_own_property(name)) return false;
         // ES6 8.1.1.2.1 HasBinding: @@unscopables is only consulted when the
         // withEnvironment flag is set -- i.e. for `with` statement object

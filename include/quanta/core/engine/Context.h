@@ -371,6 +371,8 @@ public:
     Value get_binding(const std::string& name) const;
     Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
+    Value get_binding_direct(const std::string& name, Context* ctx = nullptr) const;
+    bool set_binding_direct(const std::string& name, const Value& value);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
     void force_set_binding(const std::string& name, const Value& value);

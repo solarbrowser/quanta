@@ -57,22 +57,21 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         }
 
         // For compound assignments, capture left value BEFORE evaluating right side.
-        // Capture ref_env BEFORE get_binding because a getter may delete the property
-        // (object environment record: PutValue must write to the original env's binding object).
+        // Capture ref_env BEFORE get_binding because a getter may delete the property (object environment record: PutValue must write to the original env's binding object).
         Value left_value;
         Environment* ref_env = nullptr;
         if (operator_ != Operator::ASSIGN) {
             bool is_logical = operator_ == Operator::LOGICAL_AND_ASSIGN ||
                               operator_ == Operator::LOGICAL_OR_ASSIGN  ||
                               operator_ == Operator::NULLISH_ASSIGN;
-            if (!ctx.has_binding(name)) {
-                // Spec 8.7.1: GetValue on unresolvable reference always throws ReferenceError
+            // Capture the binding env before GetValue (getter may delete the property).
+            // find_binding_env checks @@unscopables exactly once; avoid has_binding/get_binding which would each re-check it and trigger extra Proxy traps.
+            ref_env = ctx.find_binding_env(name);
+            if (!ref_env) {
                 ctx.throw_reference_error("'" + name + "' is not defined");
                 return Value();
             }
-            // Capture the binding env before GetValue (getter may delete the property)
-            ref_env = ctx.find_binding_env(name);
-            left_value = ctx.get_binding(name);
+            left_value = ref_env->get_binding_direct(name, &ctx);
             if (ctx.has_exception()) return Value();
         }
 
@@ -98,8 +97,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             return right_value;
         }
 
-        // For ASSIGN: capture ref_env before RHS evaluation (RHS may delete the binding)
-        if (operator_ == Operator::ASSIGN && ctx.has_binding(name)) {
+        // For ASSIGN: capture ref_env before RHS evaluation (RHS may delete the binding).
+        // A single find_binding_env call (not has_binding+find_binding_env) avoids double-firing a binding object's @@unscopables getter / Proxy traps, and;
+        // avoids a second HasBinding racing against side effects from the first (e.g. the getter deleting the very property it's being looked up for).
+        if (operator_ == Operator::ASSIGN) {
             ref_env = ctx.find_binding_env(name);
         }
 
