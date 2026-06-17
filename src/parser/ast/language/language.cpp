@@ -828,17 +828,31 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     }
 
     if (proto_ptr && instance_brands_raw) {
+        // For derived classes only: propagate pm_brand_slot + pm_method_names to all instance methods. 
+        // This lets private_brand_check enforce the invariant that private methods/getters/setters are not accessible before super() returns.
+        // Base classes install the pm_brand_slot at the START of the constructor via __pfadd__, so any method call after construction always passes the check.
+        // Derived classes install it AFTER super() returns, so we need the check to block access from public methods called during super() execution.
+        bool is_derived = has_superclass();
+        Value pm_slot_for_methods = is_derived ? constructor_fn->get_property("__pm_brand_slot__") : Value();
+        Value pm_names_for_methods = is_derived ? constructor_fn->get_property("__private_method_names__") : Value();
+        auto propagate_private_meta = [&](Function* fn) {
+            fn->set_property("__private_brands__", Value(instance_brands_raw));
+            if (pm_slot_for_methods.is_string())
+                fn->set_property("__pm_brand_slot__", pm_slot_for_methods);
+            if (pm_names_for_methods.is_object())
+                fn->set_property("__private_method_names__", pm_names_for_methods);
+        };
         for (const auto& key : proto_ptr->get_own_property_keys()) {
             if (key == "constructor") continue;
             PropertyDescriptor bdesc = proto_ptr->get_property_descriptor(key);
             if (bdesc.has_getter() && bdesc.get_getter())
-                static_cast<Function*>(bdesc.get_getter())->set_property("__private_brands__", Value(instance_brands_raw));
+                propagate_private_meta(static_cast<Function*>(bdesc.get_getter()));
             if (bdesc.has_setter() && bdesc.get_setter())
-                static_cast<Function*>(bdesc.get_setter())->set_property("__private_brands__", Value(instance_brands_raw));
+                propagate_private_meta(static_cast<Function*>(bdesc.get_setter()));
             if (!bdesc.is_accessor_descriptor()) {
                 Value mv = proto_ptr->get_property(key);
                 if (mv.is_function())
-                    mv.as_function()->set_property("__private_brands__", Value(instance_brands_raw));
+                    propagate_private_meta(mv.as_function());
             }
         }
     }

@@ -123,20 +123,23 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                     ? static_cast<Object*>(name_brand.as_function())
                     : name_brand.as_object();
                 if (!do_brand_check(obj, expected)) return false;
-                if (!require_exists) return true;
-                // Check if this is a private method: must also have the per-instance brand slot
-                // (added after super() returns) to enforce the "private methods not installed
-                // before super returns" invariant.
-                Value pm_names_val = fn->get_property("__private_method_names__");
-                if (pm_names_val.is_object()) {
-                    Value is_method = pm_names_val.as_object()->get_property(prop_name);
-                    if (is_method.to_boolean()) {
-                        Value pm_slot_val = fn->get_property("__pm_brand_slot__");
-                        if (pm_slot_val.is_string()) {
-                            return obj->has_private_slot(pm_slot_val.to_string());
+                // Check pm_brand_slot for derived-class private methods/getters/setters
+                // regardless of require_exists -- this enforces "not accessible before super() returns".
+                // The slot is only propagated to methods of derived classes, so base class
+                // methods won't have it and will pass through without the extra check.
+                {
+                    Value pm_names_val = fn->get_property("__private_method_names__");
+                    if (pm_names_val.is_object()) {
+                        Value is_method = pm_names_val.as_object()->get_property(prop_name);
+                        if (is_method.to_boolean()) {
+                            Value pm_slot_val = fn->get_property("__pm_brand_slot__");
+                            if (pm_slot_val.is_string()) {
+                                return obj->has_private_slot(pm_slot_val.to_string());
+                            }
                         }
                     }
                 }
+                if (!require_exists) return true;
                 bool found = obj->has_private_slot(prop_name);
                 if (!found) {
                     Object* p = obj->get_prototype();
