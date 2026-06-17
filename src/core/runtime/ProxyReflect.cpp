@@ -897,24 +897,95 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     return target->get_property(key);
 }
 
+// ES 9.1.9.1/9.1.9.2 OrdinarySet/OrdinarySetWithOwnDescriptor: when Receiver differs
+// from the object being walked, data-property writes go through Receiver's own
+// [[GetOwnProperty]]/[[DefineOwnProperty]] (which fire Proxy traps if Receiver is a
+// Proxy), not a plain write on the original target.
+static bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
+    PropertyDescriptor own_desc;
+    bool has_own = false;
+    if (O->get_type() == Object::ObjectType::Proxy) {
+        own_desc = static_cast<Proxy*>(O)->get_own_property_descriptor_trap(Value(key));
+        if (ctx.has_exception()) return false;
+        has_own = own_desc.has_value() || own_desc.is_accessor_descriptor();
+    } else {
+        has_own = O->has_own_property(key);
+        if (has_own) own_desc = O->get_property_descriptor(key);
+    }
+
+    if (!has_own) {
+        Object* parent = O->get_prototype();
+        if (ctx.has_exception()) return false;
+        if (parent) return ordinary_set_with_receiver(parent, key, value, receiver, ctx);
+        own_desc = PropertyDescriptor(Value(), PropertyAttributes::Default);
+    }
+
+    if (own_desc.is_accessor_descriptor()) {
+        if (!own_desc.has_setter() || !own_desc.get_setter()) return false;
+        Function* setter = dynamic_cast<Function*>(own_desc.get_setter());
+        if (!setter) return false;
+        setter->call(ctx, {value}, Value(receiver));
+        return !ctx.has_exception();
+    }
+
+    if (own_desc.has_writable() && !own_desc.is_writable()) return false;
+    if (!receiver) return false;
+
+    PropertyDescriptor existing;
+    bool receiver_has_own = false;
+    if (receiver->get_type() == Object::ObjectType::Proxy) {
+        existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(Value(key));
+        if (ctx.has_exception()) return false;
+        receiver_has_own = existing.has_value() || existing.is_accessor_descriptor();
+    } else {
+        receiver_has_own = receiver->has_own_property(key);
+        if (receiver_has_own) existing = receiver->get_property_descriptor(key);
+    }
+
+    if (receiver_has_own) {
+        if (existing.is_accessor_descriptor()) return false;
+        if (existing.has_writable() && !existing.is_writable()) return false;
+        // Spec valueDesc = {[[Value]]: V} -- a partial descriptor that only updates
+        // the value, leaving writable/enumerable/configurable as already set.
+        PropertyDescriptor value_desc;
+        value_desc.set_value(value);
+        if (receiver->get_type() == Object::ObjectType::Proxy) {
+            return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), value_desc);
+        }
+        return receiver->set_property_descriptor(key, value_desc);
+    }
+
+    PropertyDescriptor new_desc(value, PropertyAttributes::Default);
+    if (receiver->get_type() == Object::ObjectType::Proxy) {
+        return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), new_desc);
+    }
+    return receiver->set_property_descriptor(key, new_desc);
+}
+
 Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
         ctx.throw_exception(Value(std::string("TypeError: Reflect.set requires at least two arguments")));
         return Value();
     }
-    
+
     Object* target = to_object(args[0], ctx);
     if (!target) {
         return Value(false);
     }
-    
+
     std::string key = to_property_key(args[1]);
-    Value value = args[2];
-    Value receiver = args.size() > 3 ? args[3] : args[0];
-    
-    (void)receiver;
-    
-    bool result = target->set_property(key, value);
+    Value value = args.size() > 2 ? args[2] : Value();
+    Object* receiver = target;
+    if (args.size() > 3) {
+        receiver = args[3].is_function() ? static_cast<Object*>(args[3].as_function()) : args[3].as_object();
+        if (!receiver) {
+            ctx.throw_exception(Value(std::string("TypeError: Reflect.set receiver must be an object")));
+            return Value();
+        }
+    }
+
+    bool result = ordinary_set_with_receiver(target, key, value, receiver, ctx);
+    if (ctx.has_exception()) return Value();
     return Value(result);
 }
 
