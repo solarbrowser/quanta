@@ -376,12 +376,17 @@ void register_global_builtins(Context& ctx) {
                         }
                     }
 
-                    // When eval runs inside default parameter expressions, var arguments conflicts
-                    // with the implicit arguments binding (or an explicit arguments parameter)
-                    if (ctx.is_in_param_eval() && ctx.has_eval_arguments_conflict()) {
+                    // When eval runs inside default parameter expressions, var declarations
+                    // cannot shadow formal parameter names (non-simple params create separate scope)
+                    if (ctx.is_in_param_eval()) {
+                        const auto& param_names = ctx.get_eval_param_names();
                         for (const auto& vname : var_names) {
-                            if (vname == "arguments") {
+                            if (ctx.has_eval_arguments_conflict() && vname == "arguments") {
                                 ctx.throw_syntax_error("Variable 'arguments' has already been declared");
+                                return Value();
+                            }
+                            if (param_names.count(vname)) {
+                                ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
                                 return Value();
                             }
                         }

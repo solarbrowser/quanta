@@ -690,6 +690,14 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         size_t regular_count = 0;
         for (const auto& p : param_objs) { if (!p->is_rest()) regular_count++; }
         gen_context.set_eval_arguments_conflict(true);
+        {
+            std::unordered_set<std::string> pnames;
+            for (const auto& p : param_objs) {
+                if (p->get_name() && !p->get_name()->get_name().empty())
+                    pnames.insert(p->get_name()->get_name());
+            }
+            gen_context.set_eval_param_names(std::move(pnames));
+        }
         gen_context.set_in_param_eval(true);
         for (size_t i = 0; i < param_objs.size(); ++i) {
             const auto& param = param_objs[i];

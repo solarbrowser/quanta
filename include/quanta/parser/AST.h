@@ -559,15 +559,6 @@ private:
     std::unique_ptr<ASTNode> property_;
     bool computed_;
 
-    struct ICEntry {
-        void* shape_ptr = nullptr;
-        uint32_t offset = UINT32_MAX;
-    };
-
-    mutable ICEntry ic_cache_[4];
-    mutable uint8_t ic_size_ = 0;
-    mutable uint32_t cache_hit_count_ = 0;
-    mutable uint32_t cache_miss_count_ = 0;
 
 public:
     MemberExpression(std::unique_ptr<ASTNode> object, std::unique_ptr<ASTNode> property,
