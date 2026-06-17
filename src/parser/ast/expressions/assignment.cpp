@@ -1107,7 +1107,17 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                         Value iter_obj = iter_method.as_function()->call(ctx, {}, source_value);
                         if (!ctx.has_exception() && iter_obj.is_object()) {
                             Value next_fn = iter_obj.as_object()->get_property("next");
-                            if (next_fn.is_function()) {
+                            {
+                                // next() may not be callable (e.g. a custom iterator object that only implements return()) 
+                                // per spec, that's only discovered (and throws) when next() is actually invoked, not before. 
+                                // Target reference evaluation for each element still happens first.
+                                auto call_next = [&]() -> Value {
+                                    if (!next_fn.is_function()) {
+                                        ctx.throw_type_error("Iterator's next() is not callable");
+                                        return Value();
+                                    }
+                                    return next_fn.as_function()->call(ctx, {}, iter_obj);
+                                };
                                 // Determine how many elements we need from pattern
                                 auto* arr_lit_check = static_cast<ArrayLiteral*>(pattern);
                                 const auto& elems_check = arr_lit_check->get_elements();
@@ -1142,34 +1152,63 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                     }
                                 };
 
-                                if (has_rest) {
-                                    // Spec AssignmentRestElement step 1: for MemberExpression targets,
-                                    // evaluate the reference (object + key) BEFORE consuming the iterator.
-                                    // ReturnIfAbrupt: if evaluation throws, IteratorClose and propagate.
-                                    const auto& elems_r = arr_lit_check->get_elements();
-                                    for (size_t ri = 0; ri < elems_r.size(); ri++) {
-                                        if (elems_r[ri] && elems_r[ri]->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
-                                            auto* sp = static_cast<SpreadElement*>(elems_r[ri].get());
-                                            ASTNode* rt = sp->get_argument();
-                                            if (rt && rt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
-                                                auto* mem = static_cast<MemberExpression*>(rt);
-                                                mem->get_object()->evaluate(ctx);
-                                                if (ctx.has_exception()) { close_iter(); return; }
-                                                if (mem->is_computed()) {
-                                                    mem->get_property()->evaluate(ctx);
-                                                    if (ctx.has_exception()) { close_iter(); return; }
-                                                }
-                                            }
-                                            break;
+                                // Spec 7.4.6 IteratorClose with a return completion (the generator being destructured into was itself resumed via .return() while
+                                // call iter_obj's return(), propagate its throw or a TypeError for a non-Object result, otherwise rethrow the original GeneratorReturnException.
+                                auto close_iter_for_generator_return = [&]() {
+                                    Value ret_m = iter_obj.as_object()->get_property("return");
+                                    if (ret_m.is_function()) {
+                                        Value inner = ret_m.as_function()->call(ctx, {}, iter_obj);
+                                        if (ctx.has_exception()) return;
+                                        if (!inner.is_object()) {
+                                            ctx.throw_type_error("Iterator return() result must be an Object");
+                                            return;
                                         }
                                     }
-                                    // Rest: collect all remaining into temp array
+                                    throw;
+                                };
+
+                                if (has_rest) {
+                                    const auto& elems_r = arr_lit_check->get_elements();
                                     auto temp = ObjectFactory::create_array(0);
                                     uint32_t cnt = 0;
                                     bool iter_done = false;
-                                    for (uint32_t ii = 0; ii < 100000; ii++) {
-                                        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-                                        if (ctx.has_exception()) { close_iter(); return; }
+                                    ASTNode* rest_target = nullptr;
+
+                                    // Spec: leading (non-rest) elements consume the iterator first, each evaluating its target reference before calling next()
+                                    // same ordering as the non-rest loop below.
+                                    // Only once all of them are done do we reach the rest element itself.
+                                    for (size_t ri = 0; ri < elems_r.size() && !iter_done; ri++) {
+                                        if (elems_r[ri] && elems_r[ri]->get_type() == ASTNode::Type::SPREAD_ELEMENT) {
+                                            rest_target = static_cast<SpreadElement*>(elems_r[ri].get())->get_argument();
+                                            break;
+                                        }
+                                        ASTNode* tgt = elems_r[ri] ? elems_r[ri].get() : nullptr;
+                                        if (tgt && tgt->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                                            tgt = static_cast<AssignmentExpression*>(tgt)->left_.get();
+                                        }
+                                        if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                                            auto* mem = static_cast<MemberExpression*>(tgt);
+                                            try {
+                                                mem->get_object()->evaluate(ctx);
+                                            } catch (const GeneratorReturnException&) {
+                                                close_iter_for_generator_return();
+                                                return;
+                                            }
+                                            if (ctx.has_exception()) { close_iter(); return; }
+                                            if (mem->is_computed()) {
+                                                try {
+                                                    mem->get_property()->evaluate(ctx);
+                                                } catch (const GeneratorReturnException&) {
+                                                    close_iter_for_generator_return();
+                                                    return;
+                                                }
+                                                if (ctx.has_exception()) { close_iter(); return; }
+                                            }
+                                        }
+                                        // Per spec, if next() throws, do NOT close the iterator
+                                        // (no IteratorClose on abrupt next).
+                                        Value res = call_next();
+                                        if (ctx.has_exception()) return;
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
                                         if (ctx.has_exception()) return;
@@ -1177,6 +1216,46 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         Value val_v = res.as_object()->get_property("value");
                                         if (ctx.has_exception()) return;
                                         temp->set_element(cnt++, val_v);
+                                    }
+
+                                    // Spec AssignmentRestElement step 1
+                                    // for a MemberExpression target,evaluate the reference (object + key) BEFORE consuming the rest of the iterator.
+                                    // ReturnIfAbrupt: if evaluation throws, close.
+                                    if (!iter_done && rest_target && rest_target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+                                        auto* mem = static_cast<MemberExpression*>(rest_target);
+                                        try {
+                                            mem->get_object()->evaluate(ctx);
+                                        } catch (const GeneratorReturnException&) {
+                                            close_iter_for_generator_return();
+                                            return;
+                                        }
+                                        if (ctx.has_exception()) { close_iter(); return; }
+                                        if (mem->is_computed()) {
+                                            try {
+                                                mem->get_property()->evaluate(ctx);
+                                            } catch (const GeneratorReturnException&) {
+                                                close_iter_for_generator_return();
+                                                return;
+                                            }
+                                            if (ctx.has_exception()) { close_iter(); return; }
+                                        }
+                                    }
+
+                                    // Rest: collect all remaining into temp array
+                                    if (!iter_done) {
+                                        for (uint32_t ii = 0; ii < 100000; ii++) {
+                                            // Per spec, if next() throws, do NOT close the iterator
+                                            // (no IteratorClose on abrupt next).
+                                            Value res = call_next();
+                                            if (ctx.has_exception()) return;
+                                            if (!res.is_object()) { iter_done = true; break; }
+                                            Value done_v = res.as_object()->get_property("done");
+                                            if (ctx.has_exception()) return;
+                                            if (done_v.to_boolean()) { iter_done = true; break; }
+                                            Value val_v = res.as_object()->get_property("value");
+                                            if (ctx.has_exception()) return;
+                                            temp->set_element(cnt++, val_v);
+                                        }
                                     }
                                     if (!iter_done) { close_iter(); }
                                     temp->set_length(cnt);
@@ -1202,16 +1281,26 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         // so that errors in key evaluation prevent next() from being called
                                         if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                                             auto* mem = static_cast<MemberExpression*>(tgt);
-                                            mem->get_object()->evaluate(ctx);
+                                            try {
+                                                mem->get_object()->evaluate(ctx);
+                                            } catch (const GeneratorReturnException&) {
+                                                close_iter_for_generator_return();
+                                                return;
+                                            }
                                             if (ctx.has_exception()) { close_iter(); return; }
                                             if (mem->is_computed()) {
-                                                mem->get_property()->evaluate(ctx);
+                                                try {
+                                                    mem->get_property()->evaluate(ctx);
+                                                } catch (const GeneratorReturnException&) {
+                                                    close_iter_for_generator_return();
+                                                    return;
+                                                }
                                                 if (ctx.has_exception()) { close_iter(); return; }
                                             }
                                         }
                                         // Now call next(). Per spec, if next()/done/value throw,
                                         // do NOT close the iterator (no IteratorClose on abrupt next).
-                                        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                                        Value res = call_next();
                                         if (ctx.has_exception()) return;
                                         if (!res.is_object()) { iter_done = true; break; }
                                         Value done_v = res.as_object()->get_property("done");
