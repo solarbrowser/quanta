@@ -16,7 +16,18 @@ namespace Quanta {
 
 Promise::Promise(Context* ctx)
     : Object(ObjectType::Promise), state_(PromiseState::PENDING), context_(ctx), engine_(nullptr) {
-    if (ctx) engine_ = ctx->get_engine();
+    if (ctx) {
+        engine_ = ctx->get_engine();
+        // Retain context_: a pending Promise may invoke it to run .then() reactions an arbitrary time later (e.g. resolved by a real setTimeout elsewhere).
+        EventLoop::instance().retain_context(ctx);
+    }
+}
+
+Promise::~Promise() {
+    if (context_) EventLoop::instance().release_context(context_);
+    then_records_.clear();
+    context_ = nullptr;
+    engine_ = nullptr;
 }
 
 // Helper: get the global context via engine (safe for async microtasks)

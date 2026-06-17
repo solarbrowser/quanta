@@ -103,6 +103,9 @@ public:
     // Survivor pool for function contexts (Promise async support)
     void add_survivor_context(Context* ctx);
     void clear_survivor_contexts();
+
+    // Drains microtasks, then drives any pending timers to exhaustion (real wall-clock wait), repeating until both queues are empty.
+    void run_event_loop_to_completion(Context& ctx);
     
     void collect_garbage();
     size_t get_heap_usage() const;

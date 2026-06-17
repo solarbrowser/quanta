@@ -13,6 +13,11 @@
 #include <functional>
 #include <vector>
 #include <deque>
+#include <queue>
+#include <unordered_set>
+#include <unordered_map>
+#include <chrono>
+#include <cstdint>
 #include <ucontext.h>
 
 namespace Quanta {
@@ -274,25 +279,49 @@ namespace AsyncUtils {
 
 
 class EventLoop {
+public:
+    struct TimerEntry {
+        int64_t id;
+        std::chrono::steady_clock::time_point deadline;
+        int64_t interval_ms;   // -1 = one-shot (setTimeout); >=0 = repeating (setInterval)
+        Function* callback;
+        std::vector<Value> bound_args;
+        Context* call_ctx;
+    };
+
 private:
-    std::vector<std::function<void()>> microtasks_;
-    std::vector<std::function<void()>> macrotasks_;
-    bool running_;
-    
+    struct TimerCompare {
+        bool operator()(const TimerEntry& a, const TimerEntry& b) const {
+            return a.deadline > b.deadline; // min-heap: earliest deadline first
+        }
+    };
+
+    std::priority_queue<TimerEntry, std::vector<TimerEntry>, TimerCompare> timers_;
+    std::unordered_set<int64_t> cancelled_ids_;
+    int64_t next_timer_id_;
+
+    // Refcounts Context* held by pending timers/Promises so clear_survivor_contexts() doesn't delete one still in use.
+    std::unordered_map<Context*, int> context_use_count_;
+
 public:
     EventLoop();
     ~EventLoop() = default;
-    
-    void schedule_microtask(std::function<void()> task);
-    void schedule_macrotask(std::function<void()> task);
-    
-    void run();
-    void stop();
-    bool is_running() const { return running_; }
-    
-    void process_microtasks();
-    void process_macrotasks();
-    
+
+    int64_t schedule_timer(Context& ctx, Function* callback,
+                            std::vector<Value> args,
+                            double delay_ms, bool repeating);
+    void clear_timer(int64_t id);
+    bool has_pending_timers() const { return !timers_.empty(); }
+    bool is_context_in_use(Context* ctx) const {
+        auto it = context_use_count_.find(ctx);
+        return it != context_use_count_.end() && it->second > 0;
+    }
+    void retain_context(Context* ctx);
+    void release_context(Context* ctx);
+
+    // Drives timers to exhaustion in real time. Returns false if the safety cap (wall-clock or iteration count) tripped first.
+    bool run_pending_timers(Context& ctx);
+
     static EventLoop& instance();
 };
 

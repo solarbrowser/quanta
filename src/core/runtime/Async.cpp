@@ -14,6 +14,8 @@
 #include "quanta/parser/Parser.h"
 #include <iostream>
 #include <chrono>
+#include <thread>
+#include <cmath>
 
 namespace Quanta {
 
@@ -92,6 +94,9 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     } else {
         self->outer_promise_->fulfill(result);
     }
+
+    // Function is fully done and won't be resumed again -- release the retain taken in AsyncFunction::call.
+    EventLoop::instance().release_context(ctx);
 
     // Return control to whoever called run()/resume()
     swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
@@ -275,11 +280,12 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         std::move(body_clone), std::move(exec_ctx), promise_raw, ctx.get_engine());
     executor->run();
 
-    // Transfer the exec context to the engine's survivor pool so that any closures
-    // created inside the body (e.g. inner async functions) can still look up bindings
-    // after this call returns and the executor is eventually destroyed.
-    // Mirrors the ContextSurvivorGuard pattern used in sync Function::call().
+    // Transfer the exec context to the engine's survivor pool so closures created inside the body can still look up bindings later. Mirrors ContextSurvivorGuard in sync Function::call().
+    // Retain first: the fiber is suspended at its first await and will resume later still using this exact Context.
+    // Without the retain, the very next clear_survivor_contexts() would delete it before the fiber ever resumes.
+    // Released in fiber_entry once the function fully completes.
     if (ctx.get_engine() && executor->exec_context_owned_) {
+        EventLoop::instance().retain_context(executor->exec_context_owned_.get());
         ctx.get_engine()->add_survivor_context(executor->exec_context_owned_.release());
     }
 
@@ -583,14 +589,10 @@ void AsyncGenerator::process_next_request() {
         // visible immediately after next() returns.
         enter_fiber();
     } else {
+        // generator_context_ is always set (constructed in the AsyncGenerator constructor).
         Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
         auto self = this;
-        auto task = [self]() { self->enter_fiber(); };
-        if (queue_ctx) {
-            queue_ctx->queue_microtask(std::move(task));
-        } else {
-            EventLoop::instance().schedule_microtask(std::move(task));
-        }
+        queue_ctx->queue_microtask([self]() { self->enter_fiber(); });
     }
 }
 
@@ -1024,61 +1026,107 @@ void setup_async_functions(Context& ctx) {
 }
 
 
-EventLoop::EventLoop() : running_(false) {
+EventLoop::EventLoop() : next_timer_id_(1) {
 }
 
-void EventLoop::schedule_microtask(std::function<void()> task) {
-    microtasks_.push_back(task);
+void EventLoop::retain_context(Context* ctx) {
+    if (ctx) context_use_count_[ctx]++;
 }
 
-void EventLoop::schedule_macrotask(std::function<void()> task) {
-    macrotasks_.push_back(task);
+void EventLoop::release_context(Context* ctx) {
+    if (!ctx) return;
+    auto it = context_use_count_.find(ctx);
+    if (it == context_use_count_.end()) return;
+    if (--it->second <= 0) context_use_count_.erase(it);
 }
 
-void EventLoop::run() {
-    running_ = true;
-    
-    while (running_ && (!microtasks_.empty() || !macrotasks_.empty())) {
-        process_microtasks();
-        
-        if (!macrotasks_.empty()) {
-            auto task = macrotasks_.front();
-            macrotasks_.erase(macrotasks_.begin());
-            task();
+int64_t EventLoop::schedule_timer(Context& ctx, Function* callback,
+                                   std::vector<Value> args,
+                                   double delay_ms, bool repeating) {
+    int64_t id = next_timer_id_++;
+
+    // GC-root the callback/args on the global object until the timer fires or is cleared.
+    Object* global = ctx.get_global_object();
+    if (global) {
+        global->set_property("__timer_" + std::to_string(id) + "_cb", Value(callback));
+        for (size_t i = 0; i < args.size(); i++) {
+            global->set_property("__timer_" + std::to_string(id) + "_arg" + std::to_string(i), args[i]);
         }
     }
+
+    TimerEntry entry;
+    entry.id = id;
+    entry.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(static_cast<int64_t>(delay_ms));
+    entry.interval_ms = repeating ? static_cast<int64_t>(delay_ms) : -1;
+    entry.callback = callback;
+    entry.bound_args = std::move(args);
+    entry.call_ctx = &ctx;
+    retain_context(&ctx);
+    timers_.push(std::move(entry));
+    return id;
 }
 
-void EventLoop::stop() {
-    running_ = false;
+void EventLoop::clear_timer(int64_t id) {
+    cancelled_ids_.insert(id);
 }
 
-void EventLoop::process_microtasks() {
-    while (!microtasks_.empty()) {
-        auto task = std::move(microtasks_.front());
-        microtasks_.erase(microtasks_.begin());
-        
-        try {
-            if (task) {
-                task();
+bool EventLoop::run_pending_timers(Context& ctx) {
+    auto start = std::chrono::steady_clock::now();
+    const auto wall_cap = std::chrono::seconds(8);
+    const int64_t iteration_cap = 100000;
+    int64_t iterations = 0;
+
+    while (!timers_.empty()) {
+        if (std::chrono::steady_clock::now() - start > wall_cap) return false;
+        if (++iterations > iteration_cap) return false;
+
+        TimerEntry entry = timers_.top();
+        timers_.pop();
+
+        if (cancelled_ids_.count(entry.id)) {
+            cancelled_ids_.erase(entry.id);
+            release_context(entry.call_ctx);
+            continue;
+        }
+
+        auto now = std::chrono::steady_clock::now();
+        if (entry.deadline > now) {
+            std::this_thread::sleep_until(entry.deadline);
+        }
+
+        Value result = entry.callback->call(*entry.call_ctx, entry.bound_args);
+        (void)result;
+        if (entry.call_ctx->has_exception()) {
+            Value exc = entry.call_ctx->get_exception();
+            entry.call_ctx->clear_exception();
+            std::cerr << "Uncaught (in timer) " << exc.to_string() << std::endl;
+        }
+
+        bool still_active = entry.interval_ms >= 0 && !cancelled_ids_.count(entry.id);
+        Object* global = entry.call_ctx->get_global_object();
+        if (still_active) {
+            TimerEntry next = entry;
+            next.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(entry.interval_ms);
+            timers_.push(std::move(next));
+        } else {
+            cancelled_ids_.erase(entry.id);
+            release_context(entry.call_ctx);
+            if (global) {
+                global->delete_property("__timer_" + std::to_string(entry.id) + "_cb");
+                for (size_t i = 0; i < entry.bound_args.size(); i++) {
+                    global->delete_property("__timer_" + std::to_string(entry.id) + "_arg" + std::to_string(i));
+                }
             }
-        } catch (...) {
         }
-    }
-}
 
-void EventLoop::process_macrotasks() {
-    if (!macrotasks_.empty()) {
-        auto task = std::move(macrotasks_.front());
-        macrotasks_.erase(macrotasks_.begin());
-        
-        try {
-            if (task) {
-                task();
-            }
-        } catch (...) {
-        }
+        // Promise/queueMicrotask jobs queue onto the engine's global context (Promise.cpp's get_exec_ctx), not entry.call_ctx.
+        // Drain the global context here so jobs queued during this callback run before the next timer fires.
+        Engine* engine = entry.call_ctx->get_engine();
+        Context* drain_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : entry.call_ctx;
+        drain_ctx->drain_microtasks();
+        if (engine) engine->clear_survivor_contexts();
     }
+    return true;
 }
 
 EventLoop& EventLoop::instance() {

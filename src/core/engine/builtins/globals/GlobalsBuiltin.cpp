@@ -25,6 +25,7 @@
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/Async.h"
 
 namespace Quanta {
 
@@ -1071,40 +1072,55 @@ void register_global_builtins(Context& ctx) {
                 return Value(promise_obj.release());
             }
 
-            // Resolve path relative to current file
+            // Deferred to a microtask (HostLoadImportedModule is a job, not inline) -- otherwise the module's top-level side effects would run before the importer's remaining synchronous code.
             std::string current_file = ctx.get_current_filename();
-            std::string resolved;
-            if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
-                (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {
-                namespace fs = std::filesystem;
-                std::string base = fs::path(current_file).parent_path().string();
-                if (base.empty()) base = ".";
-                resolved = fs::weakly_canonical(fs::path(base) / specifier).string();
-            } else {
-                resolved = specifier;
-            }
-
             Engine* engine = ctx.get_engine();
-            if (engine && engine->get_module_loader()) {
-                auto* loader = engine->get_module_loader();
-                Module* mod = loader->load_module(resolved, current_file);
-                if (mod) {
-                    if (mod->has_thrown_exception()) {
-                        promise->reject(mod->get_thrown_exception());
-                        return Value(promise_obj.release());
-                    }
-                    // Spec 10.4.6: live-binding module namespace (same object each call)
-                    Value ns_val = ModuleLoader::build_module_namespace(mod);
-                    promise->fulfill(ns_val);
-                    return Value(promise_obj.release());
-                }
-                if (loader->has_last_module_exception()) {
-                    promise->reject(loader->get_last_module_exception());
-                    return Value(promise_obj.release());
-                }
-            }
+            Promise* promise_ptr = promise;
 
-            promise->reject(Value(std::string("Error: Cannot find module '" + specifier + "'")));
+            // GC-root the promise until the job runs -- the caller may not keep a reference (e.g. side-effect-only import()).
+            static int64_t import_job_id = 0;
+            int64_t job_id = ++import_job_id;
+            std::string pin = "__import_" + std::to_string(job_id) + "_p";
+            Object* global = ctx.get_global_object();
+            if (global) global->set_property(pin, Value(promise_obj.get()));
+
+            Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : &ctx;
+            queue_ctx->queue_microtask([global, pin, specifier, current_file, engine, promise_ptr]() {
+                if (global) global->delete_property(pin);
+
+                std::string resolved;
+                if ((specifier.length() >= 2 && specifier.substr(0, 2) == "./") ||
+                    (specifier.length() >= 3 && specifier.substr(0, 3) == "../")) {
+                    namespace fs = std::filesystem;
+                    std::string base = fs::path(current_file).parent_path().string();
+                    if (base.empty()) base = ".";
+                    resolved = fs::weakly_canonical(fs::path(base) / specifier).string();
+                } else {
+                    resolved = specifier;
+                }
+
+                if (engine && engine->get_module_loader()) {
+                    auto* loader = engine->get_module_loader();
+                    Module* mod = loader->load_module(resolved, current_file);
+                    if (mod) {
+                        if (mod->has_thrown_exception()) {
+                            promise_ptr->reject(mod->get_thrown_exception());
+                            return;
+                        }
+                        // Spec 10.4.6: live-binding module namespace (same object each call)
+                        Value ns_val = ModuleLoader::build_module_namespace(mod);
+                        promise_ptr->fulfill(ns_val);
+                        return;
+                    }
+                    if (loader->has_last_module_exception()) {
+                        promise_ptr->reject(loader->get_last_module_exception());
+                        return;
+                    }
+                }
+
+                promise_ptr->reject(Value(std::string("Error: Cannot find module '" + specifier + "'")));
+            });
+
             return Value(promise_obj.release());
         }, 1);
     ctx.get_global_object()->set_property("import", Value(import_fn.release()));
@@ -1263,30 +1279,87 @@ void register_global_builtins(Context& ctx) {
         ctx.get_lexical_environment()->create_binding("Date", Value(ctx.get_built_in_object("Date")), false);
     }
     
+    auto schedule_timer_fn = [](Context& ctx, const std::vector<Value>& args, bool repeating) -> Value {
+        if (args.empty() || !args[0].is_function()) {
+            // Non-callable first arg: HTML-spec-leniency no-op rather than throw.
+            return Value(static_cast<double>(0));
+        }
+        Function* cb = args[0].as_function();
+        double delay = args.size() > 1 ? args[1].to_number() : 0.0;
+        if (std::isnan(delay) || delay < 0) delay = 0.0;
+        std::vector<Value> bound(args.size() > 2 ? args.begin() + 2 : args.end(), args.end());
+        int64_t id = EventLoop::instance().schedule_timer(ctx, cb, std::move(bound), delay, repeating);
+        return Value(static_cast<double>(id));
+    };
     auto setTimeout_fn = ObjectFactory::create_native_function("setTimeout",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(1);
+        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+            return schedule_timer_fn(ctx, args, false);
         });
     auto setInterval_fn = ObjectFactory::create_native_function("setInterval",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value(1);
+        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+            return schedule_timer_fn(ctx, args, true);
         });
-    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value();
-        });
-    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value();
-        });
+    auto clear_timer_fn = [](Context& ctx, const std::vector<Value>& args) -> Value {
+        if (!args.empty()) {
+            EventLoop::instance().clear_timer(static_cast<int64_t>(args[0].to_number()));
+        }
+        return Value();
+    };
+    auto clearTimeout_fn = ObjectFactory::create_native_function("clearTimeout", clear_timer_fn);
+    auto clearInterval_fn = ObjectFactory::create_native_function("clearInterval", clear_timer_fn);
     
     ctx.get_lexical_environment()->create_binding("setTimeout", Value(setTimeout_fn.release()), false);
     ctx.get_lexical_environment()->create_binding("setInterval", Value(setInterval_fn.release()), false);
     ctx.get_lexical_environment()->create_binding("clearTimeout", Value(clearTimeout_fn.release()), false);
     ctx.get_lexical_environment()->create_binding("clearInterval", Value(clearInterval_fn.release()), false);
-    
-    
-    
+
+    // setImmediate/clearImmediate: a zero-delay, one-shot timer (Node API, not in any web spec).
+    auto setImmediate_fn = ObjectFactory::create_native_function("setImmediate",
+        [schedule_timer_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::vector<Value> shifted;
+            shifted.push_back(args.empty() ? Value() : args[0]);
+            shifted.push_back(Value(0.0));
+            for (size_t i = 1; i < args.size(); i++) shifted.push_back(args[i]);
+            return schedule_timer_fn(ctx, shifted, false);
+        });
+    auto clearImmediate_fn = ObjectFactory::create_native_function("clearImmediate", clear_timer_fn);
+    ctx.get_lexical_environment()->create_binding("setImmediate", Value(setImmediate_fn.release()), false);
+    ctx.get_lexical_environment()->create_binding("clearImmediate", Value(clearImmediate_fn.release()), false);
+
+    // queueMicrotask: unlike setTimeout, a non-callable callback is a TypeError, not a silent no-op.
+    // Exceptions are reported as uncaught, not propagated, since the caller's turn already ended.
+    auto queueMicrotask_fn = ObjectFactory::create_native_function("queueMicrotask",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("queueMicrotask: callback must be a function");
+                return Value();
+            }
+            Function* cb = args[0].as_function();
+            Context* call_ctx = &ctx;
+            Engine* engine = ctx.get_engine();
+            Context* queue_ctx = (engine && engine->get_global_context()) ? engine->get_global_context() : call_ctx;
+
+            // GC-root the callback until the job runs (mirrors setTimeout's __timer_<id>_cb idiom).
+            static int64_t qmt_next_id = 0;
+            int64_t id = ++qmt_next_id;
+            std::string pin = "__qmt_" + std::to_string(id) + "_cb";
+            Object* global = ctx.get_global_object();
+            if (global) global->set_property(pin, Value(cb));
+
+            queue_ctx->queue_microtask([call_ctx, cb, global, pin]() {
+                if (global) global->delete_property(pin);
+                cb->call(*call_ctx, {});
+                if (call_ctx->has_exception()) {
+                    Value exc = call_ctx->get_exception();
+                    call_ctx->clear_exception();
+                    std::cerr << "Uncaught (in queueMicrotask) " << exc.to_string() << std::endl;
+                }
+            });
+            return Value();
+        }, 1);
+    ctx.get_lexical_environment()->create_binding("queueMicrotask", Value(queueMicrotask_fn.release()), false);
+
+
     if (ctx.get_built_in_object("Object")) {
         Object* obj_constructor = ctx.get_built_in_object("Object");
         Value binding_value;
