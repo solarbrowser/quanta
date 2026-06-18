@@ -515,11 +515,6 @@ void register_object_builtins(Context& ctx) {
             }
 
             Object* proto = obj->get_prototype();
-            // Functions may not have [[Prototype]] set yet -- fall back to Function.prototype
-            if (!proto && obj_val.is_function()) {
-                proto = ObjectFactory::get_function_prototype();
-                if (proto) obj->set_prototype(proto);
-            }
             if (proto) {
                 Function* func_proto = dynamic_cast<Function*>(proto);
                 if (func_proto) {

@@ -47,6 +47,11 @@ Function::Function(const std::string& name,
     PropertyDescriptor length_desc(Value(static_cast<double>(parameters_.size())), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
 
+    // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
+    // ObjectFactory::create_js_function would otherwise leave this null.
+    if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+        set_prototype(func_proto);
+    }
 }
 
 Function::Function(const std::string& name,
@@ -81,6 +86,12 @@ Function::Function(const std::string& name,
     }
     PropertyDescriptor length_desc(Value(static_cast<double>(formal_length)), PropertyAttributes::Configurable);
     this->set_property_descriptor("length", length_desc);
+
+    // [[Prototype]] (not the .prototype property above): direct construction sites that bypass
+    // ObjectFactory::create_js_function would otherwise leave this null.
+    if (Object* func_proto = ObjectFactory::get_function_prototype()) {
+        set_prototype(func_proto);
+    }
 }
 
 Function::Function(const std::string& name,
