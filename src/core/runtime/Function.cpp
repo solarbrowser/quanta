@@ -834,10 +834,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
 
-        // Write back modified closure variables to this function object,
-        // propagate to parent context, and update sibling closures
+        // Write back modified closure variables to this function object, propagate to parent context, and update sibling closures.
+        // __contains_eval__ functions never had any __closure_* properties captured to begin with (see language.cpp), so this is just a no-op guard, not the primary mechanism.
         std::vector<std::pair<std::string, Value>> modified_closures;
-        auto prop_keys2 = this->get_internal_property_keys();
+        auto prop_keys2 = this->has_property("__contains_eval__") ? std::vector<std::string>() : this->get_internal_property_keys();
         for (const auto& key : prop_keys2) {
             if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
                 std::string var_name = key.substr(10);

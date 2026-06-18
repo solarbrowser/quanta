@@ -353,12 +353,24 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         bool mutable_binding = (declarator->get_kind() != VariableDeclarator::Kind::CONST);
         VariableDeclarator::Kind kind = declarator->get_kind();
 
+        // ResolveBinding(name) may pass through a shadowing `with` object on the way to this VariableEnvironment, but must stop there -- walking past it into an ancestor scope's own same-named var would wrongly treat an un-hoisted var (e.g. one a direct eval introduces on the fly) as already declared there instead of creating a local one here.
+        Environment* var_env_here = ctx.get_variable_environment();
+        auto find_bounded_binding_env = [&]() -> Environment* {
+            Environment* env = ctx.get_lexical_environment();
+            while (env) {
+                if (env->has_own_binding(name)) return env;
+                if (env == var_env_here) return nullptr;
+                env = env->get_outer();
+            }
+            return nullptr;
+        };
+
         // Spec: ResolveBinding(name) before evaluating initializer (binding-resolution rule).
         // Capture the environment containing this binding so that initializers that
         // modify the scope (eval, delete in with-scope) don't change the write target.
         Environment* ref_env = nullptr;
-        if (kind == VariableDeclarator::Kind::VAR && declarator->get_init() && ctx.has_binding(name)) {
-            ref_env = ctx.find_binding_env(name);
+        if (kind == VariableDeclarator::Kind::VAR && declarator->get_init()) {
+            ref_env = find_bounded_binding_env();
         }
 
         Value init_value;
@@ -375,12 +387,8 @@ Value VariableDeclaration::evaluate(Context& ctx) {
             init_value = Value();
         }
 
-        bool has_local = false;
-        if (kind == VariableDeclarator::Kind::VAR) {
-            has_local = ctx.has_binding(name);
-        } else {
-            has_local = false;
-        }
+        // Re-checked after the initializer ran, since its side effects (e.g. a nested eval) may have just created the binding.
+        bool has_local = kind == VariableDeclarator::Kind::VAR && find_bounded_binding_env() != nullptr;
 
         if (has_local) {
             if (kind == VariableDeclarator::Kind::VAR) {
