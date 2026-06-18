@@ -423,10 +423,14 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     }
                 }
             }
-            if (obj->has_private_slot(iname)) return Value(true);
+            // Fields are stored under a qualified key, see resolve_private_storage_key in CallStack.cpp.
+            std::string qualified = expected_brand
+                ? iname + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected_brand))
+                : resolve_private_storage_key(iname, obj);
+            if (obj->has_private_slot(qualified) || obj->has_private_slot(iname)) return Value(true);
             Object* proto = obj->get_prototype();
             while (proto) {
-                if (proto->has_private_slot(iname)) return Value(true);
+                if (proto->has_private_slot(qualified) || proto->has_private_slot(iname)) return Value(true);
                 proto = proto->get_prototype();
             }
             return Value(false);

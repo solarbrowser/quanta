@@ -15,6 +15,7 @@
 namespace Quanta {
 
 class Function;
+class Object;
 class ASTNode;
 
 struct CallStackFrame {
@@ -109,6 +110,9 @@ public:
 
 #define STACK_FRAME_FUNC(name, file, pos, func) \
     CallStackFrameGuard __frame_guard(CallStack::instance(), name, file, pos, func)
+
+// Qualifies a bare private name (e.g. "#x") with its declaring class's brand (e.g. "#x@1234") so a base and derived class's same-named private fields don't collide into one storage slot. Falls back to scanning obj's own slots, then to the bare name, if the call stack has no frame declaring it (e.g. resumed after an await/yield).
+std::string resolve_private_storage_key(const std::string& bare_name, Object* obj = nullptr);
 
 }
 

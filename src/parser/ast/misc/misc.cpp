@@ -6,6 +6,7 @@
 
 #include "quanta/parser/AST.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -295,6 +296,9 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
                         ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
                         return Value();
                     }
+                    // Instance fields are stored under a per-class-qualified key (see resolve_private_storage_key).
+                    std::string qualified = resolve_private_storage_key(prop_name, obj);
+                    if (obj->has_private_slot(qualified)) prop_name = qualified;
                 }
                 return obj->get_property(prop_name);
             }

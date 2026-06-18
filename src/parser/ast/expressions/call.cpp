@@ -2004,6 +2004,9 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
                 ctx.throw_type_error("Cannot read private member " + method_name + " from an object whose class did not declare it");
                 return Value();
             }
+            // A private field holding a function value (e.g. `#fn = () => {}`) is stored under a qualified key (see resolve_private_storage_key); methods are unaffected since they live on the prototype under the bare name.
+            std::string qualified = resolve_private_storage_key(method_name, obj);
+            if (obj->has_private_slot(qualified)) method_name = qualified;
         }
 
         Value method_value = obj->get_property(method_name);

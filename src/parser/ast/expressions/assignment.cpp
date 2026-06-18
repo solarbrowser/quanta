@@ -7,6 +7,7 @@
 #include "quanta/parser/AST.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Async.h"
@@ -341,6 +342,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             Object* lobj = object_value.is_object() ? object_value.as_object()
                          : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
                          : nullptr;
+            // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
+            if (lobj && !lprop.empty() && lprop[0] == '#') {
+                std::string qualified = resolve_private_storage_key(lprop, lobj);
+                if (lobj->has_private_slot(qualified)) lprop = qualified;
+            }
             Value cur = lobj ? lobj->get_property(lprop) : Value();
             if (ctx.has_exception()) return Value();
             bool skip =
@@ -569,6 +575,11 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (!private_brand_check(ctx, obj, prop_name, false)) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
                 return Value();
+            }
+            // Fields are stored under a qualified key (see resolve_private_storage_key); left untouched for methods/getters/setters, which aren't found directly on the instance.
+            {
+                std::string qualified = resolve_private_storage_key(prop_name, obj);
+                if (obj->has_private_slot(qualified)) prop_name = qualified;
             }
             // For any assignment (including =), check if target is a private method or uninitialized field
             if (obj->has_private_slot(prop_name)) {
@@ -1500,6 +1511,11 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                 }
             } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(member->get_property())->get_name();
+            }
+            // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
+            if (!prop_name.empty() && prop_name[0] == '#') {
+                std::string qualified = resolve_private_storage_key(prop_name, obj);
+                if (obj->has_private_slot(qualified)) prop_name = qualified;
             }
             obj->ordinary_set(prop_name, value);
         }
