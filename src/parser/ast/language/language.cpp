@@ -18,6 +18,7 @@
 #include <sstream>
 #include <set>
 #include <unordered_set>
+#include <cctype>
 
 namespace Quanta {
 
@@ -83,6 +84,222 @@ static std::string computed_key_to_property_key(Context& ctx, const Value& val) 
     return "";
 }
 
+// Detects a literal eval() call anywhere in this function's own body (stopping at nested function/class boundaries); such functions skip closure capture/write-back below, since eval can introduce a same-named var our static analysis can't see.
+static bool contains_direct_eval(ASTNode* node) {
+    if (!node) return false;
+    switch (node->get_type()) {
+        case ASTNode::Type::FUNCTION_EXPRESSION:
+        case ASTNode::Type::FUNCTION_DECLARATION:
+        case ASTNode::Type::ARROW_FUNCTION_EXPRESSION:
+        case ASTNode::Type::ASYNC_FUNCTION_EXPRESSION:
+        case ASTNode::Type::METHOD_DEFINITION:
+        case ASTNode::Type::CLASS_DECLARATION:
+        case ASTNode::Type::CLASS_STATIC_BLOCK:
+            return false;
+        case ASTNode::Type::CALL_EXPRESSION: {
+            auto* call = static_cast<CallExpression*>(node);
+            if (call->get_callee()->get_type() == ASTNode::Type::IDENTIFIER &&
+                static_cast<Identifier*>(call->get_callee())->get_name() == "eval") {
+                return true;
+            }
+            if (contains_direct_eval(call->get_callee())) return true;
+            for (const auto& arg : call->get_arguments()) {
+                if (contains_direct_eval(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::BINARY_EXPRESSION: {
+            auto* b = static_cast<BinaryExpression*>(node);
+            return contains_direct_eval(b->get_left()) || contains_direct_eval(b->get_right());
+        }
+        case ASTNode::Type::UNARY_EXPRESSION:
+            return contains_direct_eval(static_cast<UnaryExpression*>(node)->get_operand());
+        case ASTNode::Type::ASSIGNMENT_EXPRESSION: {
+            auto* a = static_cast<AssignmentExpression*>(node);
+            return contains_direct_eval(a->get_left()) || contains_direct_eval(a->get_right());
+        }
+        case ASTNode::Type::CONDITIONAL_EXPRESSION: {
+            auto* c = static_cast<ConditionalExpression*>(node);
+            return contains_direct_eval(c->get_test()) || contains_direct_eval(c->get_consequent()) || contains_direct_eval(c->get_alternate());
+        }
+        case ASTNode::Type::MEMBER_EXPRESSION: {
+            auto* m = static_cast<MemberExpression*>(node);
+            if (contains_direct_eval(m->get_object())) return true;
+            return m->is_computed() && contains_direct_eval(m->get_property());
+        }
+        case ASTNode::Type::OPTIONAL_CHAINING_EXPRESSION: {
+            auto* m = static_cast<OptionalChainingExpression*>(node);
+            if (contains_direct_eval(m->get_object())) return true;
+            return m->is_computed() && contains_direct_eval(m->get_property());
+        }
+        case ASTNode::Type::NULLISH_COALESCING_EXPRESSION: {
+            auto* n = static_cast<NullishCoalescingExpression*>(node);
+            return contains_direct_eval(n->get_left()) || contains_direct_eval(n->get_right());
+        }
+        case ASTNode::Type::NEW_EXPRESSION: {
+            auto* n = static_cast<NewExpression*>(node);
+            if (contains_direct_eval(n->get_constructor())) return true;
+            for (const auto& arg : n->get_arguments()) {
+                if (contains_direct_eval(arg.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::OBJECT_LITERAL: {
+            for (const auto& prop : static_cast<ObjectLiteral*>(node)->get_properties()) {
+                if (prop->computed && contains_direct_eval(prop->key.get())) return true;
+                if (contains_direct_eval(prop->value.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::ARRAY_LITERAL: {
+            for (const auto& el : static_cast<ArrayLiteral*>(node)->get_elements()) {
+                if (contains_direct_eval(el.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::TEMPLATE_LITERAL: {
+            for (const auto& el : static_cast<TemplateLiteral*>(node)->get_elements()) {
+                if (el.type == TemplateLiteral::Element::Type::EXPRESSION && contains_direct_eval(el.expression.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::SPREAD_ELEMENT:
+            return contains_direct_eval(static_cast<SpreadElement*>(node)->get_argument());
+        case ASTNode::Type::AWAIT_EXPRESSION:
+            return contains_direct_eval(static_cast<AwaitExpression*>(node)->get_argument());
+        case ASTNode::Type::YIELD_EXPRESSION:
+            return contains_direct_eval(static_cast<YieldExpression*>(node)->get_argument());
+        case ASTNode::Type::EXPRESSION_STATEMENT:
+            return contains_direct_eval(static_cast<ExpressionStatement*>(node)->get_expression());
+        case ASTNode::Type::VARIABLE_DECLARATION: {
+            for (const auto& d : static_cast<VariableDeclaration*>(node)->get_declarations()) {
+                if (contains_direct_eval(d->get_init())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::BLOCK_STATEMENT: {
+            for (const auto& s : static_cast<BlockStatement*>(node)->get_statements()) {
+                if (contains_direct_eval(s.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::IF_STATEMENT: {
+            auto* i = static_cast<IfStatement*>(node);
+            return contains_direct_eval(i->get_test()) || contains_direct_eval(i->get_consequent()) ||
+                   (i->get_alternate() && contains_direct_eval(i->get_alternate()));
+        }
+        case ASTNode::Type::FOR_STATEMENT: {
+            auto* f = static_cast<ForStatement*>(node);
+            return contains_direct_eval(f->get_init()) || contains_direct_eval(f->get_test()) ||
+                   contains_direct_eval(f->get_update()) || contains_direct_eval(f->get_body());
+        }
+        case ASTNode::Type::FOR_IN_STATEMENT: {
+            auto* f = static_cast<ForInStatement*>(node);
+            return contains_direct_eval(f->get_right()) || contains_direct_eval(f->get_body());
+        }
+        case ASTNode::Type::FOR_OF_STATEMENT: {
+            auto* f = static_cast<ForOfStatement*>(node);
+            return contains_direct_eval(f->get_right()) || contains_direct_eval(f->get_body());
+        }
+        case ASTNode::Type::WHILE_STATEMENT: {
+            auto* w = static_cast<WhileStatement*>(node);
+            return contains_direct_eval(w->get_test()) || contains_direct_eval(w->get_body());
+        }
+        case ASTNode::Type::DO_WHILE_STATEMENT: {
+            auto* w = static_cast<DoWhileStatement*>(node);
+            return contains_direct_eval(w->get_test()) || contains_direct_eval(w->get_body());
+        }
+        case ASTNode::Type::WITH_STATEMENT:
+            return contains_direct_eval(static_cast<WithStatement*>(node)->get_body());
+        case ASTNode::Type::RETURN_STATEMENT: {
+            auto* r = static_cast<ReturnStatement*>(node);
+            return r->has_argument() && contains_direct_eval(r->get_argument());
+        }
+        case ASTNode::Type::THROW_STATEMENT:
+            return contains_direct_eval(static_cast<ThrowStatement*>(node)->get_expression());
+        case ASTNode::Type::LABELED_STATEMENT:
+            return contains_direct_eval(static_cast<LabeledStatement*>(node)->get_statement());
+        case ASTNode::Type::TRY_STATEMENT: {
+            auto* t = static_cast<TryStatement*>(node);
+            if (contains_direct_eval(t->get_try_block())) return true;
+            if (t->get_catch_clause() && contains_direct_eval(t->get_catch_clause())) return true;
+            return t->get_finally_block() && contains_direct_eval(t->get_finally_block());
+        }
+        case ASTNode::Type::CATCH_CLAUSE:
+            return contains_direct_eval(static_cast<CatchClause*>(node)->get_body());
+        case ASTNode::Type::SWITCH_STATEMENT: {
+            auto* s = static_cast<SwitchStatement*>(node);
+            if (contains_direct_eval(s->get_discriminant())) return true;
+            for (const auto& c : s->get_cases()) {
+                if (contains_direct_eval(c.get())) return true;
+            }
+            return false;
+        }
+        case ASTNode::Type::CASE_CLAUSE: {
+            auto* c = static_cast<CaseClause*>(node);
+            if (c->get_test() && contains_direct_eval(c->get_test())) return true;
+            for (const auto& s : c->get_consequent()) {
+                if (contains_direct_eval(s.get())) return true;
+            }
+            return false;
+        }
+        default:
+            return false;
+    }
+}
+
+// Collects the names a function body will hoist as its own `var` bindings (mirrors Function::scan_for_var_declarations, stopping at nested function boundaries); closure-capture below excludes these so the function's own declaration gets a fresh binding instead of sharing the outer one.
+static void collect_own_var_names(ASTNode* node, std::set<std::string>& names) {
+    if (!node) return;
+    if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
+        auto* var_decl = static_cast<VariableDeclaration*>(node);
+        for (const auto& d : var_decl->get_declarations()) {
+            if (d->get_kind() == VariableDeclarator::Kind::VAR && d->get_id()) {
+                names.insert(d->get_id()->get_name());
+            }
+        }
+    } else if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
+        for (const auto& s : static_cast<BlockStatement*>(node)->get_statements()) {
+            collect_own_var_names(s.get(), names);
+        }
+    } else if (node->get_type() == ASTNode::Type::IF_STATEMENT) {
+        auto* if_stmt = static_cast<IfStatement*>(node);
+        collect_own_var_names(if_stmt->get_consequent(), names);
+        if (if_stmt->get_alternate()) collect_own_var_names(if_stmt->get_alternate(), names);
+    } else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
+        auto* for_stmt = static_cast<ForStatement*>(node);
+        if (for_stmt->get_init()) collect_own_var_names(for_stmt->get_init(), names);
+        collect_own_var_names(for_stmt->get_body(), names);
+    } else if (node->get_type() == ASTNode::Type::WHILE_STATEMENT) {
+        collect_own_var_names(static_cast<WhileStatement*>(node)->get_body(), names);
+    } else if (node->get_type() == ASTNode::Type::DO_WHILE_STATEMENT) {
+        collect_own_var_names(static_cast<DoWhileStatement*>(node)->get_body(), names);
+    } else if (node->get_type() == ASTNode::Type::WITH_STATEMENT) {
+        collect_own_var_names(static_cast<WithStatement*>(node)->get_body(), names);
+    } else if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
+        auto* try_stmt = static_cast<TryStatement*>(node);
+        collect_own_var_names(try_stmt->get_try_block(), names);
+        if (try_stmt->get_catch_clause()) collect_own_var_names(try_stmt->get_catch_clause(), names);
+        if (try_stmt->get_finally_block()) collect_own_var_names(try_stmt->get_finally_block(), names);
+    } else if (node->get_type() == ASTNode::Type::SWITCH_STATEMENT) {
+        for (const auto& c : static_cast<SwitchStatement*>(node)->get_cases()) {
+            for (const auto& s : static_cast<CaseClause*>(c.get())->get_consequent()) {
+                collect_own_var_names(s.get(), names);
+            }
+        }
+    } else if (node->get_type() == ASTNode::Type::LABELED_STATEMENT) {
+        collect_own_var_names(static_cast<LabeledStatement*>(node)->get_statement(), names);
+    } else if (node->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
+        auto* forin = static_cast<ForInStatement*>(node);
+        if (forin->get_left()) collect_own_var_names(forin->get_left(), names);
+        collect_own_var_names(forin->get_body(), names);
+    } else if (node->get_type() == ASTNode::Type::FOR_OF_STATEMENT) {
+        auto* forof = static_cast<ForOfStatement*>(node);
+        if (forof->get_left()) collect_own_var_names(forof->get_left(), names);
+        collect_own_var_names(forof->get_body(), names);
+    }
+}
+
 Value FunctionDeclaration::evaluate(Context& ctx) {
     const std::string& function_name = id_->get_name();
 
@@ -127,11 +344,16 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             return e && e->get_type() == Environment::Type::Object;
         };
 
+        std::set<std::string> own_var_names;
+        collect_own_var_names(body_.get(), own_var_names);
+        // Functions containing a direct eval skip closure capture entirely below, relying on the function's real closure_context_-based environment chain (Context.cpp's create_function_context) instead.
+        bool has_eval = contains_direct_eval(body_.get());
+
         auto var_env = ctx.get_variable_environment();
-        if (var_env && var_env->get_type() != Environment::Type::Object) {
+        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
             auto var_binding_names = var_env->get_binding_names();
             for (const auto& name : var_binding_names) {
-                if (name != "this" && name != "arguments") {
+                if (name != "this" && name != "arguments" && !own_var_names.count(name)) {
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined()) {
                         function_obj->set_property("__closure_" + name, value);
@@ -142,11 +364,11 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
 
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env && !walk->is_closure_boundary()) {
+        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 auto lex_binding_names = walk->get_binding_names();
                 for (const auto& name : lex_binding_names) {
-                    if (name != "this" && name != "arguments") {
+                    if (name != "this" && name != "arguments" && !own_var_names.count(name)) {
                         if (!function_obj->has_property("__closure_" + name) && !is_global_obj_binding(name)) {
                             Value value = ctx.get_binding(name);
                             if (!value.is_undefined()) {
@@ -159,13 +381,16 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
             walk = walk->get_outer();
         }
 
-        std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
-        for (const auto& var_name : potential_vars) {
-            if (ctx.has_binding(var_name) && !is_global_obj_binding(var_name)) {
-                Value value = ctx.get_binding(var_name);
-                if (!value.is_undefined()) {
-                    if (!function_obj->has_property("__closure_" + var_name)) {
-                        function_obj->set_property("__closure_" + var_name, value);
+        if (!has_eval) {
+            std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
+            for (const auto& var_name : potential_vars) {
+                if (own_var_names.count(var_name)) continue;
+                if (ctx.has_binding(var_name) && !is_global_obj_binding(var_name)) {
+                    Value value = ctx.get_binding(var_name);
+                    if (!value.is_undefined()) {
+                        if (!function_obj->has_property("__closure_" + var_name)) {
+                            function_obj->set_property("__closure_" + var_name, value);
+                        }
                     }
                 }
             }
@@ -174,6 +399,9 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
 
     if (function_obj && !source_text_.empty()) {
         function_obj->set_source_text(source_text_);
+    }
+    if (function_obj && contains_direct_eval(body_.get())) {
+        function_obj->set_property("__contains_eval__", Value(true));
     }
 
     if (function_obj) {
@@ -1089,11 +1317,16 @@ Value FunctionExpression::evaluate(Context& ctx) {
             return e && e->get_type() == Environment::Type::Object;
         };
 
+        std::set<std::string> own_var_names;
+        collect_own_var_names(body_.get(), own_var_names);
+        // See FunctionDeclaration::evaluate's matching comment on has_eval.
+        bool has_eval = contains_direct_eval(body_.get());
+
         auto var_env = ctx.get_variable_environment();
-        if (var_env && var_env->get_type() != Environment::Type::Object) {
+        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
             auto var_binding_names = var_env->get_binding_names();
             for (const auto& name : var_binding_names) {
-                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
+                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
                     Value value = ctx.get_binding(name);
                     if (!value.is_undefined()) {
                         function->set_property("__closure_" + name, value);
@@ -1104,11 +1337,11 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env && !walk->is_closure_boundary()) {
+        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 auto lex_binding_names = walk->get_binding_names();
                 for (const auto& name : lex_binding_names) {
-                    if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end()) {
+                    if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
                         if (!function->has_property("__closure_" + name) && !is_global_obj_binding_fe(name)) {
                             Value value = ctx.get_binding(name);
                             if (!value.is_undefined()) {
@@ -1166,6 +1399,9 @@ Value FunctionExpression::evaluate(Context& ctx) {
 
     if (function && !source_text_.empty()) {
         function->set_source_text(source_text_);
+    }
+    if (function && contains_direct_eval(body_.get())) {
+        function->set_property("__contains_eval__", Value(true));
     }
 
     return Value(function.release());
@@ -1238,14 +1474,18 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
         std::set<std::string> async_param_set;
         for (const auto& p : params_) async_param_set.insert(p->get_name()->get_name());
+        std::set<std::string> own_var_names;
+        collect_own_var_names(body_.get(), own_var_names);
+        // See FunctionDeclaration::evaluate's matching comment on has_eval.
+        bool has_eval = contains_direct_eval(body_.get());
         auto is_global_obj_binding_af = [&](const std::string& n) -> bool {
             Environment* e = ctx.find_binding_env(n);
             return e && e->get_type() == Environment::Type::Object;
         };
         auto var_env = ctx.get_variable_environment();
-        if (var_env && var_env->get_type() != Environment::Type::Object) {
+        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
             for (const auto& bname : var_env->get_binding_names()) {
-                if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
+                if (bname != "this" && async_param_set.find(bname) == async_param_set.end() && !own_var_names.count(bname)) {
                     Value value = ctx.get_binding(bname);
                     if (!value.is_undefined()) {
                         async_fn->set_property("__closure_" + bname, value);
@@ -1255,10 +1495,10 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         }
         auto lex_env = ctx.get_lexical_environment();
         Environment* walk = lex_env;
-        while (walk && walk != var_env && !walk->is_closure_boundary()) {
+        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
             if (walk->get_type() != Environment::Type::Object) {
                 for (const auto& bname : walk->get_binding_names()) {
-                    if (bname != "this" && async_param_set.find(bname) == async_param_set.end()) {
+                    if (bname != "this" && async_param_set.find(bname) == async_param_set.end() && !own_var_names.count(bname)) {
                         if (!async_fn->has_property("__closure_" + bname) && !is_global_obj_binding_af(bname)) {
                             Value value = ctx.get_binding(bname);
                             if (!value.is_undefined()) {
@@ -1273,6 +1513,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
         if (!source_text_.empty()) {
             async_fn->set_source_text(source_text_);
+        }
+        if (has_eval) {
+            async_fn->set_property("__contains_eval__", Value(true));
         }
         return Value(async_fn);
     }
@@ -1316,11 +1559,16 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         return e && e->get_type() == Environment::Type::Object;
     };
 
+    std::set<std::string> own_var_names;
+    collect_own_var_names(body_.get(), own_var_names);
+    // See FunctionDeclaration::evaluate's matching comment on has_eval.
+    bool has_eval = contains_direct_eval(body_.get());
+
     auto var_env = ctx.get_variable_environment();
-    if (var_env && var_env->get_type() != Environment::Type::Object) {
+    if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
         auto var_binding_names = var_env->get_binding_names();
         for (const auto& name : var_binding_names) {
-            if (name != "this" && param_names.find(name) == param_names.end()) {
+            if (name != "this" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
                 Value value = ctx.get_binding(name);
                 if (!value.is_undefined()) {
                     arrow_function->set_property("__closure_" + name, value);
@@ -1331,11 +1579,11 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
-    while (walk && walk != var_env && !walk->is_closure_boundary()) {
+    while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
         if (walk->get_type() != Environment::Type::Object) {
             auto lex_binding_names = walk->get_binding_names();
             for (const auto& name : lex_binding_names) {
-                if (name != "this" && param_names.find(name) == param_names.end()) {
+                if (name != "this" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
                     if (!arrow_function->has_property("__closure_" + name) && !is_global_obj_binding_ar(name)) {
                         Value value = ctx.get_binding(name);
                         if (!value.is_undefined()) {
@@ -1350,6 +1598,9 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
 
     if (!source_text_.empty()) {
         arrow_function->set_source_text(source_text_);
+    }
+    if (has_eval) {
+        arrow_function->set_property("__contains_eval__", Value(true));
     }
 
     return Value(arrow_function.release());
@@ -2569,14 +2820,18 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     for (const auto& p : params_) {
         if (p->get_name()) param_set.insert(p->get_name()->get_name());
     }
+    std::set<std::string> own_var_names;
+    collect_own_var_names(body_.get(), own_var_names);
+    // See FunctionDeclaration::evaluate's matching comment on has_eval.
+    bool has_eval = contains_direct_eval(body_.get());
     auto is_global_obj = [&](const std::string& n) -> bool {
         Environment* e = ctx.find_binding_env(n);
         return e && e->get_type() == Environment::Type::Object;
     };
     auto var_env = ctx.get_variable_environment();
-    if (var_env && var_env->get_type() != Environment::Type::Object) {
+    if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
         for (const auto& bname : var_env->get_binding_names()) {
-            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
+            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end() && !own_var_names.count(bname)) {
                 Value value = ctx.get_binding(bname);
                 if (!value.is_undefined()) {
                     fn->set_property("__closure_" + bname, value);
@@ -2586,10 +2841,10 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
     }
     auto lex_env = ctx.get_lexical_environment();
     Environment* walk = lex_env;
-    while (walk && walk != var_env && !walk->is_closure_boundary()) {
+    while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
         if (walk->get_type() != Environment::Type::Object) {
             for (const auto& bname : walk->get_binding_names()) {
-                if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end()) {
+                if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end() && !own_var_names.count(bname)) {
                     if (!fn->has_property("__closure_" + bname) && !is_global_obj(bname)) {
                         Value value = ctx.get_binding(bname);
                         if (!value.is_undefined()) {
@@ -2600,6 +2855,10 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
             }
         }
         walk = walk->get_outer();
+    }
+
+    if (has_eval) {
+        fn->set_property("__contains_eval__", Value(true));
     }
 
     return Value(fn);
