@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/String.h"
 #include <sstream>
@@ -102,10 +103,22 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             }
 
             try {
-                auto property_names = spread_obj->get_enumerable_keys();
-                for (const auto& prop_name : property_names) {
-                    Value prop_value = spread_obj->get_property(prop_name);
-                    object->set_property(prop_name, prop_value);
+                if (spread_obj->get_type() == Object::ObjectType::Proxy) {
+                    // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
+                    Proxy* proxy = static_cast<Proxy*>(spread_obj);
+                    for (const auto& prop_name : proxy->own_keys_trap()) {
+                        PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(Value(prop_name));
+                        if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                        if (!desc.is_enumerable()) continue;
+                        Value prop_value = proxy->get_trap(Value(prop_name));
+                        object->set_property(prop_name, prop_value);
+                    }
+                } else {
+                    auto property_names = spread_obj->get_enumerable_keys();
+                    for (const auto& prop_name : property_names) {
+                        Value prop_value = spread_obj->get_property(prop_name);
+                        object->set_property(prop_name, prop_value);
+                    }
                 }
             } catch (const std::exception& e) {
                 ctx.throw_exception(Value("Error processing spread properties: " + std::string(e.what())));

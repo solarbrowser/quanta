@@ -945,6 +945,25 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                         pos += cl;
                         char_idx++;
                     }
+                } else if (source_obj->get_type() == Object::ObjectType::Proxy) {
+                    // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
+                    Proxy* proxy = static_cast<Proxy*>(source_obj);
+                    for (const auto& k : proxy->own_keys_trap()) {
+                        bool already_assigned = false;
+                        for (const auto& ak : assigned_keys) {
+                            if (ak == k) { already_assigned = true; break; }
+                        }
+                        if (already_assigned) continue;
+                        PropertyDescriptor kdesc = proxy->get_own_property_descriptor_trap(Value(k));
+                        if (!kdesc.is_data_descriptor() && !kdesc.is_accessor_descriptor()) continue;
+                        if (!kdesc.is_enumerable()) continue;
+                        Value val = proxy->get_trap(Value(k));
+                        if (ctx.has_exception()) return;
+                        PropertyDescriptor rdesc(val,
+                            static_cast<PropertyAttributes>(PropertyAttributes::Writable |
+                                PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                        rest_obj->set_property_descriptor(k, rdesc);
+                    }
                 } else {
                     // For objects: use enumerable keys only (spec excludes non-enumerable).
                     auto keys = source_obj->get_enumerable_keys();
