@@ -34,49 +34,52 @@ namespace Quanta {
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
-      byte_offset_(0), length_(0) {
+      byte_offset_(0), length_(0), is_length_tracking_(false) {
 }
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t length)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
-      byte_offset_(0), length_(length) {
+      byte_offset_(0), length_(length), is_length_tracking_(false) {
     size_t byte_length = length * bytes_per_element;
     buffer_ = std::make_shared<ArrayBuffer>(byte_length);
 }
 
 TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
-      buffer_(buffer), byte_offset_(0) {
+      buffer_(buffer), byte_offset_(0), is_length_tracking_(false) {
     if (!buffer_) {
         throw std::invalid_argument("ArrayBuffer cannot be null");
     }
     if (buffer_->is_detached()) {
         throw std::runtime_error("Cannot construct TypedArray from detached ArrayBuffer");
     }
-    
+
     size_t buffer_byte_length = buffer_->byte_length();
     if (buffer_byte_length % bytes_per_element_ != 0) {
         throw std::range_error("ArrayBuffer byte length is not a multiple of element size");
     }
     length_ = buffer_byte_length / bytes_per_element_;
+    // A whole-buffer view (no offset/length given) tracks a resizable buffer's size live, same as the offset+SIZE_MAX form below.
+    is_length_tracking_ = buffer_->is_resizable();
 }
 
-TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer, 
+TypedArrayBase::TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer,
                                size_t byte_offset, size_t length)
     : Object(ObjectType::TypedArray), array_type_(type), bytes_per_element_(bytes_per_element),
-      buffer_(buffer), byte_offset_(byte_offset) {
+      buffer_(buffer), byte_offset_(byte_offset), is_length_tracking_(false) {
     if (!buffer_) {
         throw std::invalid_argument("ArrayBuffer cannot be null");
     }
     if (buffer_->is_detached()) {
         throw std::runtime_error("Cannot construct TypedArray from detached ArrayBuffer");
     }
-    
+
     size_t buffer_byte_length = buffer_->byte_length();
     validate_offset_and_length(buffer_byte_length, byte_offset, length);
-    
+
     if (length == SIZE_MAX) {
-        if ((buffer_byte_length - byte_offset) % bytes_per_element_ != 0) {
+        is_length_tracking_ = buffer_->is_resizable();
+        if (!is_length_tracking_ && (buffer_byte_length - byte_offset) % bytes_per_element_ != 0) {
             throw std::range_error("Remaining buffer space is not a multiple of element size");
         }
         length_ = (buffer_byte_length - byte_offset) / bytes_per_element_;
@@ -92,8 +95,23 @@ uint8_t* TypedArrayBase::get_data_ptr() const {
     return buffer_->data() + byte_offset_;
 }
 
+bool TypedArrayBase::is_out_of_bounds() const {
+    if (!buffer_ || buffer_->is_detached()) return true;
+    if (byte_offset_ > buffer_->byte_length()) return true;
+    if (!is_length_tracking_ && byte_offset_ + length_ * bytes_per_element_ > buffer_->byte_length()) return true;
+    return false;
+}
+
+size_t TypedArrayBase::current_length() const {
+    if (is_out_of_bounds()) return 0;
+    if (is_length_tracking_) {
+        return (buffer_->byte_length() - byte_offset_) / bytes_per_element_;
+    }
+    return length_;
+}
+
 bool TypedArrayBase::check_bounds(size_t index) const {
-    return index < length_ && !buffer_->is_detached();
+    return index < current_length() && !buffer_->is_detached();
 }
 
 void TypedArrayBase::validate_offset_and_length(size_t buffer_byte_length, size_t byte_offset, size_t length) const {
@@ -114,12 +132,12 @@ void TypedArrayBase::validate_offset_and_length(size_t buffer_byte_length, size_
 Value TypedArrayBase::get_property(const std::string& key) const {
     char* end;
     unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && index < length_) {
+    if (*end == '\0' && index < current_length()) {
         return get_element(static_cast<size_t>(index));
     }
-    
+
     if (key == "length") {
-        return Value(static_cast<double>(length_));
+        return Value(static_cast<double>(current_length()));
     }
     if (key == "byteLength") {
         return Value(static_cast<double>(byte_length()));
@@ -140,20 +158,46 @@ Value TypedArrayBase::get_property(const std::string& key) const {
 bool TypedArrayBase::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     char* end;
     unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && index < length_) {
+    if (*end == '\0' && index < current_length()) {
         return set_element(static_cast<size_t>(index), value);
     }
-    
+
     return Object::set_property(key, value, attrs);
+}
+
+std::vector<std::string> TypedArrayBase::get_own_property_keys() const {
+    std::vector<std::string> keys;
+    size_t len = current_length();
+    keys.reserve(len);
+    for (size_t i = 0; i < len; ++i) keys.push_back(std::to_string(i));
+    for (const auto& k : Object::get_own_property_keys()) keys.push_back(k);
+    return keys;
+}
+
+bool TypedArrayBase::has_own_property(const std::string& key) const {
+    char* end;
+    unsigned long index = std::strtoul(key.c_str(), &end, 10);
+    if (*end == '\0' && !key.empty() && index < current_length()) return true;
+    return Object::has_own_property(key);
+}
+
+PropertyDescriptor TypedArrayBase::get_property_descriptor(const std::string& key) const {
+    char* end;
+    unsigned long index = std::strtoul(key.c_str(), &end, 10);
+    if (*end == '\0' && !key.empty() && index < current_length()) {
+        return PropertyDescriptor(get_element(static_cast<size_t>(index)), PropertyAttributes::Default);
+    }
+    return Object::get_property_descriptor(key);
 }
 
 std::string TypedArrayBase::to_string() const {
     if (buffer_->is_detached()) {
         return "[object " + get_type_name() + "]";
     }
-    
+
     std::ostringstream oss;
-    for (size_t i = 0; i < length_; ++i) {
+    size_t len = current_length();
+    for (size_t i = 0; i < len; ++i) {
         if (i > 0) oss << ",";
         oss << get_element(i).to_string();
     }
@@ -162,7 +206,7 @@ std::string TypedArrayBase::to_string() const {
 
 Value TypedArrayBase::to_primitive(const std::string& hint) const {
     if (hint == "number") {
-        return Value(static_cast<double>(length_));
+        return Value(static_cast<double>(current_length()));
     }
     return Value(to_string());
 }
@@ -458,6 +502,10 @@ std::unique_ptr<TypedArrayBase> create_from_buffer(TypedArrayBase::ArrayType typ
             return std::make_unique<Float32Array>(buffer, byte_offset, length);
         case TypedArrayBase::ArrayType::FLOAT64:
             return std::make_unique<Float64Array>(buffer, byte_offset, length);
+        case TypedArrayBase::ArrayType::BIGINT64:
+            return std::make_unique<BigInt64Array>(buffer, byte_offset, length);
+        case TypedArrayBase::ArrayType::BIGUINT64:
+            return std::make_unique<BigUint64Array>(buffer, byte_offset, length);
         default:
             throw std::invalid_argument("Unsupported TypedArray type");
     }

@@ -32,14 +32,30 @@ void register_arraybuffer_builtins(Context& ctx) {
                 ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
                 return Value();
             }
-            
+
             size_t byte_length = static_cast<size_t>(length_double);
-            
+
             try {
-                auto buffer_obj = std::make_unique<ArrayBuffer>(byte_length);
-                buffer_obj->set_property("byteLength", Value(static_cast<double>(byte_length)));
+                std::unique_ptr<ArrayBuffer> buffer_obj;
+                if (args.size() > 1 && args[1].is_object()) {
+                    Value max_byte_length_val = args[1].as_object()->get_property("maxByteLength");
+                    if (!max_byte_length_val.is_undefined()) {
+                        double mbl_double = max_byte_length_val.to_number();
+                        if (std::isnan(mbl_double) || mbl_double < 0 || mbl_double != std::floor(mbl_double)) {
+                            ctx.throw_range_error("maxByteLength must be a non-negative integer");
+                            return Value();
+                        }
+                        size_t max_byte_length = static_cast<size_t>(mbl_double);
+                        if (byte_length > max_byte_length) {
+                            ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength");
+                            return Value();
+                        }
+                        buffer_obj = std::make_unique<ArrayBuffer>(byte_length, max_byte_length);
+                    }
+                }
+                if (!buffer_obj) buffer_obj = std::make_unique<ArrayBuffer>(byte_length);
                 buffer_obj->set_property("_isArrayBuffer", Value(true));
-                
+
                 if (ctx.has_binding("ArrayBuffer")) {
                     Value arraybuffer_ctor = ctx.get_binding("ArrayBuffer");
                     if (!arraybuffer_ctor.is_undefined()) {
@@ -129,6 +145,30 @@ void register_arraybuffer_builtins(Context& ctx) {
 
     auto ab_resize_fn = ObjectFactory::create_native_function("resize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_array_buffer()) {
+                ctx.throw_type_error("ArrayBuffer.prototype.resize called on non-ArrayBuffer");
+                return Value();
+            }
+            ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            if (ab->is_detached()) {
+                ctx.throw_type_error("Cannot resize a detached ArrayBuffer");
+                return Value();
+            }
+            if (!ab->is_resizable()) {
+                ctx.throw_type_error("Cannot resize a non-resizable ArrayBuffer");
+                return Value();
+            }
+            double new_len_double = args.empty() ? 0.0 : args[0].to_number();
+            if (std::isnan(new_len_double) || new_len_double < 0 || new_len_double != std::floor(new_len_double)) {
+                ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
+                return Value();
+            }
+            if (static_cast<size_t>(new_len_double) > ab->max_byte_length()) {
+                ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength");
+                return Value();
+            }
+            ab->resize(static_cast<size_t>(new_len_double));
             return Value();
         }, 1);
 
@@ -147,20 +187,13 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
+            if (!this_obj || !this_obj->is_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.maxByteLength called on non-ArrayBuffer");
                 return Value();
             }
-
-            if (this_obj->has_property("maxByteLength")) {
-                return this_obj->get_property("maxByteLength");
-            }
-
-            if (this_obj->has_property("byteLength")) {
-                return this_obj->get_property("byteLength");
-            }
-
-            return Value(0.0);
+            ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            if (ab->is_detached()) return Value(0.0);
+            return Value(static_cast<double>(ab->is_resizable() ? ab->max_byte_length() : ab->byte_length()));
         }, 0);
 
     PropertyDescriptor maxByteLength_desc(Value(ab_maxByteLength_fn.release()), PropertyAttributes::Configurable);
@@ -171,20 +204,11 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
+            if (!this_obj || !this_obj->is_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.resizable called on non-ArrayBuffer");
                 return Value();
             }
-
-            if (this_obj->has_property("maxByteLength") && this_obj->has_property("byteLength")) {
-                Value max = this_obj->get_property("maxByteLength");
-                Value current = this_obj->get_property("byteLength");
-                if (max.is_number() && current.is_number()) {
-                    return Value(max.as_number() != current.as_number());
-                }
-            }
-
-            return Value(false);
+            return Value(static_cast<ArrayBuffer*>(this_obj)->is_resizable());
         }, 0);
 
     PropertyDescriptor resizable_desc(Value(ab_resizable_fn.release()), PropertyAttributes::Configurable);
