@@ -107,10 +107,13 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                     // get_enumerable_keys()/get_property() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec.
                     Proxy* proxy = static_cast<Proxy*>(spread_obj);
                     for (const auto& prop_name : proxy->own_keys_trap()) {
-                        PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(Value(prop_name));
+                        // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
+                        Symbol* sym = Symbol::find_by_property_key(prop_name);
+                        Value key_value = sym ? Value(sym) : Value(prop_name);
+                        PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(key_value);
                         if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                         if (!desc.is_enumerable()) continue;
-                        Value prop_value = proxy->get_trap(Value(prop_name));
+                        Value prop_value = proxy->get_trap(key_value);
                         object->set_property(prop_name, prop_value);
                     }
                 } else {
