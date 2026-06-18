@@ -45,6 +45,7 @@ protected:
     size_t length_;
     ArrayType array_type_;
     size_t bytes_per_element_;
+    bool is_length_tracking_;
 
     uint8_t* get_data_ptr() const;
     bool check_bounds(size_t index) const;
@@ -54,15 +55,21 @@ public:
     TypedArrayBase(ArrayType type, size_t bytes_per_element);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, size_t length);
     TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer);
-    TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer, 
+    TypedArrayBase(ArrayType type, size_t bytes_per_element, std::shared_ptr<ArrayBuffer> buffer,
                    size_t byte_offset, size_t length = SIZE_MAX);
-    
+
     virtual ~TypedArrayBase() = default;
 
     ArrayBuffer* buffer() const { return buffer_.get(); }
     size_t byte_offset() const { return byte_offset_; }
-    size_t byte_length() const { return length_ * bytes_per_element_; }
-    size_t length() const { return length_; }
+    // Spec-current length, re-derived live from the backing buffer's current size for a
+    // length-tracking view (one created without an explicit length over a resizable buffer),
+    // and 0 for a fixed-length view whose window no longer fits after the buffer shrank.
+    size_t current_length() const;
+    bool is_out_of_bounds() const;
+    size_t byte_length() const { return current_length() * bytes_per_element_; }
+    size_t length() const { return current_length(); }
+    bool is_length_tracking() const { return is_length_tracking_; }
     size_t bytes_per_element() const { return bytes_per_element_; }
     ArrayType get_array_type() const { return array_type_; }
     
@@ -78,6 +85,12 @@ public:
     
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
+    // Integer-indexed properties (0..current_length()-1) live in the backing buffer, not in the
+    // generic Object property table, so [[OwnPropertyKeys]]/[[GetOwnProperty]]/for-in/Object.keys
+    // need their own view of them here -- re-derived live so a resizable buffer's current size is reflected.
+    std::vector<std::string> get_own_property_keys() const override;
+    bool has_own_property(const std::string& key) const override;
+    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
     
     Value get_element(uint32_t index) const;
     bool set_element(uint32_t index, const Value& value);
