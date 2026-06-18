@@ -1095,10 +1095,43 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     }
     
     Value super_constructor_prop = get_property("__super_constructor__");
-    
+    // Use has_own_property to avoid inheriting __default_ctor__ from parent class
+    bool is_default_ctor = has_own_property("__default_ctor__");
+
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
     ctx.set_new_target(Value(static_cast<Object*>(this)));
+
+    // A synthesized default derived constructor is spec'd as `constructor(...args) { super(...args); }`, so auto-super must run before the constructor body (which here only contains field initializers) -- otherwise a super-chain override (e.g. a base constructor returning `new Proxy(this, ...)`) takes effect too late and fields get written to the object that's about to be discarded.
+    if (is_default_ctor && super_constructor_prop.is_function()) {
+        Function* super_constructor = super_constructor_prop.as_function();
+        Value super_result;
+        if (super_constructor->is_native()) {
+            // Native built-ins (Boolean, Number, String, etc.) need construct semantics
+            super_result = super_constructor->construct(ctx, args);
+        } else {
+            super_result = super_constructor->call(ctx, args, this_value);
+        }
+        ctx.set_super_called(true);
+        if (ctx.has_exception()) {
+            ctx.set_in_constructor_call(false);
+            ctx.set_new_target(Value());
+            return Value();
+        }
+        if (super_result.is_object() || super_result.is_function()) {
+            this_value = super_result;
+        }
+        // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
+        Value pm_slot_val = get_property("__pm_brand_slot__");
+        if (pm_slot_val.is_string()) {
+            std::string pm_slot = pm_slot_val.to_string();
+            Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
+            if (pm_this) pm_this->add_private_field(pm_slot);
+        }
+        // ctx.is_in_constructor_call() is a single shared flag, not a stack, and the nested super construct() call above clears it on its way out -- restore it before running the field-initializer body below.
+        ctx.set_in_constructor_call(true);
+    }
+
     Value result = call(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
     ctx.set_in_constructor_call(false);
@@ -1107,40 +1140,10 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Propagate any exception from the constructor body before checking super state
     if (ctx.has_exception()) return Value();
 
-    // If super wasn't called and this is a derived class
+    // Explicit constructor that never called super() -- ReferenceError
     if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        // Use has_own_property to avoid inheriting __default_ctor__ from parent class
-        bool is_default_ctor = has_own_property("__default_ctor__");
-        if (is_default_ctor) {
-            // Default synthesized constructor: auto-call super(...args) with [[Construct]]
-            Function* super_constructor = super_constructor_prop.as_function();
-            ctx.set_in_constructor_call(true);
-            ctx.set_new_target(Value(static_cast<Object*>(this)));
-            Value super_result;
-            if (super_constructor->is_native()) {
-                // Native built-ins (Boolean, Number, String, etc.) need construct semantics
-                super_result = super_constructor->construct(ctx, args);
-            } else {
-                super_result = super_constructor->call(ctx, args, this_value);
-            }
-            ctx.set_in_constructor_call(false);
-            ctx.set_new_target(Value());
-            if (!super_result.is_undefined()) result = super_result;
-            // InitializeInstanceElements after auto-super: add per-instance private method brand slot.
-            {
-                Value pm_slot_val = get_property("__pm_brand_slot__");
-                if (pm_slot_val.is_string()) {
-                    std::string pm_slot = pm_slot_val.to_string();
-                    Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
-                    if (!pm_this) pm_this = ctx.get_this_binding();
-                    if (pm_this) pm_this->add_private_field(pm_slot);
-                }
-            }
-        } else {
-            // Explicit constructor that didn't call super() -- ReferenceError
-            ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
-            return Value();
-        }
+        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+        return Value();
     }
 
     // In derived class constructors, returning a primitive throws TypeError
@@ -1150,9 +1153,12 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    // If constructor explicitly returned an object or function, use that
-    if ((result.is_object() || result.is_function()) && result.as_object() != new_object.get()) {
-        Object* ret_obj = result.as_object();
+    // An explicit return from the constructor body wins; otherwise fall back to this_value, which the auto-super override above may have replaced.
+    Value final_result = (result.is_object() || result.is_function()) ? result : this_value;
+
+    // If construction resolved to an object or function other than the pre-allocated this, use that
+    if ((final_result.is_object() || final_result.is_function()) && final_result.as_object() != new_object.get()) {
+        Object* ret_obj = final_result.as_object();
         // For derived classes: always set prototype to this class's prototype
         // so `new Derived() instanceof Derived` works even when super is a built-in
         if (is_derived && constructor_prototype.is_object()) {
@@ -1162,7 +1168,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         }
         // A base-class constructor may have captured a raw pointer to new_object before returning this override (e.g. `new Proxy(this, ...)`), so release rather than let the unique_ptr delete it out from under them.
         new_object.release();
-        return result;
+        return final_result;
     } else {
         return Value(new_object.release());
     }
