@@ -122,10 +122,12 @@ BUILD_DIR = build
 OBJ_DIR = $(BUILD_DIR)/obj
 BIN_DIR = $(BUILD_DIR)/bin
 
+rwildcard = $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2)$(filter $(subst *,%,$2),$d))
+
 # Core source files - recursively find all in subdirectories
-CORE_SOURCES = $(wildcard $(CORE_SRC)/*/*.cpp) $(wildcard $(CORE_SRC)/*/*/*.cpp)
-LEXER_SOURCES = $(wildcard $(LEXER_SRC)/*.cpp)
-PARSER_SOURCES = $(wildcard $(PARSER_SRC)/*.cpp)
+CORE_SOURCES = $(call rwildcard,$(CORE_SRC)/,*.cpp)
+LEXER_SOURCES = $(call rwildcard,$(LEXER_SRC)/,*.cpp)
+PARSER_SOURCES = $(call rwildcard,$(PARSER_SRC)/,*.cpp)
 
 # Object files
 CORE_OBJECTS = $(CORE_SOURCES:$(CORE_SRC)/%.cpp=$(OBJ_DIR)/core/%.o)
