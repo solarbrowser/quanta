@@ -643,7 +643,7 @@ void Proxy::parse_handler() {
                         if (ctx) ctx->throw_type_error("'ownKeys' trap must return a list of strings and symbols");
                         throw std::runtime_error("TypeError: 'ownKeys' trap must return a list of strings and symbols");
                     }
-                    keys.push_back(elem.to_string());
+                    keys.push_back(elem.is_symbol() ? elem.as_symbol()->to_property_key() : elem.to_string());
                 }
             }
             return keys;

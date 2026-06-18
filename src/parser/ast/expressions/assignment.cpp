@@ -966,10 +966,13 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                             if (ak == k) { already_assigned = true; break; }
                         }
                         if (already_assigned) continue;
-                        PropertyDescriptor kdesc = proxy->get_own_property_descriptor_trap(Value(k));
+                        // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
+                        Symbol* sym = Symbol::find_by_property_key(k);
+                        Value key_value = sym ? Value(sym) : Value(k);
+                        PropertyDescriptor kdesc = proxy->get_own_property_descriptor_trap(key_value);
                         if (!kdesc.is_data_descriptor() && !kdesc.is_accessor_descriptor()) continue;
                         if (!kdesc.is_enumerable()) continue;
-                        Value val = proxy->get_trap(Value(k));
+                        Value val = proxy->get_trap(key_value);
                         if (ctx.has_exception()) return;
                         PropertyDescriptor rdesc(val,
                             static_cast<PropertyAttributes>(PropertyAttributes::Writable |
@@ -2295,20 +2298,37 @@ bool DestructuringAssignment::handle_complex_object_destructuring(Object* obj, C
 
         if (prop_name.length() >= 3 && prop_name.substr(0, 3) == "...") {
             std::string rest_name = prop_name.substr(3);
-            
+
             auto rest_obj = std::make_unique<Object>(Object::ObjectType::Ordinary);
-            
-            auto keys = obj->get_own_property_keys();
-            for (const auto& key : keys) {
-                if (extracted_props.find(key) == extracted_props.end()) {
-                    // Only copy enumerable own properties (spec: CopyDataProperties)
-                    PropertyDescriptor pd = obj->get_property_descriptor(key);
-                    if (pd.is_data_descriptor() && !pd.is_enumerable()) continue;
-                    Value prop_value = obj->get_property(key);
+
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                // get_own_property_keys()/get_property_descriptor() don't know about Proxy traps, so go through ownKeys/getOwnPropertyDescriptor/get directly per spec (CopyDataProperties).
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                for (const auto& key : proxy->own_keys_trap()) {
+                    if (extracted_props.find(key) != extracted_props.end()) continue;
+                    // own_keys_trap() returns symbol keys as their "@@sym:" string encoding; decode back to the real Symbol so traps receive the original key, not its string form.
+                    Symbol* sym = Symbol::find_by_property_key(key);
+                    Value key_value = sym ? Value(sym) : Value(key);
+                    PropertyDescriptor pd = proxy->get_own_property_descriptor_trap(key_value);
+                    if (!pd.is_data_descriptor() && !pd.is_accessor_descriptor()) continue;
+                    if (!pd.is_enumerable()) continue;
+                    Value prop_value = proxy->get_trap(key_value);
+                    if (ctx.has_exception()) return false;
                     rest_obj->set_property(key, prop_value);
                 }
+            } else {
+                auto keys = obj->get_own_property_keys();
+                for (const auto& key : keys) {
+                    if (extracted_props.find(key) == extracted_props.end()) {
+                        // Only copy enumerable own properties (spec: CopyDataProperties)
+                        PropertyDescriptor pd = obj->get_property_descriptor(key);
+                        if (pd.is_data_descriptor() && !pd.is_enumerable()) continue;
+                        Value prop_value = obj->get_property(key);
+                        rest_obj->set_property(key, prop_value);
+                    }
+                }
             }
-            
+
             if (!ctx.has_binding(rest_name)) {
                 ctx.create_binding(rest_name, Value(rest_obj.release()), true);
             } else {

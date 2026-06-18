@@ -669,17 +669,11 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value();
         }
         
-        std::string prop_name;
-        if (!computed_ && property_->get_type() == ASTNode::Type::IDENTIFIER) {
-            Identifier* prop = static_cast<Identifier*>(property_.get());
-            prop_name = prop->get_name();
-        }
-        
-        if (!computed_ && prop_name == "length") {
+        if (prop_name == "length") {
             return Value(static_cast<double>(utf16_length(str_value)));
         }
 
-        if (!computed_ && prop_name == "charAt") {
+        if (prop_name == "charAt") {
             auto char_at_fn = ObjectFactory::create_native_function("charAt",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
@@ -693,7 +687,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value(char_at_fn.release());
         }
         
-        if (!computed_ && prop_name == "indexOf") {
+        if (prop_name == "indexOf") {
             auto index_of_fn = ObjectFactory::create_native_function("indexOf",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
@@ -815,7 +809,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value(slice_fn.release());
         }
         
-        if (!computed_ && prop_name == "split") {
+        if (prop_name == "split") {
             auto split_fn = ObjectFactory::create_native_function("split",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
@@ -870,7 +864,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value(replace_fn.release());
         }
         
-        if (!computed_ && prop_name == "startsWith") {
+        if (prop_name == "startsWith") {
             auto starts_with_fn = ObjectFactory::create_native_function("startsWith",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
@@ -906,7 +900,7 @@ Value MemberExpression::evaluate(Context& ctx) {
             return Value(starts_with_fn.release());
         }
         
-        if (!computed_ && prop_name == "endsWith") {
+        if (prop_name == "endsWith") {
             auto ends_with_fn = ObjectFactory::create_native_function("endsWith",
                 [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)ctx;
@@ -1262,7 +1256,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(index_of_fn.release());
             }
             
-            if (!computed_ && prop_name == "split") {
+            if (prop_name == "split") {
                 auto split_fn = ObjectFactory::create_native_function("split",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx;
@@ -1296,7 +1290,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(split_fn.release());
             }
             
-            if (!computed_ && prop_name == "startsWith") {
+            if (prop_name == "startsWith") {
                 auto starts_with_fn = ObjectFactory::create_native_function("startsWith",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx; (void)args;
@@ -1305,7 +1299,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                 return Value(starts_with_fn.release());
             }
             
-            if (!computed_ && prop_name == "endsWith") {
+            if (prop_name == "endsWith") {
                 auto ends_with_fn = ObjectFactory::create_native_function("endsWith",
                     [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)ctx;
