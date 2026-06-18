@@ -672,6 +672,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         Value super_constructor = this->get_property("__super_constructor__");
         if (!super_constructor.is_undefined() && !super_constructor.is_null()) {
             function_context.create_binding("__super__", super_constructor, false);
+            // member.cpp's super lookup needs to know if this is a static method (resolves on the parent constructor itself) or an instance method (resolves on its .prototype).
+            if (this->has_property("__is_static_method__")) {
+                function_context.create_binding("__super_is_static__", Value(true), false);
+            }
         }
     }
     if (this->has_property("__super_is_null__")) {
@@ -1156,6 +1160,8 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         } else if (!ret_obj->get_prototype_raw() && constructor_prototype.is_object()) {
             ret_obj->set_prototype(constructor_prototype.as_object());
         }
+        // A base-class constructor may have captured a raw pointer to new_object before returning this override (e.g. `new Proxy(this, ...)`), so release rather than let the unique_ptr delete it out from under them.
+        new_object.release();
         return result;
     } else {
         return Value(new_object.release());

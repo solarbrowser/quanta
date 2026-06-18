@@ -684,6 +684,8 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     static_method->set_property("__private_class_brand__", Value(constructor_fn.get()));
                     if (instance_brands_raw)
                         static_method->set_property("__private_brands__", Value(instance_brands_raw));
+                    // member.cpp's super lookup needs to know this resolves on the constructor itself, not its .prototype.
+                    static_method->set_property("__is_static_method__", Value(true));
 
                     if (method->get_kind() == MethodDefinition::GETTER || method->get_kind() == MethodDefinition::SETTER) {
                         bool is_getter = method->get_kind() == MethodDefinition::GETTER;
@@ -765,16 +767,37 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     auto method_keys = proto_ptr->get_own_property_keys();
                     for (const auto& mkey : method_keys) {
                         if (mkey == "constructor") continue;
-                        Value mval = proto_ptr->get_property(mkey);
-                        if (mval.is_function()) {
-                            mval.as_function()->set_property("__super_constructor__", Value(super_fn));
-                        }
+                        // get_property/get_own_property invoke the getter for accessor properties, which would spuriously execute "get m() { return super.x(); }" right now and throw.
                         PropertyDescriptor mdesc = proto_ptr->get_property_descriptor(mkey);
-                        if (mdesc.has_getter() && mdesc.get_getter()) {
-                            static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                        if (mdesc.is_accessor_descriptor()) {
+                            if (mdesc.has_getter() && mdesc.get_getter()) {
+                                static_cast<Function*>(mdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                            if (mdesc.has_setter() && mdesc.get_setter()) {
+                                static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                        } else if (mdesc.has_value() && mdesc.get_value().is_function()) {
+                            mdesc.get_value().as_function()->set_property("__super_constructor__", Value(super_fn));
                         }
-                        if (mdesc.has_setter() && mdesc.get_setter()) {
-                            static_cast<Function*>(mdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                    }
+                }
+
+                // Static methods/getters/setters need __super_constructor__ too, or "static get foo() { return super.bar(); }" falls back to this's [[Prototype]] instead of the real binding.
+                {
+                    auto static_method_keys = constructor_fn->get_own_property_keys();
+                    for (const auto& skey : static_method_keys) {
+                        if (skey == "prototype" || skey == "name" || skey == "length" ||
+                            skey == "__super_constructor__") continue;
+                        PropertyDescriptor sdesc = constructor_fn->get_property_descriptor(skey);
+                        if (sdesc.is_accessor_descriptor()) {
+                            if (sdesc.has_getter() && sdesc.get_getter()) {
+                                static_cast<Function*>(sdesc.get_getter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                            if (sdesc.has_setter() && sdesc.get_setter()) {
+                                static_cast<Function*>(sdesc.get_setter())->set_property("__super_constructor__", Value(super_fn));
+                            }
+                        } else if (sdesc.has_value() && sdesc.get_value().is_function()) {
+                            sdesc.get_value().as_function()->set_property("__super_constructor__", Value(super_fn));
                         }
                     }
                 }
@@ -821,9 +844,17 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     auto static_keys = constructor_fn->get_own_property_keys();
     for (const auto& key : static_keys) {
         if (key == "prototype" || key == "name" || key == "length" || key == "__super_constructor__") continue;
-        Value method_val = constructor_fn->get_property(key);
-        if (method_val.is_function()) {
-            mark_class_name_closure(method_val.as_function());
+        // get_property invokes the getter for accessor properties (e.g. "static get foo() { ... }"), which we must not do here.
+        PropertyDescriptor desc = constructor_fn->get_property_descriptor(key);
+        if (desc.is_accessor_descriptor()) {
+            if (desc.has_getter() && desc.get_getter()) {
+                mark_class_name_closure(static_cast<Function*>(desc.get_getter()));
+            }
+            if (desc.has_setter() && desc.get_setter()) {
+                mark_class_name_closure(static_cast<Function*>(desc.get_setter()));
+            }
+        } else if (desc.has_value() && desc.get_value().is_function()) {
+            mark_class_name_closure(desc.get_value().as_function());
         }
     }
 
