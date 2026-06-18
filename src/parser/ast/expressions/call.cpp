@@ -1999,17 +1999,22 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             }
         }
 
+        Object* private_method_owner = nullptr;
         if (!method_name.empty() && method_name[0] == '#') {
             if (!private_brand_check(ctx, obj, method_name)) {
                 ctx.throw_type_error("Cannot read private member " + method_name + " from an object whose class did not declare it");
                 return Value();
             }
-            // A private field holding a function value (e.g. `#fn = () => {}`) is stored under a qualified key (see resolve_private_storage_key); methods are unaffected since they live on the prototype under the bare name.
             std::string qualified = resolve_private_storage_key(method_name, obj);
-            if (obj->has_private_slot(qualified)) method_name = qualified;
+            if (obj->has_private_slot(qualified)) {
+                method_name = qualified;
+            } else {
+                // Private method: lives on the declaring class's own prototype.
+                private_method_owner = resolve_private_accessor_owner(method_name);
+            }
         }
 
-        Value method_value = obj->get_property(method_name);
+        Value method_value = private_method_owner ? private_method_owner->get_property(method_name) : obj->get_property(method_name);
         if (ctx.has_exception()) return Value();
 
         std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);

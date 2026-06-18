@@ -914,6 +914,98 @@ bool BinaryExpression::is_right_associative(Operator op) {
     return op == Operator::ASSIGN || op == Operator::EXPONENT;
 }
 
+// Mirrors MemberExpression::evaluate's super-read resolution. __super__ may be a non-function
+// sentinel for object-literal methods, so is_function() must gate the class-method lookup.
+static Object* resolve_super_lookup_proto(Context& ctx) {
+    Value super_ctor = ctx.get_binding("__super__");
+    if (super_ctor.is_function()) {
+        if (ctx.has_binding("__super_is_static__")) {
+            return super_ctor.as_function();
+        }
+        Value proto_val = super_ctor.as_function()->get_property("prototype");
+        return proto_val.is_object() ? proto_val.as_object() : nullptr;
+    }
+    Value home = ctx.get_binding("__home_object__");
+    if (!home.is_undefined() && !home.is_null()) {
+        Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function()) : home.as_object();
+        return home_obj ? home_obj->get_prototype() : nullptr;
+    }
+    Value this_val = ctx.get_binding("this");
+    if (this_val.is_object_like()) {
+        Object* this_obj = this_val.is_function() ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+        return this_obj ? this_obj->get_prototype() : nullptr;
+    }
+    return nullptr;
+}
+
+// Writes the result of ++/-- on a MemberExpression target. For super.x, the write targets
+// 'this' but the setter lookup must start at the super base.
+static bool write_member_update_result(Context& ctx, MemberExpression* member, const Value& new_value) {
+    bool is_super = member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
+        static_cast<Identifier*>(member->get_object())->get_name() == "super";
+
+    Object* write_obj = nullptr;
+    Object* lookup_obj = nullptr;
+    if (is_super) {
+        Value this_val = ctx.get_binding("this");
+        write_obj = this_val.is_function() ? static_cast<Object*>(this_val.as_function())
+                  : (this_val.is_object() ? this_val.as_object() : nullptr);
+        lookup_obj = resolve_super_lookup_proto(ctx);
+        if (!lookup_obj) {
+            ctx.throw_type_error("Cannot assign to property of null (super property)");
+            return false;
+        }
+    } else {
+        Value obj = member->get_object()->evaluate(ctx);
+        if (ctx.has_exception()) return false;
+        if (!obj.is_object()) {
+            ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
+            return false;
+        }
+        write_obj = obj.as_object();
+    }
+
+    std::string prop_name;
+    if (member->is_computed()) {
+        Value prop_value = member->get_property()->evaluate(ctx);
+        if (ctx.has_exception()) return false;
+        if (prop_value.is_symbol()) {
+            prop_name = prop_value.as_symbol()->to_property_key();
+        } else {
+            prop_name = prop_value.to_string();
+        }
+    } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
+        prop_name = static_cast<Identifier*>(member->get_property())->get_name();
+    } else {
+        ctx.throw_exception(Value(std::string("Invalid property name")));
+        return false;
+    }
+    if (ctx.has_exception()) return false;
+
+    if (is_super) {
+        PropertyDescriptor desc = lookup_obj->get_property_descriptor(prop_name);
+        if (!desc.is_accessor_descriptor() && !lookup_obj->has_own_property(prop_name)) {
+            Object* proto = lookup_obj->get_prototype();
+            while (proto) {
+                PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
+                if (proto_desc.is_accessor_descriptor()) { desc = proto_desc; break; }
+                if (proto_desc.has_value()) break;
+                proto = proto->get_prototype();
+            }
+        }
+        if (desc.is_accessor_descriptor()) {
+            if (desc.has_setter()) {
+                Function* setter_fn = dynamic_cast<Function*>(desc.get_setter());
+                if (setter_fn && write_obj) setter_fn->call(ctx, {new_value}, Value(write_obj));
+            }
+        } else if (write_obj) {
+            write_obj->ordinary_set(prop_name, new_value);
+        }
+    } else if (write_obj) {
+        write_obj->set_property(prop_name, new_value);
+    }
+    return true;
+}
 
 Value UnaryExpression::evaluate(Context& ctx) {
     switch (operator_) {
@@ -1106,33 +1198,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     incremented = Value(numeric.to_number() + 1.0);
                 }
 
-                Value obj = member->get_object()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                if (!obj.is_object()) {
-                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
-                    return Value();
-                }
-
-                std::string prop_name;
-                if (member->is_computed()) {
-                    Value prop_value = member->get_property()->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (prop_value.is_symbol()) {
-                        prop_name = prop_value.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = prop_value.to_string();
-                    }
-                } else {
-                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* id = static_cast<Identifier*>(member->get_property());
-                        prop_name = id->get_name();
-                    } else {
-                        ctx.throw_exception(Value(std::string("Invalid property name")));
-                        return Value();
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                obj.as_object()->set_property(prop_name, incremented);
+                if (!write_member_update_result(ctx, member, incremented)) return Value();
                 return incremented;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
@@ -1189,33 +1255,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     incremented = Value(old_numeric.to_number() + 1.0);
                 }
 
-                Value obj = member->get_object()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                if (!obj.is_object()) {
-                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
-                    return Value();
-                }
-
-                std::string prop_name;
-                if (member->is_computed()) {
-                    Value prop_value = member->get_property()->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (prop_value.is_symbol()) {
-                        prop_name = prop_value.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = prop_value.to_string();
-                    }
-                } else {
-                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* id = static_cast<Identifier*>(member->get_property());
-                        prop_name = id->get_name();
-                    } else {
-                        ctx.throw_exception(Value(std::string("Invalid property name")));
-                        return Value();
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                obj.as_object()->set_property(prop_name, incremented);
+                if (!write_member_update_result(ctx, member, incremented)) return Value();
                 return old_numeric;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
@@ -1272,33 +1312,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     decremented = Value(numeric.to_number() - 1.0);
                 }
 
-                Value obj = member->get_object()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                if (!obj.is_object()) {
-                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
-                    return Value();
-                }
-
-                std::string prop_name;
-                if (member->is_computed()) {
-                    Value prop_value = member->get_property()->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (prop_value.is_symbol()) {
-                        prop_name = prop_value.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = prop_value.to_string();
-                    }
-                } else {
-                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* id = static_cast<Identifier*>(member->get_property());
-                        prop_name = id->get_name();
-                    } else {
-                        ctx.throw_exception(Value(std::string("Invalid property name")));
-                        return Value();
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                obj.as_object()->set_property(prop_name, decremented);
+                if (!write_member_update_result(ctx, member, decremented)) return Value();
                 return decremented;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));
@@ -1355,33 +1369,7 @@ Value UnaryExpression::evaluate(Context& ctx) {
                     decremented = Value(old_numeric.to_number() - 1.0);
                 }
 
-                Value obj = member->get_object()->evaluate(ctx);
-                if (ctx.has_exception()) return Value();
-                if (!obj.is_object()) {
-                    ctx.throw_exception(Value(std::string("Cannot assign to property of non-object")));
-                    return Value();
-                }
-
-                std::string prop_name;
-                if (member->is_computed()) {
-                    Value prop_value = member->get_property()->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (prop_value.is_symbol()) {
-                        prop_name = prop_value.as_symbol()->to_property_key();
-                    } else {
-                        prop_name = prop_value.to_string();
-                    }
-                } else {
-                    if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                        Identifier* id = static_cast<Identifier*>(member->get_property());
-                        prop_name = id->get_name();
-                    } else {
-                        ctx.throw_exception(Value(std::string("Invalid property name")));
-                        return Value();
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                obj.as_object()->set_property(prop_name, decremented);
+                if (!write_member_update_result(ctx, member, decremented)) return Value();
                 return old_numeric;
             } else {
                 ctx.throw_exception(Value(std::string("Invalid left-hand side in assignment")));

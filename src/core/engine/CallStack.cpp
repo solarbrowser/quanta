@@ -40,6 +40,20 @@ std::string resolve_private_storage_key(const std::string& bare_name, Object* ob
     return bare_name;
 }
 
+Object* resolve_private_accessor_owner(const std::string& bare_name) {
+    CallStack& cs = CallStack::instance();
+    for (size_t i = cs.depth(); i > 0; --i) {
+        Function* fn = cs.at(i - 1).function_ptr;
+        if (!fn) continue;
+        Value brands_val = fn->get_property("__private_brands__");
+        if (!brands_val.is_object()) continue;
+        Value name_brand = brands_val.as_object()->get_property(bare_name);
+        if (!name_brand.is_object() && !name_brand.is_function()) continue;
+        return name_brand.is_function() ? static_cast<Object*>(name_brand.as_function()) : name_brand.as_object();
+    }
+    return nullptr;
+}
+
 std::string CallStackFrame::to_string() const {
     std::ostringstream oss;
     oss << "at ";

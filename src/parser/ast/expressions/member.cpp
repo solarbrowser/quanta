@@ -331,21 +331,42 @@ Value MemberExpression::evaluate(Context& ctx) {
                     ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
                     return Value();
                 }
-                // Fields are stored under a qualified key (see resolve_private_storage_key); left untouched for methods/getters/setters, which aren't found directly on the instance.
+                // Fields live under a qualified key; accessors/methods live on the declaring
+                // class's own prototype (not necessarily the closest "#name" in obj's chain).
                 std::string qualified = resolve_private_storage_key(prop_name, obj);
-                if (obj->has_private_slot(qualified)) prop_name = qualified;
-                Object* lookup = obj;
-                while (lookup) {
-                    PropertyDescriptor d = lookup->get_property_descriptor(prop_name);
-                    if (d.is_accessor_descriptor()) {
-                        if (!d.has_getter()) {
-                            ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                if (obj->has_private_slot(qualified)) {
+                    prop_name = qualified;
+                } else {
+                    Object* owner = resolve_private_accessor_owner(prop_name);
+                    if (owner) {
+                        PropertyDescriptor d = owner->get_property_descriptor(prop_name);
+                        if (d.is_accessor_descriptor()) {
+                            if (!d.has_getter()) {
+                                ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                                return Value();
+                            }
+                            Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+                            if (getter_fn) return getter_fn->call(ctx, {}, object_value);
                             return Value();
                         }
-                        break;
+                        // get_property(), not d.get_value(): a data field's value can live in
+                        // overflow storage while descriptors_ still holds a stale pre-write value.
+                        if (d.has_value()) return owner->get_property(prop_name);
                     }
-                    if (d.has_value()) break;
-                    lookup = lookup->get_prototype();
+                    // Fallback: no frame declared this name (e.g. resumed after await/yield).
+                    Object* lookup = obj;
+                    while (lookup) {
+                        PropertyDescriptor d = lookup->get_property_descriptor(prop_name);
+                        if (d.is_accessor_descriptor()) {
+                            if (!d.has_getter()) {
+                                ctx.throw_type_error("'" + prop_name + "' accessor has no getter");
+                                return Value();
+                            }
+                            break;
+                        }
+                        if (d.has_value()) break;
+                        lookup = lookup->get_prototype();
+                    }
                 }
             }
 

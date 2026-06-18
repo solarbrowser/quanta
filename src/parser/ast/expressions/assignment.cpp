@@ -310,8 +310,30 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // For super.x = val, the write always goes to 'this', not to the super prototype.
         // The object_value (super prototype) is only used for setter lookup.
         Value write_target;
+        // GetSuperBase, resolved before the key expression evaluates (its ToPropertyKey can have
+        // side effects). __super__ may be a non-function sentinel for object-literal methods.
+        Object* super_lookup_proto = nullptr;
         if (is_super_assignment) {
             write_target = ctx.get_binding("this");
+            Value super_ctor = ctx.get_binding("__super__");
+            if (super_ctor.is_function()) {
+                if (ctx.has_binding("__super_is_static__")) {
+                    super_lookup_proto = super_ctor.as_function();
+                } else {
+                    Value proto_val = super_ctor.as_function()->get_property("prototype");
+                    if (proto_val.is_object()) super_lookup_proto = proto_val.as_object();
+                }
+            } else {
+                Value home = ctx.get_binding("__home_object__");
+                if (!home.is_undefined() && !home.is_null()) {
+                    Object* home_obj = home.is_function() ? static_cast<Object*>(home.as_function()) : home.as_object();
+                    if (home_obj) super_lookup_proto = home_obj->get_prototype();
+                } else if (write_target.is_object_like()) {
+                    Object* this_obj = write_target.is_function()
+                        ? static_cast<Object*>(write_target.as_function()) : write_target.as_object();
+                    if (this_obj) super_lookup_proto = this_obj->get_prototype();
+                }
+            }
         }
 
         // Evaluate key expression once (before RHS per spec)
@@ -335,14 +357,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 lprop = static_cast<Identifier*>(member->get_property())->get_name();
             }
-            // Spec: GetValue(ref) -> ToObject(base) throws TypeError for null/undefined
-            if (object_value.is_null() || object_value.is_undefined()) {
-                ctx.throw_type_error("Cannot read property of null or undefined");
-                return Value();
+            // Spec: GetValue(ref) -> ToObject(base) throws TypeError for null/undefined.
+            // For super, the read side uses the resolved super base, not 'this'.
+            Object* lobj;
+            if (is_super_assignment) {
+                if (!super_lookup_proto) {
+                    ctx.throw_type_error("Cannot read properties of null (reading super property)");
+                    return Value();
+                }
+                lobj = super_lookup_proto;
+            } else {
+                if (object_value.is_null() || object_value.is_undefined()) {
+                    ctx.throw_type_error("Cannot read property of null or undefined");
+                    return Value();
+                }
+                lobj = object_value.is_object() ? object_value.as_object()
+                     : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
+                     : nullptr;
             }
-            Object* lobj = object_value.is_object() ? object_value.as_object()
-                         : object_value.is_function() ? static_cast<Object*>(object_value.as_function())
-                         : nullptr;
             // Fields are stored under a qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live unqualified on the prototype.
             if (lobj && !lprop.empty() && lprop[0] == '#') {
                 std::string qualified = resolve_private_storage_key(lprop, lobj);
@@ -357,8 +389,13 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             if (skip) return cur;
             right_value = right_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            if (lobj) {
-                bool ok = lobj->ordinary_set(lprop, right_value);
+            // The write target for super.x (op)= val is always 'this', never the super base.
+            Object* wobj = is_super_assignment
+                ? (write_target.is_function() ? static_cast<Object*>(write_target.as_function())
+                                                : (write_target.is_object() ? write_target.as_object() : nullptr))
+                : lobj;
+            if (wobj) {
+                bool ok = wobj->ordinary_set(lprop, right_value);
                 if (!ok && ctx.is_strict_mode()) {
                     ctx.throw_type_error("Cannot assign to read only property '" + lprop + "'");
                     return Value();
@@ -370,7 +407,12 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // Spec: for compound operators GetValue(lref) happens before RHS eval.
         // This means CheckObjectCoercible(base) and ToPropertyKey(key) must happen first.
         if (operator_ != Operator::ASSIGN) {
-            if (object_value.is_null() || object_value.is_undefined()) {
+            if (is_super_assignment) {
+                if (!super_lookup_proto) {
+                    ctx.throw_type_error("Cannot read properties of null (reading super property)");
+                    return Value();
+                }
+            } else if (object_value.is_null() || object_value.is_undefined()) {
                 ctx.throw_type_error(std::string("Cannot read properties of ") +
                     (object_value.is_null() ? "null" : "undefined"));
                 return Value();
@@ -459,14 +501,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             obj = effective_object.as_object();
         } else if (effective_object.is_function()) {
             obj = effective_object.as_function();
-        } else if (effective_object.is_string() || effective_object.is_number() || effective_object.is_boolean()) {
+        } else if (effective_object.is_string() || effective_object.is_number() || effective_object.is_boolean() || effective_object.is_symbol()) {
             std::string str_val = effective_object.is_string() ? effective_object.to_string() : "";
             if (effective_object.is_string() && str_val.length() >= 7 && str_val.substr(0, 7) == "OBJECT:") {
                 is_string_object = true;
             } else {
                 // ES5: Check for accessor setter on prototype before failing
                 std::string ctor_name = effective_object.is_string() ? "String" :
-                    (effective_object.is_number() ? "Number" : "Boolean");
+                    (effective_object.is_number() ? "Number" :
+                    (effective_object.is_boolean() ? "Boolean" : "Symbol"));
                 std::string prop_name;
                 if (member->is_computed()) {
                     Value pv = member->get_property()->evaluate(ctx);
@@ -483,15 +526,25 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     Value ctor = ctx.get_binding(ctor_name);
                     if (ctor.is_function()) {
                         Value proto = ctor.as_function()->get_property("prototype");
-                        if (proto.is_object()) {
-                            PropertyDescriptor desc = proto.as_object()->get_property_descriptor(prop_name);
-                            if (desc.is_accessor_descriptor() && desc.has_setter()) {
-                                Function* setter = dynamic_cast<Function*>(desc.get_setter());
-                                if (setter) {
-                                    setter->call(ctx, {right_value}, object_value);
-                                    return right_value;
-                                }
+                        // Walk the whole prototype chain (not just XPrototype) for an inherited
+                        // setter/Proxy trap, passing the original primitive as receiver.
+                        Object* level = proto.is_object() ? proto.as_object() : nullptr;
+                        while (level) {
+                            if (level->get_type() == Object::ObjectType::Proxy) {
+                                static_cast<Proxy*>(level)->set_trap(Value(prop_name), right_value, object_value);
+                                if (ctx.has_exception()) return Value();
+                                return right_value;
                             }
+                            PropertyDescriptor desc = level->get_property_descriptor(prop_name);
+                            if (desc.is_accessor_descriptor()) {
+                                if (desc.has_setter()) {
+                                    Function* setter = dynamic_cast<Function*>(desc.get_setter());
+                                    if (setter) setter->call(ctx, {right_value}, object_value);
+                                }
+                                return right_value;
+                            }
+                            if (desc.has_value()) break; // non-writable (or shadowed) data property: stop, fall through to no-op/throw below
+                            level = level->get_prototype();
                         }
                     }
                 }
@@ -572,6 +625,9 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             }
         }
 
+        // For a private accessor/method, the descriptor lives on the declaring class's own
+        // prototype, not necessarily the closest "#name" in obj's actual chain.
+        Object* private_owner = nullptr;
         if (obj && !is_string_object && !prop_name.empty() && prop_name[0] == '#') {
             if (!private_brand_check(ctx, obj, prop_name, false)) {
                 ctx.throw_type_error("Cannot write private member " + prop_name + " to an object whose class did not declare it");
@@ -599,40 +655,21 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     }
                 }
             } else {
-                bool found_on_proto = false;
-                Object* proto = obj->get_prototype();
-                while (proto) {
-                    PropertyDescriptor pd = proto->get_property_descriptor(prop_name);
-                    if (pd.has_value()) {
-                        found_on_proto = true;
-                        // It's a data property on prototype -- could be a private method
-                        if (!pd.is_accessor_descriptor() && pd.get_value().is_function()) {
-                            ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
-                            return Value();
-                        }
-                        break;
-                    }
-                    if (pd.is_accessor_descriptor()) {
-                        found_on_proto = true;
-                        if (!pd.has_setter()) {
-                            ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
-                            return Value();
-                        }
-                        break;
-                    }
-                    proto = proto->get_prototype();
-                }
-                // Private instance field not yet initialized on this object
+                private_owner = resolve_private_accessor_owner(prop_name);
+                PropertyDescriptor pd = private_owner ? private_owner->get_property_descriptor(prop_name) : PropertyDescriptor();
+                bool found_on_proto = pd.has_value() || pd.is_accessor_descriptor();
                 if (!found_on_proto) {
-                    ctx.throw_type_error("Cannot set private field " + prop_name + " on an object that has not been initialized");
-                    return Value();
+                    // Fallback: no frame declared this name (e.g. resumed after await/yield).
+                    private_owner = nullptr;
+                    Object* proto = obj->get_prototype();
+                    while (proto) {
+                        pd = proto->get_property_descriptor(prop_name);
+                        if (pd.has_value() || pd.is_accessor_descriptor()) { found_on_proto = true; private_owner = proto; break; }
+                        proto = proto->get_prototype();
+                    }
                 }
-            }
-            if (operator_ != Operator::ASSIGN && !obj->has_private_slot(prop_name)) {
-                Object* proto = obj->get_prototype();
-                while (proto) {
-                    PropertyDescriptor pd = proto->get_property_descriptor(prop_name);
-                    if (pd.has_value() && !pd.is_accessor_descriptor()) {
+                if (found_on_proto) {
+                    if (!pd.is_accessor_descriptor() && pd.get_value().is_function()) {
                         ctx.throw_type_error("'" + prop_name + "' is a private method and cannot be assigned to");
                         return Value();
                     }
@@ -640,19 +677,24 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         ctx.throw_type_error("'" + prop_name + "' was defined without a setter");
                         return Value();
                     }
-                    if (pd.has_value() || pd.is_accessor_descriptor()) break;
-                    proto = proto->get_prototype();
+                } else {
+                    // Private instance field not yet initialized on this object
+                    ctx.throw_type_error("Cannot set private field " + prop_name + " on an object that has not been initialized");
+                    return Value();
                 }
             }
         }
 
-        if (obj && !is_string_object) {
+        // Descriptor lookup starts at the super base / private_owner, but the write target is always 'this'/obj.
+        Object* read_base = is_super_assignment ? super_lookup_proto : (private_owner ? private_owner : obj);
+
+        if (read_base && !is_string_object) {
             // Check own descriptor first, then prototype chain for setter
-            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            PropertyDescriptor desc = read_base->get_property_descriptor(prop_name);
             bool found_inherited = false;
-            if (!desc.is_accessor_descriptor() && !obj->has_own_property(prop_name)) {
+            if (!desc.is_accessor_descriptor() && !read_base->has_own_property(prop_name)) {
                 // Walk prototype chain for accessor or non-writable data descriptor
-                Object* proto = obj->get_prototype();
+                Object* proto = read_base->get_prototype();
                 while (proto) {
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
                     if (proto_desc.is_accessor_descriptor()) {
@@ -785,7 +827,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         }
                     }
                 } else {
-                    Value current_value = obj->get_property(prop_name);
+                    Value current_value = read_base ? read_base->get_property(prop_name) : Value();
                     if (ctx.has_exception()) return Value();
                     // String concatenation or numeric addition
                     Value computed;
@@ -814,7 +856,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
             case Operator::RIGHT_SHIFT_ASSIGN:
             case Operator::UNSIGNED_RIGHT_SHIFT_ASSIGN: {
                 if (!obj) { ctx.throw_type_error("Cannot set property of null"); return Value(); }
-                Value cur = obj->get_property(prop_name);
+                Value cur = read_base ? read_base->get_property(prop_name) : Value();
                 if (ctx.has_exception()) return Value();
                 double l = cur.to_number();
                 double r = right_value.to_number();
