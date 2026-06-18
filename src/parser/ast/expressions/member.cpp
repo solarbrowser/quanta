@@ -140,10 +140,12 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                     }
                 }
                 if (!require_exists) return true;
-                bool found = obj->has_private_slot(prop_name);
+                // Fields are stored under the qualified key (see resolve_private_storage_key); fall back to the bare key for methods/getters/setters, which live on the prototype.
+                std::string qualified = resolve_private_storage_key(prop_name, obj);
+                bool found = obj->has_private_slot(qualified) || obj->has_private_slot(prop_name);
                 if (!found) {
                     Object* p = obj->get_prototype();
-                    while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+                    while (p && !found) { if (p->has_private_slot(qualified) || p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
                 }
                 return found;
             }
@@ -156,18 +158,21 @@ bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name
                 : brand_val.as_object();
             if (!do_brand_check(obj, expected)) return false;
             if (!require_exists) return true;
-            bool found = obj->has_private_slot(prop_name);
+            std::string qualified = resolve_private_storage_key(prop_name);
+            bool found = obj->has_private_slot(qualified) || obj->has_private_slot(prop_name);
             if (!found) {
                 Object* p = obj->get_prototype();
-                while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+                while (p && !found) { if (p->has_private_slot(qualified) || p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
             }
             return found;
         }
     }
-    bool found = obj->has_private_slot(prop_name);
+    // No frame declares this name -- e.g. resumed after an await/yield. Fall back to the object's own qualified slot, if any (see resolve_private_storage_key).
+    std::string qualified = resolve_private_storage_key(prop_name, obj);
+    bool found = obj->has_private_slot(qualified) || obj->has_private_slot(prop_name);
     if (!found) {
         Object* p = obj->get_prototype();
-        while (p && !found) { if (p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
+        while (p && !found) { if (p->has_private_slot(qualified) || p->has_private_slot(prop_name)) found = true; p = p->get_prototype(); }
     }
     return found;
 }
@@ -326,6 +331,9 @@ Value MemberExpression::evaluate(Context& ctx) {
                     ctx.throw_type_error("Cannot read private member " + prop_name + " from an object whose class did not declare it");
                     return Value();
                 }
+                // Fields are stored under a qualified key (see resolve_private_storage_key); left untouched for methods/getters/setters, which aren't found directly on the instance.
+                std::string qualified = resolve_private_storage_key(prop_name, obj);
+                if (obj->has_private_slot(qualified)) prop_name = qualified;
                 Object* lookup = obj;
                 while (lookup) {
                     PropertyDescriptor d = lookup->get_property_descriptor(prop_name);

@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/engine/CallStack.h"
 #include "quanta/lexer/Lexer.h"
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
@@ -1188,7 +1189,8 @@ void register_global_builtins(Context& ctx) {
             Object* obj = args[0].as_object();
             std::string name = args[1].to_string();
             Value val = args.size() >= 3 ? args[2] : Value();
-            obj->add_private_field(name, val);
+            // Qualify by declaring class so a base and derived class's same-named field don't collide into one slot.
+            obj->add_private_field(resolve_private_storage_key(name, obj), val);
             return Value();
         }, 2);
     ctx.get_global_object()->set_property("__pfadd__", Value(pfadd_fn.release()));

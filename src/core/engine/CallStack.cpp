@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/CallStack.h"
+#include "quanta/core/runtime/Object.h"
 #include "quanta/parser/AST.h"
 #include <sstream>
 #include <algorithm>
@@ -12,6 +13,32 @@
 namespace Quanta {
 
 thread_local CallStack* CallStack::instance_ = nullptr;
+
+std::string resolve_private_storage_key(const std::string& bare_name, Object* obj) {
+    CallStack& cs = CallStack::instance();
+    for (size_t i = cs.depth(); i > 0; --i) {
+        Function* fn = cs.at(i - 1).function_ptr;
+        if (!fn) continue;
+        Value brands_val = fn->get_property("__private_brands__");
+        if (!brands_val.is_object()) continue;
+        Value name_brand = brands_val.as_object()->get_property(bare_name);
+        if (!name_brand.is_object() && !name_brand.is_function()) continue;
+        Object* expected = name_brand.is_function()
+            ? static_cast<Object*>(name_brand.as_function())
+            : name_brand.as_object();
+        return bare_name + "@" + std::to_string(reinterpret_cast<uintptr_t>(expected));
+    }
+    // No frame declares this name -- typical after resuming an async function or generator past an await/yield, where the continuation doesn't re-enter through Function::call. Fall back to whatever qualified slot already exists on the object.
+    if (obj) {
+        std::string prefix = bare_name + "@";
+        for (const auto& key : obj->get_own_property_keys()) {
+            if (key.size() > prefix.size() && key.compare(0, prefix.size(), prefix) == 0) {
+                return key;
+            }
+        }
+    }
+    return bare_name;
+}
 
 std::string CallStackFrame::to_string() const {
     std::ostringstream oss;
