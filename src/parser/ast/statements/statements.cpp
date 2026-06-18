@@ -14,6 +14,7 @@
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "../ast_internal.h"
+#include "quanta/core/engine/CallStack.h"
 #include <algorithm>
 #include <sstream>
 #include <iostream>
@@ -1790,8 +1791,19 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         Identifier* prop_id = static_cast<Identifier*>(member->get_property());
                                         prop_key = prop_id->get_name();
                                     }
-                                    if (obj_val.is_object()) obj_val.as_object()->ordinary_set(prop_key, value);
-                                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->ordinary_set(prop_key, value);
+                                    Object* target_obj = obj_val.is_object() ? obj_val.as_object()
+                                                        : obj_val.is_function() ? static_cast<Object*>(obj_val.as_function())
+                                                        : nullptr;
+                                    if (target_obj && !prop_key.empty() && prop_key[0] == '#') {
+                                        if (!private_brand_check(*loop_ctx, target_obj, prop_key, false)) {
+                                            loop_ctx->throw_type_error("Cannot write private member " + prop_key + " to an object whose class did not declare it");
+                                            close_iterator();
+                                            return Value();
+                                        }
+                                        std::string qualified = resolve_private_storage_key(prop_key, target_obj);
+                                        if (target_obj->has_private_slot(qualified)) prop_key = qualified;
+                                    }
+                                    if (target_obj) target_obj->ordinary_set(prop_key, value);
                                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                                            left_->get_type() == Type::OBJECT_LITERAL) {
                                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), value);
@@ -1992,8 +2004,18 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         Identifier* prop_id = static_cast<Identifier*>(member->get_property());
                         prop_key = prop_id->get_name();
                     }
-                    if (obj_val.is_object()) obj_val.as_object()->ordinary_set(prop_key, element);
-                    else if (obj_val.is_function()) static_cast<Object*>(obj_val.as_function())->ordinary_set(prop_key, element);
+                    Object* target_obj = obj_val.is_object() ? obj_val.as_object()
+                                        : obj_val.is_function() ? static_cast<Object*>(obj_val.as_function())
+                                        : nullptr;
+                    if (target_obj && !prop_key.empty() && prop_key[0] == '#') {
+                        if (!private_brand_check(*loop_ctx, target_obj, prop_key, false)) {
+                            loop_ctx->throw_type_error("Cannot write private member " + prop_key + " to an object whose class did not declare it");
+                            return Value();
+                        }
+                        std::string qualified = resolve_private_storage_key(prop_key, target_obj);
+                        if (target_obj->has_private_slot(qualified)) prop_key = qualified;
+                    }
+                    if (target_obj) target_obj->ordinary_set(prop_key, element);
                 } else if (left_->get_type() == Type::ARRAY_LITERAL ||
                            left_->get_type() == Type::OBJECT_LITERAL) {
                     AssignmentExpression::destructuring_assign(*loop_ctx, left_.get(), element);
