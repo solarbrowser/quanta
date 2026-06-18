@@ -70,6 +70,7 @@ public:
     void revoke();
     bool is_revoked() const { return target_ == nullptr; }
     Object* get_proxy_target() const { return target_; }
+    Object* get_proxy_handler() const { return handler_; }
 
     Value get_property(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;

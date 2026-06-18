@@ -6,6 +6,7 @@
 
 #include "quanta/core/gc/GC.h"
 #include "quanta/core/engine/Context.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include <iostream>
 #include <algorithm>
 #include <cstring>
@@ -386,6 +387,13 @@ void GarbageCollector::mark_from_object(Object* obj) {
     if (!obj) return;
 
     mark_object(obj);
+
+    // Proxy's target/handler are plain C++ members invisible to get_internal_property_keys() below, so mark them explicitly or a live Proxy can outlive them.
+    if (obj->get_type() == Object::ObjectType::Proxy) {
+        Proxy* proxy = static_cast<Proxy*>(obj);
+        mark_object(proxy->get_proxy_target());
+        mark_object(proxy->get_proxy_handler());
+    }
 
     std::vector<std::string> keys = obj->get_internal_property_keys();
     for (const std::string& key : keys) {
@@ -791,12 +799,19 @@ void GarbageCollector::mark_objects_ultra_fast() {
 
 void GarbageCollector::mark_object_ultra_fast(Object* obj) {
     if (!obj) return;
-    
+
     auto* managed = find_managed_object_ultra_fast(obj);
     if (managed && !managed->is_marked) {
         managed->is_marked = true;
         managed->access_count += 2;
-        
+
+        // See mark_from_object for why Proxy's target/handler need explicit marking.
+        if (obj->get_type() == Object::ObjectType::Proxy) {
+            Proxy* proxy = static_cast<Proxy*>(obj);
+            mark_object_ultra_fast(proxy->get_proxy_target());
+            mark_object_ultra_fast(proxy->get_proxy_handler());
+        }
+
         std::vector<std::string> keys = obj->get_internal_property_keys();
         for (const std::string& key : keys) {
             Value prop = obj->get_property(key);
