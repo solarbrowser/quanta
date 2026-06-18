@@ -490,8 +490,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // For super.x = val: write to 'this', not to super's prototype
         Value effective_object = is_super_assignment ? write_target : object_value;
 
-        // PutValue step 5a: ToObject(base) throws TypeError for null/undefined (always, not just strict)
-        if (effective_object.is_null() || effective_object.is_undefined()) {
+        // PutValue step 5a: ToObject(V.[[Base]]) throws TypeError for null/undefined. For super,
+        // [[Base]] is the super base (super_lookup_proto), not 'this' -- 'this' can be perfectly
+        // valid while the super base is null (e.g. Object.setPrototypeOf(HomeObject, null)).
+        if (is_super_assignment) {
+            if (!super_lookup_proto) {
+                ctx.throw_type_error("Cannot set properties of null (super property)");
+                return Value();
+            }
+        } else if (effective_object.is_null() || effective_object.is_undefined()) {
             ctx.throw_type_error(std::string("Cannot set properties of ") +
                 (effective_object.is_null() ? "null" : "undefined"));
             return Value();
