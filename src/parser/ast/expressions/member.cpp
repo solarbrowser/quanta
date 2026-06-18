@@ -187,9 +187,14 @@ Value MemberExpression::evaluate(Context& ctx) {
         Object* lookup_proto = nullptr;
         Value super_ctor = ctx.get_binding("__super__");
         if (super_ctor.is_function()) {
-            // Class method: super is the parent class, lookup on its prototype
-            Value proto_val = super_ctor.as_function()->get_property("prototype");
-            if (proto_val.is_object()) lookup_proto = proto_val.as_object();
+            if (ctx.has_binding("__super_is_static__")) {
+                // Static method: super.x resolves on the parent constructor itself.
+                lookup_proto = super_ctor.as_function();
+            } else {
+                // Instance method: super is the parent class, lookup on its prototype.
+                Value proto_val = super_ctor.as_function()->get_property("prototype");
+                if (proto_val.is_object()) lookup_proto = proto_val.as_object();
+            }
         } else {
             // Object literal method: super = Object.getPrototypeOf([[HomeObject]])
             // Use __home_object__ if set, otherwise fall back to current 'this'
