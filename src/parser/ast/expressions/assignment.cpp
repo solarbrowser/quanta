@@ -216,7 +216,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                         return Value();
                     }
                 } else {
-                    bool success = ctx.set_binding(name, right_value);
+                    // Write to the captured ref_env directly (not a fresh ctx.set_binding chain walk), so a closer same-named binding the RHS introduced (e.g. via eval) doesn't hijack a write meant for the originally resolved reference.
+                    bool success = ref_env->set_binding(name, right_value);
                     if (!success) {
                         if (ctx.is_strict_mode() || ctx.is_strict_const(name)) {
                             ctx.throw_type_error("Assignment to constant variable '" + name + "'");
