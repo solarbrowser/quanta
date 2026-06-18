@@ -492,12 +492,15 @@ std::unique_ptr<ASTNode> FunctionDeclaration::clone() const {
         );
     }
 
-    return std::make_unique<FunctionDeclaration>(
+    auto cloned = std::make_unique<FunctionDeclaration>(
         std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
         start_, end_, is_async_, is_generator_
     );
+    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
+    cloned->set_source_text(source_text_);
+    return cloned;
 }
 
 
@@ -1197,20 +1200,24 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
         cloned_superclass = superclass_->clone();
     }
 
+    std::unique_ptr<ClassDeclaration> cloned;
     if (has_superclass()) {
-        return std::make_unique<ClassDeclaration>(
+        cloned = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
             std::move(cloned_superclass),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
             start_, end_
         );
     } else {
-        return std::make_unique<ClassDeclaration>(
+        cloned = std::make_unique<ClassDeclaration>(
             std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
             start_, end_
         );
     }
+    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
+    cloned->set_source_text(source_text_);
+    return cloned;
 }
 
 
@@ -1435,12 +1442,15 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
         cloned_id = std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release()));
     }
 
-    return std::make_unique<FunctionExpression>(
+    auto cloned = std::make_unique<FunctionExpression>(
         std::move(cloned_id),
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
         start_, end_, is_generator_, is_async_
     );
+    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
+    cloned->set_source_text(source_text_);
+    return cloned;
 }
 
 
@@ -1634,12 +1644,15 @@ std::unique_ptr<ASTNode> ArrowFunctionExpression::clone() const {
         );
     }
 
-    return std::make_unique<ArrowFunctionExpression>(
+    auto cloned = std::make_unique<ArrowFunctionExpression>(
         std::move(cloned_params),
         body_->clone(),
         is_async_,
         start_, end_
     );
+    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
+    cloned->set_source_text(source_text_);
+    return cloned;
 }
 
 

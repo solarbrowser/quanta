@@ -114,6 +114,10 @@ public:
 // Qualifies a bare private name (e.g. "#x") with its declaring class's brand (e.g. "#x@1234") so a base and derived class's same-named private fields don't collide into one storage slot. Falls back to scanning obj's own slots, then to the bare name, if the call stack has no frame declaring it (e.g. resumed after an await/yield).
 std::string resolve_private_storage_key(const std::string& bare_name, Object* obj = nullptr);
 
+// Like resolve_private_storage_key, but returns the declaring class's prototype directly --
+// for private accessors/methods, which live on that exact prototype, not on obj's own slots.
+Object* resolve_private_accessor_owner(const std::string& bare_name);
+
 }
 
 #endif
