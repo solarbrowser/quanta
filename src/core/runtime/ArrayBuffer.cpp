@@ -160,15 +160,21 @@ bool ArrayBuffer::resize(size_t new_byte_length) {
     if (!is_resizable_ || is_detached_) {
         return false;
     }
-    
+
     if (new_byte_length > max_byte_length_) {
         return false;
     }
-    
+
+    // Growing must re-zero the newly exposed region: bytes written while a prior, larger size
+    // was in effect must not reappear as stale data once the buffer shrinks and grows back over them.
+    if (new_byte_length > byte_length_ && data_) {
+        quanta_memset(data_.get() + byte_length_, 0, new_byte_length - byte_length_);
+    }
+
     byte_length_ = new_byte_length;
-    
+
     set_property("byteLength", Value(static_cast<double>(byte_length_)));
-    
+
     return true;
 }
 

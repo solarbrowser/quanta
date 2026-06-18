@@ -15,6 +15,47 @@
 
 namespace Quanta {
 
+// Shared `new XArray(buffer[, byteOffset[, length]])` handling for all 11 typed array
+// constructors. Byte-offset/length bounds and alignment are validated by TypedArrayBase's own
+// constructor (via validate_offset_and_length); this just parses the JS arguments and converts
+// any resulting C++ range_error into the corresponding JS RangeError. Returns nullptr (with no
+// exception set) if args[0] isn't an ArrayBuffer, so callers fall through to their other cases.
+static std::unique_ptr<TypedArrayBase> construct_typed_array_from_buffer_arg(
+        Context& ctx, const std::vector<Value>& args,
+        TypedArrayBase::ArrayType type, size_t bytes_per_element) {
+    if (args.empty() || !args[0].is_object() || !args[0].as_object()->is_array_buffer()) {
+        return nullptr;
+    }
+    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(args[0].as_object());
+    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
+
+    double offset_double = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_number() : 0.0;
+    if (ctx.has_exception()) return nullptr;
+    if (std::isnan(offset_double) || offset_double < 0 || offset_double != std::floor(offset_double)) {
+        ctx.throw_range_error("Invalid typed array byte offset");
+        return nullptr;
+    }
+    size_t byte_offset = static_cast<size_t>(offset_double);
+
+    size_t length = SIZE_MAX;
+    if (args.size() > 2 && !args[2].is_undefined()) {
+        double length_double = args[2].to_number();
+        if (ctx.has_exception()) return nullptr;
+        if (std::isnan(length_double) || length_double < 0 || length_double != std::floor(length_double)) {
+            ctx.throw_range_error("Invalid typed array length");
+            return nullptr;
+        }
+        length = static_cast<size_t>(length_double);
+    }
+
+    try {
+        return TypedArrayFactory::create_from_buffer(type, shared_buffer, byte_offset, length);
+    } catch (const std::exception& e) {
+        ctx.throw_range_error(e.what());
+        return nullptr;
+    }
+}
+
 void register_typed_array_builtins(Context& ctx) {
     auto uint8array_constructor = ObjectFactory::create_native_constructor("Uint8Array",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -32,8 +73,9 @@ void register_typed_array_builtins(Context& ctx) {
                 Object* obj = args[0].as_object();
 
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    return Value(TypedArrayFactory::create_uint8_array_from_buffer(buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::UINT8, 1);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
 
                 if (obj->is_array() || obj->has_property("length")) {
@@ -137,8 +179,9 @@ void register_typed_array_builtins(Context& ctx) {
                 }
 
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    return Value(TypedArrayFactory::create_uint8_clamped_array_from_buffer(buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::UINT8_CLAMPED, 1);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
 
                 if (obj->is_typed_array()) {
@@ -210,8 +253,9 @@ void register_typed_array_builtins(Context& ctx) {
                 Object* obj = args[0].as_object();
 
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    return Value(TypedArrayFactory::create_float32_array_from_buffer(buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::FLOAT32, 4);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
 
                 if (obj->is_array() || obj->has_property("length")) {
@@ -829,9 +873,13 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__len", Value(static_cast<double>(ta->length()))); iter->set_property("__arr", Value(this_obj));
+            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
-                (void)a; Object* it = ctx.get_this_binding(); size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = (size_t)it->get_property("__len").to_number();
+                // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
+                (void)a; Object* it = ctx.get_this_binding();
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
                 auto res = ObjectFactory::create_object();
                 if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { auto pair = ObjectFactory::create_object(); pair->set_property("0", Value((double)idx)); pair->set_property("1", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); pair->set_property("length", Value(2.0));
@@ -847,9 +895,13 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__len", Value(static_cast<double>(ta->length())));
+            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
-                (void)a; Object* it = ctx.get_this_binding(); size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = (size_t)it->get_property("__len").to_number();
+                // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
+                (void)a; Object* it = ctx.get_this_binding();
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
                 auto res = ObjectFactory::create_object();
                 if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { res->set_property("done", Value(false)); res->set_property("value", Value((double)idx)); it->set_property("__idx", Value((double)(idx + 1))); }
@@ -864,9 +916,13 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
-            iter->set_property("__idx", Value(0.0)); iter->set_property("__len", Value(static_cast<double>(ta->length()))); iter->set_property("__arr", Value(this_obj));
+            iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
-                (void)a; Object* it = ctx.get_this_binding(); size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = (size_t)it->get_property("__len").to_number();
+                // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
+                (void)a; Object* it = ctx.get_this_binding();
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
                 auto res = ObjectFactory::create_object();
                 if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { res->set_property("done", Value(false)); res->set_property("value", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); it->set_property("__idx", Value((double)(idx + 1))); }
@@ -882,14 +938,19 @@ void register_typed_array_builtins(Context& ctx) {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            (void)ta;
             auto iter = ObjectFactory::create_object();
-            struct TAIterState { Object* obj; uint32_t idx = 0; uint32_t len; };
-            auto state = std::make_shared<TAIterState>(TAIterState{this_obj, 0, static_cast<uint32_t>(ta->byte_length() / ta->bytes_per_element())});
+            struct TAIterState { Object* obj; uint32_t idx = 0; };
+            auto state = std::make_shared<TAIterState>(TAIterState{this_obj, 0});
             auto next = ObjectFactory::create_native_function("next",
                 [state](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
+                    (void)args;
                     auto res = ObjectFactory::create_object();
-                    if (state->idx >= state->len) {
+                    TypedArrayBase* live = static_cast<TypedArrayBase*>(state->obj);
+                    if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                    // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
+                    uint32_t len = static_cast<uint32_t>(live->length());
+                    if (state->idx >= len) {
                         res->set_property("done", Value(true));
                         res->set_property("value", Value());
                     } else {
@@ -910,10 +971,12 @@ void register_typed_array_builtins(Context& ctx) {
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             int64_t len = ta->length(), start = 0, end = len;
+            bool end_given = args.size() > 1 && !args[1].is_undefined();
             if (!args.empty()) { int64_t s = static_cast<int64_t>(args[0].to_number()); start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s); }
-            if (args.size() > 1 && !args[1].is_undefined()) { int64_t e = static_cast<int64_t>(args[1].to_number()); end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e); }
-            size_t nl = end > start ? end - start : 0;
+            if (end_given) { int64_t e = static_cast<int64_t>(args[1].to_number()); end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e); }
             size_t nbo = ta->byte_offset() + start * ta->bytes_per_element();
+            // If end was omitted and the source tracks its buffer's length, the subarray keeps tracking too (SIZE_MAX means "length-tracking" to the TypedArrayBase constructor); otherwise it's a fixed-length window.
+            size_t nl = (!end_given && ta->is_length_tracking()) ? SIZE_MAX : (end > start ? end - start : 0);
             std::shared_ptr<ArrayBuffer> sb(ta->buffer(), [](ArrayBuffer*) {});
             TypedArrayBase* r = nullptr;
             switch (ta->get_array_type()) {
@@ -926,6 +989,8 @@ void register_typed_array_builtins(Context& ctx) {
                 case TypedArrayBase::ArrayType::UINT32: r = new Uint32Array(sb, nbo, nl); break;
                 case TypedArrayBase::ArrayType::FLOAT32: r = new Float32Array(sb, nbo, nl); break;
                 case TypedArrayBase::ArrayType::FLOAT64: r = new Float64Array(sb, nbo, nl); break;
+                case TypedArrayBase::ArrayType::BIGINT64: r = new BigInt64Array(sb, nbo, nl); break;
+                case TypedArrayBase::ArrayType::BIGUINT64: r = new BigUint64Array(sb, nbo, nl); break;
                 default: ctx.throw_type_error("Unsupported type"); return Value();
             }
             return Value(r);
@@ -1001,9 +1066,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Int8Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::INT8, 1);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
                 if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
                     uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
@@ -1068,9 +1133,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Uint16Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::UINT16, 2);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
                 if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
                     uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
@@ -1135,9 +1200,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Int16Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::INT16, 2);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
                 if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
                     uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
@@ -1202,9 +1267,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Uint32Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::UINT32, 4);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
                 if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
                     uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
@@ -1269,9 +1334,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Int32Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::INT32, 4);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
                 if (obj->is_array() || obj->has_property("length") || obj->is_typed_array()) {
                     uint32_t length = obj->is_typed_array() ? static_cast<TypedArrayBase*>(obj)->length() :
@@ -1339,9 +1404,9 @@ void register_typed_array_builtins(Context& ctx) {
                 Object* obj = args[0].as_object();
 
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* buffer = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
-                    return Value(std::make_unique<Float64Array>(shared_buffer).release());
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::FLOAT64, 8);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
 
                 if (obj->is_array() || obj->has_property("length")) {
@@ -1413,9 +1478,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> sb(ab, [](ArrayBuffer*){});
-                    return Value(new BigInt64Array(sb));
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::BIGINT64, 8);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
             }
             ctx.throw_type_error("BigInt64Array constructor argument not supported");
@@ -1431,9 +1496,9 @@ void register_typed_array_builtins(Context& ctx) {
             if (args[0].is_object()) {
                 Object* obj = args[0].as_object();
                 if (obj->is_array_buffer()) {
-                    ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
-                    std::shared_ptr<ArrayBuffer> sb(ab, [](ArrayBuffer*){});
-                    return Value(new BigUint64Array(sb));
+                    auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::BIGUINT64, 8);
+                    if (ctx.has_exception()) return Value();
+                    return Value(ta.release());
                 }
             }
             ctx.throw_type_error("BigUint64Array constructor argument not supported");
@@ -1448,7 +1513,8 @@ void register_typed_array_builtins(Context& ctx) {
     TypedInfo typed_infos[] = {
         {"Int8Array", 1}, {"Uint8Array", 1}, {"Uint8ClampedArray", 1},
         {"Int16Array", 2}, {"Uint16Array", 2}, {"Int32Array", 4}, {"Uint32Array", 4},
-        {"Float32Array", 4}, {"Float64Array", 8}
+        {"Float32Array", 4}, {"Float64Array", 8},
+        {"BigInt64Array", 8}, {"BigUint64Array", 8}
     };
     Symbol* ta_species_sym = Symbol::get_well_known(Symbol::SPECIES);
     for (const auto& info : typed_infos) {
@@ -1481,6 +1547,12 @@ void register_typed_array_builtins(Context& ctx) {
                 ctor_desc.set_enumerable(false);
                 proto->set_property_descriptor("constructor", ctor_desc);
             }
+            // BYTES_PER_ELEMENT is also a static own property of the constructor itself (spec 23.2.6.1), not just the prototype.
+            PropertyDescriptor ctor_bpe_desc(Value(static_cast<double>(info.bytes)), PropertyAttributes::None);
+            ctor_bpe_desc.set_enumerable(false);
+            ctor_bpe_desc.set_writable(false);
+            ctor_bpe_desc.set_configurable(false);
+            ctor->set_property_descriptor("BYTES_PER_ELEMENT", ctor_bpe_desc);
         }
     }
 
