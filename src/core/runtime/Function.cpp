@@ -1111,7 +1111,11 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
     ctx.set_in_constructor_call(true);
     ctx.set_super_called(false);
-    ctx.set_new_target(Value(static_cast<Object*>(this)));
+    // Preserve new.target across the whole super-chain instead of stomping it with `this`.
+    Value old_new_target = ctx.get_new_target();
+    if (old_new_target.is_undefined()) {
+        ctx.set_new_target(Value(static_cast<Object*>(this)));
+    }
 
     // A synthesized default derived constructor is spec'd as `constructor(...args) { super(...args); }`, so auto-super must run before the constructor body (which here only contains field initializers) -- otherwise a super-chain override (e.g. a base constructor returning `new Proxy(this, ...)`) takes effect too late and fields get written to the object that's about to be discarded.
     if (is_default_ctor && super_constructor_prop.is_function()) {
@@ -1126,7 +1130,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         ctx.set_super_called(true);
         if (ctx.has_exception()) {
             ctx.set_in_constructor_call(false);
-            ctx.set_new_target(Value());
+            ctx.set_new_target(old_new_target);
             return Value();
         }
         if (super_result.is_object() || super_result.is_function()) {
@@ -1139,14 +1143,15 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
             Object* pm_this = this_value.is_object() ? this_value.as_object() : nullptr;
             if (pm_this) pm_this->add_private_field(pm_slot);
         }
-        // ctx.is_in_constructor_call() is a single shared flag, not a stack, and the nested super construct() call above clears it on its way out -- restore it before running the field-initializer body below.
+        // Nested super construct() clears/overwrites these shared flags -- restore them.
         ctx.set_in_constructor_call(true);
+        ctx.set_new_target(old_new_target);
     }
 
     Value result = call(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
     ctx.set_in_constructor_call(false);
-    ctx.set_new_target(Value());
+    ctx.set_new_target(old_new_target);
 
     // Propagate any exception from the constructor body before checking super state
     if (ctx.has_exception()) return Value();
