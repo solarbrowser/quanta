@@ -94,7 +94,14 @@ void register_string_builtins(Context& ctx) {
         });
     
     auto string_prototype = ObjectFactory::create_object();
-    
+
+    // Spec 22.1.3: String.prototype is itself a String object with [[StringData]] = "".
+    {
+        PropertyDescriptor proto_length_desc(Value(0.0), static_cast<PropertyAttributes>(PropertyAttributes::None));
+        string_prototype->set_property_descriptor("length", proto_length_desc);
+        string_prototype->set_property("[[PrimitiveValue]]", Value(std::string("")));
+    }
+
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
