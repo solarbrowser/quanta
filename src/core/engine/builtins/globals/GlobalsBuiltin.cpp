@@ -21,6 +21,7 @@
 #include <unordered_set>
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/runtime/ArrayBuffer.h"
 #include "quanta/core/modules/ModuleLoader.h"
 #include <filesystem>
 #include "quanta/core/runtime/BigInt.h"
@@ -507,6 +508,23 @@ void register_global_builtins(Context& ctx) {
         ctx.get_global_object()->set_property_descriptor("global", global_ref_desc);
         ctx.get_global_object()->set_property_descriptor("window", global_ref_desc);
         ctx.get_global_object()->set_property_descriptor("this", global_ref_desc);
+    }
+
+    // test262 host API ($262): only detachArrayBuffer is implemented 
+
+    {
+        auto test262_host = ObjectFactory::create_object();
+        auto detach_fn = ObjectFactory::create_native_function("detachArrayBuffer",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (args.empty() || !args[0].is_object() || !args[0].as_object()->is_array_buffer()) {
+                    ctx.throw_type_error("detachArrayBuffer requires an ArrayBuffer argument");
+                    return Value();
+                }
+                static_cast<ArrayBuffer*>(args[0].as_object())->detach();
+                return Value();
+            });
+        test262_host->set_property("detachArrayBuffer", Value(detach_fn.release()), PropertyAttributes::BuiltinFunction);
+        ctx.get_lexical_environment()->create_binding("$262", Value(test262_host.release()), true);
     }
     ctx.get_lexical_environment()->create_binding("true", Value(true), false, false);
     ctx.get_lexical_environment()->create_binding("false", Value(false), false, false);
