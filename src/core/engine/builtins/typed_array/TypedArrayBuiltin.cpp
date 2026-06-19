@@ -9,11 +9,29 @@
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/BigInt.h"
 #include <cmath>
 #include "quanta/parser/AST.h"
 #include <algorithm>
 
 namespace Quanta {
+
+// ToBigInt(argument), per spec: only BigInt/Boolean/String coerce; Number/Symbol/null/undefined  throw. 
+static Value to_bigint_for_typed_array(Context& ctx, const Value& value) {
+    if (value.is_bigint()) return value;
+    if (value.is_boolean()) return Value(new BigInt(value.as_boolean() ? 1 : 0));
+    if (value.is_string()) {
+        try {
+            return Value(new BigInt(value.to_string()));
+        } catch (const std::exception&) {
+            ctx.throw_syntax_error("Cannot convert string to BigInt");
+            return Value();
+        }
+    }
+    ctx.throw_type_error("Cannot convert " + std::string(value.is_number() ? "Number" :
+        (value.is_symbol() ? "Symbol" : (value.is_null() ? "null" : "undefined"))) + " to BigInt");
+    return Value();
+}
 
 // Shared `new XArray(buffer[, byteOffset[, length]])` handling for all 11 typed array
 // constructors. Byte-offset/length bounds and alignment are validated by TypedArrayBase's own
@@ -1482,6 +1500,74 @@ void register_typed_array_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     return Value(ta.release());
                 }
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* src = static_cast<TypedArrayBase*>(obj);
+                    auto src_type = src->get_array_type();
+                    if (src_type != TypedArrayBase::ArrayType::BIGINT64 && src_type != TypedArrayBase::ArrayType::BIGUINT64) {
+                        ctx.throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
+                        return Value();
+                    }
+                    uint32_t length = src->length();
+                    auto typed_array = std::make_unique<BigInt64Array>(length);
+                    for (uint32_t i = 0; i < length; i++) typed_array->set_element(i, src->get_element(i));
+                    return Value(typed_array.release());
+                }
+                if (obj->is_array() || obj->has_property("length")) {
+                    Value length_val = obj->get_property("length");
+                    if (ctx.has_exception()) return Value();
+                    if (length_val.is_symbol()) {
+                        ctx.throw_type_error("Cannot convert a Symbol value to a number");
+                        return Value();
+                    }
+                    uint32_t length = obj->is_array() ? obj->get_length() : static_cast<uint32_t>(length_val.to_number());
+                    auto typed_array = std::make_unique<BigInt64Array>(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        Value el = obj->get_element(i);
+                        if (ctx.has_exception()) return Value();
+                        Value big = to_bigint_for_typed_array(ctx, el);
+                        if (ctx.has_exception()) return Value();
+                        typed_array->set_element(i, big);
+                    }
+                    return Value(typed_array.release());
+                }
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = std::make_unique<BigInt64Array>(items.size());
+                            for (size_t i = 0; i < items.size(); i++) {
+                                Value big = to_bigint_for_typed_array(ctx, items[i]);
+                                if (ctx.has_exception()) return Value();
+                                ta->set_element(i, big);
+                            }
+                            return Value(ta.release());
+                        }
+                    }
+                }
             }
             ctx.throw_type_error("BigInt64Array constructor argument not supported");
             return Value();
@@ -1499,6 +1585,74 @@ void register_typed_array_builtins(Context& ctx) {
                     auto ta = construct_typed_array_from_buffer_arg(ctx, args, TypedArrayBase::ArrayType::BIGUINT64, 8);
                     if (ctx.has_exception()) return Value();
                     return Value(ta.release());
+                }
+                if (obj->is_typed_array()) {
+                    TypedArrayBase* src = static_cast<TypedArrayBase*>(obj);
+                    auto src_type = src->get_array_type();
+                    if (src_type != TypedArrayBase::ArrayType::BIGINT64 && src_type != TypedArrayBase::ArrayType::BIGUINT64) {
+                        ctx.throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
+                        return Value();
+                    }
+                    uint32_t length = src->length();
+                    auto typed_array = std::make_unique<BigUint64Array>(length);
+                    for (uint32_t i = 0; i < length; i++) typed_array->set_element(i, src->get_element(i));
+                    return Value(typed_array.release());
+                }
+                if (obj->is_array() || obj->has_property("length")) {
+                    Value length_val = obj->get_property("length");
+                    if (ctx.has_exception()) return Value();
+                    if (length_val.is_symbol()) {
+                        ctx.throw_type_error("Cannot convert a Symbol value to a number");
+                        return Value();
+                    }
+                    uint32_t length = obj->is_array() ? obj->get_length() : static_cast<uint32_t>(length_val.to_number());
+                    auto typed_array = std::make_unique<BigUint64Array>(length);
+                    for (uint32_t i = 0; i < length; i++) {
+                        Value el = obj->get_element(i);
+                        if (ctx.has_exception()) return Value();
+                        Value big = to_bigint_for_typed_array(ctx, el);
+                        if (ctx.has_exception()) return Value();
+                        typed_array->set_element(i, big);
+                    }
+                    return Value(typed_array.release());
+                }
+                {
+                    Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                    if (iter_sym) {
+                        Value iter_fn = obj->get_property(iter_sym->to_property_key());
+                        if (iter_fn.is_function()) {
+                            Context* iter_call_ctx = iter_fn.as_function()->get_closure_context();
+                            if (!iter_call_ctx) iter_call_ctx = &ctx;
+                            Value iterator = iter_fn.as_function()->call(*iter_call_ctx, {}, Value(obj));
+                            if (iter_call_ctx->has_exception()) {
+                                if (iter_call_ctx != &ctx) ctx.throw_exception(iter_call_ctx->get_exception(), true);
+                                return Value();
+                            }
+                            std::vector<Value> items;
+                            Object* it = iterator.is_object() ? iterator.as_object() : (iterator.is_function() ? static_cast<Object*>(iterator.as_function()) : nullptr);
+                            while (it) {
+                                Value next_fn = it->get_property("next");
+                                if (!next_fn.is_function()) break;
+                                Context* next_call_ctx = next_fn.as_function()->get_closure_context();
+                                if (!next_call_ctx) next_call_ctx = &ctx;
+                                Value res = next_fn.as_function()->call(*next_call_ctx, {}, iterator);
+                                if (next_call_ctx->has_exception()) {
+                                    if (next_call_ctx != &ctx) ctx.throw_exception(next_call_ctx->get_exception(), true);
+                                    return Value();
+                                }
+                                if (!res.is_object()) break;
+                                if (res.as_object()->get_property("done").to_boolean()) break;
+                                items.push_back(res.as_object()->get_property("value"));
+                            }
+                            auto ta = std::make_unique<BigUint64Array>(items.size());
+                            for (size_t i = 0; i < items.size(); i++) {
+                                Value big = to_bigint_for_typed_array(ctx, items[i]);
+                                if (ctx.has_exception()) return Value();
+                                ta->set_element(i, big);
+                            }
+                            return Value(ta.release());
+                        }
+                    }
                 }
             }
             ctx.throw_type_error("BigUint64Array constructor argument not supported");
