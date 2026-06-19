@@ -42,56 +42,26 @@ GarbageCollector::~GarbageCollector() {
 
 void GarbageCollector::register_object(Object* obj, size_t size) {
     if (!obj) return;
-    
+
     std::lock_guard<std::mutex> lock(gc_mutex_);
-    
+
     if (size == 0) {
         size = sizeof(Object) + obj->property_count() * sizeof(Value);
     }
-    
+
     auto* managed = new ManagedObject(obj, Generation::Young, size);
     managed_objects_.insert(managed);
+    object_to_managed_[obj] = managed;
     young_generation_.push_back(managed);
-    
+
     stats_.total_allocations++;
     stats_.bytes_allocated += size;
-    
+
     size_t current_heap_size = get_heap_size();
     if (current_heap_size > stats_.peak_memory_usage) {
         stats_.peak_memory_usage = current_heap_size;
     }
-    
-    if (collection_mode_ == CollectionMode::Automatic && should_trigger_gc()) {
-        static auto last_gc_time = std::chrono::high_resolution_clock::now();
-        auto now = std::chrono::high_resolution_clock::now();
-        auto time_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_gc_time);
 
-        if (ultra_fast_gc_) {
-            if (time_since_last.count() > 100) {
-                if (young_generation_.size() > 2000) {
-                    if (parallel_collection_) {
-                        std::thread([this]() { collect_young_generation_parallel(); }).detach();
-                    } else {
-                        collect_young_generation_ultra_fast();
-                    }
-                    last_gc_time = now;
-                } else if (young_generation_.size() > 5000) {
-                    force_ultra_fast_collection();
-                    last_gc_time = now;
-                }
-            }
-        } else {
-            if (time_since_last.count() > 200) {
-                if (young_generation_.size() > 5000) {
-                    collect_young_generation();
-                    last_gc_time = now;
-                } else if (young_generation_.size() > 10000) {
-                    collect_garbage();
-                    last_gc_time = now;
-                }
-            }
-        }
-    }
 }
 
 void GarbageCollector::unregister_object(Object* obj) {
@@ -102,7 +72,8 @@ void GarbageCollector::unregister_object(Object* obj) {
     auto* managed = find_managed_object(obj);
     if (managed) {
         managed_objects_.erase(managed);
-        
+        object_to_managed_.erase(managed->object);
+
         auto remove_from_vector = [managed](std::vector<ManagedObject*>& vec) {
             vec.erase(std::remove(vec.begin(), vec.end(), managed), vec.end());
         };
@@ -266,11 +237,8 @@ bool GarbageCollector::should_trigger_gc() const {
 }
 
 size_t GarbageCollector::get_heap_size() const {
-    size_t total = 0;
-    for (const auto* managed : managed_objects_) {
-        total += managed->size;
-    }
-    return total;
+    return stats_.bytes_allocated >= stats_.bytes_freed
+        ? stats_.bytes_allocated - stats_.bytes_freed : 0;
 }
 
 size_t GarbageCollector::get_available_memory() const {
@@ -434,9 +402,10 @@ void GarbageCollector::sweep_generation(std::vector<ManagedObject*>& generation)
         auto* managed = *it;
         if (!managed->is_marked) {
             managed_objects_.erase(managed);
+            object_to_managed_.erase(managed->object);
             stats_.total_deallocations++;
             stats_.bytes_freed += managed->size;
-            
+
             delete managed->object;
             delete managed;
             it = generation.erase(it);
@@ -479,12 +448,8 @@ void GarbageCollector::break_cycles() {
 }
 
 GarbageCollector::ManagedObject* GarbageCollector::find_managed_object(Object* obj) {
-    for (auto* managed : managed_objects_) {
-        if (managed->object == obj) {
-            return managed;
-        }
-    }
-    return nullptr;
+    auto it = object_to_managed_.find(obj);
+    return it != object_to_managed_.end() ? it->second : nullptr;
 }
 
 void GarbageCollector::update_statistics(const std::chrono::high_resolution_clock::time_point& start) {
@@ -830,6 +795,7 @@ void GarbageCollector::sweep_generation_ultra_fast(std::vector<ManagedObject*>& 
         auto* managed = *it;
         if (!managed->is_marked) {
             managed_objects_.erase(managed);
+            object_to_managed_.erase(managed->object);
             stats_.total_deallocations++;
             stats_.bytes_freed += managed->size;
             
@@ -868,12 +834,8 @@ void GarbageCollector::break_cycles_ultra_fast() {
 }
 
 GarbageCollector::ManagedObject* GarbageCollector::find_managed_object_ultra_fast(Object* obj) {
-    for (auto* managed : managed_objects_) {
-        if (managed->object == obj) {
-            return managed;
-        }
-    }
-    return nullptr;
+    auto it = object_to_managed_.find(obj);
+    return it != object_to_managed_.end() ? it->second : nullptr;
 }
 
 void GarbageCollector::mark_objects_parallel_worker() {
@@ -931,6 +893,7 @@ void GarbageCollector::emergency_cleanup() {
         auto* managed = *it;
         if (managed->access_count < 2) {
             managed_objects_.erase(managed);
+            object_to_managed_.erase(managed->object);
             delete managed->object;
             delete managed;
             it = young_generation_.erase(it);

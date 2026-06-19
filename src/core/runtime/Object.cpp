@@ -264,7 +264,7 @@ Value Object::get_property(const std::string& key) const {
     if (!result.is_undefined()) {
         return result;
     }
-    
+
     const Object* original_receiver = this;
     Object* current = header_.prototype;
     while (current) {
@@ -309,14 +309,17 @@ Value Object::get_own_property(const std::string& key) const {
             auto desc_it = descriptors_->find(key);
             if (desc_it != descriptors_->end()) {
                 const PropertyDescriptor& desc = desc_it->second;
-                if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                    Object* getter = desc.get_getter();
-                    if (getter && current_context_) {
-                        Function* getter_fn = dynamic_cast<Function*>(getter);
-                        if (getter_fn) {
-                            return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                if (desc.is_accessor_descriptor()) {
+                    if (desc.has_getter()) {
+                        Object* getter = desc.get_getter();
+                        if (getter && current_context_) {
+                            Function* getter_fn = dynamic_cast<Function*>(getter);
+                            if (getter_fn) {
+                                return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                            }
                         }
                     }
+                    return Value(); // setter-only accessor: undefined, don't walk prototype
                 }
                 if (desc.is_data_descriptor()) {
                     return desc.get_value();
@@ -404,17 +407,7 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
                     }
                 }
             }
-        } else if (new_length > old_length) {
-            elements_.resize(new_length);
-            // Mark new elements as holes
-            if (!deleted_elements_) {
-                deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
-            }
-            for (uint32_t i = old_length; i < new_length; ++i) {
-                deleted_elements_->insert(i);
-            }
         }
-
         Value length_value(static_cast<double>(new_length));
 
         if (!overflow_properties_) {
@@ -557,7 +550,8 @@ bool Object::delete_property(const std::string& key) {
     if (is_array_index(key, &index)) {
         // Also remove any descriptor (e.g. mapped arguments accessor)
         if (descriptors_) descriptors_->erase(key);
-        return delete_element(index);
+        delete_element(index); // return value ignored: descriptor erase above already made it gone
+        return true;
     }
 
     if (overflow_properties_) {
@@ -660,7 +654,8 @@ bool Object::set_element(uint32_t index, const Value& value) {
         if (__builtin_expect(header_.type == ObjectType::Array, 1)) {
             if (overflow_properties_) {
                 auto it = overflow_properties_->find("length");
-                if (it != overflow_properties_->end()) {
+                // never shrink length on a write within bounds
+                if (it != overflow_properties_->end() && it->second.to_number() < new_size) {
                     it->second = Value(static_cast<double>(new_size));
                 }
             }
@@ -864,7 +859,8 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         }
         uint32_t index;
         if (is_array_index(key, &index)) {
-            if (desc.has_value()) {
+            // cap growth to avoid huge upfront allocation on a sparse high index
+            if (desc.has_value() && index <= 10000000) {
                 if (index >= elements_.size()) {
                     elements_.resize(index + 1);
                 }
@@ -885,9 +881,6 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         uint32_t index;
         if (is_array_index(key, &index)) {
             uint32_t new_size = index + 1;
-            if (index >= elements_.size()) {
-                elements_.resize(new_size);
-            }
             if (header_.type == ObjectType::Array && new_size > get_length()) {
                 if (overflow_properties_) {
                     auto it = overflow_properties_->find("length");
@@ -993,6 +986,16 @@ uint32_t Object::get_length() const {
         Value length_val = get_own_property("length");
         if (length_val.is_number()) {
             return static_cast<uint32_t>(length_val.as_number());
+        }
+    }
+    // plain array-likes (e.g. Array.prototype.every.call(plainObj)) store length as a property
+    if (header_.type == ObjectType::Ordinary && has_property("length")) {
+        Value length_val = get_property("length");
+        if (length_val.is_number()) {
+            double n = length_val.as_number();
+            if (!std::isinf(n) && !std::isnan(n) && n >= 0) {
+                return static_cast<uint32_t>(std::min(n, (double)UINT32_MAX));
+            }
         }
     }
     return static_cast<uint32_t>(elements_.size());

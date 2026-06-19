@@ -1670,7 +1670,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 bool found = false;
                 for (uint32_t i = 0; i < length; i++) {
                     if (this_obj->has_property(std::to_string(i))) {
-                        accumulator = this_obj->get_element(i);
+                        accumulator = this_obj->get_property(std::to_string(i));
                         start_index = i + 1;
                         found = true;
                         break;
@@ -1685,7 +1685,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (!this_obj->has_property(std::to_string(i))) {
                     continue;
                 }
-                Value element = this_obj->get_element(i);
+                Value element = this_obj->get_property(std::to_string(i));
                 std::vector<Value> callback_args = {
                     accumulator,
                     element,
