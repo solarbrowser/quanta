@@ -103,7 +103,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array_buffer()) {
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.byteLength called on non-ArrayBuffer");
                 return Value();
             }
@@ -121,7 +121,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array_buffer()) {
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.detached called on non-ArrayBuffer");
                 return Value();
             }
@@ -146,7 +146,7 @@ void register_arraybuffer_builtins(Context& ctx) {
     auto ab_resize_fn = ObjectFactory::create_native_function("resize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array_buffer()) {
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.resize called on non-ArrayBuffer");
                 return Value();
             }
@@ -187,7 +187,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array_buffer()) {
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.maxByteLength called on non-ArrayBuffer");
                 return Value();
             }
@@ -204,7 +204,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_array_buffer()) {
+            if (!this_obj || !this_obj->is_array_buffer() || this_obj->is_shared_array_buffer()) {
                 ctx.throw_type_error("ArrayBuffer.prototype.resizable called on non-ArrayBuffer");
                 return Value();
             }
@@ -273,18 +273,16 @@ void register_arraybuffer_builtins(Context& ctx) {
     {
         auto sab_constructor = ObjectFactory::create_native_constructor("SharedArrayBuffer",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
-                double byte_length = args.empty() ? 0.0 : args[0].to_number();
-                auto buf = ObjectFactory::create_object();
-                buf->set_property("byteLength", Value(byte_length), PropertyAttributes::None);
-                buf->set_property("_isSharedArrayBuffer", Value(true));
-                // Set prototype
-                if (ctx.has_binding("SharedArrayBuffer")) {
-                    Value ctor = ctx.get_binding("SharedArrayBuffer");
-                    if (ctor.is_function()) {
-                        Value proto = ctor.as_function()->get_property("prototype");
-                        if (proto.is_object()) buf->set_prototype(proto.as_object());
-                    }
+                if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+                double length_double = args.empty() ? 0.0 : args[0].to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(length_double) || length_double < 0 || length_double != std::floor(length_double)) {
+                    ctx.throw_range_error("SharedArrayBuffer size must be a non-negative integer");
+                    return Value();
                 }
+                size_t byte_length = static_cast<size_t>(length_double);
+                auto buf = std::make_unique<SharedArrayBuffer>(byte_length);
+                buf->set_property("_isSharedArrayBuffer", Value(true));
                 return Value(buf.release());
             }, 1);
 

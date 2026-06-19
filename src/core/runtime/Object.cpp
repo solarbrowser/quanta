@@ -548,10 +548,11 @@ bool Object::delete_property(const std::string& key) {
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        // Also remove any descriptor (e.g. mapped arguments accessor)
-        if (descriptors_) descriptors_->erase(key);
-        delete_element(index); // return value ignored: descriptor erase above already made it gone
-        return true;
+        // Mapped arguments accessor: descriptor erase alone makes the property gone,
+        // even if delete_element finds no physical elements_ slot to clear.
+        bool had_descriptor = descriptors_ && descriptors_->erase(key) > 0;
+        bool deleted = delete_element(index);
+        return deleted || had_descriptor;
     }
 
     if (overflow_properties_) {
