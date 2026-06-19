@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
 #include <unordered_set>
+#include <unordered_map>
 #include <vector>
 #include <memory>
 #include <chrono>
@@ -76,6 +77,9 @@ private:
     double gc_trigger_ratio_;
     
     std::unordered_set<ManagedObject*> managed_objects_;
+    // O(1) Object* -> ManagedObject* lookup; find_managed_object[_ultra_fast] used to linearly
+    // scan managed_objects_, making every mark pass O(reachable * total_tracked).
+    std::unordered_map<Object*, ManagedObject*> object_to_managed_;
     std::vector<ManagedObject*> young_generation_;
     std::vector<ManagedObject*> old_generation_;
     std::vector<ManagedObject*> permanent_generation_;
