@@ -2203,9 +2203,26 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
 
         // Unicode-mode (/u or /v) strict validation
         if (has_unicode_flag) {
+            bool has_v_flag = flags.find('v') != std::string::npos;
+            // Properties of strings (Unicode "binary string" properties): can only appear as
+            // \p{Name} under /v, never \P{Name} and never inside a negated character class.
+            static const std::unordered_set<std::string> string_properties = {
+                "Basic_Emoji", "Emoji_Keycap_Sequence", "RGI_Emoji", "RGI_Emoji_Flag_Sequence",
+                "RGI_Emoji_Modifier_Sequence", "RGI_Emoji_Tag_Sequence", "RGI_Emoji_ZWJ_Sequence"
+            };
+            static const std::unordered_set<std::string> unsupported_properties = {
+                "Grapheme_Link", "Prepended_Concatenation_Mark"
+            };
+            bool in_class = false;
+            bool class_negated = false;
             int group_count = 0;
             for (size_t i = 0; i < p.size(); i++) {
-                if (p[i] == '(' && (i == 0 || p[i-1] != '\\')) {
+                if (p[i] == '[' && (i == 0 || p[i-1] != '\\') && !in_class) {
+                    in_class = true;
+                    class_negated = (i + 1 < p.size() && p[i+1] == '^');
+                } else if (p[i] == ']' && (i == 0 || p[i-1] != '\\') && in_class) {
+                    in_class = false;
+                } else if (p[i] == '(' && (i == 0 || p[i-1] != '\\')) {
                     group_count++;
                 } else if (p[i] == '\\' && i + 1 < p.size()) {
                     char next = p[i+1];
@@ -2242,6 +2259,35 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                         } else {
                             size_t skip = (next == 'u') ? 4 : 2;
                             for (size_t s = 0; s < skip && i + 1 < p.size(); s++) i++;
+                        }
+                    } else if (next == 'p' || next == 'P') {
+                        // Skip \p{Name} / \p{Name=Value} so its { isn't seen as a lone brace
+                        bool negated_escape = (next == 'P');
+                        i++;
+                        if (i + 1 < p.size() && p[i+1] == '{') {
+                            size_t name_start = i + 2;
+                            i++;
+                            while (i + 1 < p.size() && p[i+1] != '}') i++;
+                            size_t name_end = i + 1;
+                            if (i + 1 < p.size()) i++;
+                            std::string content = p.substr(name_start, name_end - name_start);
+                            if (content.find(' ') != std::string::npos) {
+                                add_error("SyntaxError: Invalid property name (loose matching not allowed) in regexp");
+                                return nullptr;
+                            }
+                            // Only the property NAME part matters for the string-property checks
+                            // (Name=Value forms are binary/value properties, never string properties).
+                            std::string name = content.substr(0, content.find('='));
+                            if (unsupported_properties.count(name)) {
+                                add_error("SyntaxError: Unsupported Unicode property " + name + " in regexp");
+                                return nullptr;
+                            }
+                            if (string_properties.count(name)) {
+                                if (!has_v_flag || negated_escape || (in_class && class_negated)) {
+                                    add_error("SyntaxError: Property of strings " + name + " cannot be negated or used in /u mode");
+                                    return nullptr;
+                                }
+                            }
                         }
                     } else {
                         i++;

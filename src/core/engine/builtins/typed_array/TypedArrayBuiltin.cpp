@@ -47,6 +47,10 @@ static std::unique_ptr<TypedArrayBase> construct_typed_array_from_buffer_arg(
     ArrayBuffer* buffer = static_cast<ArrayBuffer*>(args[0].as_object());
     std::shared_ptr<ArrayBuffer> shared_buffer(buffer, [](ArrayBuffer*) {});
 
+    if (args.size() > 1 && (args[1].is_symbol() || args[1].is_bigint())) {
+        ctx.throw_type_error("Cannot convert byte offset to a number");
+        return nullptr;
+    }
     double offset_double = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_number() : 0.0;
     if (ctx.has_exception()) return nullptr;
     if (std::isnan(offset_double) || offset_double < 0 || offset_double != std::floor(offset_double)) {
@@ -57,6 +61,10 @@ static std::unique_ptr<TypedArrayBase> construct_typed_array_from_buffer_arg(
 
     size_t length = SIZE_MAX;
     if (args.size() > 2 && !args[2].is_undefined()) {
+        if (args[2].is_symbol() || args[2].is_bigint()) {
+            ctx.throw_type_error("Cannot convert length to a number");
+            return nullptr;
+        }
         double length_double = args[2].to_number();
         if (ctx.has_exception()) return nullptr;
         if (std::isnan(length_double) || length_double < 0 || length_double != std::floor(length_double)) {
@@ -712,6 +720,41 @@ void register_typed_array_builtins(Context& ctx) {
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("findIndex", PropertyDescriptor(Value(findIndex_fn.release()), PropertyAttributes::BuiltinFunction));
 
+    auto findLast_fn = ObjectFactory::create_native_function("findLast",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+            Function* cb = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+            for (int64_t i = static_cast<int64_t>(ta->length()) - 1; i >= 0; i--) {
+                Value el = ta->get_element(static_cast<size_t>(i));
+                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(this_obj) };
+                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return el;
+            }
+            return Value();
+        }, 1);
+    typedarray_proto_ptr->set_property_descriptor("findLast", PropertyDescriptor(Value(findLast_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    auto findLastIndex_fn = ObjectFactory::create_native_function("findLastIndex",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+            Function* cb = args[0].as_function();
+            Value thisArg = args.size() > 1 ? args[1] : Value();
+            for (int64_t i = static_cast<int64_t>(ta->length()) - 1; i >= 0; i--) {
+                std::vector<Value> cb_args = { ta->get_element(static_cast<size_t>(i)), Value(static_cast<double>(i)), Value(this_obj) };
+                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return Value(static_cast<double>(i));
+            }
+            return Value(-1.0);
+        }, 1);
+    typedarray_proto_ptr->set_property_descriptor("findLastIndex", PropertyDescriptor(Value(findLastIndex_fn.release()), PropertyAttributes::BuiltinFunction));
+
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
@@ -1015,6 +1058,80 @@ void register_typed_array_builtins(Context& ctx) {
         }, 2);
     typedarray_proto_ptr->set_property_descriptor("subarray", PropertyDescriptor(Value(ta_subarray_fn.release()), PropertyAttributes::BuiltinFunction));
 
+    auto ta_set_fn = ObjectFactory::create_native_function("set",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* target = static_cast<TypedArrayBase*>(this_obj);
+            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("source is not an object"); return Value(); }
+            Object* source = args[0].as_object();
+
+            Value offset_arg = args.size() > 1 ? args[1] : Value();
+            if (offset_arg.is_symbol() || offset_arg.is_bigint()) {
+                ctx.throw_type_error("Cannot convert offset to a number");
+                return Value();
+            }
+            double offset_double = offset_arg.is_undefined() ? 0.0 : offset_arg.to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(offset_double) || offset_double < 0 || offset_double != std::floor(offset_double)) {
+                ctx.throw_range_error("Invalid offset");
+                return Value();
+            }
+            size_t offset = static_cast<size_t>(offset_double);
+
+            bool target_is_big = target->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
+                                  target->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
+
+            if (source->is_typed_array()) {
+                TypedArrayBase* src_ta = static_cast<TypedArrayBase*>(source);
+                bool source_is_big = src_ta->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
+                                      src_ta->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
+                if (target_is_big != source_is_big) {
+                    ctx.throw_type_error("Cannot mix BigInt and non-BigInt typed array content");
+                    return Value();
+                }
+                if (target->is_out_of_bounds() || src_ta->is_out_of_bounds()) {
+                    ctx.throw_type_error("TypedArray is out of bounds");
+                    return Value();
+                }
+                size_t src_len = src_ta->length();
+                if (offset + src_len > target->length()) {
+                    ctx.throw_range_error("Source is too large");
+                    return Value();
+                }
+                for (size_t i = 0; i < src_len; i++) target->set_element(offset + i, src_ta->get_element(i));
+                return Value();
+            }
+
+            if (target->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+
+            Value len_val = source->get_property("length");
+            if (ctx.has_exception()) return Value();
+            if (len_val.is_symbol() || len_val.is_bigint()) {
+                ctx.throw_type_error("Cannot convert length to a number");
+                return Value();
+            }
+            double len_double = len_val.to_number();
+            if (ctx.has_exception()) return Value();
+            size_t src_len = (std::isnan(len_double) || len_double < 0) ? 0 : static_cast<size_t>(len_double);
+
+            if (offset + src_len > target->length()) {
+                ctx.throw_range_error("Source is too large");
+                return Value();
+            }
+            for (size_t i = 0; i < src_len; i++) {
+                Value v = source->get_property(std::to_string(i));
+                if (target_is_big) {
+                    v = to_bigint_for_typed_array(ctx, v);
+                    if (ctx.has_exception()) return Value();
+                }
+                if (target->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                target->set_element(offset + i, v);
+            }
+            return Value();
+        }, 1);
+    typedarray_proto_ptr->set_property_descriptor("set", PropertyDescriptor(Value(ta_set_fn.release()), PropertyAttributes::BuiltinFunction));
+
     auto ta_includes_fn = ObjectFactory::create_native_function("includes",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
@@ -1053,8 +1170,88 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto typedarray_from = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            ctx.throw_type_error("TypedArray.from must be called on a concrete TypedArray constructor");
-            return Value();
+            Object* this_obj = ctx.get_this_binding();
+            Function* ctor = this_obj ? dynamic_cast<Function*>(this_obj) : nullptr;
+            if (!ctor) {
+                ctx.throw_type_error("TypedArray.from must be called on a concrete TypedArray constructor");
+                return Value();
+            }
+            Value mapfn = args.size() > 1 ? args[1] : Value();
+            if (!mapfn.is_undefined() && !mapfn.is_function()) {
+                ctx.throw_type_error("mapfn is not a function");
+                return Value();
+            }
+            Value this_arg = args.size() > 2 ? args[2] : Value();
+            Value source = args.empty() ? Value() : args[0];
+
+            std::vector<Value> items;
+            bool got_iterator = false;
+            if (source.is_object()) {
+                Object* src_obj = source.as_object();
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    Value iter_fn = src_obj->get_property(iter_sym->to_property_key());
+                    if (iter_fn.is_function()) {
+                        got_iterator = true;
+                        Value iterator = iter_fn.as_function()->call(ctx, {}, source);
+                        if (ctx.has_exception()) return Value();
+                        Object* it = iterator.is_object() ? iterator.as_object() : nullptr;
+                        while (it) {
+                            Value next_fn = it->get_property("next");
+                            if (!next_fn.is_function()) break;
+                            Value res = next_fn.as_function()->call(ctx, {}, iterator);
+                            if (ctx.has_exception()) return Value();
+                            if (!res.is_object()) break;
+                            if (res.as_object()->get_property("done").to_boolean()) break;
+                            items.push_back(res.as_object()->get_property("value"));
+                        }
+                    }
+                }
+            }
+            if (!got_iterator) {
+                if (source.is_undefined() || source.is_null()) {
+                    ctx.throw_type_error("Cannot convert undefined or null to object");
+                    return Value();
+                }
+                if (source.is_object()) {
+                    Object* obj = source.as_object();
+                    uint32_t len = obj->is_typed_array() ? static_cast<uint32_t>(static_cast<TypedArrayBase*>(obj)->length()) : obj->get_length();
+                    for (uint32_t i = 0; i < len; i++) items.push_back(obj->get_property(std::to_string(i)));
+                }
+            }
+
+            std::vector<Value> ctor_args = { Value(static_cast<double>(items.size())) };
+            Value result = ctor->construct(ctx, ctor_args);
+            if (ctx.has_exception()) return Value();
+            if (!result.is_object() || !result.as_object()->is_typed_array()) {
+                ctx.throw_type_error("TypedArray constructor did not return a TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(result.as_object());
+            bool target_is_big = ta->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
+                                  ta->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
+            Function* mfn = mapfn.is_function() ? mapfn.as_function() : nullptr;
+            // mapfn runs per-element, interleaved with the Set into the (already-constructed)
+            // result -- a mapfn call can detach/resize the result's buffer mid-loop, which must
+            // surface as a TypeError on the very next Set, not get silently skipped.
+            for (size_t i = 0; i < items.size(); i++) {
+                Value v = items[i];
+                if (mfn) {
+                    std::vector<Value> cb_args = { v, Value(static_cast<double>(i)) };
+                    v = mfn->call(ctx, cb_args, this_arg);
+                    if (ctx.has_exception()) return Value();
+                }
+                if (target_is_big) {
+                    v = to_bigint_for_typed_array(ctx, v);
+                    if (ctx.has_exception()) return Value();
+                }
+                if (ta->is_out_of_bounds() || i >= ta->length()) {
+                    ctx.throw_type_error("TypedArray is out of bounds");
+                    return Value();
+                }
+                ta->set_element(i, v);
+            }
+            return result;
         }, 1);
     PropertyDescriptor from_desc(Value(typedarray_from.release()),
         PropertyAttributes::BuiltinFunction);

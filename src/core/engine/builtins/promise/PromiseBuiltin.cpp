@@ -646,6 +646,175 @@ void register_promise_builtins(Context& ctx) {
         }, 1);
     promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()));
 
+    auto promise_allKeyed_static = ObjectFactory::create_native_function("allKeyed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_type_error("Promise.allKeyed argument must be an object");
+                return Value();
+            }
+            Object* dict = args[0].as_object();
+            std::vector<std::string> keys;
+            for (const auto& k : dict->get_enumerable_keys()) {
+                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) keys.push_back(k);
+            }
+
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+
+            auto results_obj = ObjectFactory::create_object();
+            results_obj->set_prototype(nullptr);
+            for (const auto& k : keys) results_obj->set_property(k, Value());
+            Object* results_raw = results_obj.release();
+            result_promise->set_property("__allkeyed_results__", Value(results_raw));
+            result_promise->set_property("__allkeyed_remaining__", Value((double)keys.size()));
+
+            if (keys.empty()) {
+                result_promise->fulfill(Value(results_raw));
+                return Value(result_promise_obj.release());
+            }
+
+            for (size_t i = 0; i < keys.size(); i++) {
+                std::string key = keys[i];
+                Value element = dict->get_property(key);
+
+                Promise* p = nullptr;
+                std::unique_ptr<Object> wrapped_obj;
+                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
+                if (p_cast) {
+                    p = p_cast;
+                } else {
+                    wrapped_obj = ObjectFactory::create_promise(&ctx);
+                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
+                    p = static_cast<Promise*>(wrapped_obj.release());
+                }
+
+                Promise* rp = result_promise;
+
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value val = args.empty() ? Value() : args[0];
+                        Value res_v = rp->get_property("__allkeyed_results__");
+                        if (res_v.is_object()) res_v.as_object()->set_property(key, val);
+                        Value rem_v = rp->get_property("__allkeyed_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__allkeyed_remaining__", Value(remaining));
+                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__allkeyed_results__"));
+                        return Value();
+                    });
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value reason = args.empty() ? Value() : args[0];
+                        rp->reject(reason);
+                        return Value();
+                    });
+
+                std::string k_ful = "__allkeyed_ful_" + std::to_string(i) + "__";
+                std::string k_rej = "__allkeyed_rej_" + std::to_string(i) + "__";
+                Function* ful_fn = on_ful.get();
+                Function* rej_fn = on_rej.get();
+                result_promise->set_property(k_ful, Value(on_ful.release()));
+                result_promise->set_property(k_rej, Value(on_rej.release()));
+
+                p->then(ful_fn, rej_fn);
+            }
+
+            return Value(result_promise_obj.release());
+        });
+    promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()));
+
+    auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty() || !args[0].is_object()) {
+                ctx.throw_type_error("Promise.allSettledKeyed argument must be an object");
+                return Value();
+            }
+            Object* dict = args[0].as_object();
+            std::vector<std::string> keys;
+            for (const auto& k : dict->get_enumerable_keys()) {
+                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) keys.push_back(k);
+            }
+
+            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
+            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
+
+            auto results_obj = ObjectFactory::create_object();
+            results_obj->set_prototype(nullptr);
+            for (const auto& k : keys) results_obj->set_property(k, Value());
+            Object* results_raw = results_obj.release();
+            result_promise->set_property("__settledkeyed_results__", Value(results_raw));
+            result_promise->set_property("__settledkeyed_remaining__", Value((double)keys.size()));
+
+            if (keys.empty()) {
+                result_promise->fulfill(Value(results_raw));
+                return Value(result_promise_obj.release());
+            }
+
+            for (size_t i = 0; i < keys.size(); i++) {
+                std::string key = keys[i];
+                Value element = dict->get_property(key);
+
+                Promise* p = nullptr;
+                std::unique_ptr<Object> wrapped_obj;
+                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
+                if (p_cast) {
+                    p = p_cast;
+                } else {
+                    wrapped_obj = ObjectFactory::create_promise(&ctx);
+                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
+                    p = static_cast<Promise*>(wrapped_obj.release());
+                }
+
+                Promise* rp = result_promise;
+
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value val = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("fulfilled")));
+                        settled->set_property("value", val);
+                        Value res_v = rp->get_property("__settledkeyed_results__");
+                        if (res_v.is_object()) res_v.as_object()->set_property(key, Value(settled.release()));
+                        Value rem_v = rp->get_property("__settledkeyed_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__settledkeyed_remaining__", Value(remaining));
+                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settledkeyed_results__"));
+                        return Value();
+                    });
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (!rp->is_pending()) return Value();
+                        Value reason = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("rejected")));
+                        settled->set_property("reason", reason);
+                        Value res_v = rp->get_property("__settledkeyed_results__");
+                        if (res_v.is_object()) res_v.as_object()->set_property(key, Value(settled.release()));
+                        Value rem_v = rp->get_property("__settledkeyed_remaining__");
+                        double remaining = rem_v.to_number() - 1.0;
+                        rp->set_property("__settledkeyed_remaining__", Value(remaining));
+                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settledkeyed_results__"));
+                        return Value();
+                    });
+
+                std::string k_ful = "__settledkeyed_ful_" + std::to_string(i) + "__";
+                std::string k_rej = "__settledkeyed_rej_" + std::to_string(i) + "__";
+                Function* ful_fn = on_ful.get();
+                Function* rej_fn = on_rej.get();
+                result_promise->set_property(k_ful, Value(on_ful.release()));
+                result_promise->set_property(k_rej, Value(on_rej.release()));
+
+                p->then(ful_fn, rej_fn);
+            }
+
+            return Value(result_promise_obj.release());
+        });
+    promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()));
+
     auto promise_any_static = ObjectFactory::create_native_function("any",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
