@@ -2229,12 +2229,22 @@ Value WhileStatement::evaluate(Context& ctx) {
                     }
                     break;
                 }
+            } catch (const YieldException&) {
+                throw;
+            } catch (const GeneratorReturnException&) {
+                ctx.set_current_loop_label(prev_loop_label);
+                throw;
             } catch (...) {
                 ctx.throw_exception(Value(std::string("Error in while-loop body execution")));
                 ctx.set_current_loop_label(prev_loop_label);
                 return Value();
             }
         }
+    } catch (const YieldException&) {
+        throw;
+    } catch (const GeneratorReturnException&) {
+        ctx.set_current_loop_label(prev_loop_label);
+        throw;
     } catch (...) {
         ctx.throw_exception(Value(std::string("Fatal error in while-loop execution")));
         ctx.set_current_loop_label(prev_loop_label);
@@ -2308,6 +2318,11 @@ Value DoWhileStatement::evaluate(Context& ctx) {
                     }
                 }
 
+            } catch (const YieldException&) {
+                throw;
+            } catch (const GeneratorReturnException&) {
+                ctx.set_current_loop_label(prev_loop_label);
+                throw;
             } catch (...) {
                 ctx.set_current_loop_label(prev_loop_label);
                 ctx.throw_exception(Value(std::string("Error in do-while-loop body execution")));
@@ -2333,6 +2348,11 @@ Value DoWhileStatement::evaluate(Context& ctx) {
 
         } while (true);
 
+    } catch (const YieldException&) {
+        throw;
+    } catch (const GeneratorReturnException&) {
+        ctx.set_current_loop_label(prev_loop_label);
+        throw;
     } catch (...) {
         ctx.set_current_loop_label(prev_loop_label);
         ctx.throw_exception(Value(std::string("Fatal error in do-while-loop execution")));

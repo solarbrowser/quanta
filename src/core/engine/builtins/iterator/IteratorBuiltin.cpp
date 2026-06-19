@@ -9,8 +9,74 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
+#include <cmath>
 
 namespace Quanta {
+
+// Steps an iterator using an already-resolved next method, not a re-fetched one -- avoids
+// re-triggering a `next` getter with side effects on every step.
+static std::pair<Value, bool> iterator_helper_step(Context& ctx, const Value& iter_val, const Value& next_method) {
+    if (!next_method.is_function()) {
+        ctx.throw_type_error("Iterator helper's underlying next is not a function");
+        return {Value(), true};
+    }
+    Value result = next_method.as_function()->call(ctx, {}, iter_val);
+    if (ctx.has_exception()) return {Value(), true};
+    if (!result.is_object()) {
+        ctx.throw_type_error("Iterator result is not an object");
+        return {Value(), true};
+    }
+    bool done = result.as_object()->get_property("done").to_boolean();
+    Value val = done ? Value() : result.as_object()->get_property("value");
+    return {val, done};
+}
+
+// IteratorClose: calls iter.return() if present, preserving any already-pending exception.
+static void iterator_helper_close(Context& ctx, const Value& iter_val) {
+    if (!iter_val.is_object() && !iter_val.is_function()) return;
+    Object* obj = iter_val.is_function() ? static_cast<Object*>(iter_val.as_function()) : iter_val.as_object();
+    Value ret_fn = obj->get_property("return");
+    if (!ret_fn.is_function()) return;
+    bool had_exception = ctx.has_exception();
+    Value pending = had_exception ? ctx.get_exception() : Value();
+    if (had_exception) ctx.clear_exception();
+    ret_fn.as_function()->call(ctx, {}, iter_val);
+    if (had_exception) {
+        ctx.clear_exception();
+        ctx.throw_exception(pending, true);
+    }
+}
+
+static Object* make_iter_result(const Value& value, bool done) {
+    auto result = ObjectFactory::create_object();
+    result->set_property("value", done ? Value() : value);
+    result->set_property("done", Value(done));
+    return result.release();
+}
+
+// Scaffolding shared by all Iterator Helpers: stores iter/next as own properties (so the GC
+// reaches them through the object graph instead of a captured raw pointer), inherits
+// Symbol.iterator from iterator_proto, and wires up `return`. Callers add their own `next`.
+static Object* create_iterator_helper_base(Object* iterator_proto, const Value& iter_val, const Value& next_method) {
+    auto helper = ObjectFactory::create_object();
+    helper->set_prototype(iterator_proto);
+    helper->set_property("__ih_iter__", iter_val);
+    helper->set_property("__ih_next__", next_method);
+
+    auto return_fn = ObjectFactory::create_native_function("return",
+        [](Context& ctx, const std::vector<Value>&) -> Value {
+            Object* self = ctx.get_this_binding();
+            if (self) {
+                Value inner_val = self->get_property("__ih_inner__");
+                if (inner_val.is_object() || inner_val.is_function()) iterator_helper_close(ctx, inner_val);
+                iterator_helper_close(ctx, self->get_property("__ih_iter__"));
+            }
+            return Value(make_iter_result(Value(), true));
+        }, 0);
+    helper->set_property("return", Value(return_fn.release()));
+
+    return helper.release();
+}
 
 void register_iterator_helpers(Context& ctx) {
     // Add ES2025 Iterator Helpers to %IteratorPrototype%
@@ -81,53 +147,170 @@ void register_iterator_helpers(Context& ctx) {
             },1);
         iter_proto_obj->set_property("find", Value(iter_find2.release()));
 
+        // Lazy Iterator Helpers, mirroring register_iterator_constructor's versions below.
         auto iter_map2 = ObjectFactory::create_native_function("map",
-            [call_iter_next](Context& ctx, const std::vector<Value>& args) -> Value {
-                Object* it=ctx.get_this_binding(); if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("map");return Value();}
-                Function* cb=args[0].as_function(); auto a=ObjectFactory::create_array(); uint32_t i=0;
-                while(true){auto[v,d]=call_iter_next(ctx,it); if(ctx.has_exception()||d)break; Value r=cb->call(ctx,{v,Value((double)i)},Value()); if(ctx.has_exception())break; a->set_property(std::to_string(i++),r);}
-                a->set_property("length",Value((double)i)); Value vf=a->get_property("values"); if(vf.is_function())return vf.as_function()->call(ctx,{},Value(a.release())); return Value(a.release());
-            },1);
+            [iter_proto_obj](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* iter = ctx.get_this_binding();
+                if (!iter) { ctx.throw_type_error("map called on non-object"); return Value(); }
+                if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("map requires a callable"); return Value(); }
+                Value next_method = iter->get_property("next");
+                if (ctx.has_exception()) return Value();
+                if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+                Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
+                helper->set_property("__ih_fn__", args[0]);
+                helper->set_property("__ih_counter__", Value(0.0));
+
+                auto next_fn = ObjectFactory::create_native_function("next",
+                    [](Context& ctx, const std::vector<Value>&) -> Value {
+                        Object* self = ctx.get_this_binding();
+                        if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                        Value mapper_val = self->get_property("__ih_fn__");
+                        if (!mapper_val.is_function()) return Value(make_iter_result(Value(), true));
+                        Value iter_val = self->get_property("__ih_iter__");
+                        Value next_method = self->get_property("__ih_next__");
+                        double counter = self->get_property("__ih_counter__").to_number();
+
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+
+                        Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
+                        self->set_property("__ih_counter__", Value(counter + 1));
+                        if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
+                        return Value(make_iter_result(mapped, false));
+                    }, 0);
+                helper->set_property("next", Value(next_fn.release()));
+                return Value(helper);
+            }, 1);
         iter_proto_obj->set_property("map", Value(iter_map2.release()));
 
         auto iter_filter2 = ObjectFactory::create_native_function("filter",
-            [call_iter_next](Context& ctx, const std::vector<Value>& args) -> Value {
-                Object* it=ctx.get_this_binding(); if(!it||args.empty()||!args[0].is_function()){ctx.throw_type_error("filter");return Value();}
-                Function* cb=args[0].as_function(); auto a=ObjectFactory::create_array(); uint32_t i=0,o=0;
-                while(true){auto[v,d]=call_iter_next(ctx,it); if(ctx.has_exception()||d)break; if(cb->call(ctx,{v,Value((double)i++)},Value()).to_boolean())a->set_property(std::to_string(o++),v);}
-                a->set_property("length",Value((double)o)); Value vf=a->get_property("values"); if(vf.is_function())return vf.as_function()->call(ctx,{},Value(a.release())); return Value(a.release());
-            },1);
+            [iter_proto_obj](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* iter = ctx.get_this_binding();
+                if (!iter) { ctx.throw_type_error("filter called on non-object"); return Value(); }
+                if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("filter requires a callable"); return Value(); }
+                Value next_method = iter->get_property("next");
+                if (ctx.has_exception()) return Value();
+                if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+                Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
+                helper->set_property("__ih_fn__", args[0]);
+                helper->set_property("__ih_counter__", Value(0.0));
+
+                auto next_fn = ObjectFactory::create_native_function("next",
+                    [](Context& ctx, const std::vector<Value>&) -> Value {
+                        Object* self = ctx.get_this_binding();
+                        if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                        Value pred_val = self->get_property("__ih_fn__");
+                        if (!pred_val.is_function()) return Value(make_iter_result(Value(), true));
+                        Value iter_val = self->get_property("__ih_iter__");
+                        Value next_method = self->get_property("__ih_next__");
+                        double counter = self->get_property("__ih_counter__").to_number();
+
+                        while (true) {
+                            auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                            if (ctx.has_exception()) return Value();
+                            if (done) return Value(make_iter_result(Value(), true));
+                            Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
+                            counter += 1;
+                            self->set_property("__ih_counter__", Value(counter));
+                            if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
+                            if (keep.to_boolean()) return Value(make_iter_result(val, false));
+                        }
+                    }, 0);
+                helper->set_property("next", Value(next_fn.release()));
+                return Value(helper);
+            }, 1);
         iter_proto_obj->set_property("filter", Value(iter_filter2.release()));
 
         auto iter_take2 = ObjectFactory::create_native_function("take",
-            [call_iter_next](Context& ctx, const std::vector<Value>& args) -> Value {
-                Object* it=ctx.get_this_binding(); if(!it){return Value();}
-                uint32_t lim=args.empty()?0:(uint32_t)args[0].to_number(); auto a=ObjectFactory::create_array(); uint32_t i=0;
-                while(i<lim){auto[v,d]=call_iter_next(ctx,it); if(ctx.has_exception()||d)break; a->set_property(std::to_string(i++),v);}
-                a->set_property("length",Value((double)i)); Value vf=a->get_property("values"); if(vf.is_function())return vf.as_function()->call(ctx,{},Value(a.release())); return Value(a.release());
-            },1);
+            [iter_proto_obj](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* iter = ctx.get_this_binding();
+                if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
+                double limit = args.empty() ? 0.0 : args[0].to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(limit) || limit < 0) { ctx.throw_range_error("Invalid count"); return Value(); }
+                Value next_method = iter->get_property("next");
+                if (ctx.has_exception()) return Value();
+                if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+                Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
+                helper->set_property("__ih_remaining__", Value(limit));
+
+                auto next_fn = ObjectFactory::create_native_function("next",
+                    [](Context& ctx, const std::vector<Value>&) -> Value {
+                        Object* self = ctx.get_this_binding();
+                        if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                        Value iter_val = self->get_property("__ih_iter__");
+                        double remaining = self->get_property("__ih_remaining__").to_number();
+                        if (remaining <= 0) { iterator_helper_close(ctx, iter_val); return Value(make_iter_result(Value(), true)); }
+                        self->set_property("__ih_remaining__", Value(remaining - 1));
+                        Value next_method = self->get_property("__ih_next__");
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+                        return Value(make_iter_result(val, false));
+                    }, 0);
+                helper->set_property("next", Value(next_fn.release()));
+                return Value(helper);
+            }, 1);
         iter_proto_obj->set_property("take", Value(iter_take2.release()));
 
         auto iter_drop2 = ObjectFactory::create_native_function("drop",
-            [call_iter_next](Context& ctx, const std::vector<Value>& args) -> Value {
-                Object* it=ctx.get_this_binding(); if(!it){return Value();}
-                uint32_t sk=args.empty()?0:(uint32_t)args[0].to_number();
-                for(uint32_t i=0;i<sk;i++){auto[v,d]=call_iter_next(ctx,it);(void)v;if(ctx.has_exception()||d)break;}
-                auto a=ObjectFactory::create_array(); uint32_t i=0;
-                while(true){auto[v,d]=call_iter_next(ctx,it); if(ctx.has_exception()||d)break; a->set_property(std::to_string(i++),v);}
-                a->set_property("length",Value((double)i)); Value vf=a->get_property("values"); if(vf.is_function())return vf.as_function()->call(ctx,{},Value(a.release())); return Value(a.release());
-            },1);
+            [iter_proto_obj](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* iter = ctx.get_this_binding();
+                if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
+                double limit = args.empty() ? 0.0 : args[0].to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(limit) || limit < 0) { ctx.throw_range_error("Invalid count"); return Value(); }
+                Value next_method = iter->get_property("next");
+                if (ctx.has_exception()) return Value();
+                if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+                Object* helper = create_iterator_helper_base(iter_proto_obj, Value(iter), next_method);
+                helper->set_property("__ih_remaining__", Value(limit));
+
+                auto next_fn = ObjectFactory::create_native_function("next",
+                    [](Context& ctx, const std::vector<Value>&) -> Value {
+                        Object* self = ctx.get_this_binding();
+                        if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                        Value iter_val = self->get_property("__ih_iter__");
+                        Value next_method = self->get_property("__ih_next__");
+                        double remaining = self->get_property("__ih_remaining__").to_number();
+                        while (remaining > 0) {
+                            auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                            (void)val;
+                            remaining -= 1;
+                            self->set_property("__ih_remaining__", Value(remaining));
+                            if (ctx.has_exception()) return Value();
+                            if (done) return Value(make_iter_result(Value(), true));
+                        }
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+                        return Value(make_iter_result(val, false));
+                    }, 0);
+                helper->set_property("next", Value(next_fn.release()));
+                return Value(helper);
+            }, 1);
         iter_proto_obj->set_property("drop", Value(iter_drop2.release()));
     }
 }
 
 void register_iterator_constructor(Context& ctx) {
-    auto iterator_constructor = ObjectFactory::create_native_function("Iterator",
+    auto iterator_constructor = ObjectFactory::create_native_constructor("Iterator",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            auto iterator_obj = ObjectFactory::create_object();
+            // Iterator is abstract: only equals new.target for a direct `new Iterator()`, not via super().
+            Value new_target = ctx.get_new_target();
+            if (new_target.is_function() && new_target.as_function() == ctx.get_built_in_object("Iterator")) {
+                ctx.throw_type_error("Abstract class Iterator not directly constructable");
+                return Value();
+            }
 
             Object* constructor = ctx.get_this_binding();
+            auto iterator_obj = ObjectFactory::create_object();
             if (constructor && constructor->is_function()) {
                 Value prototype_val = constructor->get_property("prototype");
                 if (prototype_val.is_object()) {
@@ -270,138 +453,219 @@ void register_iterator_constructor(Context& ctx) {
         }, 1);
     iterator_prototype->set_property("find", Value(iter_find_fn.release()));
 
-    // map - returns a new iterator
+    // Lazy Iterator Helpers: pull from the source only as values are demanded.
+    Object* iterator_proto_ptr = iterator_prototype.get();
+
     auto iter_map_fn = ObjectFactory::create_native_function("map",
-        [call_next](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* iter = ctx.get_this_binding();
-            if (!iter || args.empty() || !args[0].is_function()) { ctx.throw_type_error("map requires function"); return Value(); }
-            Function* mapper = args[0].as_function();
-            // Collect all mapped values into array-backed iterator
-            auto arr = ObjectFactory::create_array();
-            uint32_t idx = 0;
-            while (true) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                Value mapped = mapper->call(ctx, {val, Value((double)idx)}, Value());
-                if (ctx.has_exception()) break;
-                arr->set_property(std::to_string(idx), mapped);
-                idx++;
-            }
-            arr->set_property("length", Value((double)idx));
-            // Return array iterator
-            Value values_fn = arr->get_property("values");
-            if (values_fn.is_function()) return values_fn.as_function()->call(ctx, {}, Value(arr.release()));
-            return Value(arr.release());
+            if (!iter) { ctx.throw_type_error("map called on non-object"); return Value(); }
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("map requires a callable"); return Value(); }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_property("__ih_fn__", args[0]);
+            helper->set_property("__ih_counter__", Value(0.0));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    Value mapper_val = self->get_property("__ih_fn__");
+                    if (!mapper_val.is_function()) return Value(make_iter_result(Value(), true));
+                    Value iter_val = self->get_property("__ih_iter__");
+                    Value next_method = self->get_property("__ih_next__");
+                    double counter = self->get_property("__ih_counter__").to_number();
+
+                    auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                    if (ctx.has_exception()) return Value();
+                    if (done) return Value(make_iter_result(Value(), true));
+
+                    Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
+                    self->set_property("__ih_counter__", Value(counter + 1));
+                    if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
+                    return Value(make_iter_result(mapped, false));
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            return Value(helper);
         }, 1);
     iterator_prototype->set_property("map", Value(iter_map_fn.release()));
 
-    // filter
     auto iter_filter_fn = ObjectFactory::create_native_function("filter",
-        [call_next](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* iter = ctx.get_this_binding();
-            if (!iter || args.empty() || !args[0].is_function()) { ctx.throw_type_error("filter requires function"); return Value(); }
-            Function* pred = args[0].as_function();
-            auto arr = ObjectFactory::create_array();
-            uint32_t idx = 0, out = 0;
-            while (true) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                Value r = pred->call(ctx, {val, Value((double)idx++)}, Value());
-                if (ctx.has_exception()) break;
-                if (r.to_boolean()) { arr->set_property(std::to_string(out++), val); }
-            }
-            arr->set_property("length", Value((double)out));
-            Value values_fn = arr->get_property("values");
-            if (values_fn.is_function()) return values_fn.as_function()->call(ctx, {}, Value(arr.release()));
-            return Value(arr.release());
+            if (!iter) { ctx.throw_type_error("filter called on non-object"); return Value(); }
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("filter requires a callable"); return Value(); }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_property("__ih_fn__", args[0]);
+            helper->set_property("__ih_counter__", Value(0.0));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    Value pred_val = self->get_property("__ih_fn__");
+                    if (!pred_val.is_function()) return Value(make_iter_result(Value(), true));
+                    Value iter_val = self->get_property("__ih_iter__");
+                    Value next_method = self->get_property("__ih_next__");
+                    double counter = self->get_property("__ih_counter__").to_number();
+
+                    while (true) {
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+                        Value keep = pred_val.as_function()->call(ctx, {val, Value(counter)}, Value());
+                        counter += 1;
+                        self->set_property("__ih_counter__", Value(counter));
+                        if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
+                        if (keep.to_boolean()) return Value(make_iter_result(val, false));
+                    }
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            return Value(helper);
         }, 1);
     iterator_prototype->set_property("filter", Value(iter_filter_fn.release()));
 
-    // take
     auto iter_take_fn = ObjectFactory::create_native_function("take",
-        [call_next](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* iter = ctx.get_this_binding();
-            if (!iter) { ctx.throw_type_error("take on non-object"); return Value(); }
-            uint32_t limit = args.empty() ? 0 : (uint32_t)args[0].to_number();
-            auto arr = ObjectFactory::create_array();
-            for (uint32_t i = 0; i < limit; i++) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                arr->set_property(std::to_string(i), val);
-                arr->set_property("length", Value((double)(i+1)));
-            }
-            Value values_fn = arr->get_property("values");
-            if (values_fn.is_function()) return values_fn.as_function()->call(ctx, {}, Value(arr.release()));
-            return Value(arr.release());
+            if (!iter) { ctx.throw_type_error("take called on non-object"); return Value(); }
+            double limit = args.empty() ? 0.0 : args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(limit) || limit < 0) { ctx.throw_range_error("Invalid count"); return Value(); }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_property("__ih_remaining__", Value(limit));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    Value iter_val = self->get_property("__ih_iter__");
+                    double remaining = self->get_property("__ih_remaining__").to_number();
+                    if (remaining <= 0) { iterator_helper_close(ctx, iter_val); return Value(make_iter_result(Value(), true)); }
+                    self->set_property("__ih_remaining__", Value(remaining - 1));
+                    Value next_method = self->get_property("__ih_next__");
+                    auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                    if (ctx.has_exception()) return Value();
+                    if (done) return Value(make_iter_result(Value(), true));
+                    return Value(make_iter_result(val, false));
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            return Value(helper);
         }, 1);
     iterator_prototype->set_property("take", Value(iter_take_fn.release()));
 
-    // drop
     auto iter_drop_fn = ObjectFactory::create_native_function("drop",
-        [call_next](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* iter = ctx.get_this_binding();
-            if (!iter) { ctx.throw_type_error("drop on non-object"); return Value(); }
-            uint32_t skip = args.empty() ? 0 : (uint32_t)args[0].to_number();
-            for (uint32_t i = 0; i < skip; i++) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                (void)val;
-            }
-            // Return remaining iterator
-            auto arr = ObjectFactory::create_array();
-            uint32_t idx = 0;
-            while (true) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                arr->set_property(std::to_string(idx++), val);
-            }
-            arr->set_property("length", Value((double)idx));
-            Value values_fn = arr->get_property("values");
-            if (values_fn.is_function()) return values_fn.as_function()->call(ctx, {}, Value(arr.release()));
-            return Value(arr.release());
+            if (!iter) { ctx.throw_type_error("drop called on non-object"); return Value(); }
+            double limit = args.empty() ? 0.0 : args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(limit) || limit < 0) { ctx.throw_range_error("Invalid count"); return Value(); }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_property("__ih_remaining__", Value(limit));
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    Value iter_val = self->get_property("__ih_iter__");
+                    Value next_method = self->get_property("__ih_next__");
+                    double remaining = self->get_property("__ih_remaining__").to_number();
+                    while (remaining > 0) {
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                        (void)val;
+                        remaining -= 1;
+                        self->set_property("__ih_remaining__", Value(remaining));
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+                    }
+                    auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+                    if (ctx.has_exception()) return Value();
+                    if (done) return Value(make_iter_result(Value(), true));
+                    return Value(make_iter_result(val, false));
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            return Value(helper);
         }, 1);
     iterator_prototype->set_property("drop", Value(iter_drop_fn.release()));
 
-    // flatMap
     auto iter_flatMap_fn = ObjectFactory::create_native_function("flatMap",
-        [call_next](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* iter = ctx.get_this_binding();
-            if (!iter || args.empty() || !args[0].is_function()) { ctx.throw_type_error("flatMap requires function"); return Value(); }
-            Function* mapper = args[0].as_function();
-            auto arr = ObjectFactory::create_array();
-            uint32_t out = 0, idx = 0;
-            while (true) {
-                auto [val, done] = call_next(ctx, iter);
-                if (ctx.has_exception() || done) break;
-                Value mapped = mapper->call(ctx, {val, Value((double)idx++)}, Value());
-                if (ctx.has_exception()) break;
-                // Iterate over mapped value
-                if (mapped.is_object()) {
-                    Symbol* fmap_iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                    Value iter_sym_val = fmap_iter_sym
-                        ? mapped.as_object()->get_property(fmap_iter_sym->to_property_key())
-                        : mapped.as_object()->get_property("@@iterator");
-                    if (!iter_sym_val.is_function()) {
-                        iter_sym_val = mapped.as_object()->get_property("@@iterator");
-                    }
-                    if (iter_sym_val.is_function()) {
-                        Value inner = iter_sym_val.as_function()->call(ctx, {}, mapped);
-                        if (inner.is_object()) {
-                            while (true) {
-                                auto [iv, id] = call_next(ctx, inner.as_object());
-                                if (ctx.has_exception() || id) break;
-                                arr->set_property(std::to_string(out++), iv);
-                            }
-                            continue;
+            if (!iter) { ctx.throw_type_error("flatMap called on non-object"); return Value(); }
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("flatMap requires a callable"); return Value(); }
+            Value next_method = iter->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_method.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return Value(); }
+
+            Object* helper = create_iterator_helper_base(iterator_proto_ptr, Value(iter), next_method);
+            helper->set_property("__ih_fn__", args[0]);
+            helper->set_property("__ih_counter__", Value(0.0));
+            helper->set_property("__ih_inner__", Value());
+            helper->set_property("__ih_inner_next__", Value());
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    Value mapper_val = self->get_property("__ih_fn__");
+                    if (!mapper_val.is_function()) return Value(make_iter_result(Value(), true));
+                    Value iter_val = self->get_property("__ih_iter__");
+                    Value outer_next = self->get_property("__ih_next__");
+
+                    while (true) {
+                        Value inner_val = self->get_property("__ih_inner__");
+                        if (inner_val.is_object() || inner_val.is_function()) {
+                            Value inner_next = self->get_property("__ih_inner_next__");
+                            auto [ival, idone] = iterator_helper_step(ctx, inner_val, inner_next);
+                            if (ctx.has_exception()) return Value();
+                            if (!idone) return Value(make_iter_result(ival, false));
+                            self->set_property("__ih_inner__", Value());
+                            self->set_property("__ih_inner_next__", Value());
                         }
+
+                        double counter = self->get_property("__ih_counter__").to_number();
+                        auto [val, done] = iterator_helper_step(ctx, iter_val, outer_next);
+                        if (ctx.has_exception()) return Value();
+                        if (done) return Value(make_iter_result(Value(), true));
+
+                        Value mapped = mapper_val.as_function()->call(ctx, {val, Value(counter)}, Value());
+                        self->set_property("__ih_counter__", Value(counter + 1));
+                        if (ctx.has_exception()) { iterator_helper_close(ctx, iter_val); return Value(); }
+                        if (!mapped.is_object() && !mapped.is_function()) { ctx.throw_type_error("flatMap mapper must return an iterable"); return Value(); }
+
+                        Object* mapped_obj = mapped.is_function() ? static_cast<Object*>(mapped.as_function()) : mapped.as_object();
+                        Symbol* fmap_iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                        Value iter_fn = fmap_iter_sym ? mapped_obj->get_property(fmap_iter_sym->to_property_key()) : Value();
+                        if (!iter_fn.is_function()) { ctx.throw_type_error("flatMap mapper result is not iterable"); return Value(); }
+                        Value inner = iter_fn.as_function()->call(ctx, {}, mapped);
+                        if (ctx.has_exception()) return Value();
+                        if (!inner.is_object() && !inner.is_function()) { ctx.throw_type_error("Result of [Symbol.iterator] is not an object"); return Value(); }
+                        Object* inner_obj = inner.is_function() ? static_cast<Object*>(inner.as_function()) : inner.as_object();
+                        Value inner_next_method = inner_obj->get_property("next");
+                        if (ctx.has_exception()) return Value();
+                        self->set_property("__ih_inner__", inner);
+                        self->set_property("__ih_inner_next__", inner_next_method);
+                        // loop: pull from the freshly-set inner iterator next time around
                     }
-                }
-                arr->set_property(std::to_string(out++), mapped);
-            }
-            arr->set_property("length", Value((double)out));
-            Value values_fn = arr->get_property("values");
-            if (values_fn.is_function()) return values_fn.as_function()->call(ctx, {}, Value(arr.release()));
-            return Value(arr.release());
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            return Value(helper);
         }, 1);
     iterator_prototype->set_property("flatMap", Value(iter_flatMap_fn.release()));
 
