@@ -78,6 +78,107 @@ static Object* create_iterator_helper_base(Object* iterator_proto, const Value& 
     return helper.release();
 }
 
+// Closes all alive columns except `skip`, for early abandonment (one column threw, or the zip ended).
+static void iterator_zip_close_others(Context& ctx, Object* iters_arr, Object* alive_arr, uint32_t count, uint32_t skip) {
+    for (uint32_t j = count; j-- > 0;) {
+        if (j == skip) continue;
+        if (alive_arr->get_property(std::to_string(j)).to_boolean())
+            iterator_helper_close(ctx, iters_arr->get_property(std::to_string(j)));
+    }
+}
+
+// Shared next() for zip/zipKeyed: steps every alive column, padding exhausted ones in "longest"
+// mode, packaging the row as an array or (zipKeyed) a null-prototype keyed object.
+static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
+    Object* self = ctx.get_this_binding();
+    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+    if (self->get_property("__iz_done__").to_boolean()) return Value(make_iter_result(Value(), true));
+
+    uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
+    std::string mode = self->get_property("__iz_mode__").to_string();
+    bool keyed = self->get_property("__iz_keyed__").to_boolean();
+    Object* iters_arr = self->get_property("__iz_iters__").as_object();
+    Object* nexts_arr = self->get_property("__iz_nexts__").as_object();
+    Object* padding_arr = self->get_property("__iz_padding__").as_object();
+    Object* alive_arr = self->get_property("__iz_alive__").as_object();
+    Object* keys_arr = keyed ? self->get_property("__iz_keys__").as_object() : nullptr;
+
+    if (count == 0) { self->set_property("__iz_done__", Value(true)); return Value(make_iter_result(Value(), true)); }
+
+    auto results = keyed ? ObjectFactory::create_object() : ObjectFactory::create_array();
+    if (keyed) results->set_prototype(nullptr);
+
+    for (uint32_t i = 0; i < count; i++) {
+        std::string out_key = keyed ? keys_arr->get_property(std::to_string(i)).to_string() : std::to_string(i);
+        bool alive = alive_arr->get_property(std::to_string(i)).to_boolean();
+        if (!alive) {
+            results->set_property(out_key, padding_arr->get_property(std::to_string(i)));
+            continue;
+        }
+        Value iter_val = iters_arr->get_property(std::to_string(i));
+        Value next_method = nexts_arr->get_property(std::to_string(i));
+        auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
+        if (ctx.has_exception()) {
+            self->set_property("__iz_done__", Value(true));
+            iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
+            return Value();
+        }
+        if (done) {
+            if (mode == "shortest") {
+                self->set_property("__iz_done__", Value(true));
+                iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
+                return Value(make_iter_result(Value(), true));
+            } else if (mode == "strict") {
+                self->set_property("__iz_done__", Value(true));
+                if (i != 0) {
+                    iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
+                    ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)");
+                    return Value();
+                }
+                bool mismatch = false;
+                for (uint32_t j = 1; j < count; j++) {
+                    if (!alive_arr->get_property(std::to_string(j)).to_boolean()) continue;
+                    auto [jval, jdone] = iterator_helper_step(ctx, iters_arr->get_property(std::to_string(j)), nexts_arr->get_property(std::to_string(j)));
+                    (void)jval;
+                    if (ctx.has_exception()) {
+                        iterator_zip_close_others(ctx, iters_arr, alive_arr, count, j);
+                        return Value();
+                    }
+                    if (!jdone) mismatch = true;
+                }
+                if (mismatch) { ctx.throw_type_error("Iterator.zip: iterables are not the same length (strict mode)"); return Value(); }
+                return Value(make_iter_result(Value(), true));
+            } else { // longest
+                alive_arr->set_property(std::to_string(i), Value(false));
+                results->set_property(out_key, padding_arr->get_property(std::to_string(i)));
+                continue;
+            }
+        }
+        results->set_property(out_key, val);
+    }
+
+    if (mode == "longest") {
+        bool all_dead = true;
+        for (uint32_t i = 0; i < count; i++) if (alive_arr->get_property(std::to_string(i)).to_boolean()) { all_dead = false; break; }
+        if (all_dead) { self->set_property("__iz_done__", Value(true)); return Value(make_iter_result(Value(), true)); }
+    }
+
+    if (!keyed) results->set_length(count);
+    return Value(make_iter_result(Value(results.release()), false));
+}
+
+static Value iterator_zip_return(Context& ctx, const std::vector<Value>&) {
+    Object* self = ctx.get_this_binding();
+    if (self && !self->get_property("__iz_done__").to_boolean()) {
+        self->set_property("__iz_done__", Value(true));
+        uint32_t count = (uint32_t)self->get_property("__iz_count__").to_number();
+        Object* iters_arr = self->get_property("__iz_iters__").as_object();
+        Object* alive_arr = self->get_property("__iz_alive__").as_object();
+        iterator_zip_close_others(ctx, iters_arr, alive_arr, count, count);
+    }
+    return Value(make_iter_result(Value(), true));
+}
+
 void register_iterator_helpers(Context& ctx) {
     // Add ES2025 Iterator Helpers to %IteratorPrototype%
     if (Iterator::s_iterator_prototype_) {
@@ -98,7 +199,7 @@ void register_iterator_helpers(Context& ctx) {
                 (void)args; Object* it = ctx.get_this_binding(); if (!it) return Value();
                 auto a = ObjectFactory::create_array(); uint32_t i=0;
                 while(true){auto[v,d]=call_iter_next(ctx,it); if(ctx.has_exception()||d)break; a->set_property(std::to_string(i++),v);}
-                a->set_property("length",Value((double)i)); return Value(a.release());
+                a->set_length(i); return Value(a.release());
             },0);
         iter_proto_obj->set_property("toArray", Value(iter_toArray.release()));
 
@@ -361,7 +462,7 @@ void register_iterator_constructor(Context& ctx) {
                 if (ctx.has_exception() || done) break;
                 arr->set_property(std::to_string(idx++), val);
             }
-            arr->set_property("length", Value((double)idx));
+            arr->set_length(idx);
             return Value(arr.release());
         }, 0);
     iterator_prototype->set_property("toArray", Value(iter_toArray_fn.release()));
@@ -704,6 +805,394 @@ void register_iterator_constructor(Context& ctx) {
             return Value();
         }, 1);
     iterator_constructor->set_property("from", Value(iterator_from.release()));
+
+    // Static Iterator.concat(...items): lazily exhausts each item in turn; [Symbol.iterator] is
+    // resolved eagerly per item but only called once that item is reached.
+    auto iterator_concat = ObjectFactory::create_native_function("concat",
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            auto items = ObjectFactory::create_array();
+            auto methods = ObjectFactory::create_array();
+            uint32_t n = 0;
+            for (const auto& item : args) {
+                if (!item.is_object() && !item.is_function()) { ctx.throw_type_error("Iterator.concat argument must be an object"); return Value(); }
+                Object* item_obj = item.is_function() ? static_cast<Object*>(item.as_function()) : item.as_object();
+                Value method = iter_sym ? item_obj->get_property(iter_sym->to_property_key()) : Value();
+                if (ctx.has_exception()) return Value();
+                if (method.is_null() || method.is_undefined()) { ctx.throw_type_error("Iterator.concat argument is not iterable"); return Value(); }
+                if (!method.is_function()) { ctx.throw_type_error("[Symbol.iterator] is not a function"); return Value(); }
+                items->set_property(std::to_string(n), item);
+                methods->set_property(std::to_string(n), method);
+                n++;
+            }
+            items->set_property("length", Value((double)n));
+            methods->set_property("length", Value((double)n));
+
+            auto helper = ObjectFactory::create_object();
+            helper->set_prototype(iterator_proto_ptr);
+            helper->set_property("__ic_items__", Value(items.release()));
+            helper->set_property("__ic_methods__", Value(methods.release()));
+            helper->set_property("__ic_index__", Value(0.0));
+            helper->set_property("__ic_inner__", Value());
+            helper->set_property("__ic_inner_next__", Value());
+
+            auto next_fn = ObjectFactory::create_native_function("next",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (!self) { ctx.throw_type_error("next called on non-object"); return Value(); }
+                    while (true) {
+                        Value inner_val = self->get_property("__ic_inner__");
+                        if (inner_val.is_object() || inner_val.is_function()) {
+                            Value inner_next = self->get_property("__ic_inner_next__");
+                            auto [val, done] = iterator_helper_step(ctx, inner_val, inner_next);
+                            if (ctx.has_exception()) return Value();
+                            if (!done) return Value(make_iter_result(val, false));
+                            self->set_property("__ic_inner__", Value());
+                            self->set_property("__ic_inner_next__", Value());
+                        }
+                        double index = self->get_property("__ic_index__").to_number();
+                        Object* items_obj = self->get_property("__ic_items__").as_object();
+                        double total = items_obj->get_property("length").to_number();
+                        if (index >= total) return Value(make_iter_result(Value(), true));
+                        Value item = items_obj->get_property(std::to_string((uint32_t)index));
+                        Object* methods_obj = self->get_property("__ic_methods__").as_object();
+                        Value method = methods_obj->get_property(std::to_string((uint32_t)index));
+                        self->set_property("__ic_index__", Value(index + 1));
+
+                        Value inner = method.as_function()->call(ctx, {}, item);
+                        if (ctx.has_exception()) return Value();
+                        if (!inner.is_object() && !inner.is_function()) { ctx.throw_type_error("Result of [Symbol.iterator] is not an object"); return Value(); }
+                        Object* inner_obj = inner.is_function() ? static_cast<Object*>(inner.as_function()) : inner.as_object();
+                        Value inner_next_method = inner_obj->get_property("next");
+                        if (ctx.has_exception()) return Value();
+                        self->set_property("__ic_inner__", inner);
+                        self->set_property("__ic_inner_next__", inner_next_method);
+                    }
+                }, 0);
+            helper->set_property("next", Value(next_fn.release()));
+
+            auto return_fn = ObjectFactory::create_native_function("return",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Object* self = ctx.get_this_binding();
+                    if (self) {
+                        Value inner_val = self->get_property("__ic_inner__");
+                        if (inner_val.is_object() || inner_val.is_function()) {
+                            iterator_helper_close(ctx, inner_val);
+                            self->set_property("__ic_inner__", Value());
+                        }
+                        Object* items_obj = self->get_property("__ic_items__").as_object();
+                        double total = items_obj ? items_obj->get_property("length").to_number() : 0;
+                        self->set_property("__ic_index__", Value(total));
+                    }
+                    return Value(make_iter_result(Value(), true));
+                }, 0);
+            helper->set_property("return", Value(return_fn.release()));
+
+            return Value(helper.release());
+        }, 0);
+    iterator_constructor->set_property("concat", Value(iterator_concat.release()), PropertyAttributes::BuiltinFunction);
+
+    // Static Iterator.zip(iterables, options): inner iterators are collected eagerly, per-row
+    // stepping is lazy. "padding" (mode "longest") is read once into a fixed per-column array,
+    // not re-read per row.
+    auto iterator_zip = ObjectFactory::create_native_function("zip",
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            Value iterables_val = args.empty() ? Value() : args[0];
+            if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zip: iterables must be an object"); return Value(); }
+
+            Value options = args.size() > 1 ? args[1] : Value();
+            Object* options_obj = nullptr;
+            std::unique_ptr<Object> default_options;
+            if (options.is_undefined()) {
+                default_options = ObjectFactory::create_object();
+                options_obj = default_options.get();
+            } else if (options.is_object() || options.is_function()) {
+                options_obj = options.is_function() ? static_cast<Object*>(options.as_function()) : options.as_object();
+            } else {
+                ctx.throw_type_error("Iterator.zip: options must be an object"); return Value();
+            }
+
+            Value mode_val = options_obj->get_property("mode");
+            if (ctx.has_exception()) return Value();
+            std::string mode = "shortest";
+            if (!mode_val.is_undefined()) {
+                if (!mode_val.is_string()) { ctx.throw_type_error("Iterator.zip: mode must be a string"); return Value(); }
+                mode = mode_val.to_string();
+                if (mode != "shortest" && mode != "longest" && mode != "strict") { ctx.throw_type_error("Iterator.zip: invalid mode"); return Value(); }
+            }
+
+            Value padding_option;
+            if (mode == "longest") {
+                padding_option = options_obj->get_property("padding");
+                if (ctx.has_exception()) return Value();
+                if (!padding_option.is_undefined() && !padding_option.is_object() && !padding_option.is_function()) {
+                    ctx.throw_type_error("Iterator.zip: padding must be an object"); return Value();
+                }
+            }
+
+            Object* iterables_obj = iterables_val.is_function() ? static_cast<Object*>(iterables_val.as_function()) : iterables_val.as_object();
+            Value outer_iter_fn = iter_sym ? iterables_obj->get_property(iter_sym->to_property_key()) : Value();
+            if (ctx.has_exception()) return Value();
+            if (!outer_iter_fn.is_function()) { ctx.throw_type_error("Iterator.zip: iterables is not iterable"); return Value(); }
+            Value outer_iter = outer_iter_fn.as_function()->call(ctx, {}, iterables_val);
+            if (ctx.has_exception()) return Value();
+            if (!outer_iter.is_object() && !outer_iter.is_function()) { ctx.throw_type_error("Result of [Symbol.iterator] is not an object"); return Value(); }
+            Object* outer_iter_obj = outer_iter.is_function() ? static_cast<Object*>(outer_iter.as_function()) : outer_iter.as_object();
+            Value outer_next = outer_iter_obj->get_property("next");
+            if (ctx.has_exception()) return Value();
+
+            std::vector<Value> iters;
+            std::vector<Value> iter_nexts;
+            while (true) {
+                auto [item, done] = iterator_helper_step(ctx, outer_iter, outer_next);
+                if (ctx.has_exception()) {
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                if (done) break;
+                if (!item.is_object() && !item.is_function()) {
+                    ctx.throw_type_error("Iterator.zip: each iterable item must be an object");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Object* item_obj = item.is_function() ? static_cast<Object*>(item.as_function()) : item.as_object();
+                Value method = iter_sym ? item_obj->get_property(iter_sym->to_property_key()) : Value();
+                Value inner_iter = item;
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (!method.is_undefined() && !method.is_null()) {
+                    if (!method.is_function()) {
+                        ctx.throw_type_error("[Symbol.iterator] is not a function");
+                        for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        return Value();
+                    }
+                    inner_iter = method.as_function()->call(ctx, {}, item);
+                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                    if (!inner_iter.is_object() && !inner_iter.is_function()) {
+                        ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
+                        for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        return Value();
+                    }
+                }
+                Object* inner_obj = inner_iter.is_function() ? static_cast<Object*>(inner_iter.as_function()) : inner_iter.as_object();
+                Value inner_next = inner_obj->get_property("next");
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                iters.push_back(inner_iter);
+                iter_nexts.push_back(inner_next);
+            }
+
+            uint32_t iter_count = (uint32_t)iters.size();
+            std::vector<Value> padding(iter_count, Value());
+            if (mode == "longest" && !padding_option.is_undefined()) {
+                Object* padding_obj = padding_option.is_function() ? static_cast<Object*>(padding_option.as_function()) : padding_option.as_object();
+                Value pad_iter_fn = iter_sym ? padding_obj->get_property(iter_sym->to_property_key()) : Value();
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (!pad_iter_fn.is_function()) {
+                    ctx.throw_type_error("Iterator.zip: padding is not iterable");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Value pad_iter = pad_iter_fn.as_function()->call(ctx, {}, padding_option);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (!pad_iter.is_object() && !pad_iter.is_function()) {
+                    ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Object* pad_obj = pad_iter.is_function() ? static_cast<Object*>(pad_iter.as_function()) : pad_iter.as_object();
+                Value pad_next = pad_obj->get_property("next");
+                bool exhausted = false;
+                for (uint32_t i = 0; i < iter_count && !exhausted; i++) {
+                    auto [pv, pd] = iterator_helper_step(ctx, pad_iter, pad_next);
+                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                    if (pd) exhausted = true;
+                    else padding[i] = pv;
+                }
+                if (!exhausted) iterator_helper_close(ctx, pad_iter);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+            }
+
+            auto helper = ObjectFactory::create_object();
+            helper->set_prototype(iterator_proto_ptr);
+            auto iters_arr = ObjectFactory::create_array();
+            auto nexts_arr = ObjectFactory::create_array();
+            auto padding_arr = ObjectFactory::create_array();
+            auto alive_arr = ObjectFactory::create_array();
+            for (uint32_t i = 0; i < iter_count; i++) {
+                iters_arr->set_property(std::to_string(i), iters[i]);
+                nexts_arr->set_property(std::to_string(i), iter_nexts[i]);
+                padding_arr->set_property(std::to_string(i), padding[i]);
+                alive_arr->set_property(std::to_string(i), Value(true));
+            }
+            iters_arr->set_property("length", Value((double)iter_count));
+            nexts_arr->set_property("length", Value((double)iter_count));
+            padding_arr->set_property("length", Value((double)iter_count));
+            alive_arr->set_property("length", Value((double)iter_count));
+            helper->set_property("__iz_iters__", Value(iters_arr.release()));
+            helper->set_property("__iz_nexts__", Value(nexts_arr.release()));
+            helper->set_property("__iz_padding__", Value(padding_arr.release()));
+            helper->set_property("__iz_alive__", Value(alive_arr.release()));
+            helper->set_property("__iz_count__", Value((double)iter_count));
+            helper->set_property("__iz_mode__", Value(mode));
+            helper->set_property("__iz_done__", Value(false));
+            helper->set_property("__iz_keyed__", Value(false));
+
+            auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            auto return_fn = ObjectFactory::create_native_function("return", iterator_zip_return, 0);
+            helper->set_property("return", Value(return_fn.release()));
+
+            return Value(helper.release());
+        }, 1);
+    iterator_constructor->set_property("zip", Value(iterator_zip.release()), PropertyAttributes::BuiltinFunction);
+
+    // Static Iterator.zipKeyed: like zip, but columns come from iterables' own enumerable keys
+    // and each row is a null-prototype object keyed the same way.
+    auto iterator_zipKeyed = ObjectFactory::create_native_function("zipKeyed",
+        [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            Value iterables_val = args.empty() ? Value() : args[0];
+            if (!iterables_val.is_object() && !iterables_val.is_function()) { ctx.throw_type_error("Iterator.zipKeyed: iterables must be an object"); return Value(); }
+
+            Value options = args.size() > 1 ? args[1] : Value();
+            Object* options_obj = nullptr;
+            std::unique_ptr<Object> default_options;
+            if (options.is_undefined()) {
+                default_options = ObjectFactory::create_object();
+                options_obj = default_options.get();
+            } else if (options.is_object() || options.is_function()) {
+                options_obj = options.is_function() ? static_cast<Object*>(options.as_function()) : options.as_object();
+            } else {
+                ctx.throw_type_error("Iterator.zipKeyed: options must be an object"); return Value();
+            }
+
+            Value mode_val = options_obj->get_property("mode");
+            if (ctx.has_exception()) return Value();
+            std::string mode = "shortest";
+            if (!mode_val.is_undefined()) {
+                if (!mode_val.is_string()) { ctx.throw_type_error("Iterator.zipKeyed: mode must be a string"); return Value(); }
+                mode = mode_val.to_string();
+                if (mode != "shortest" && mode != "longest" && mode != "strict") { ctx.throw_type_error("Iterator.zipKeyed: invalid mode"); return Value(); }
+            }
+
+            Value padding_option;
+            if (mode == "longest") {
+                padding_option = options_obj->get_property("padding");
+                if (ctx.has_exception()) return Value();
+                if (!padding_option.is_undefined() && !padding_option.is_object() && !padding_option.is_function()) {
+                    ctx.throw_type_error("Iterator.zipKeyed: padding must be an object"); return Value();
+                }
+            }
+
+            Object* iterables_obj = iterables_val.is_function() ? static_cast<Object*>(iterables_val.as_function()) : iterables_val.as_object();
+            std::vector<std::string> keys;
+            std::vector<Value> iters;
+            std::vector<Value> iter_nexts;
+            for (const auto& key : iterables_obj->get_own_property_keys()) {
+                PropertyDescriptor desc = iterables_obj->get_property_descriptor(key);
+                if (!desc.is_enumerable()) continue;
+                Value value = iterables_obj->get_property(key);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (value.is_undefined()) continue;
+                if (!value.is_object() && !value.is_function()) {
+                    ctx.throw_type_error("Iterator.zipKeyed: each iterable value must be an object");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Object* value_obj = value.is_function() ? static_cast<Object*>(value.as_function()) : value.as_object();
+                Value method = iter_sym ? value_obj->get_property(iter_sym->to_property_key()) : Value();
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                Value inner_iter = value;
+                if (!method.is_undefined() && !method.is_null()) {
+                    if (!method.is_function()) {
+                        ctx.throw_type_error("[Symbol.iterator] is not a function");
+                        for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        return Value();
+                    }
+                    inner_iter = method.as_function()->call(ctx, {}, value);
+                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                    if (!inner_iter.is_object() && !inner_iter.is_function()) {
+                        ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
+                        for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        return Value();
+                    }
+                }
+                Object* inner_obj = inner_iter.is_function() ? static_cast<Object*>(inner_iter.as_function()) : inner_iter.as_object();
+                Value inner_next = inner_obj->get_property("next");
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                keys.push_back(key);
+                iters.push_back(inner_iter);
+                iter_nexts.push_back(inner_next);
+            }
+
+            uint32_t iter_count = (uint32_t)iters.size();
+            std::vector<Value> padding(iter_count, Value());
+            if (mode == "longest" && !padding_option.is_undefined()) {
+                Object* padding_obj = padding_option.is_function() ? static_cast<Object*>(padding_option.as_function()) : padding_option.as_object();
+                Value pad_iter_fn = iter_sym ? padding_obj->get_property(iter_sym->to_property_key()) : Value();
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (!pad_iter_fn.is_function()) {
+                    ctx.throw_type_error("Iterator.zipKeyed: padding is not iterable");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Value pad_iter = pad_iter_fn.as_function()->call(ctx, {}, padding_option);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (!pad_iter.is_object() && !pad_iter.is_function()) {
+                    ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
+                    for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                    return Value();
+                }
+                Object* pad_obj = pad_iter.is_function() ? static_cast<Object*>(pad_iter.as_function()) : pad_iter.as_object();
+                Value pad_next = pad_obj->get_property("next");
+                bool exhausted = false;
+                for (uint32_t i = 0; i < iter_count && !exhausted; i++) {
+                    auto [pv, pd] = iterator_helper_step(ctx, pad_iter, pad_next);
+                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                    if (pd) exhausted = true;
+                    else padding[i] = pv;
+                }
+                if (!exhausted) iterator_helper_close(ctx, pad_iter);
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+            }
+
+            auto helper = ObjectFactory::create_object();
+            helper->set_prototype(iterator_proto_ptr);
+            auto iters_arr = ObjectFactory::create_array();
+            auto nexts_arr = ObjectFactory::create_array();
+            auto padding_arr = ObjectFactory::create_array();
+            auto alive_arr = ObjectFactory::create_array();
+            auto keys_arr = ObjectFactory::create_array();
+            for (uint32_t i = 0; i < iter_count; i++) {
+                iters_arr->set_property(std::to_string(i), iters[i]);
+                nexts_arr->set_property(std::to_string(i), iter_nexts[i]);
+                padding_arr->set_property(std::to_string(i), padding[i]);
+                alive_arr->set_property(std::to_string(i), Value(true));
+                keys_arr->set_property(std::to_string(i), Value(keys[i]));
+            }
+            iters_arr->set_property("length", Value((double)iter_count));
+            nexts_arr->set_property("length", Value((double)iter_count));
+            padding_arr->set_property("length", Value((double)iter_count));
+            alive_arr->set_property("length", Value((double)iter_count));
+            keys_arr->set_property("length", Value((double)iter_count));
+            helper->set_property("__iz_iters__", Value(iters_arr.release()));
+            helper->set_property("__iz_nexts__", Value(nexts_arr.release()));
+            helper->set_property("__iz_padding__", Value(padding_arr.release()));
+            helper->set_property("__iz_alive__", Value(alive_arr.release()));
+            helper->set_property("__iz_keys__", Value(keys_arr.release()));
+            helper->set_property("__iz_count__", Value((double)iter_count));
+            helper->set_property("__iz_mode__", Value(mode));
+            helper->set_property("__iz_done__", Value(false));
+            helper->set_property("__iz_keyed__", Value(true));
+
+            auto next_fn = ObjectFactory::create_native_function("next", iterator_zip_step, 0);
+            helper->set_property("next", Value(next_fn.release()));
+            auto return_fn = ObjectFactory::create_native_function("return", iterator_zip_return, 0);
+            helper->set_property("return", Value(return_fn.release()));
+
+            return Value(helper.release());
+        }, 1);
+    iterator_constructor->set_property("zipKeyed", Value(iterator_zipKeyed.release()), PropertyAttributes::BuiltinFunction);
 
     iterator_constructor->set_property("prototype", Value(iterator_prototype.release()));
     ctx.register_built_in_object("Iterator", iterator_constructor.release());

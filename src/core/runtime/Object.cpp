@@ -1998,6 +1998,8 @@ std::unique_ptr<Object> create_string(const std::string& value) {
     PropertyDescriptor length_desc(Value(static_cast<double>(value.length())),
         static_cast<PropertyAttributes>(PropertyAttributes::None));
     str_obj->set_property_descriptor("length", length_desc);
+    // to_string()/String.prototype methods read [[PrimitiveValue]] to recover the wrapped value.
+    str_obj->set_property("[[PrimitiveValue]]", Value(value));
     return str_obj;
 }
 

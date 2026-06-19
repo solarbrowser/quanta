@@ -36,6 +36,11 @@ void register_object_builtins(Context& ctx) {
             
             if (value.is_string()) {
                 auto string_obj = ObjectFactory::create_string(value.to_string());
+                Value str_ctor = ctx.get_binding("String");
+                if (str_ctor.is_function()) {
+                    Value str_proto = static_cast<Object*>(str_ctor.as_function())->get_property("prototype");
+                    if (str_proto.is_object()) string_obj->set_prototype(str_proto.as_object());
+                }
                 return Value(string_obj.release());
             } else if (value.is_number()) {
                 auto number_obj = ObjectFactory::create_object();
@@ -50,6 +55,11 @@ void register_object_builtins(Context& ctx) {
                 return Value(number_obj.release());
             } else if (value.is_boolean()) {
                 auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
+                Value bool_ctor = ctx.get_binding("Boolean");
+                if (bool_ctor.is_function()) {
+                    Value bool_proto = static_cast<Object*>(bool_ctor.as_function())->get_property("prototype");
+                    if (bool_proto.is_object()) boolean_obj->set_prototype(bool_proto.as_object());
+                }
                 return Value(boolean_obj.release());
             } else if (value.is_symbol()) {
                 // ES6: Create a Symbol wrapper object
@@ -78,6 +88,11 @@ void register_object_builtins(Context& ctx) {
                 return Value(symbol_obj.release());
             } else if (value.is_bigint()) {
                 auto bigint_obj = ObjectFactory::create_object();
+                Value bigint_ctor = ctx.get_binding("BigInt");
+                if (bigint_ctor.is_function()) {
+                    Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
+                    if (bigint_proto.is_object()) bigint_obj->set_prototype(bigint_proto.as_object());
+                }
                 Value captured_bigint = value;
                 auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
                     [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
