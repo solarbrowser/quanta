@@ -285,7 +285,7 @@ Value DataView::constructor(Context& ctx, const std::vector<Value>& args) {
         
         return Value(dataview.release());
     } catch (const std::exception& e) {
-        ctx.throw_error(std::string("DataView creation failed: ") + e.what());
+        ctx.throw_range_error(e.what());
         return Value();
     }
 }

@@ -387,6 +387,11 @@ void Context::clear_exception() {
 void Context::throw_error(const std::string& message) {
     auto error = Error::create_error(message);
     error->generate_stack_trace();
+    Value error_ctor = get_binding("Error");
+    if (error_ctor.is_function()) {
+        Value proto = error_ctor.as_function()->get_property("prototype");
+        if (proto.is_object()) error->set_prototype(proto.as_object());
+    }
     throw_exception(Value(error.release()));
 }
 
