@@ -903,16 +903,18 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     if (is_attr_only) {
         if (descriptors_->count(key)) {
             PropertyDescriptor& existing = (*descriptors_)[key];
-            // ES6 9.4.4.3 for Arguments: reject impossible attribute changes.
-            if (header_.type == ObjectType::Arguments) {
-                // Get the effective configurable value (accessor = its configurable; severed = data's configurable).
-                bool effective_configurable = existing.is_configurable();
-                if (!effective_configurable) {
-                    if (desc.has_configurable() && desc.is_configurable()) {
-                        if (current_context_) current_context_->throw_type_error(
-                            "Cannot redefine property: " + key);
-                        return false;
-                    }
+            // Non-configurable property enforcement -- only when configurable was explicitly set to false
+            // and only when called from a live JS context (not during engine initialization)
+            if (current_context_ && existing.has_configurable() && !existing.is_configurable()) {
+                // Cannot change configurable to true
+                if (desc.has_configurable() && desc.is_configurable()) {
+                    current_context_->throw_type_error("Cannot redefine non-configurable property: " + key);
+                    return false;
+                }
+                // Cannot change enumerable
+                if (existing.has_enumerable() && desc.has_enumerable() && desc.is_enumerable() != existing.is_enumerable()) {
+                    current_context_->throw_type_error("Cannot change enumerable of non-configurable property: " + key);
+                    return false;
                 }
             }
             // ES6 9.4.4.3: if defineProperty makes a mapped arg non-writable, sever the mapping.

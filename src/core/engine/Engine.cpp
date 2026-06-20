@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/engine/Engine.h"
+#include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/JSON.h"
 #include "quanta/core/runtime/Math.h"
@@ -65,16 +66,22 @@ bool Engine::initialize() {
     }
     
     try {
-        
+        // Temporarily null out current_context_ so that non-configurable property
+        // checks in set_property_descriptor don't fire during built-in setup.
+        Context* saved_context = Object::current_context_;
+        Object::current_context_ = nullptr;
+
         global_context_ = ContextFactory::create_global_context(this);
-        
+
         module_loader_ = std::make_unique<ModuleLoader>(this);
-        
+
         ObjectFactory::initialize_memory_pools();
-        
+
         setup_built_in_functions();
         setup_built_in_objects();
         setup_error_types();
+
+        Object::current_context_ = saved_context;
         
 
         initialized_ = true;

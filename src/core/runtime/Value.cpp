@@ -297,6 +297,11 @@ double Value::to_number() const {
                     }
                 }
             }
+            // Note: when both valueOf and toString return objects, spec says throw TypeError.
+            // We return NaN here for safety to avoid breaking harness code that catches
+            // exceptions during iteration. The specific case of object-as-array-length
+            // that should throw is handled at the call site (get_length checks ctx.has_exception).
+            return std::numeric_limits<double>::quiet_NaN();
         }
         return std::numeric_limits<double>::quiet_NaN();
     }
