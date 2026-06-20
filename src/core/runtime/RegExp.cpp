@@ -408,7 +408,6 @@ void RegExp::do_compile() {
         // PCRE2_UCP intentionally absent: it would extend \d/\w to Unicode categories,
         // but JS spec requires \d=[0-9] and \w=[A-Za-z0-9_] (ASCII only). \s is handled
         // by expand_js_charclass_shortcuts above. \p{} still works via PCRE2_UTF.
-        options |= PCRE2_MATCH_INVALID_UTF;
     }
     if (ignore_case_) options |= PCRE2_CASELESS;
     if (multiline_)  options |= PCRE2_MULTILINE;
