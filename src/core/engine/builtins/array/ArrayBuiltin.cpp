@@ -521,6 +521,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto find_fn = ObjectFactory::create_native_function("find",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -560,6 +562,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto findLast_fn = ObjectFactory::create_native_function("findLast",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast called on non-object")));
@@ -601,6 +604,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto findLastIndex_fn = ObjectFactory::create_native_function("findLastIndex",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex called on non-object")));
@@ -642,6 +646,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto with_fn = ObjectFactory::create_native_function("with",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.with called on non-object")));
@@ -690,6 +695,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto at_fn = ObjectFactory::create_native_function("at",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.at called on non-object")));
@@ -723,6 +729,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto includes_fn = ObjectFactory::create_native_function("includes",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.includes called on non-object")));
@@ -779,6 +786,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto flat_fn = ObjectFactory::create_native_function("flat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -830,6 +838,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto flatMap_fn = ObjectFactory::create_native_function("flatMap",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -875,6 +884,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto fill_fn = ObjectFactory::create_native_function("fill",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -973,6 +984,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto array_toString_fn = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.toString called on non-object")));
@@ -1013,6 +1025,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto array_push_fn = ObjectFactory::create_native_function("push",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.push called on non-object")));
@@ -1044,6 +1057,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -1151,6 +1166,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 return Value(-1.0);
@@ -1201,6 +1217,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 ctx.throw_type_error("Array.prototype.reduceRight called on null or undefined");
@@ -1284,6 +1301,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(std::string(""));
 
@@ -1325,6 +1343,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto toReversed_fn = ObjectFactory::create_native_function("toReversed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -1344,6 +1363,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto toSorted_fn = ObjectFactory::create_native_function("toSorted",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -1364,6 +1384,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto toSpliced_fn = ObjectFactory::create_native_function("toSpliced",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -1487,6 +1508,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto every_fn = ObjectFactory::create_native_function("every",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(false);
 
@@ -1518,6 +1540,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto filter_fn = ObjectFactory::create_native_function("filter",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -1558,6 +1581,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -1585,6 +1610,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(-1.0);
 
@@ -1627,6 +1653,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto map_fn = ObjectFactory::create_native_function("map",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -1665,6 +1692,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -1722,6 +1751,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto some_fn = ObjectFactory::create_native_function("some",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(false);
 
@@ -1754,6 +1784,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto findIndex_fn = ObjectFactory::create_native_function("findIndex",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(-1.0);
 
@@ -1783,6 +1814,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto join_fn = ObjectFactory::create_native_function("join",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(std::string(""));
 
@@ -1803,6 +1835,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto pop_fn = ObjectFactory::create_native_function("pop",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -1835,6 +1869,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto reverse_fn = ObjectFactory::create_native_function("reverse",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(this_obj);
 
@@ -1881,6 +1916,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto shift_fn = ObjectFactory::create_native_function("shift",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
 
@@ -1926,6 +1963,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
                 auto empty = ObjectFactory::create_array();
@@ -1974,6 +2012,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto sort_fn = ObjectFactory::create_native_function("sort",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(this_obj);
 
@@ -2045,6 +2084,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto splice_fn = ObjectFactory::create_native_function("splice",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
@@ -2206,6 +2246,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto unshift_fn = ObjectFactory::create_native_function("unshift",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(0.0);
 
@@ -2260,6 +2301,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto array_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             auto iterator = ObjectFactory::create_object();
