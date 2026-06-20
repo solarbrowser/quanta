@@ -9,6 +9,7 @@
 
 #include <string>
 #include <string_view>
+#include <cstdint>
 
 namespace Quanta {
 
@@ -50,6 +51,11 @@ public:
 private:
     void calculate_hash() noexcept;
 };
+
+size_t utf16_length(const std::string& utf8);
+int32_t utf16_code_unit_at(const std::string& utf8, size_t utf16_index);
+int32_t utf16_code_point_at(const std::string& utf8, size_t utf16_index);
+std::string encode_utf16_unit(uint32_t unit);
 
 }
 

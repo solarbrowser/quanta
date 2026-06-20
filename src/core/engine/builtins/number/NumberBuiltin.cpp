@@ -97,6 +97,7 @@ void register_number_builtins(Context& ctx) {
     // ES6: Number.parseFloat/parseInt set up later after global functions are defined
 
     auto number_prototype = ObjectFactory::create_object();
+    number_prototype->set_property("[[PrimitiveValue]]", Value(0.0));
 
     auto number_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -143,7 +144,7 @@ void register_number_builtins(Context& ctx) {
                     Object* this_obj = this_val.as_object();
                     if (this_obj->has_property("[[PrimitiveValue]]")) {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
-                        num = primitive.as_number();
+                        num = primitive.to_number();
                     } else {
                         ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
                         return Value();

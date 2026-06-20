@@ -54,4 +54,97 @@ void String::calculate_hash() noexcept {
     hash_ = std::hash<std::string>{}(data_);
 }
 
+namespace {
+uint32_t decode_utf8_at(const std::string& s, size_t byte_pos, size_t* out_len) {
+    unsigned char c = static_cast<unsigned char>(s[byte_pos]);
+    if (c < 0x80) { *out_len = 1; return c; }
+    if ((c & 0xE0) == 0xC0 && byte_pos + 1 < s.size()) {
+        *out_len = 2;
+        return ((c & 0x1F) << 6) | (static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F);
+    }
+    if ((c & 0xF0) == 0xE0 && byte_pos + 2 < s.size()) {
+        *out_len = 3;
+        return ((c & 0x0F) << 12) |
+               ((static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F) << 6) |
+               (static_cast<unsigned char>(s[byte_pos + 2]) & 0x3F);
+    }
+    if ((c & 0xF8) == 0xF0 && byte_pos + 3 < s.size()) {
+        *out_len = 4;
+        return ((c & 0x07) << 18) |
+               ((static_cast<unsigned char>(s[byte_pos + 1]) & 0x3F) << 12) |
+               ((static_cast<unsigned char>(s[byte_pos + 2]) & 0x3F) << 6) |
+               (static_cast<unsigned char>(s[byte_pos + 3]) & 0x3F);
+    }
+    *out_len = 1;
+    return c;
+}
+}
+
+size_t utf16_length(const std::string& s) {
+    size_t pos = 0, units = 0;
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        units += (cp > 0xFFFF) ? 2 : 1;
+        pos += len;
+    }
+    return units;
+}
+
+int32_t utf16_code_unit_at(const std::string& s, size_t index) {
+    size_t pos = 0, units = 0;
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        if (cp <= 0xFFFF) {
+            if (units == index) return static_cast<int32_t>(cp);
+            units += 1;
+        } else {
+            uint32_t v = cp - 0x10000;
+            uint32_t hi = 0xD800 + (v >> 10);
+            uint32_t lo = 0xDC00 + (v & 0x3FF);
+            if (units == index) return static_cast<int32_t>(hi);
+            if (units + 1 == index) return static_cast<int32_t>(lo);
+            units += 2;
+        }
+        pos += len;
+    }
+    return -1;
+}
+
+int32_t utf16_code_point_at(const std::string& s, size_t index) {
+    size_t pos = 0, units = 0;
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        if (cp <= 0xFFFF) {
+            if (units == index) return static_cast<int32_t>(cp);
+            units += 1;
+        } else {
+            uint32_t v = cp - 0x10000;
+            uint32_t lo = 0xDC00 + (v & 0x3FF);
+            if (units == index) return static_cast<int32_t>(cp);
+            if (units + 1 == index) return static_cast<int32_t>(lo);
+            units += 2;
+        }
+        pos += len;
+    }
+    return -1;
+}
+
+std::string encode_utf16_unit(uint32_t unit) {
+    std::string r;
+    if (unit <= 0x7F) {
+        r += static_cast<char>(unit);
+    } else if (unit <= 0x7FF) {
+        r += static_cast<char>(0xC0 | (unit >> 6));
+        r += static_cast<char>(0x80 | (unit & 0x3F));
+    } else {
+        r += static_cast<char>(0xE0 | (unit >> 12));
+        r += static_cast<char>(0x80 | ((unit >> 6) & 0x3F));
+        r += static_cast<char>(0x80 | (unit & 0x3F));
+    }
+    return r;
+}
+
 }

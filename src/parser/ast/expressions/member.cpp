@@ -700,10 +700,10 @@ Value MemberExpression::evaluate(Context& ctx) {
                     (void)ctx;
                     if (args.empty()) return Value(std::string(""));
                     int index = static_cast<int>(args[0].to_number());
-                    if (index >= 0 && index < static_cast<int>(str_value.length())) {
-                        return Value(std::string(1, str_value[index]));
-                    }
-                    return Value(std::string(""));
+                    if (index < 0) return Value(std::string(""));
+                    int32_t unit = utf16_code_unit_at(str_value, static_cast<size_t>(index));
+                    if (unit < 0) return Value(std::string(""));
+                    return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
                 });
             return Value(char_at_fn.release());
         }
@@ -1108,11 +1108,11 @@ Value MemberExpression::evaluate(Context& ctx) {
         if (computed_) {
             Value prop_value = property_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            
+
             if (prop_value.is_symbol()) {
                 Symbol* prop_symbol = prop_value.as_symbol();
                 Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
-                
+
                 if (iterator_symbol && prop_symbol->equals(iterator_symbol)) {
                     auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
                         [str_value](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1123,20 +1123,17 @@ Value MemberExpression::evaluate(Context& ctx) {
                         });
                     return Value(string_iterator_fn.release());
                 }
-            }
-        }
-        
-        if (computed_) {
-            Value prop_value = property_->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            if (prop_value.is_number()) {
+            } else if (prop_value.is_number()) {
                 int index = static_cast<int>(prop_value.to_number());
-                if (index >= 0 && index < static_cast<int>(str_value.length())) {
-                    return Value(std::string(1, str_value[index]));
+                if (index >= 0) {
+                    int32_t unit = utf16_code_unit_at(str_value, static_cast<size_t>(index));
+                    if (unit >= 0) {
+                        return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
+                    }
                 }
             }
         }
-        
+
         return Value();
     }
     
