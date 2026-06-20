@@ -704,14 +704,24 @@ void register_object_builtins(Context& ctx) {
 
                 if (desc->has_own_property("get")) {
                     Value getter = desc->get_property("get");
-                    if (getter.is_function()) {
+                    if (getter.is_undefined()) {
+                        // undefined getter is allowed (means no getter)
+                    } else if (!getter.is_function()) {
+                        ctx.throw_type_error("Property descriptor getter must be callable");
+                        return Value();
+                    } else {
                         prop_desc.set_getter(getter.as_object());
                     }
                 }
 
                 if (desc->has_own_property("set")) {
                     Value setter = desc->get_property("set");
-                    if (setter.is_function()) {
+                    if (setter.is_undefined()) {
+                        // undefined setter is allowed (means no setter)
+                    } else if (!setter.is_function()) {
+                        ctx.throw_type_error("Property descriptor setter must be callable");
+                        return Value();
+                    } else {
                         prop_desc.set_setter(setter.as_object());
                     }
                 }
