@@ -291,6 +291,11 @@ void register_function_builtins(Context& ctx) {
             // ES6 19.2.3.2 step 12: bound function's [[Prototype]] should be target's [[Prototype]]
             bound_function->set_prototype(target_func->get_prototype());
 
+            // Bound functions are constructable iff target is constructable
+            if (target_func->is_constructor()) {
+                bound_function->set_is_constructor(true);
+            }
+
             return Value(bound_function.release());
         });
 
