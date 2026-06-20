@@ -8,6 +8,7 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/String.h"
 #include <set>
 #include <map>
 #include <cstdio>
@@ -82,7 +83,8 @@ std::unique_ptr<ASTNode> NumberLiteral::clone() const {
 
 Value StringLiteral::evaluate(Context& ctx) {
     (void)ctx;
-    return Value(value_);
+    if (!cached_) cached_ = new String(value_);
+    return Value(cached_);
 }
 
 std::string StringLiteral::to_string() const {
