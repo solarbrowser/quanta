@@ -2126,6 +2126,40 @@ void register_typed_array_builtins(Context& ctx) {
     PropertyDescriptor dataview_tag_desc(Value(std::string("DataView")), PropertyAttributes::Configurable);
     dataview_prototype->set_property_descriptor("Symbol.toStringTag", dataview_tag_desc);
 
+    // Accessor properties on DataView.prototype: buffer, byteLength, byteOffset
+    auto dv_check = [](Context& ctx) -> DataView* {
+        Object* obj = ctx.get_this_binding();
+        if (!obj || !obj->is_data_view()) { ctx.throw_type_error("DataView accessor called on non-DataView"); return nullptr; }
+        return static_cast<DataView*>(obj);
+    };
+    {
+        auto g = ObjectFactory::create_native_function("get buffer",
+            [dv_check](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+                return Value(dv->buffer());
+            }, 0);
+        PropertyDescriptor d; d.set_getter(g.release()); d.set_enumerable(false); d.set_configurable(true);
+        dataview_prototype->set_property_descriptor("buffer", d);
+    }
+    {
+        auto g = ObjectFactory::create_native_function("get byteLength",
+            [dv_check](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+                return Value(static_cast<double>(dv->byte_length()));
+            }, 0);
+        PropertyDescriptor d; d.set_getter(g.release()); d.set_enumerable(false); d.set_configurable(true);
+        dataview_prototype->set_property_descriptor("byteLength", d);
+    }
+    {
+        auto g = ObjectFactory::create_native_function("get byteOffset",
+            [dv_check](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args; DataView* dv = dv_check(ctx); if (!dv) return Value();
+                return Value(static_cast<double>(dv->byte_offset()));
+            }, 0);
+        PropertyDescriptor d; d.set_getter(g.release()); d.set_enumerable(false); d.set_configurable(true);
+        dataview_prototype->set_property_descriptor("byteOffset", d);
+    }
+
     dataview_constructor->set_property("prototype", Value(dataview_prototype.release()));
 
     ctx.register_built_in_object("DataView", dataview_constructor.release());
