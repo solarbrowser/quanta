@@ -24,7 +24,10 @@ static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (!iter_sym) return false;
     Value iter_method = iterable->get_property(iter_sym->to_property_key());
-    if (!iter_method.is_function()) return false;
+    if (!iter_method.is_function()) {
+        ctx.throw_type_error("object is not iterable (Symbol.iterator is not callable)");
+        return false;
+    }
     Value iter_obj = iter_method.as_function()->call(ctx, {}, iterable_val);
     if (ctx.has_exception() || !iter_obj.is_object()) return false;
     Value next_fn = iter_obj.as_object()->get_property("next");
@@ -201,7 +204,7 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
                     }
                     return true;
                 });
-            if (!handled) {
+            if (!handled && !ctx.has_exception()) {
                 auto iterator = IterableUtils::get_iterator(args[0], ctx);
                 if (iterator) {
                     while (true) {
@@ -231,11 +234,11 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
 Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Map.prototype.set called on non-object")));
+        ctx.throw_type_error("Map.prototype.set called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.set called on non-Map")));
+        ctx.throw_type_error("Map.prototype.set called on non-Map");
         return Value();
     }
     
@@ -250,11 +253,11 @@ Value Map::map_set(Context& ctx, const std::vector<Value>& args) {
 Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Map.prototype.get called on non-object")));
+        ctx.throw_type_error("Map.prototype.get called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.get called on non-Map")));
+        ctx.throw_type_error("Map.prototype.get called on non-Map");
         return Value();
     }
     
@@ -267,11 +270,11 @@ Value Map::map_get(Context& ctx, const std::vector<Value>& args) {
 Value Map::map_has(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Map.prototype.has called on non-object")));
+        ctx.throw_type_error("Map.prototype.has called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.has called on non-Map")));
+        ctx.throw_type_error("Map.prototype.has called on non-Map");
         return Value();
     }
     
@@ -284,13 +287,13 @@ Value Map::map_has(Context& ctx, const std::vector<Value>& args) {
 Value Map::map_delete(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Map.prototype.delete called on non-object")));
+        ctx.throw_type_error("Map.prototype.delete called on non-object");
         return Value();
     }
     
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.delete called on non-Map")));
+        ctx.throw_type_error("Map.prototype.delete called on non-Map");
         return Value();
     }
     
@@ -305,13 +308,13 @@ Value Map::map_clear(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Map.prototype.clear called on non-object")));
+        ctx.throw_type_error("Map.prototype.clear called on non-object");
         return Value();
     }
     
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.clear called on non-Map")));
+        ctx.throw_type_error("Map.prototype.clear called on non-Map");
         return Value();
     }
     
@@ -325,11 +328,11 @@ Value Map::map_size_getter(Context& ctx, const std::vector<Value>& args) {
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Map.prototype.size called on non-object")));
+        ctx.throw_type_error("Map.prototype.size called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype.size called on non-Map")));
+        ctx.throw_type_error("Map.prototype.size called on non-Map");
         return Value();
     }
     
@@ -342,11 +345,11 @@ Value Map::map_iterator_method(Context& ctx, const std::vector<Value>& args) {
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Map.prototype[Symbol.iterator] called on non-object")));
+        ctx.throw_type_error("Map.prototype[Symbol.iterator] called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Map) {
-        ctx.throw_exception(Value(std::string("Map.prototype[Symbol.iterator] called on non-Map")));
+        ctx.throw_type_error("Map.prototype[Symbol.iterator] called on non-Map");
         return Value();
     }
     
@@ -450,6 +453,36 @@ void Map::setup_map_prototype(Context& ctx) {
     } else {
         entries_fn.release();
     }
+
+    auto map_getOrInsert_fn = ObjectFactory::create_native_function("getOrInsert",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Map) { ctx.throw_type_error("Map.prototype.getOrInsert"); return Value(); }
+            Map* m = static_cast<Map*>(obj);
+            Value key = args.empty() ? Value() : args[0];
+            Value val = args.size() > 1 ? args[1] : Value();
+            if (m->has(key)) return m->get(key);
+            m->set(key, val);
+            return val;
+        }, 2);
+    map_prototype->set_property("getOrInsert", Value(map_getOrInsert_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto map_getOrInsertComputed_fn = ObjectFactory::create_native_function("getOrInsertComputed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::Map) { ctx.throw_type_error("Map.prototype.getOrInsertComputed"); return Value(); }
+            if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
+            Map* m = static_cast<Map*>(obj);
+            Value key = args.empty() ? Value() : args[0];
+            if (m->has(key)) return m->get(key);
+            Value val = args[1].as_function()->call(ctx, {key}, Value());
+            if (ctx.has_exception()) return Value();
+            m->set(key, val);
+            return val;
+        }, 2);
+    map_prototype->set_property("getOrInsertComputed", Value(map_getOrInsertComputed_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     PropertyDescriptor map_tag_desc(Value(std::string("Map")), PropertyAttributes::Configurable);
     map_prototype->set_property_descriptor("Symbol.toStringTag", map_tag_desc);
@@ -634,7 +667,7 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
                     }
                     return true;
                 });
-            if (!handled) {
+            if (!handled && !ctx.has_exception()) {
                 auto iterator = IterableUtils::get_iterator(args[0], ctx);
                 if (iterator) {
                     while (true) {
@@ -657,11 +690,11 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
 Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype.add called on non-object")));
+        ctx.throw_type_error("Set.prototype.add called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype.add called on non-Set")));
+        ctx.throw_type_error("Set.prototype.add called on non-Set");
         return Value();
     }
     
@@ -675,11 +708,11 @@ Value Set::set_add(Context& ctx, const std::vector<Value>& args) {
 Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype.has called on non-object")));
+        ctx.throw_type_error("Set.prototype.has called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype.has called on non-Set")));
+        ctx.throw_type_error("Set.prototype.has called on non-Set");
         return Value();
     }
     
@@ -692,11 +725,11 @@ Value Set::set_has(Context& ctx, const std::vector<Value>& args) {
 Value Set::set_delete(Context& ctx, const std::vector<Value>& args) {
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype.delete called on non-object")));
+        ctx.throw_type_error("Set.prototype.delete called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype.delete called on non-Set")));
+        ctx.throw_type_error("Set.prototype.delete called on non-Set");
         return Value();
     }
     
@@ -711,11 +744,11 @@ Value Set::set_clear(Context& ctx, const std::vector<Value>& args) {
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype.clear called on non-object")));
+        ctx.throw_type_error("Set.prototype.clear called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype.clear called on non-Set")));
+        ctx.throw_type_error("Set.prototype.clear called on non-Set");
         return Value();
     }
     
@@ -729,11 +762,11 @@ Value Set::set_size_getter(Context& ctx, const std::vector<Value>& args) {
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype.size called on non-object")));
+        ctx.throw_type_error("Set.prototype.size called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype.size called on non-Set")));
+        ctx.throw_type_error("Set.prototype.size called on non-Set");
         return Value();
     }
     
@@ -746,11 +779,11 @@ Value Set::set_iterator_method(Context& ctx, const std::vector<Value>& args) {
     
     Object* obj = ctx.get_this_binding();
     if (!obj) {
-        ctx.throw_exception(Value(std::string("Set.prototype[Symbol.iterator] called on non-object")));
+        ctx.throw_type_error("Set.prototype[Symbol.iterator] called on non-object");
         return Value();
     }
     if (obj->get_type() != Object::ObjectType::Set) {
-        ctx.throw_exception(Value(std::string("Set.prototype[Symbol.iterator] called on non-Set")));
+        ctx.throw_type_error("Set.prototype[Symbol.iterator] called on non-Set");
         return Value();
     }
     
@@ -1145,8 +1178,40 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     weakmap_prototype->set_property("delete", Value(delete_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     
+    auto wm_getOrInsert_fn = ObjectFactory::create_native_function("getOrInsert",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsert"); return Value(); }
+            WeakMap* wm = static_cast<WeakMap*>(obj);
+            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("WeakMap key must be an object"); return Value(); }
+            Object* key = args[0].as_object();
+            Value val = args.size() > 1 ? args[1] : Value();
+            if (wm->has(key)) return wm->get(key);
+            wm->set(key, val);
+            return val;
+        }, 2);
+    weakmap_prototype->set_property("getOrInsert", Value(wm_getOrInsert_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
+    auto wm_getOrInsertComputed_fn = ObjectFactory::create_native_function("getOrInsertComputed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || obj->get_type() != Object::ObjectType::WeakMap) { ctx.throw_type_error("WeakMap.prototype.getOrInsertComputed"); return Value(); }
+            if (args.size() < 2 || !args[1].is_function()) { ctx.throw_type_error("callbackFn is not a function"); return Value(); }
+            WeakMap* wm = static_cast<WeakMap*>(obj);
+            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("WeakMap key must be an object"); return Value(); }
+            Object* key = args[0].as_object();
+            if (wm->has(key)) return wm->get(key);
+            Value val = args[1].as_function()->call(ctx, {Value(key)}, Value());
+            if (ctx.has_exception()) return Value();
+            wm->set(key, val);
+            return val;
+        }, 2);
+    weakmap_prototype->set_property("getOrInsertComputed", Value(wm_getOrInsertComputed_fn.release()),
+        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+
     WeakMap::prototype_object = weakmap_prototype.get();
-    
+
     weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()));
     ctx.create_binding("WeakMap", Value(weakmap_constructor_fn.release()));
 }
@@ -1255,18 +1320,18 @@ Value WeakMap::weakmap_constructor(Context& ctx, const std::vector<Value>& args)
 
 Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.set requires 2 arguments")));
+        ctx.throw_type_error("WeakMap.prototype.set requires 2 arguments");
         return Value();
     }
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.set called on non-object")));
+        ctx.throw_type_error("WeakMap.prototype.set called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.set called on non-WeakMap")));
+        ctx.throw_type_error("WeakMap.prototype.set called on non-WeakMap");
         return Value();
     }
     
@@ -1277,7 +1342,7 @@ Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
         weakmap->set(key, args[1]);
         return Value(this_obj);
     } else {
-        ctx.throw_exception(Value(std::string("WeakMap key must be an object")));
+        ctx.throw_type_error("WeakMap key must be an object");
         return Value();
     }
 }
@@ -1289,12 +1354,12 @@ Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.get called on non-object")));
+        ctx.throw_type_error("WeakMap.prototype.get called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.get called on non-WeakMap")));
+        ctx.throw_type_error("WeakMap.prototype.get called on non-WeakMap");
         return Value();
     }
     
@@ -1315,12 +1380,12 @@ Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.has called on non-object")));
+        ctx.throw_type_error("WeakMap.prototype.has called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.has called on non-WeakMap")));
+        ctx.throw_type_error("WeakMap.prototype.has called on non-WeakMap");
         return Value();
     }
     
@@ -1341,12 +1406,12 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.delete called on non-object")));
+        ctx.throw_type_error("WeakMap.prototype.delete called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakMap) {
-        ctx.throw_exception(Value(std::string("WeakMap.prototype.delete called on non-WeakMap")));
+        ctx.throw_type_error("WeakMap.prototype.delete called on non-WeakMap");
         return Value();
     }
     
@@ -1404,18 +1469,18 @@ Value WeakSet::weakset_constructor(Context& ctx, const std::vector<Value>& args)
 
 Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.add requires an argument")));
+        ctx.throw_type_error("WeakSet.prototype.add requires an argument");
         return Value();
     }
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.add called on non-object")));
+        ctx.throw_type_error("WeakSet.prototype.add called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.add called on non-WeakSet")));
+        ctx.throw_type_error("WeakSet.prototype.add called on non-WeakSet");
         return Value();
     }
     
@@ -1426,7 +1491,7 @@ Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
         weakset->add(value);
         return Value(this_obj);
     } else {
-        ctx.throw_exception(Value(std::string("WeakSet value must be an object")));
+        ctx.throw_type_error("WeakSet value must be an object");
         return Value();
     }
 }
@@ -1438,12 +1503,12 @@ Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.has called on non-object")));
+        ctx.throw_type_error("WeakSet.prototype.has called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.has called on non-WeakSet")));
+        ctx.throw_type_error("WeakSet.prototype.has called on non-WeakSet");
         return Value();
     }
     
@@ -1464,12 +1529,12 @@ Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.delete called on non-object")));
+        ctx.throw_type_error("WeakSet.prototype.delete called on non-object");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::WeakSet) {
-        ctx.throw_exception(Value(std::string("WeakSet.prototype.delete called on non-WeakSet")));
+        ctx.throw_type_error("WeakSet.prototype.delete called on non-WeakSet");
         return Value();
     }
     
