@@ -437,10 +437,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
         std::string str_value = object_value.is_string() ? object_value.to_string() : "";
         if (str_value.length() >= 6 && str_value.substr(0, 6) == "ARRAY:" && member->is_computed()) {
-            Value index_value = member->get_property()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            
-            int index = static_cast<int>(index_value.to_number());
+            int index = static_cast<int>(computed_key_value.to_number());
             if (index >= 0) {
                 std::string array_content = str_value.substr(6);
                 array_content = array_content.substr(1, array_content.length() - 2);
@@ -519,12 +516,10 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     (effective_object.is_boolean() ? "Boolean" : "Symbol"));
                 std::string prop_name;
                 if (member->is_computed()) {
-                    Value pv = member->get_property()->evaluate(ctx);
-                    if (ctx.has_exception()) return Value();
-                    if (pv.is_symbol()) {
-                        prop_name = pv.as_symbol()->to_property_key();
+                    if (computed_key_value.is_symbol()) {
+                        prop_name = computed_key_value.as_symbol()->to_property_key();
                     } else {
-                        prop_name = pv.to_string();
+                        prop_name = computed_key_value.to_string();
                     }
                 } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                     prop_name = static_cast<Identifier*>(member->get_property())->get_name();
@@ -570,8 +565,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         }
         
         if (member->is_computed() && obj && obj->is_array()) {
-            Value prop_value = member->get_property()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
+            Value prop_value = computed_key_value;
 
             if (__builtin_expect(prop_value.is_number(), 1)) {
                 double idx_double = prop_value.as_number();

@@ -13,6 +13,30 @@
 
 namespace Quanta {
 
+// Replace WTF-8 lone surrogate sequences (ED [A0-BF] [80-BF]) with U+FFFD (EF BF BD).
+// Both are 3 bytes so byte offsets are preserved; PCRE2 rejects raw surrogate bytes.
+static std::string sanitize_wtf8(const std::string& s) {
+    std::string r = s;
+    for (size_t i = 0; i + 2 < r.size(); ) {
+        unsigned char c = static_cast<unsigned char>(r[i]);
+        if (c == 0xED) {
+            unsigned char c1 = static_cast<unsigned char>(r[i+1]);
+            if (c1 >= 0xA0 && c1 <= 0xBF) {
+                r[i]   = static_cast<char>(0xEF);
+                r[i+1] = static_cast<char>(0xBF);
+                r[i+2] = static_cast<char>(0xBD);
+                i += 3;
+                continue;
+            }
+        }
+        if (c < 0x80) i += 1;
+        else if ((c & 0xE0) == 0xC0) i += 2;
+        else if ((c & 0xF0) == 0xE0) i += 3;
+        else i += 4;
+    }
+    return r;
+}
+
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), code_(nullptr),
       global_(false), ignore_case_(false), multiline_(false),
@@ -338,7 +362,9 @@ void RegExp::do_compile() {
         : fix_optional_backrefs(convert_unicode_escapes(preprocess_pattern(pattern_)));
 
     uint32_t options = PCRE2_UTF;
-    if (unicode_)    options |= PCRE2_UCP;
+    if (unicode_) {
+        options |= PCRE2_UCP | PCRE2_MATCH_INVALID_UTF;
+    }
     if (ignore_case_) options |= PCRE2_CASELESS;
     if (multiline_)  options |= PCRE2_MULTILINE;
     if (dotall_)     options |= PCRE2_DOTALL;
@@ -379,6 +405,7 @@ void RegExp::do_compile() {
 bool RegExp::test(const std::string& str) {
     if (!code_) return false;
 
+    const std::string& subject = unicode_ ? sanitize_wtf8(str) : str;
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return false;
@@ -386,7 +413,7 @@ bool RegExp::test(const std::string& str) {
     PCRE2_SIZE start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
         start = static_cast<PCRE2_SIZE>(last_index_);
-        if (start > str.length()) {
+        if (start > subject.length()) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return false;
@@ -394,7 +421,7 @@ bool RegExp::test(const std::string& str) {
     }
 
     int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.length(),
         start, 0, md, nullptr);
 
     bool found = (rc >= 0);
@@ -415,6 +442,7 @@ bool RegExp::test(const std::string& str) {
 Value RegExp::exec(const std::string& str) {
     if (!code_) return Value::null();
 
+    const std::string& subject = unicode_ ? sanitize_wtf8(str) : str;
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return Value::null();
@@ -423,7 +451,7 @@ Value RegExp::exec(const std::string& str) {
     PCRE2_SIZE start = 0;
     if (advances && last_index_ > 0) {
         start = static_cast<PCRE2_SIZE>(last_index_);
-        if (start > str.length()) {
+        if (start > subject.length()) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return Value::null();
@@ -431,7 +459,7 @@ Value RegExp::exec(const std::string& str) {
     }
 
     int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(str.c_str()), str.length(),
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.length(),
         start, 0, md, nullptr);
 
     if (rc < 0) {

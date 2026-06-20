@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/runtime/String.h"
 #include <cmath>
 #include <sstream>
 #include <algorithm>
@@ -61,21 +62,16 @@ void register_string_builtins(Context& ctx) {
             if (this_obj) {
                 this_obj->set_property("value", Value(str_value));
                 this_obj->set_property("[[PrimitiveValue]]", Value(str_value));
-                size_t str_utf16_len = 0;
-                for (size_t i = 0; i < str_value.size(); ) {
-                    unsigned char c = (unsigned char)str_value[i];
-                    if (c >= 0xF0) { str_utf16_len += 2; i += 4; }
-                    else if (c >= 0xE0) { str_utf16_len += 1; i += 3; }
-                    else if (c >= 0xC0) { str_utf16_len += 1; i += 2; }
-                    else { str_utf16_len += 1; i += 1; }
-                }
+                size_t str_utf16_len = utf16_length(str_value);
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),
                     static_cast<PropertyAttributes>(PropertyAttributes::None));
                 this_obj->set_property_descriptor("length", length_desc);
 
                 // Set indexed character properties: c[0] === "g"
-                for (size_t i = 0; i < str_value.size(); i++) {
-                    this_obj->set_property(std::to_string(i), Value(std::string(1, str_value[i])));
+                for (size_t i = 0; i < str_utf16_len; i++) {
+                    int32_t unit = utf16_code_unit_at(str_value, i);
+                    if (unit < 0) break;
+                    this_obj->set_property(std::to_string(i), Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
                 }
 
                 auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -957,37 +953,13 @@ void register_string_builtins(Context& ctx) {
             if (args.size() == 0 || str.empty()) return Value();
 
             int32_t pos = static_cast<int32_t>(args[0].to_number());
-            if (pos < 0 || pos >= static_cast<int32_t>(str.length())) {
+            if (pos < 0 || static_cast<size_t>(pos) >= utf16_length(str)) {
                 return Value();
             }
 
-            unsigned char ch = str[pos];
-
-            if ((ch & 0x80) == 0) {
-                return Value(static_cast<double>(ch));
-            } else if ((ch & 0xE0) == 0xC0) {
-                if (pos + 1 < static_cast<int32_t>(str.length())) {
-                    uint32_t codePoint = ((ch & 0x1F) << 6) | (str[pos + 1] & 0x3F);
-                    return Value(static_cast<double>(codePoint));
-                }
-            } else if ((ch & 0xF0) == 0xE0) {
-                if (pos + 2 < static_cast<int32_t>(str.length())) {
-                    uint32_t codePoint = ((ch & 0x0F) << 12) |
-                                        ((str[pos + 1] & 0x3F) << 6) |
-                                        (str[pos + 2] & 0x3F);
-                    return Value(static_cast<double>(codePoint));
-                }
-            } else if ((ch & 0xF8) == 0xF0) {
-                if (pos + 3 < static_cast<int32_t>(str.length())) {
-                    uint32_t codePoint = ((ch & 0x07) << 18) |
-                                        ((str[pos + 1] & 0x3F) << 12) |
-                                        ((str[pos + 2] & 0x3F) << 6) |
-                                        (str[pos + 3] & 0x3F);
-                    return Value(static_cast<double>(codePoint));
-                }
-            }
-
-            return Value(static_cast<double>(ch));
+            int32_t cp = utf16_code_point_at(str, static_cast<size_t>(pos));
+            if (cp < 0) return Value();
+            return Value(static_cast<double>(cp));
         }, 1);
     PropertyDescriptor codePointAt_desc(Value(codePointAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1021,11 +993,12 @@ void register_string_builtins(Context& ctx) {
                 index = static_cast<uint32_t>(args[0].to_number());
             }
 
-            if (index >= str.length()) {
+            int32_t unit = utf16_code_unit_at(str, index);
+            if (unit < 0) {
                 return Value(std::string(""));
             }
 
-            return Value(std::string(1, str[index]));
+            return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         });
     PropertyDescriptor charAt_desc(Value(charAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1041,7 +1014,7 @@ void register_string_builtins(Context& ctx) {
             }
 
             int64_t index = static_cast<int64_t>(args[0].to_number());
-            int64_t len = static_cast<int64_t>(str.length());
+            int64_t len = static_cast<int64_t>(utf16_length(str));
 
             if (index < 0) {
                 index = len + index;
@@ -1051,7 +1024,9 @@ void register_string_builtins(Context& ctx) {
                 return Value();
             }
 
-            return Value(std::string(1, str[static_cast<size_t>(index)]));
+            int32_t unit = utf16_code_unit_at(str, static_cast<size_t>(index));
+            if (unit < 0) return Value();
+            return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
         }, 1);
     PropertyDescriptor string_at_desc(Value(string_at_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1067,11 +1042,12 @@ void register_string_builtins(Context& ctx) {
                 index = static_cast<uint32_t>(args[0].to_number());
             }
 
-            if (index >= str.length()) {
+            int32_t unit = utf16_code_unit_at(str, index);
+            if (unit < 0) {
                 return Value(std::numeric_limits<double>::quiet_NaN());
             }
 
-            return Value(static_cast<double>(static_cast<unsigned char>(str[index])));
+            return Value(static_cast<double>(unit));
         });
     PropertyDescriptor charCodeAt_desc(Value(charCodeAt_fn.release()),
         PropertyAttributes::BuiltinFunction);

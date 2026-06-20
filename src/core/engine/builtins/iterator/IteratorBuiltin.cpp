@@ -1194,8 +1194,13 @@ void register_iterator_constructor(Context& ctx) {
         }, 1);
     iterator_constructor->set_property("zipKeyed", Value(iterator_zipKeyed.release()), PropertyAttributes::BuiltinFunction);
 
+    Object* iter_proto_raw = iterator_prototype.get();
     iterator_constructor->set_property("prototype", Value(iterator_prototype.release()));
     ctx.register_built_in_object("Iterator", iterator_constructor.release());
+
+    if (Iterator::s_iterator_prototype_ && Iterator::s_iterator_prototype_ != iter_proto_raw) {
+        Iterator::s_iterator_prototype_->set_prototype(iter_proto_raw);
+    }
 }
 
 } // namespace Quanta

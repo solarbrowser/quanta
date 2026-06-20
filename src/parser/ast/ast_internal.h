@@ -8,6 +8,7 @@
 #include <string>
 #include <cstddef>
 #include <unordered_map>
+#include "quanta/core/runtime/String.h"
 
 namespace Quanta {
 
@@ -17,18 +18,6 @@ class Object;
 extern std::unordered_map<std::string, Value> g_object_function_map;
 
 bool private_brand_check(Context& ctx, Object* obj, const std::string& prop_name, bool require_exists = true);
-
-inline size_t utf16_length(const std::string& str) {
-    size_t count = 0;
-    for (size_t i = 0; i < str.size(); ) {
-        unsigned char c = (unsigned char)str[i];
-        if (c >= 0xF0) { count += 2; i += 4; }
-        else if (c >= 0xE0) { count += 1; i += 3; }
-        else if (c >= 0xC0) { count += 1; i += 2; }
-        else { count += 1; i += 1; }
-    }
-    return count;
-}
 
 void increment_loop_depth();
 void decrement_loop_depth();
