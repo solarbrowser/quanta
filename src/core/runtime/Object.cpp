@@ -990,10 +990,12 @@ uint32_t Object::get_length() const {
         }
     }
     // plain array-likes (e.g. Array.prototype.every.call(plainObj)) store length as a property
+    // ToLength per spec: coerce length via ToNumber (handles strings "2", booleans, and
+    // objects with valueOf) but skip Symbol which throws on ToNumber.
     if (header_.type == ObjectType::Ordinary && has_property("length")) {
         Value length_val = get_property("length");
-        if (length_val.is_number()) {
-            double n = length_val.as_number();
+        if (!length_val.is_symbol() && !length_val.is_undefined() && !length_val.is_null()) {
+            double n = length_val.to_number();
             if (!std::isinf(n) && !std::isnan(n) && n >= 0) {
                 return static_cast<uint32_t>(std::min(n, (double)UINT32_MAX));
             }

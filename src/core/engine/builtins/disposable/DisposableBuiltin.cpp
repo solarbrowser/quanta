@@ -15,20 +15,13 @@ void register_disposable_builtins(Context& ctx) {
     auto disposablestack_constructor = ObjectFactory::create_native_constructor("DisposableStack",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* constructor = ctx.get_this_binding();
-            auto stack_obj = ObjectFactory::create_object();
-
-            if (constructor && constructor->is_function()) {
-                Value prototype_val = constructor->get_property("prototype");
-                if (prototype_val.is_object()) {
-                    stack_obj->set_prototype(prototype_val.as_object());
-                }
-            }
-
-            stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
-            stack_obj->set_property("_disposed", Value(false));
-
-            return Value(stack_obj.release());
+            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("DisposableStack requires 'new'"); return Value(); }
+            // Use the pre-allocated `this` (Function::construct already applied new.target.prototype to it)
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+            this_obj->set_property("_disposed", Value(false));
+            return Value(); // undefined → Function::construct uses this_obj as the result
         }, 0);
 
     auto disposablestack_prototype = ObjectFactory::create_object();
@@ -37,22 +30,21 @@ void register_disposable_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
-
             Value disposed = this_obj->get_property("_disposed");
-            if (disposed.to_boolean()) {
-                ctx.throw_reference_error("DisposableStack already disposed");
-                return Value();
+            if (disposed.to_boolean()) { ctx.throw_reference_error("DisposableStack already disposed"); return Value(); }
+            Value value = args.empty() ? Value() : args[0];
+            if (value.is_null() || value.is_undefined()) return value;
+            if (!value.is_object() && !value.is_function()) { ctx.throw_type_error("DisposableStack.use value must be an object"); return Value(); }
+            Object* val_obj = value.is_function() ? static_cast<Object*>(value.as_function()) : value.as_object();
+            Symbol* dispose_sym = Symbol::get_well_known(Symbol::DISPOSE);
+            if (dispose_sym) {
+                Value method = val_obj->get_property(dispose_sym->to_property_key());
+                if (method.is_null() || method.is_undefined()) { ctx.throw_type_error("Symbol.dispose is null or undefined"); return Value(); }
+                if (!method.is_function()) { ctx.throw_type_error("Symbol.dispose is not callable"); return Value(); }
             }
-
-            if (args.size() > 0) {
-                Value stack_val = this_obj->get_property("_stack");
-                if (stack_val.is_object()) {
-                    Object* stack = stack_val.as_object();
-                    stack->push(args[0]);
-                }
-                return args[0];
-            }
-            return Value();
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) stack_val.as_object()->push(value);
+            return value;
         }, 1);
     disposablestack_prototype->set_property("use", Value(ds_use_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -228,20 +220,12 @@ void register_disposable_builtins(Context& ctx) {
     auto asyncdisposablestack_constructor = ObjectFactory::create_native_constructor("AsyncDisposableStack",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* constructor = ctx.get_this_binding();
-            auto stack_obj = ObjectFactory::create_object();
-
-            if (constructor && constructor->is_function()) {
-                Value prototype_val = constructor->get_property("prototype");
-                if (prototype_val.is_object()) {
-                    stack_obj->set_prototype(prototype_val.as_object());
-                }
-            }
-
-            stack_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
-            stack_obj->set_property("_disposed", Value(false));
-
-            return Value(stack_obj.release());
+            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("AsyncDisposableStack requires 'new'"); return Value(); }
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj) return Value();
+            this_obj->set_property("_stack", Value(ObjectFactory::create_array(0).release()));
+            this_obj->set_property("_disposed", Value(false));
+            return Value(); // Function::construct uses this_obj (which already has the right prototype)
         }, 0);
 
     auto asyncdisposablestack_prototype = ObjectFactory::create_object();
@@ -250,22 +234,29 @@ void register_disposable_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
-
             Value disposed = this_obj->get_property("_disposed");
-            if (disposed.to_boolean()) {
-                ctx.throw_reference_error("AsyncDisposableStack already disposed");
-                return Value();
+            if (disposed.to_boolean()) { ctx.throw_reference_error("AsyncDisposableStack already disposed"); return Value(); }
+            Value value = args.empty() ? Value() : args[0];
+            if (value.is_null() || value.is_undefined()) return value;
+            if (!value.is_object() && !value.is_function()) { ctx.throw_type_error("AsyncDisposableStack.use value must be an object"); return Value(); }
+            Object* val_obj = value.is_function() ? static_cast<Object*>(value.as_function()) : value.as_object();
+            // GetDisposableMethod: check Symbol.asyncDispose, then Symbol.dispose
+            Symbol* async_dispose_sym = Symbol::get_well_known(Symbol::ASYNC_DISPOSE);
+            Symbol* dispose_sym = Symbol::get_well_known(Symbol::DISPOSE);
+            Value method;
+            if (async_dispose_sym) {
+                method = val_obj->get_property(async_dispose_sym->to_property_key());
+                if (method.is_null() || method.is_undefined()) { ctx.throw_type_error("Symbol.asyncDispose is null or undefined"); return Value(); }
+                if (!method.is_function()) { ctx.throw_type_error("Symbol.asyncDispose is not callable"); return Value(); }
             }
-
-            if (args.size() > 0) {
-                Value stack_val = this_obj->get_property("_stack");
-                if (stack_val.is_object()) {
-                    Object* stack = stack_val.as_object();
-                    stack->push(args[0]);
-                }
-                return args[0];
+            if (method.is_undefined() && dispose_sym) {
+                method = val_obj->get_property(dispose_sym->to_property_key());
+                if (method.is_null() || method.is_undefined()) { ctx.throw_type_error("Symbol.dispose is null or undefined"); return Value(); }
+                if (!method.is_function()) { ctx.throw_type_error("Symbol.dispose is not callable"); return Value(); }
             }
-            return Value();
+            Value stack_val = this_obj->get_property("_stack");
+            if (stack_val.is_object()) stack_val.as_object()->push(value);
+            return value;
         }, 1);
     asyncdisposablestack_prototype->set_property("use", Value(ads_use_fn.release()), PropertyAttributes::BuiltinFunction);
 
