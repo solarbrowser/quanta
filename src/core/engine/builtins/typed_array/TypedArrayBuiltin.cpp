@@ -6,6 +6,7 @@
 #include "quanta/core/engine/builtins/TypedArrayBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -15,6 +16,8 @@
 #include <algorithm>
 
 namespace Quanta {
+
+static void register_uint8array_base64_hex(Context& ctx); // forward declaration
 
 // ToBigInt(argument), per spec: only BigInt/Boolean/String coerce; Number/Symbol/null/undefined  throw. 
 static Value to_bigint_for_typed_array(Context& ctx, const Value& value) {
@@ -169,6 +172,71 @@ void register_typed_array_builtins(Context& ctx) {
             ctx.throw_type_error("Uint8Array constructor argument not supported");
             return Value();
         });
+    // ES2025: Uint8Array.fromBase64 / fromHex static methods
+    {
+        // fromHex(str) -> Uint8Array
+        auto fromHex_fn = ObjectFactory::create_native_function("fromHex",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromHex requires a string"); return Value(); }
+                const std::string& hex = args[0].as_string()->str();
+                if (hex.size() % 2 != 0) { ctx.throw_syntax_error("fromHex: odd-length string"); return Value(); }
+                auto ta = TypedArrayFactory::create_uint8_array(hex.size() / 2);
+                for (size_t i = 0; i < hex.size(); i += 2) {
+                    auto h = [](char c) -> int {
+                        if (c >= '0' && c <= '9') return c - '0';
+                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                        return -1;
+                    };
+                    int hi = h(hex[i]), lo = h(hex[i+1]);
+                    if (hi < 0 || lo < 0) { ctx.throw_syntax_error("fromHex: invalid hex character"); return Value(); }
+                    ta->set_element(i/2, Value((double)((hi << 4) | lo)));
+                }
+                return Value(ta.release());
+            }, 1);
+        uint8array_constructor->set_property("fromHex", Value(fromHex_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        // fromBase64(str, {alphabet, lastChunkHandling}) → Uint8Array
+        auto fromBase64_fn = ObjectFactory::create_native_function("fromBase64",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromBase64 requires a string"); return Value(); }
+                std::string str = args[0].as_string()->str();
+                bool url_safe = false;
+                if (args.size() > 1 && args[1].is_object()) {
+                    Value alph = args[1].as_object()->get_property("alphabet");
+                    if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
+                }
+                // decode base64
+                auto decode_char = [url_safe](char c) -> int {
+                    if (c >= 'A' && c <= 'Z') return c - 'A';
+                    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+                    if (c >= '0' && c <= '9') return c - '0' + 52;
+                    if (url_safe) { if (c == '-') return 62; if (c == '_') return 63; }
+                    else          { if (c == '+') return 62; if (c == '/') return 63; }
+                    return -1;
+                };
+                // strip padding/whitespace, validate
+                std::string clean;
+                for (char c : str) { if (c == '=') break; if (c != ' ' && c != '\t' && c != '\n' && c != '\r') clean += c; }
+                std::vector<uint8_t> bytes;
+                size_t i = 0;
+                while (i < clean.size()) {
+                    int b0 = i < clean.size() ? decode_char(clean[i++]) : 0;
+                    int b1 = i < clean.size() ? decode_char(clean[i++]) : 0;
+                    int b2 = i < clean.size() ? decode_char(clean[i++]) : -2; // -2 = absent
+                    int b3 = i < clean.size() ? decode_char(clean[i++]) : -2;
+                    if (b0 < 0 || b1 < 0) { ctx.throw_syntax_error("fromBase64: invalid character"); return Value(); }
+                    if (b2 < -1 || b3 < -1) { ctx.throw_syntax_error("fromBase64: invalid character"); return Value(); }
+                    bytes.push_back((b0 << 2) | (b1 >> 4));
+                    if (b2 >= 0) bytes.push_back(((b1 & 0xF) << 4) | (b2 >> 2));
+                    if (b3 >= 0) bytes.push_back(((b2 & 0x3) << 6) | b3);
+                }
+                auto ta = TypedArrayFactory::create_uint8_array(bytes.size());
+                for (size_t j = 0; j < bytes.size(); j++) ta->set_element(j, Value((double)bytes[j]));
+                return Value(ta.release());
+            }, 1);
+        uint8array_constructor->set_property("fromBase64", Value(fromBase64_fn.release()), PropertyAttributes::BuiltinFunction);
+    }
     ctx.register_built_in_object("Uint8Array", uint8array_constructor.release());
 
     auto uint8clampedarray_constructor = ObjectFactory::create_native_constructor("Uint8ClampedArray",
@@ -528,6 +596,7 @@ void register_typed_array_builtins(Context& ctx) {
             }
 
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
@@ -560,6 +629,12 @@ void register_typed_array_builtins(Context& ctx) {
                     break;
                 case TypedArrayBase::ArrayType::FLOAT64:
                     result = TypedArrayFactory::create_float64_array(length).release();
+                    break;
+                case TypedArrayBase::ArrayType::BIGINT64:
+                    result = new BigInt64Array(length);
+                    break;
+                case TypedArrayBase::ArrayType::BIGUINT64:
+                    result = new BigUint64Array(length);
                     break;
                 default:
                     ctx.throw_type_error("Unsupported TypedArray type");
@@ -594,6 +669,7 @@ void register_typed_array_builtins(Context& ctx) {
             }
 
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
@@ -641,6 +717,12 @@ void register_typed_array_builtins(Context& ctx) {
                     break;
                 case TypedArrayBase::ArrayType::FLOAT64:
                     result = TypedArrayFactory::create_float64_array(filtered.size()).release();
+                    break;
+                case TypedArrayBase::ArrayType::BIGINT64:
+                    result = new BigInt64Array(filtered.size());
+                    break;
+                case TypedArrayBase::ArrayType::BIGUINT64:
+                    result = new BigUint64Array(filtered.size());
                     break;
                 default:
                     ctx.throw_type_error("Unsupported TypedArray type");
@@ -2087,6 +2169,151 @@ void register_typed_array_builtins(Context& ctx) {
             }
         }
     }
+    register_uint8array_base64_hex(ctx);
+}
+
+// ES2025: Uint8Array.prototype.toBase64/toHex/setFromBase64/setFromHex
+static void register_uint8array_base64_hex(Context& ctx) {
+    Object* u8ctor = ctx.get_built_in_object("Uint8Array");
+    if (!u8ctor) return;
+    Value proto_val = u8ctor->get_property("prototype");
+    if (!proto_val.is_object()) return;
+    Object* proto = proto_val.as_object();
+
+    proto->set_property("toHex", Value(ObjectFactory::create_native_function("toHex",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("toHex: not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
+            if (ta->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("toHex: requires Uint8Array"); return Value(); }
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("toHex: TypedArray is out of bounds"); return Value(); }
+            static const char hex[] = "0123456789abcdef";
+            std::string result;
+            result.reserve(ta->length() * 2);
+            for (size_t i = 0; i < ta->length(); i++) {
+                uint8_t b = static_cast<uint8_t>(ta->get_element(i).to_number());
+                result += hex[b >> 4];
+                result += hex[b & 0xF];
+            }
+            return Value(result);
+        }, 0).release()), PropertyAttributes::BuiltinFunction);
+
+    proto->set_property("toBase64", Value(ObjectFactory::create_native_function("toBase64",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("toBase64: not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
+            if (ta->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("toBase64: requires Uint8Array"); return Value(); }
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("toBase64: TypedArray is out of bounds"); return Value(); }
+            bool url_safe = false, omit_padding = false;
+            if (!args.empty() && args[0].is_object()) {
+                Value alph = args[0].as_object()->get_property("alphabet");
+                if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
+                Value op = args[0].as_object()->get_property("omitPadding");
+                if (!op.is_undefined()) omit_padding = op.to_boolean();
+            }
+            const char* tbl = url_safe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                                        : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string result;
+            size_t n = ta->length();
+            for (size_t i = 0; i < n; i += 3) {
+                uint8_t b0 = static_cast<uint8_t>(ta->get_element(i).to_number());
+                uint8_t b1 = i+1 < n ? static_cast<uint8_t>(ta->get_element(i+1).to_number()) : 0;
+                uint8_t b2 = i+2 < n ? static_cast<uint8_t>(ta->get_element(i+2).to_number()) : 0;
+                result += tbl[b0 >> 2];
+                result += tbl[((b0 & 3) << 4) | (b1 >> 4)];
+                if (i+1 < n) result += tbl[((b1 & 0xF) << 2) | (b2 >> 6)];
+                else if (!omit_padding) result += '=';
+                if (i+2 < n) result += tbl[b2 & 0x3F];
+                else if (!omit_padding) result += '=';
+            }
+            return Value(result);
+        }, 0).release()), PropertyAttributes::BuiltinFunction);
+
+    proto->set_property("setFromHex", Value(ObjectFactory::create_native_function("setFromHex",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("setFromHex: not a TypedArray"); return Value(); }
+            TypedArrayBase* ta2 = static_cast<TypedArrayBase*>(obj);
+            if (ta2->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("setFromHex: requires Uint8Array"); return Value(); }
+            if (ta2->is_out_of_bounds()) { ctx.throw_type_error("setFromHex: TypedArray is out of bounds"); return Value(); }
+            if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromHex requires a string"); return Value(); }
+            TypedArrayBase* ta = ta2;
+            const std::string& hex = args[0].as_string()->str();
+            if (hex.size() % 2 != 0) { ctx.throw_syntax_error("setFromHex: odd-length string"); return Value(); }
+            auto h = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return -1;
+            };
+            size_t written = 0;
+            for (size_t i = 0; i < hex.size() && written < ta->length(); i += 2, written++) {
+                int hi = h(hex[i]), lo = h(hex[i+1]);
+                if (hi < 0 || lo < 0) { ctx.throw_syntax_error("setFromHex: invalid hex character"); return Value(); }
+                ta->set_element(written, Value((double)((hi << 4) | lo)));
+            }
+            auto res = ObjectFactory::create_object();
+            res->set_property("read", Value((double)(written * 2)));
+            res->set_property("written", Value((double)written));
+            return Value(res.release());
+        }, 1).release()), PropertyAttributes::BuiltinFunction);
+
+    proto->set_property("setFromBase64", Value(ObjectFactory::create_native_function("setFromBase64",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("setFromBase64: not a TypedArray"); return Value(); }
+            TypedArrayBase* ta2 = static_cast<TypedArrayBase*>(obj);
+            if (ta2->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("setFromBase64: requires Uint8Array"); return Value(); }
+            if (ta2->is_out_of_bounds()) { ctx.throw_type_error("setFromBase64: TypedArray is out of bounds"); return Value(); }
+            if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromBase64 requires a string"); return Value(); }
+            TypedArrayBase* ta = ta2;
+            std::string str = args[0].as_string()->str();
+            bool url_safe = false;
+            if (args.size() > 1 && args[1].is_object()) {
+                Value alph = args[1].as_object()->get_property("alphabet");
+                if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
+            }
+            auto decode_char = [url_safe](char c) -> int {
+                if (c >= 'A' && c <= 'Z') return c - 'A';
+                if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+                if (c >= '0' && c <= '9') return c - '0' + 52;
+                if (url_safe) { if (c == '-') return 62; if (c == '_') return 63; }
+                else          { if (c == '+') return 62; if (c == '/') return 63; }
+                return -1;
+            };
+            std::string clean;
+            size_t chars_read = 0;
+            for (size_t i = 0; i < str.size(); i++) {
+                char c = str[i];
+                if (c == '=') { chars_read = i; break; }
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
+                clean += c;
+                chars_read = i + 1;
+            }
+            if (chars_read == 0 && !str.empty()) chars_read = str.size();
+            size_t written = 0;
+            std::vector<uint8_t> bytes;
+            for (size_t i = 0; i < clean.size(); ) {
+                int b0 = i < clean.size() ? decode_char(clean[i++]) : 0;
+                int b1 = i < clean.size() ? decode_char(clean[i++]) : 0;
+                int b2_absent = (i >= clean.size()); int b2 = !b2_absent ? decode_char(clean[i++]) : 0;
+                int b3_absent = (i >= clean.size()); int b3 = !b3_absent ? decode_char(clean[i++]) : 0;
+                if (b0 < 0 || b1 < 0 || (!b2_absent && b2 < 0) || (!b3_absent && b3 < 0)) {
+                    ctx.throw_syntax_error("setFromBase64: invalid character"); return Value();
+                }
+                bytes.push_back((b0 << 2) | (b1 >> 4));
+                if (!b2_absent) bytes.push_back(((b1 & 0xF) << 4) | (b2 >> 2));
+                if (!b3_absent) bytes.push_back(((b2 & 0x3) << 6) | b3);
+            }
+            written = std::min(bytes.size(), ta->length());
+            for (size_t i = 0; i < written; i++) ta->set_element(i, Value((double)bytes[i]));
+            auto res = ObjectFactory::create_object();
+            res->set_property("read", Value((double)chars_read));
+            res->set_property("written", Value((double)written));
+            return Value(res.release());
+        }, 1).release()), PropertyAttributes::BuiltinFunction);
 }
 
 } // namespace Quanta
