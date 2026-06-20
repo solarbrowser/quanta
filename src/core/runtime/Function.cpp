@@ -36,7 +36,13 @@ Function::Function(const std::string& name,
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
 
-    this->set_property("prototype", Value(prototype_));
+    // ES5 13.2: function.prototype is {writable:true, enumerable:false, configurable:false}
+    {
+        PropertyDescriptor proto_desc(Value(prototype_), PropertyAttributes::Writable);
+        proto_desc.set_enumerable(false);
+        proto_desc.set_configurable(false);
+        this->set_property_descriptor("prototype", proto_desc);
+    }
     // ES5 13.2: .prototype.constructor is {writable:true, enumerable:false, configurable:true}
     PropertyDescriptor ctor_desc(Value(this), static_cast<PropertyAttributes>(
         PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -69,7 +75,12 @@ Function::Function(const std::string& name,
     auto proto = ObjectFactory::create_object();
     prototype_ = proto.release();
 
-    this->set_property("prototype", Value(prototype_));
+    {
+        PropertyDescriptor proto_desc2(Value(prototype_), PropertyAttributes::Writable);
+        proto_desc2.set_enumerable(false);
+        proto_desc2.set_configurable(false);
+        this->set_property_descriptor("prototype", proto_desc2);
+    }
     {
         PropertyDescriptor ctor_desc2(Value(this), static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Configurable));
