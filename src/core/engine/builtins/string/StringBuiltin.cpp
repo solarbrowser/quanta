@@ -101,6 +101,17 @@ void register_string_builtins(Context& ctx) {
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
             
             if (args.empty()) return Value(str);
@@ -131,6 +142,17 @@ void register_string_builtins(Context& ctx) {
     auto padEnd_fn = ObjectFactory::create_native_function("padEnd",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
             
             if (args.empty()) return Value(str);
@@ -178,6 +200,17 @@ void register_string_builtins(Context& ctx) {
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
@@ -233,6 +266,17 @@ void register_string_builtins(Context& ctx) {
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
@@ -286,6 +330,17 @@ void register_string_builtins(Context& ctx) {
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.empty()) return Value(false);
@@ -331,6 +386,15 @@ void register_string_builtins(Context& ctx) {
 
     // Helper to convert this value to string for String.prototype methods
     auto toString_helper = [](Context& ctx, const Value& this_value) -> std::string {
+        // RequireObjectCoercible: nullptr this_binding + global-boxed this = original was null/undefined
+        if (!ctx.get_this_binding()) {
+            Value tv = ctx.get_binding("this");
+            bool is_global_boxed = tv.is_object() && tv.as_object() == ctx.get_global_object();
+            if (is_global_boxed || tv.is_null() || tv.is_undefined()) {
+                ctx.throw_type_error("String method called on null or undefined");
+                return "";
+            }
+        }
         if (this_value.is_object() || this_value.is_function()) {
             Object* obj = this_value.is_object() ? this_value.as_object() : this_value.as_function();
             Value toString_method = obj->get_property("toString");
@@ -856,6 +920,17 @@ void register_string_builtins(Context& ctx) {
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.size() < 2) return Value(str);
@@ -900,6 +975,17 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
@@ -916,6 +1002,17 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
@@ -932,6 +1029,17 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             size_t end = str.find_last_not_of(" \t\n\r\f\v");
@@ -948,6 +1056,17 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.size() == 0 || str.empty()) return Value();
@@ -969,6 +1088,17 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.size() == 0) return Value(0.0);
@@ -1007,6 +1137,17 @@ void register_string_builtins(Context& ctx) {
     auto string_at_fn = ObjectFactory::create_native_function("at",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
 
             if (args.empty()) {
@@ -1674,6 +1815,17 @@ void register_string_builtins(Context& ctx) {
     auto substr_fn = ObjectFactory::create_native_function("substr",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
             int64_t size = static_cast<int64_t>(str.length());
 
@@ -1798,6 +1950,17 @@ void register_string_builtins(Context& ctx) {
     auto normalize_fn = ObjectFactory::create_native_function("normalize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
+            if (!ctx.get_this_binding()) {
+                // nullptr this_binding means original this was null/undefined (boxed to global in non-strict)
+                // Verify: ctx binding "this" should be the global object after null/undefined boxing
+                Value this_val = ctx.get_binding("this");
+                bool is_global_boxed = this_val.is_object() && this_val.as_object() == ctx.get_global_object();
+                bool is_null_undef = this_val.is_null() || this_val.is_undefined();
+                if (is_global_boxed || is_null_undef) {
+                    ctx.throw_type_error("String method called on null or undefined");
+                    return Value();
+                }
+            }
             std::string str = this_value.to_string();
             std::string form = (args.size() > 0 && !args[0].is_undefined()) ? args[0].to_string() : "NFC";
 

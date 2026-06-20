@@ -694,12 +694,8 @@ void register_object_builtins(Context& ctx) {
             }
 
             Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
-            std::string prop_name;
-            if (args[1].is_symbol()) {
-                prop_name = args[1].as_symbol()->to_property_key();
-            } else {
-                prop_name = args[1].to_string();
-            }
+            std::string prop_name = args[1].to_property_key();
+            if (ctx.has_exception()) return Value();
 
             if (args[2].is_object()) {
                 Object* desc = args[2].as_object();
@@ -1086,7 +1082,8 @@ void register_object_builtins(Context& ctx) {
             if (!args[0].is_object()) return Value(false);
 
             Object* obj = args[0].as_object();
-            std::string prop_name = args[1].to_string();
+            std::string prop_name = args[1].to_property_key();
+            if (ctx.has_exception()) return Value();
 
             return Value(obj->has_own_property(prop_name));
         }, 2);
@@ -1250,12 +1247,8 @@ void register_object_builtins(Context& ctx) {
                 return Value(false);
             }
 
-            std::string prop_name;
-            if (args[0].is_symbol()) {
-                prop_name = args[0].as_symbol()->to_property_key();
-            } else {
-                prop_name = args[0].to_string();
-            }
+            std::string prop_name = args[0].to_property_key();
+            if (ctx.has_exception()) return Value();
             // Spec: HasOwnProperty calls [[GetOwnProperty]], which fires getOwnPropertyDescriptor trap
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
                 PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(Value(prop_name));
@@ -1325,12 +1318,8 @@ void register_object_builtins(Context& ctx) {
                 return Value(false);
             }
 
-            std::string prop_name;
-            if (args[0].is_symbol()) {
-                prop_name = args[0].as_symbol()->to_property_key();
-            } else {
-                prop_name = args[0].to_string();
-            }
+            std::string prop_name = args[0].to_property_key();
+            if (ctx.has_exception()) return Value(false);
 
             if (!this_obj->has_own_property(prop_name)) {
                 return Value(false);
