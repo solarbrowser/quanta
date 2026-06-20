@@ -15,16 +15,18 @@ namespace Quanta {
 
 // Replace WTF-8 lone surrogate sequences (ED [A0-BF] [80-BF]) with U+FFFD (EF BF BD).
 // Both are 3 bytes so byte offsets are preserved; PCRE2 rejects raw surrogate bytes.
-static std::string sanitize_wtf8(const std::string& s) {
-    std::string r = s;
-    for (size_t i = 0; i + 2 < r.size(); ) {
-        unsigned char c = static_cast<unsigned char>(r[i]);
+// Fast-path: if the string contains no 0xED byte, no surrogates -> return original.
+static const std::string& sanitize_wtf8(const std::string& s, std::string& buf) {
+    if (s.find('\xED') == std::string::npos) return s;
+    buf = s;
+    for (size_t i = 0; i + 2 < buf.size(); ) {
+        unsigned char c = static_cast<unsigned char>(buf[i]);
         if (c == 0xED) {
-            unsigned char c1 = static_cast<unsigned char>(r[i+1]);
+            unsigned char c1 = static_cast<unsigned char>(buf[i+1]);
             if (c1 >= 0xA0 && c1 <= 0xBF) {
-                r[i]   = static_cast<char>(0xEF);
-                r[i+1] = static_cast<char>(0xBF);
-                r[i+2] = static_cast<char>(0xBD);
+                buf[i]   = static_cast<char>(0xEF);
+                buf[i+1] = static_cast<char>(0xBF);
+                buf[i+2] = static_cast<char>(0xBD);
                 i += 3;
                 continue;
             }
@@ -34,7 +36,7 @@ static std::string sanitize_wtf8(const std::string& s) {
         else if ((c & 0xF0) == 0xE0) i += 3;
         else i += 4;
     }
-    return r;
+    return buf;
 }
 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
@@ -449,7 +451,7 @@ void RegExp::do_compile() {
 bool RegExp::test(const std::string& str) {
     if (!code_) return false;
 
-    const std::string& subject = unicode_ ? sanitize_wtf8(str) : str;
+    std::string _wtf8_buf; const std::string& subject = unicode_ ? sanitize_wtf8(str, _wtf8_buf) : str;
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return false;
@@ -486,7 +488,7 @@ bool RegExp::test(const std::string& str) {
 Value RegExp::exec(const std::string& str) {
     if (!code_) return Value::null();
 
-    const std::string& subject = unicode_ ? sanitize_wtf8(str) : str;
+    std::string _wtf8_buf; const std::string& subject = unicode_ ? sanitize_wtf8(str, _wtf8_buf) : str;
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return Value::null();
