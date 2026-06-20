@@ -532,6 +532,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
@@ -580,6 +581,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
@@ -620,6 +622,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
@@ -646,6 +649,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             if (args.empty()) {
                 throw std::runtime_error("TypeError: Array.prototype.with requires an index argument");
@@ -698,6 +702,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             int32_t index = static_cast<int32_t>(args[0].to_number());
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             if (index < 0) {
                 index = static_cast<int32_t>(length) + index;
@@ -836,6 +841,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             auto result = ObjectFactory::create_array();
             uint32_t result_index = 0;
 
@@ -895,6 +901,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
             int32_t start = start_arg < 0
@@ -983,6 +990,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (this_obj->is_array()) {
                 std::ostringstream result;
                 uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
                 for (uint32_t i = 0; i < length; i++) {
                     if (i > 0) {
@@ -1093,6 +1101,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             double target_arg = args.empty() ? 0.0 : args[0].to_number();
             int32_t target = target_arg < 0
@@ -1279,6 +1288,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!this_obj) return Value(std::string(""));
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             std::string result;
 
             for (uint32_t i = 0; i < length; i++) {
@@ -1319,6 +1329,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             auto result = ObjectFactory::create_array(length);
 
             for (uint32_t i = 0; i < length; i++) {
@@ -1337,6 +1348,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             auto result = ObjectFactory::create_array(length);
 
             for (uint32_t i = 0; i < length; i++) {
@@ -1356,6 +1368,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             int32_t start = args.empty() ? 0 : static_cast<int32_t>(args[0].to_number());
             uint32_t deleteCount = args.size() < 2 ? (length - start) : static_cast<uint32_t>(args[1].to_number());
 
@@ -1484,6 +1497,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
@@ -1514,6 +1528,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_obj, 0);
@@ -1552,6 +1567,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value this_arg = args.size() > 1 ? args[1] : Value();
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
                     continue;
@@ -1576,6 +1592,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value search_element = args[0];
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             int32_t start_index = 0;
             if (args.size() > 1) {
@@ -1620,6 +1637,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_obj, length);
@@ -1656,6 +1674,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             Function* callback = args[0].as_function();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             if (length == 0 && args.size() < 2) {
                 throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
@@ -1713,6 +1732,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
@@ -1744,6 +1764,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
@@ -1769,6 +1790,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             std::string result = "";
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             for (uint32_t i = 0; i < length; i++) {
                 if (i > 0) result += separator;
                 result += this_obj->get_element(i).to_string();
@@ -1800,6 +1822,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             if (length == 0) return Value();
 
             Value element = this_obj->get_element(length - 1);
@@ -1844,6 +1867,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             for (uint32_t i = 0; i < length / 2; i++) {
                 Value temp = this_obj->get_element(i);
                 this_obj->set_element(i, this_obj->get_element(length - 1 - i));
@@ -1884,6 +1908,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             if (length == 0) return Value();
 
             Value first = this_obj->get_element(0);
@@ -1908,6 +1933,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             int32_t start = 0;
             int32_t end = static_cast<int32_t>(length);
@@ -1952,6 +1978,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (!this_obj) return Value(this_obj);
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             if (length <= 1) return Value(this_obj);
 
             Function* compareFn = nullptr;
@@ -2106,6 +2133,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             int32_t start = 0;
             if (!args.empty()) {
@@ -2204,6 +2232,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
             uint32_t argCount = args.size();
 
             for (int32_t i = length - 1; i >= 0; i--) {

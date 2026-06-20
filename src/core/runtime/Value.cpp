@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/runtime/Symbol.h"
@@ -249,6 +250,26 @@ double Value::to_number() const {
             Value pv = obj->get_property("[[PrimitiveValue]]");
             if (!pv.is_object()) {
                 return pv.to_number();
+            }
+        }
+        // ToPrimitive with "number" hint: try valueOf() first, then toString()
+        if (obj && Object::current_context_) {
+            Context& ctx = *Object::current_context_;
+            Value valueOf_fn = obj->get_property("valueOf");
+            if (valueOf_fn.is_function()) {
+                Value prim = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
+                if (!prim.is_object() && !prim.is_function() && !ctx.has_exception()) {
+                    return prim.to_number();
+                }
+            }
+            if (!ctx.has_exception()) {
+                Value toString_fn = obj->get_property("toString");
+                if (toString_fn.is_function()) {
+                    Value prim = toString_fn.as_function()->call(ctx, {}, Value(obj));
+                    if (!prim.is_object() && !prim.is_function() && !ctx.has_exception()) {
+                        return prim.to_number();
+                    }
+                }
             }
         }
         return std::numeric_limits<double>::quiet_NaN();
