@@ -757,6 +757,25 @@ void register_object_builtins(Context& ctx) {
                     return Value();
                 }
 
+                // Non-configurable property enforcement: check before calling set_property_descriptor
+                // This only applies to user-space Object.defineProperty calls (not internal engine setup)
+                if (obj->get_type() != Object::ObjectType::Proxy) {
+                    PropertyDescriptor existing = obj->get_property_descriptor(prop_name);
+                    if (existing.has_configurable() && !existing.is_configurable()) {
+                        // Cannot make non-configurable property configurable
+                        if (prop_desc.has_configurable() && prop_desc.is_configurable()) {
+                            ctx.throw_type_error("Cannot redefine non-configurable property '" + prop_name + "'");
+                            return Value();
+                        }
+                        // Cannot change enumerable
+                        if (existing.has_enumerable() && prop_desc.has_enumerable() &&
+                            prop_desc.is_enumerable() != existing.is_enumerable()) {
+                            ctx.throw_type_error("Cannot change enumerable of non-configurable property '" + prop_name + "'");
+                            return Value();
+                        }
+                    }
+                }
+
                 bool success;
                 if (obj->get_type() == Object::ObjectType::Proxy) {
                     success = static_cast<Proxy*>(obj)->define_property_trap(Value(prop_name), prop_desc);
