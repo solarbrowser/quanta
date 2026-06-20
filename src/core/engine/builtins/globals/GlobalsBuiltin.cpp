@@ -6,6 +6,8 @@
 #include "quanta/core/engine/builtins/GlobalsBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/engine/Engine.h"
+#include <memory>
+#include <functional>
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/engine/CallStack.h"
@@ -510,10 +512,10 @@ void register_global_builtins(Context& ctx) {
         ctx.get_global_object()->set_property_descriptor("this", global_ref_desc);
     }
 
-    // test262 host API ($262): only detachArrayBuffer is implemented 
-
+    // test262 host API ($262)
     {
         auto test262_host = ObjectFactory::create_object();
+
         auto detach_fn = ObjectFactory::create_native_function("detachArrayBuffer",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 if (args.empty() || !args[0].is_object() || !args[0].as_object()->is_array_buffer()) {
@@ -524,6 +526,52 @@ void register_global_builtins(Context& ctx) {
                 return Value();
             });
         test262_host->set_property("detachArrayBuffer", Value(detach_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        // createRealm: spawn a new Engine with its own intrinsics; return {global, eval, createRealm}
+        using RealmFn = std::function<Value(Context&, const std::vector<Value>&)>;
+        auto make_realm_fn = std::make_shared<RealmFn>();
+        *make_realm_fn = [make_realm_fn](Context& caller_ctx, const std::vector<Value>&) -> Value {
+            Engine* new_engine = new Engine(); // intentionally leaked -- consistent with engine memory model
+            if (!new_engine) { caller_ctx.throw_type_error("createRealm: failed to create engine"); return Value(); }
+            if (!new_engine->initialize()) { caller_ctx.throw_type_error("createRealm: failed to initialize engine"); return Value(); }
+
+            Context* new_ctx = new_engine->get_global_context();
+            Object* new_global = new_ctx ? new_ctx->get_global_object() : nullptr;
+            if (!new_global) { caller_ctx.throw_type_error("createRealm: no global"); return Value(); }
+
+            auto realm_obj = ObjectFactory::create_object();
+            realm_obj->set_property("global", Value(new_global));
+
+            auto eval_fn = ObjectFactory::create_native_function("eval",
+                [new_engine](Context& ctx, const std::vector<Value>& args) -> Value {
+                    if (args.empty()) return Value();
+                    auto result = new_engine->evaluate(args[0].to_string());
+                    if (!result.success) {
+                        ctx.throw_exception(result.exception_value.is_undefined()
+                            ? Value(result.error_message) : result.exception_value);
+                        return Value();
+                    }
+                    return result.value;
+                }, 1);
+            realm_obj->set_property("eval", Value(eval_fn.release()), PropertyAttributes::BuiltinFunction);
+            realm_obj->set_property("evalScript", realm_obj->get_property("eval"));
+
+            auto sub_create = ObjectFactory::create_native_function("createRealm",
+                [make_realm_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+                    return (*make_realm_fn)(ctx, args);
+                }, 0);
+            realm_obj->set_property("createRealm", Value(sub_create.release()), PropertyAttributes::BuiltinFunction);
+
+            realm_obj->set_property("$262", Value(realm_obj.get()));
+            return Value(realm_obj.release());
+        };
+
+        auto createRealm_fn = ObjectFactory::create_native_function("createRealm",
+            [make_realm_fn](Context& ctx, const std::vector<Value>& args) -> Value {
+                return (*make_realm_fn)(ctx, args);
+            }, 0);
+        test262_host->set_property("createRealm", Value(createRealm_fn.release()), PropertyAttributes::BuiltinFunction);
+
         ctx.get_lexical_environment()->create_binding("$262", Value(test262_host.release()), true);
     }
     ctx.get_lexical_environment()->create_binding("true", Value(true), false, false);
