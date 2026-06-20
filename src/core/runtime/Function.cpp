@@ -225,14 +225,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
-        if (this_value.is_null() || this_value.is_undefined()) {
+        bool was_nullish = this_value.is_null() || this_value.is_undefined();
+        if (was_nullish) {
             ctx.set_this_binding(nullptr);
         }
+        bool prev_nullish = ctx.original_this_was_nullish();
+        ctx.set_original_this_nullish(was_nullish);
 
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
         Value result = native_fn_(ctx, args);
         Object::current_context_ = prev_context;
+        ctx.set_original_this_nullish(prev_nullish);
 
         ctx.set_this_binding(old_this);
 

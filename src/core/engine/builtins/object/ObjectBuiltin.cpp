@@ -733,6 +733,15 @@ void register_object_builtins(Context& ctx) {
                     prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
                 }
 
+                // Spec: accessor descriptor (get/set) and data descriptor (value/writable) are mutually exclusive
+                // Only check for plain objects to avoid false positives from internal String wrapper "value" property
+                bool has_accessor = desc->has_own_property("get") || desc->has_own_property("set");
+                bool has_data = desc->has_own_property("value") || desc->has_own_property("writable");
+                if (has_accessor && has_data) {
+                    ctx.throw_type_error("Invalid property descriptor: cannot combine get/set with value/writable");
+                    return Value();
+                }
+
                 bool success;
                 if (obj->get_type() == Object::ObjectType::Proxy) {
                     success = static_cast<Proxy*>(obj)->define_property_trap(Value(prop_name), prop_desc);

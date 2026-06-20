@@ -78,6 +78,7 @@ private:
     bool super_called_;
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Value new_target_;
+    bool original_this_was_nullish_; // set when native call had null/undefined thisArg
 
     bool strict_mode_;
     
@@ -141,6 +142,8 @@ public:
     
     bool is_strict_mode() const { return strict_mode_; }
     void set_strict_mode(bool strict) { strict_mode_ = strict; }
+    bool original_this_was_nullish() const { return original_this_was_nullish_; }
+    void set_original_this_nullish(bool v) { original_this_was_nullish_ = v; }
 
     Object* get_global_object() const { return global_object_; }
     void set_global_object(Object* global);
