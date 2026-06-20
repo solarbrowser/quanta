@@ -31,27 +31,59 @@ String::String(const char* str) : data_(str ? str : "") {
 
 bool String::operator==(const String& other) const noexcept {
     if (this == &other) return true;
-    if (hash_ != other.hash_) return false;
-    return data_ == other.data_;
+    const std::string& a = str();
+    const std::string& b = other.str();
+    if (hash_ && other.hash_ && hash_ != other.hash_) return false;
+    return a == b;
 }
 
 String String::concat(const String& other) const {
-    return String(data_ + other.data_);
+    return String(str() + other.str());
 }
 
 String String::substring(size_t start, size_t length) const {
-    return String(data_.substr(start, length));
+    return String(str().substr(start, length));
 }
 
-String String::intern(const std::string& str) {
-    String result(str);
+String String::intern(const std::string& s) {
+    String result(s);
     result.interned_ = true;
-    intern_cache_[str] = result.hash_;
+    intern_cache_[s] = result.hash_;
     return result;
 }
 
 void String::calculate_hash() noexcept {
     hash_ = std::hash<std::string>{}(data_);
+}
+
+void String::collect_bytes(const String* node, std::string& out) {
+    if (!node->is_cons_ || node->flat_) {
+        out.append(node->data_);
+    } else {
+        collect_bytes(node->left_, out);
+        collect_bytes(node->right_, out);
+    }
+}
+
+void String::ensure_flat() const {
+    std::string result;
+    collect_bytes(this, result);
+    data_  = std::move(result);
+    flat_  = true;
+    hash_  = std::hash<std::string>{}(data_);
+}
+
+static constexpr size_t CONS_THRESHOLD = 32;
+
+String* String::make_concat(String* a, String* b) {
+    if (!a || a->empty()) return b;
+    if (!b || b->empty()) return a;
+    // Flatten immediately only when BOTH sides are already flat and combined size is small.
+    // Don't call str() on a cons node here — that would defeat the whole purpose.
+    if (!a->is_cons_ && !b->is_cons_ && a->data_.size() + b->data_.size() <= CONS_THRESHOLD) {
+        return new String(a->data_ + b->data_);
+    }
+    return new String(a, b);
 }
 
 namespace {

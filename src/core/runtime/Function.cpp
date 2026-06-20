@@ -98,7 +98,8 @@ Function::Function(const std::string& name,
                    std::function<Value(Context&, const std::vector<Value>&)> native_fn,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
+      is_class_constructor_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();
@@ -119,7 +120,8 @@ Function::Function(const std::string& name,
                    uint32_t arity,
                    bool create_prototype)
     : Object(ObjectType::Function), name_(name), closure_context_(nullptr), closure_environment_(nullptr),
-      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
+      prototype_(nullptr), is_native_(true), is_constructor_(create_prototype), is_arrow_(false),
+      is_class_constructor_(false), is_strict_(false), is_param_default_(false), native_fn_(native_fn), execution_count_(0), is_hot_(false) {
     if (create_prototype) {
         auto proto = ObjectFactory::create_object();
         prototype_ = proto.release();

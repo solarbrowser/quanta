@@ -312,6 +312,48 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
     return result;
 }
 
+// JS spec: \d = [0-9], \w = [A-Za-z0-9_], \s = specific Unicode whitespace list.
+// PCRE2_UCP extends these to full Unicode categories which is wrong per spec.
+// We remove UCP and expand \s manually; \d/\w revert to ASCII-only automatically.
+static std::string expand_js_charclass_shortcuts(const std::string& p) {
+    // JS \s whitespace — exactly the set from ECMAScript spec (WhiteSpace + LineTerminator)
+    static const char* s_inner  = "\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}";
+    static const char* s_outer  = "[\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
+    static const char* S_outer  = "[^\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
+    // For \S inside a character class we'd need set subtraction (not standard in /u mode);
+    // in practice \S inside [...] is rare, leave it as-is and let PCRE2 handle it.
+
+    std::string result;
+    result.reserve(p.size() * 2);
+    bool in_cc = false;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '\\' && i + 1 < p.size()) {
+            char next = p[i + 1];
+            if (next == 's') {
+                result += in_cc ? s_inner : s_outer;
+                i++;
+                continue;
+            }
+            if (next == 'S' && !in_cc) {
+                result += S_outer;
+                i++;
+                continue;
+            }
+            result += p[i++];
+            result += p[i];
+        } else if (p[i] == '[' && !in_cc) {
+            in_cc = true;
+            result += p[i];
+        } else if (p[i] == ']' && in_cc) {
+            in_cc = false;
+            result += p[i];
+        } else {
+            result += p[i];
+        }
+    }
+    return result;
+}
+
 static std::string expand_gc_aliases(const std::string& pattern) {
     static const std::pair<const char*, const char*> aliases[] = {
         {"Other_Symbol", "So"}, {"Uppercase_Letter", "Lu"}, {"Lowercase_Letter", "Ll"},
@@ -358,12 +400,15 @@ void RegExp::do_compile() {
     }
 
     std::string pat = unicode_
-        ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(pattern_)))
+        ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_))))
         : fix_optional_backrefs(convert_unicode_escapes(preprocess_pattern(pattern_)));
 
     uint32_t options = PCRE2_UTF;
     if (unicode_) {
-        options |= PCRE2_UCP | PCRE2_MATCH_INVALID_UTF;
+        // PCRE2_UCP intentionally absent: it would extend \d/\w to Unicode categories,
+        // but JS spec requires \d=[0-9] and \w=[A-Za-z0-9_] (ASCII only). \s is handled
+        // by expand_js_charclass_shortcuts above. \p{} still works via PCRE2_UTF.
+        options |= PCRE2_MATCH_INVALID_UTF;
     }
     if (ignore_case_) options |= PCRE2_CASELESS;
     if (multiline_)  options |= PCRE2_MULTILINE;
