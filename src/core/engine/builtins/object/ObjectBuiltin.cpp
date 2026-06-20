@@ -697,6 +697,11 @@ void register_object_builtins(Context& ctx) {
             std::string prop_name = args[1].to_property_key();
             if (ctx.has_exception()) return Value();
 
+            // Descriptor must be an object per spec step 3 ToPropertyDescriptor
+            if (!args[2].is_object() && !args[2].is_function()) {
+                ctx.throw_type_error("Property descriptor must be an object");
+                return Value();
+            }
             if (args[2].is_object()) {
                 Object* desc = args[2].as_object();
 
