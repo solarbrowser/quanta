@@ -124,6 +124,7 @@ public:
     bool set_property(const Value& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default);
     bool ordinary_set(const std::string& key, const Value& value);
     virtual bool delete_property(const std::string& key);
+    void remove_own_property(const std::string& key); // force-remove ignoring configurable
     
     virtual Value get_element(uint32_t index) const;
 

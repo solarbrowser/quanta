@@ -128,6 +128,7 @@ AsyncFunction::AsyncFunction(const std::string& name,
     : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
     set_is_constructor(false);
     set_function_prototype(nullptr);
+    remove_own_property("prototype"); // async functions must not have .prototype
 }
 
 AsyncFunction::AsyncFunction(const std::string& name,
@@ -137,6 +138,7 @@ AsyncFunction::AsyncFunction(const std::string& name,
     : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
     set_is_constructor(false);
     set_function_prototype(nullptr);
+    remove_own_property("prototype");
 }
 
 Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {

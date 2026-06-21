@@ -535,6 +535,16 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
     return set_property(key, value);
 }
 
+void Object::remove_own_property(const std::string& key) {
+    if (descriptors_) descriptors_->erase(key);
+    if (overflow_properties_) {
+        overflow_properties_->erase(key);
+        property_insertion_order_.erase(
+            std::remove(property_insertion_order_.begin(), property_insertion_order_.end(), key),
+            property_insertion_order_.end());
+    }
+}
+
 bool Object::delete_property(const std::string& key) {
     // Spec: deleting a non-existent property always returns true
     if (!has_own_property(key)) {
