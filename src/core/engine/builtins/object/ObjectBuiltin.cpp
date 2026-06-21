@@ -369,15 +369,12 @@ void register_object_builtins(Context& ctx) {
 
                     if (desc->has_own_property("get")) {
                         Value getter = desc->get_property("get");
-                        if (getter.is_function()) {
-                            prop_desc.set_getter(getter.as_object());
-                        }
+                        // set_getter even when undefined -- makes it an accessor descriptor (spec 6.2.6.1)
+                        prop_desc.set_getter(getter.is_function() ? getter.as_object() : nullptr);
                     }
                     if (desc->has_own_property("set")) {
                         Value setter = desc->get_property("set");
-                        if (setter.is_function()) {
-                            prop_desc.set_setter(setter.as_object());
-                        }
+                        prop_desc.set_setter(setter.is_function() ? setter.as_object() : nullptr);
                     }
 
                     if (desc->has_own_property("value")) {
@@ -711,7 +708,7 @@ void register_object_builtins(Context& ctx) {
                 if (desc->has_own_property("get")) {
                     Value getter = desc->get_property("get");
                     if (getter.is_undefined()) {
-                        // undefined getter is allowed (means no getter)
+                        prop_desc.set_getter(nullptr); // marks as accessor descriptor
                     } else if (!getter.is_function()) {
                         ctx.throw_type_error("Property descriptor getter must be callable");
                         return Value();
@@ -723,7 +720,7 @@ void register_object_builtins(Context& ctx) {
                 if (desc->has_own_property("set")) {
                     Value setter = desc->get_property("set");
                     if (setter.is_undefined()) {
-                        // undefined setter is allowed (means no setter)
+                        prop_desc.set_setter(nullptr); // marks as accessor descriptor
                     } else if (!setter.is_function()) {
                         ctx.throw_type_error("Property descriptor setter must be callable");
                         return Value();
@@ -758,21 +755,57 @@ void register_object_builtins(Context& ctx) {
                     return Value();
                 }
 
-                // Non-configurable property enforcement: check before calling set_property_descriptor
-                // This only applies to user-space Object.defineProperty calls (not internal engine setup)
+                // Non-configurable property enforcement (ES2022 10.1.6.3 ValidateAndApplyPropertyDescriptor)
                 if (obj->get_type() != Object::ObjectType::Proxy) {
                     PropertyDescriptor existing = obj->get_property_descriptor(prop_name);
                     if (existing.has_configurable() && !existing.is_configurable()) {
-                        // Cannot make non-configurable property configurable
                         if (prop_desc.has_configurable() && prop_desc.is_configurable()) {
                             ctx.throw_type_error("Cannot redefine non-configurable property '" + prop_name + "'");
                             return Value();
                         }
-                        // Cannot change enumerable
                         if (existing.has_enumerable() && prop_desc.has_enumerable() &&
                             prop_desc.is_enumerable() != existing.is_enumerable()) {
                             ctx.throw_type_error("Cannot change enumerable of non-configurable property '" + prop_name + "'");
                             return Value();
+                        }
+                        // Cannot change data <-> accessor on non-configurable property
+                        bool existing_is_accessor = existing.is_accessor_descriptor();
+                        bool new_is_accessor = prop_desc.is_accessor_descriptor();
+                        if (existing_is_accessor != new_is_accessor) {
+                            ctx.throw_type_error("Cannot change kind of non-configurable property '" + prop_name + "'");
+                            return Value();
+                        }
+                        if (!existing_is_accessor) {
+                            // Non-configurable data property: cannot make writable false->true
+                            if (existing.has_writable() && !existing.is_writable()) {
+                                if (prop_desc.has_writable() && prop_desc.is_writable()) {
+                                    ctx.throw_type_error("Cannot change writable of non-configurable property '" + prop_name + "'");
+                                    return Value();
+                                }
+                                // Cannot change value of non-writable non-configurable property
+                                if (prop_desc.has_value()) {
+                                    Value existingVal = existing.get_value();
+                                    Value newVal = prop_desc.get_value();
+                                    // Use SameValue (not ===): NaN === NaN is true here
+                                    bool same = existingVal.strict_equals(newVal) ||
+                                        (existingVal.is_number() && newVal.is_number() &&
+                                         std::isnan(existingVal.as_number()) && std::isnan(newVal.as_number()));
+                                    if (!same) {
+                                        ctx.throw_type_error("Cannot change value of non-writable non-configurable property '" + prop_name + "'");
+                                        return Value();
+                                    }
+                                }
+                            }
+                        } else {
+                            // Non-configurable accessor: cannot change getter/setter
+                            if (prop_desc.has_getter() && prop_desc.get_getter() != existing.get_getter()) {
+                                ctx.throw_type_error("Cannot change getter of non-configurable property '" + prop_name + "'");
+                                return Value();
+                            }
+                            if (prop_desc.has_setter() && prop_desc.get_setter() != existing.get_setter()) {
+                                ctx.throw_type_error("Cannot change setter of non-configurable property '" + prop_name + "'");
+                                return Value();
+                            }
                         }
                     }
                 }
@@ -941,7 +974,12 @@ void register_object_builtins(Context& ctx) {
                     prop_desc.set_configurable(false);
                 }
 
-                obj->set_property_descriptor(prop_name, prop_desc);
+                bool ok = obj->set_property_descriptor(prop_name, prop_desc);
+                if (!ok && !ctx.has_exception()) {
+                    ctx.throw_type_error("Cannot define property '" + prop_name + "'");
+                    return Value();
+                }
+                if (ctx.has_exception()) return Value();
             }
 
             return args[0];
