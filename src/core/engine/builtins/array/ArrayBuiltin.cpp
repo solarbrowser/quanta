@@ -733,8 +733,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            int32_t index = static_cast<int32_t>(args[0].to_number());
+            // Spec order: LengthOfArrayLike is captured BEFORE ToIntegerOrInfinity(index),
+            // since the latter can run user code (valueOf) that mutates the receiver's length.
             uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+            int32_t index = static_cast<int32_t>(args[0].to_number());
             if (ctx.has_exception()) return Value();
 
             if (index < 0) {
@@ -1204,25 +1207,35 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             Value searchElement = args[0];
-            Value length_val = this_obj->get_property("length");
-            uint32_t length = static_cast<uint32_t>(length_val.is_number() ? length_val.as_number() : 0);
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
 
             if (length == 0) {
                 return Value(-1.0);
             }
 
             int32_t fromIndex = static_cast<int32_t>(length - 1);
-            if (args.size() > 1 && args[1].is_number()) {
-                fromIndex = static_cast<int32_t>(args[1].as_number());
-                if (fromIndex < 0) {
-                    fromIndex = static_cast<int32_t>(length) + fromIndex;
+            if (args.size() > 1) {
+                double from_num = args[1].to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(from_num)) {
+                    return Value(-1.0);
                 }
-                if (fromIndex >= static_cast<int32_t>(length)) {
+                // ToIntegerOrInfinity truncates toward zero before any arithmetic.
+                double int_from = std::trunc(from_num);
+                if (int_from < 0) {
+                    double relative = static_cast<double>(length) + int_from;
+                    if (relative < 0) return Value(-1.0);
+                    fromIndex = static_cast<int32_t>(relative);
+                } else if (int_from < static_cast<double>(length)) {
+                    fromIndex = static_cast<int32_t>(int_from);
+                } else {
                     fromIndex = static_cast<int32_t>(length - 1);
                 }
             }
 
             for (int32_t i = fromIndex; i >= 0; i--) {
+                if (!this_obj->is_typed_array() && !this_obj->has_property(std::to_string(i))) continue;
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 if (element.strict_equals(searchElement)) {
                     return Value(static_cast<double>(i));
@@ -1667,6 +1680,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             for (uint32_t i = static_cast<uint32_t>(start_index); i < length; i++) {
+                if (!this_obj->is_typed_array() && !this_obj->has_property(std::to_string(i))) continue;
                 Value element = this_obj->get_element(i);
                 if (element.strict_equals(search_element)) {
                     return Value(static_cast<double>(i));

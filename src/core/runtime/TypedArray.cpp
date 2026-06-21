@@ -307,6 +307,7 @@ bool TypedArray<T>::set_typed_element(size_t index, T value) {
 
 template<typename T>
 Value TypedArray<T>::get_element(size_t index) const {
+    if (!check_bounds(index)) return Value();
     T value = get_typed_element(index);
     if constexpr (std::is_floating_point_v<T>) {
         return Value(static_cast<double>(value));

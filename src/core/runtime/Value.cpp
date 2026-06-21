@@ -244,7 +244,13 @@ double Value::to_number() const {
         }
 
         try {
-            return std::stod(trimmed);
+            size_t consumed = 0;
+            double result = std::stod(trimmed, &consumed);
+            // JS ToNumber requires the *entire* trimmed string to be numeric
+            if (consumed != trimmed.length()) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            return result;
         } catch (...) {
             return std::numeric_limits<double>::quiet_NaN();
         }
