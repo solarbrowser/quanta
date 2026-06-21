@@ -317,8 +317,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         actual_this = this->get_property("__arrow_this__");
     }
 
-    if (!is_arrow_ && !function_context.is_strict_mode()) {
-        if (this_value.is_undefined() || this_value.is_null()) {
+    bool is_strict_now = function_context.is_strict_mode();
+    bool this_is_nullish = this_value.is_undefined() || this_value.is_null();
+    if (!is_arrow_ && !is_strict_now) {
+        if (this_is_nullish) {
             Object* global = function_context.get_global_object();
             if (global) {
                 actual_this = Value(global);

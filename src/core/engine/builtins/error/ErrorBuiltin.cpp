@@ -75,7 +75,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
             // Support subclassing: when called via super() from a derived class,
             // ctx.get_this_binding() is the subclass instance with its prototype.
@@ -153,7 +153,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(type_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -209,7 +209,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(reference_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -264,7 +264,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(syntax_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -319,7 +319,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(range_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -375,7 +375,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(uri_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -423,7 +423,7 @@ void register_error_builtins(Context& ctx) {
                 message = args[0].to_string();
             }
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_prototype(eval_error_proto_ptr);
 
             if (args.size() > 1 && args[1].is_object()) {
@@ -494,7 +494,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
             error_obj->set_prototype(agg_error_proto_ptr);
 
@@ -572,11 +572,11 @@ void register_error_builtins(Context& ctx) {
         [suppressed_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string message = (args.size() >= 3 && !args[2].is_undefined()) ? args[2].to_string() : "";
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
-            error_obj->set_property("_isError", Value(true));
+            error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_property("name", Value(std::string("SuppressedError")));
             error_obj->set_prototype(suppressed_proto_ptr);
-            if (args.size() >= 1) error_obj->set_property("error", args[0]);
-            if (args.size() >= 2) error_obj->set_property("suppressed", args[1]);
+            if (args.size() >= 1) error_obj->set_property("error", args[0], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+            if (args.size() >= 2) error_obj->set_property("suppressed", args[1], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             if (!message.empty()) error_obj->set_property("message", Value(message));
             return Value(error_obj.release());
         }, 3);

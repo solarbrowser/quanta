@@ -700,11 +700,10 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
     }
     
     auto js_date_obj = ObjectFactory::create_object();
-    
-    js_date_obj->set_property("_isDate", Value(true));
-    
-    js_date_obj->set_property("_timestamp", Value(date_impl->getTimestamp()));
-    
+
+    js_date_obj->set_property("_isDate", Value(true), PropertyAttributes::Writable);
+    js_date_obj->set_property("_timestamp", Value(date_impl->getTimestamp()), PropertyAttributes::Writable);
+
     return Value(js_date_obj.release());
 }
 

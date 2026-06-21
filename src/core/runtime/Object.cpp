@@ -969,6 +969,17 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 elements_[index] = desc.get_value();
             }
         } else {
+            // Array "length" must still go through ToUint32 validation (RangeError for
+            // NaN/negative/non-integer/>2^32-1) even via defineProperty -- the overflow
+            // fast path below bypasses Object::set_property's length-specific checks.
+            if (header_.type == ObjectType::Array && key == "length" && desc.has_value()) {
+                double length_double = desc.get_value().to_number();
+                if (current_context_ && current_context_->has_exception()) return false;
+                if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
+                    if (current_context_) current_context_->throw_range_error("Invalid array length");
+                    return false;
+                }
+            }
             // Directly update overflow to bypass writable check on existing props
             if (desc.has_value()) {
                 if (overflow_properties_ && overflow_properties_->count(key)) {

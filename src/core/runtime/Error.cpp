@@ -33,7 +33,7 @@ void Error::set_error_name() {
 }
 
 void Error::initialize_properties() {
-    set_property("name", Value(name_));
+    set_property("name", Value(name_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Only set message as own property when non-empty; when message is "" it means
     // no argument was passed (the native constructor does not pass "" for undefined args).
@@ -42,7 +42,7 @@ void Error::initialize_properties() {
     }
 
     if (!stack_trace_.empty()) {
-        set_property("stack", Value(stack_trace_));
+        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
 
 
@@ -119,10 +119,10 @@ void Error::generate_stack_trace() {
         }
         
         stack_trace_ = oss.str();
-        set_property("stack", Value(stack_trace_));
+        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     } catch (...) {
         stack_trace_ = name_ + (message_.empty() ? "" : ": " + message_);
-        set_property("stack", Value(stack_trace_));
+        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
 }
 

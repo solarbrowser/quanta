@@ -358,15 +358,18 @@ void register_object_builtins(Context& ctx) {
                 }
 
                 Object* properties = args[1].as_object();
-                auto prop_names = properties->get_own_property_keys();
+                auto prop_names = properties->get_enumerable_keys();
 
                 for (const auto& prop_name : prop_names) {
                     Value descriptor_val = properties->get_property(prop_name);
-                    if (!descriptor_val.is_object()) {
-                        continue;
+                    if (ctx.has_exception()) return Value();
+                    if (!descriptor_val.is_object() && !descriptor_val.is_function()) {
+                        ctx.throw_type_error("Property description must be an object");
+                        return Value();
                     }
 
-                    Object* desc = descriptor_val.as_object();
+                    Object* desc = descriptor_val.is_function()
+                        ? static_cast<Object*>(descriptor_val.as_function()) : descriptor_val.as_object();
                     PropertyDescriptor prop_desc;
 
                     if (desc->has_property("get")) {
@@ -753,26 +756,27 @@ void register_object_builtins(Context& ctx) {
                 // Non-configurable property enforcement (ES2022 10.1.6.3 ValidateAndApplyPropertyDescriptor)
                 if (obj->get_type() != Object::ObjectType::Proxy) {
                     PropertyDescriptor existing = obj->get_property_descriptor(prop_name);
-                    if (existing.has_configurable() && !existing.is_configurable()) {
+                    if (obj->has_own_property(prop_name) && !existing.is_configurable()) {
                         if (prop_desc.has_configurable() && prop_desc.is_configurable()) {
                             ctx.throw_type_error("Cannot redefine non-configurable property '" + prop_name + "'");
                             return Value();
                         }
-                        if (existing.has_enumerable() && prop_desc.has_enumerable() &&
+                        if (prop_desc.has_enumerable() &&
                             prop_desc.is_enumerable() != existing.is_enumerable()) {
                             ctx.throw_type_error("Cannot change enumerable of non-configurable property '" + prop_name + "'");
                             return Value();
                         }
-                        // Cannot change data <-> accessor on non-configurable property
+                        // A generic descriptor ({} or {enumerable:true} alone) doesn't specify a
+                        // kind, so it can't conflict with the existing kind.
                         bool existing_is_accessor = existing.is_accessor_descriptor();
                         bool new_is_accessor = prop_desc.is_accessor_descriptor();
-                        if (existing_is_accessor != new_is_accessor) {
+                        if (!prop_desc.is_generic_descriptor() && existing_is_accessor != new_is_accessor) {
                             ctx.throw_type_error("Cannot change kind of non-configurable property '" + prop_name + "'");
                             return Value();
                         }
-                        if (!existing_is_accessor) {
+                        if (!existing_is_accessor && !prop_desc.is_generic_descriptor()) {
                             // Non-configurable data property: cannot make writable false->true
-                            if (existing.has_writable() && !existing.is_writable()) {
+                            if (!existing.is_writable()) {
                                 if (prop_desc.has_writable() && prop_desc.is_writable()) {
                                     ctx.throw_type_error("Cannot change writable of non-configurable property '" + prop_name + "'");
                                     return Value();
@@ -781,10 +785,16 @@ void register_object_builtins(Context& ctx) {
                                 if (prop_desc.has_value()) {
                                     Value existingVal = existing.get_value();
                                     Value newVal = prop_desc.get_value();
-                                    // Use SameValue (not ===): NaN === NaN is true here
-                                    bool same = existingVal.strict_equals(newVal) ||
-                                        (existingVal.is_number() && newVal.is_number() &&
-                                         std::isnan(existingVal.as_number()) && std::isnan(newVal.as_number()));
+                                    // SameValue, not ===: NaN equals NaN, -0 does not equal +0.
+                                    bool same;
+                                    if (existingVal.is_number() && newVal.is_number()) {
+                                        double a = existingVal.as_number(), b = newVal.as_number();
+                                        if (std::isnan(a) && std::isnan(b)) same = true;
+                                        else if (a == 0 && b == 0) same = (std::signbit(a) == std::signbit(b));
+                                        else same = (a == b);
+                                    } else {
+                                        same = existingVal.strict_equals(newVal);
+                                    }
                                     if (!same) {
                                         ctx.throw_type_error("Cannot change value of non-writable non-configurable property '" + prop_name + "'");
                                         return Value();
@@ -812,7 +822,7 @@ void register_object_builtins(Context& ctx) {
                     success = obj->set_property_descriptor(prop_name, prop_desc);
                 }
                 if (!success) {
-                    ctx.throw_type_error("Cannot define property");
+                    if (!ctx.has_exception()) ctx.throw_type_error("Cannot define property");
                     return Value();
                 }
             }
@@ -913,27 +923,39 @@ void register_object_builtins(Context& ctx) {
 
             Object* obj = args[0].as_object();
 
-            if (!args[1].is_object()) {
-                ctx.throw_type_error("Properties argument must be an object");
+            // ToObject only throws for null/undefined; other primitives box into a wrapper
+            // with no own enumerable properties, so the loop below just does nothing.
+            if (args[1].is_null() || args[1].is_undefined()) {
+                ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
+            if (!args[1].is_object() && !args[1].is_function()) {
+                return Value(obj);
+            }
 
-            Object* properties = args[1].as_object();
-            // For Proxy, use ownKeys trap so the target's own keys are enumerated
+            Object* properties = args[1].is_function()
+                ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
             std::vector<std::string> prop_names;
             if (properties->get_type() == Object::ObjectType::Proxy) {
-                prop_names = static_cast<Proxy*>(properties)->own_keys_trap();
+                for (const auto& key : static_cast<Proxy*>(properties)->own_keys_trap()) {
+                    if (properties->get_property_descriptor(key).is_enumerable()) {
+                        prop_names.push_back(key);
+                    }
+                }
             } else {
-                prop_names = properties->get_own_property_keys();
+                prop_names = properties->get_enumerable_keys();
             }
 
             for (const auto& prop_name : prop_names) {
                 Value descriptor_val = properties->get_property(prop_name);
-                if (!descriptor_val.is_object()) {
-                    continue;
+                if (ctx.has_exception()) return Value();
+                if (!descriptor_val.is_object() && !descriptor_val.is_function()) {
+                    ctx.throw_type_error("Property description must be an object");
+                    return Value();
                 }
 
-                Object* desc = descriptor_val.as_object();
+                Object* desc = descriptor_val.is_function()
+                    ? static_cast<Object*>(descriptor_val.as_function()) : descriptor_val.as_object();
                 PropertyDescriptor prop_desc;
 
                 if (desc->has_property("get")) {
