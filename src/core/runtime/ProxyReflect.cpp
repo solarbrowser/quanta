@@ -863,13 +863,7 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
 void Proxy::setup_proxy(Context& ctx) {
     auto proxy_constructor_fn = ObjectFactory::create_native_constructor("Proxy", proxy_constructor);
     // Per spec, Proxy constructor does not have a 'prototype' property
-    // Make the prototype property configurable first so we can delete it
-    {
-        PropertyDescriptor deletable_desc;
-        deletable_desc.set_configurable(true);
-        proxy_constructor_fn->set_property_descriptor("prototype", deletable_desc);
-        proxy_constructor_fn->delete_property("prototype");
-    }
+    proxy_constructor_fn->remove_own_property("prototype");
 
     auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
     proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
