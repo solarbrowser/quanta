@@ -131,9 +131,11 @@ bool Object::has_own_property(const std::string& key) const {
 
     uint32_t index;
     if (is_array_index(key, &index)) {
-        if (index >= elements_.size()) return false;
-        if (deleted_elements_ && deleted_elements_->count(index) > 0) return false;
-        return true;
+        if (index < elements_.size() && !(deleted_elements_ && deleted_elements_->count(index) > 0)) {
+            return true;
+        }
+        // Not in elements_ (or a hole there) -- may still live in overflow_properties_.
+        return overflow_properties_ && overflow_properties_->count(key) > 0;
     }
 
     if (overflow_properties_) {
@@ -232,15 +234,12 @@ Value Object::get_property(const std::string& key) const {
             return Value(static_cast<double>(get_length()));
         }
 
-        // Check own properties first
-        Value own_result = get_own_property(key);
-        if (!own_result.is_undefined()) {
-            return own_result;
-        }
-        // Own accessor with no getter legitimately yields undefined -- stop here,
-        // don't fall through to the prototype chain or the native-method fallback below.
+        // has_own_property() is own-only; get_own_property() isn't for array-index keys
+        // (it falls back through get_element(), which itself walks the prototype chain),
+        // so only call it once we know there's an actual own property to avoid invoking
+        // an inherited getter here AND again in the explicit loop below.
         if (has_own_property(key)) {
-            return Value();
+            return get_own_property(key);
         }
 
         // Check prototype chain for overridden methods
@@ -392,6 +391,12 @@ Value Object::get_property(const Value& key) const {
 
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     if (header_.type == ObjectType::Array && key == "length") {
+        if (descriptors_) {
+            auto it = descriptors_->find("length");
+            if (it != descriptors_->end() && it->second.has_writable() && !it->second.is_writable()) {
+                return false;
+            }
+        }
         double length_double = value.to_number();
 
         if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
@@ -425,11 +430,41 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             overflow_properties_ = std::make_unique<std::unordered_map<std::string, Value>>();
         }
         (*overflow_properties_)["length"] = length_value;
+        // get_property_descriptor() checks descriptors_ first -- keep it in sync or it
+        // keeps reporting the pre-update length.
+        if (descriptors_) {
+            auto it = descriptors_->find("length");
+            if (it != descriptors_->end()) {
+                it->second.set_value(length_value);
+            }
+        }
         return true;
     }
 
     uint32_t index;
     if (is_array_index(key, &index)) {
+        // [[Set]] must check the prototype chain for an inherited accessor first. Scoped to
+        // Array only: plain-object literals ({0: x, ...}) also reach set_property() for
+        // CreateDataProperty-style init and must not trigger this.
+        if (header_.type == ObjectType::Array && !has_own_property(key) && header_.prototype) {
+            Object* proto = header_.prototype;
+            while (proto) {
+                if (proto->has_own_property(key)) {
+                    PropertyDescriptor pd = proto->get_property_descriptor(key);
+                    if (pd.is_accessor_descriptor()) {
+                        Object* setter = pd.get_setter();
+                        if (!setter) return false; // no setter (incl. {set: undefined})
+                        if (current_context_) {
+                            Function* setter_fn = dynamic_cast<Function*>(setter);
+                            if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
+                        }
+                        return true;
+                    }
+                    break; // own data property on prototype: normal shadowing write below
+                }
+                proto = proto->get_prototype();
+            }
+        }
         return set_element(index, value);
     }
 
