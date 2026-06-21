@@ -454,9 +454,10 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         Object* cur = header_.prototype;
         while (cur) {
             PropertyDescriptor inherited_desc = cur->get_property_descriptor(key);
-            if (inherited_desc.is_accessor_descriptor() && inherited_desc.has_setter()) {
+            if (inherited_desc.is_accessor_descriptor()) {
+                if (!inherited_desc.get_setter()) return false; // no setter (incl. {set: undefined})
                 Object* setter = inherited_desc.get_setter();
-                if (setter && current_context_) {
+                if (current_context_) {
                     Function* setter_fn = dynamic_cast<Function*>(setter);
                     if (setter_fn) {
                         Value receiver = this->is_function()
@@ -474,9 +475,9 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
 
     if (prop_exists) {
         PropertyDescriptor desc = get_property_descriptor(key);
-        if (desc.is_accessor_descriptor() && desc.has_setter()) {
+        if (desc.is_accessor_descriptor() && desc.has_setter() && desc.get_setter()) {
             Object* setter = desc.get_setter();
-            if (setter && current_context_) {
+            if (current_context_) {
                 Function* setter_fn = dynamic_cast<Function*>(setter);
                 if (setter_fn) {
                     Value receiver = this->is_function()
@@ -487,7 +488,8 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
             }
             return true;
         }
-        // Accessor with no setter
+        // Accessor with no setter (including {set: undefined}, where has_setter() is
+        // true but the setter pointer itself is null -- still "no setter" per spec).
         if (desc.is_accessor_descriptor()) {
             return false;
         }
@@ -691,12 +693,11 @@ bool Object::set_element(uint32_t index, const Value& value) {
         auto it = descriptors_->find(std::to_string(index));
         if (it != descriptors_->end()) {
             if (it->second.is_accessor_descriptor()) {
-                if (it->second.has_setter()) {
-                    Object* setter = it->second.get_setter();
-                    if (setter && current_context_) {
-                        Function* setter_fn = dynamic_cast<Function*>(setter);
-                        if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
-                    }
+                Object* setter = it->second.get_setter();
+                if (!setter) return false; // no setter (incl. {set: undefined})
+                if (current_context_) {
+                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
                 }
                 return true;
             }
@@ -899,14 +900,10 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
     // Early non-configurable check -- runs BEFORE elements_ is written.
     // Covers both descriptors_-stored and externally-stored (e.g. Array.length) properties.
     if (current_context_ && has_own_property(key)) {
-        PropertyDescriptor existing_desc;
-        auto existing_it = descriptors_ ? descriptors_->find(key) : (decltype(descriptors_->begin()))descriptors_->end();
-        bool in_descriptors = descriptors_ && existing_it != descriptors_->end();
-        if (in_descriptors) {
-            existing_desc = existing_it->second;
-        } else {
-            existing_desc = get_property_descriptor(key);
-        }
+        // get_property_descriptor (not the raw descriptors_ entry) so that Arguments
+        // param-mapped slots are seen as the DATA descriptor they present to callers,
+        // not the internal accessor used for the parameter-binding mapping.
+        PropertyDescriptor existing_desc = get_property_descriptor(key);
         if (existing_desc.has_configurable() && !existing_desc.is_configurable()) {
             if (desc.has_configurable() && desc.is_configurable()) {
                 return false; // caller (defineProperty_fn/defineProperties_fn) handles throwing
@@ -976,6 +973,18 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.has_value()) {
                 if (overflow_properties_ && overflow_properties_->count(key)) {
                     (*overflow_properties_)[key] = desc.get_value();
+                    // A bare value write must not silently drop an explicit attribute
+                    // change (e.g. defineProperty({value, configurable:true}) on a
+                    // property whose attrs so far only lived implicitly/in shape defaults).
+                    if (desc.has_writable() || desc.has_enumerable() || desc.has_configurable()) {
+                        PropertyDescriptor merged = get_property_descriptor(key);
+                        merged.set_value(desc.get_value());
+                        if (desc.has_writable())     merged.set_writable(desc.is_writable());
+                        if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
+                        if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
+                        if (!descriptors_) descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
+                        (*descriptors_)[key] = merged;
+                    }
                 } else {
                     set_property(key, desc.get_value(), desc.get_attributes());
                 }

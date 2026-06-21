@@ -599,6 +599,11 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_element(i, args[i]);
         }
         {
+            // create_array's set_length() already established "length" as non-configurable
+            // (real Array semantics); Arguments needs it configurable, so clear that internal
+            // bookkeeping entry first instead of letting the non-configurable guard see a
+            // (spurious, construction-time-only) attempt to relax it.
+            arguments_obj->remove_own_property("length");
             PropertyDescriptor len_desc(Value(static_cast<double>(args.size())),
                 static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             arguments_obj->set_property_descriptor("length", len_desc);

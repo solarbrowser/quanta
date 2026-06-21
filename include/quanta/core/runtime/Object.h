@@ -383,7 +383,10 @@ public:
     }
 
     Object* get_function_prototype() const { return prototype_; }
-    void set_function_prototype(Object* proto) { prototype_ = proto; }
+    void set_function_prototype(Object* proto) {
+        prototype_ = proto;
+        if (!proto) remove_own_property("prototype");
+    }
 
     static Function* create_function_prototype();
     
