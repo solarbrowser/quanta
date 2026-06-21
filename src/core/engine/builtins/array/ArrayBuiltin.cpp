@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Promise.h"
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <sstream>
@@ -26,6 +27,19 @@ static Object* array_to_object(Context& ctx) {
     // Check if this call's this was primitive (set by Function::call)
     if (!ctx.has_binding("__primitive_this__")) return obj;
     Value prim = ctx.get_binding("__primitive_this__");
+    if (prim.is_symbol() || prim.is_bigint()) {
+        // Reuse Object()'s wrapper setup rather than duplicating it here.
+        Value obj_ctor_val = ctx.get_binding("Object");
+        if (obj_ctor_val.is_function()) {
+            Value boxed = obj_ctor_val.as_function()->call(ctx, {prim});
+            if (boxed.is_object()) {
+                Object* raw = boxed.as_object();
+                ctx.set_binding("__primitive_this__", Value(raw));
+                return raw;
+            }
+        }
+        return obj;
+    }
     if (!prim.is_boolean() && !prim.is_number() && !prim.is_string()) return obj;
     // Box the primitive
     const char* ctor_name = nullptr;
@@ -43,6 +57,33 @@ static Object* array_to_object(Context& ctx) {
     // Pin in context so GC can't collect during this call
     ctx.set_binding("__primitive_this__", Value(raw));
     return raw;
+}
+
+// ToPrimitive("string") for sort's default comparator: toString() then valueOf(), matching
+// String(x) rather than Value::to_string()'s "default" hint (valueOf() first).
+static std::string sort_default_to_string(Context& ctx, const Value& v) {
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return "";
+    }
+    if (!v.is_object() && !v.is_function()) return v.to_string();
+    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+    Value toString_fn = obj->get_property("toString");
+    if (ctx.has_exception()) return "";
+    if (toString_fn.is_function()) {
+        Value prim = toString_fn.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return "";
+        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
+    }
+    Value valueOf_fn = obj->get_property("valueOf");
+    if (ctx.has_exception()) return "";
+    if (valueOf_fn.is_function()) {
+        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return "";
+        if (!prim.is_object() && !prim.is_function()) return prim.to_string();
+    }
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return "";
 }
 
 // Array.fromAsync (spec 23.1.2.1): drives iteration via recursive Promise
@@ -2069,10 +2110,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(this_obj);
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
-            if (length <= 1) return Value(this_obj);
-
             Function* compareFn = nullptr;
             if (!args.empty() && !args[0].is_undefined()) {
                 if (!args[0].is_function()) {
@@ -2082,6 +2119,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 compareFn = args[0].as_function();
             }
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+            if (length <= 1) return Value(this_obj);
+
             auto compare = [&](const Value& a, const Value& b) -> int {
                 if (a.is_undefined() && b.is_undefined()) return 0;
                 if (a.is_undefined()) return 1;
@@ -2090,44 +2131,44 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (compareFn) {
                     std::vector<Value> compare_args = { a, b };
                     Value result = compareFn->call(ctx, compare_args);
+                    if (ctx.has_exception()) return 0;
                     double cmp = result.to_number();
                     if (std::isnan(cmp)) return 0;
                     return cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
                 } else {
-                    std::string str_a = a.to_string();
-                    std::string str_b = b.to_string();
+                    std::string str_a = sort_default_to_string(ctx, a);
+                    if (ctx.has_exception()) return 0;
+                    std::string str_b = sort_default_to_string(ctx, b);
+                    if (ctx.has_exception()) return 0;
                     return str_a.compare(str_b);
                 }
             };
 
-            std::function<void(int32_t, int32_t)> quicksort;
-            quicksort = [&](int32_t low, int32_t high) {
-                if (low < high) {
-                    Value pivot = this_obj->get_element(high);
-                    int32_t i = low - 1;
-
-                    for (int32_t j = low; j < high; j++) {
-                        Value current = this_obj->get_element(j);
-                        if (compare(current, pivot) <= 0) {
-                            i++;
-                            Value temp = this_obj->get_element(i);
-                            this_obj->set_element(i, current);
-                            this_obj->set_element(j, temp);
-                        }
-                    }
-
-                    Value temp = this_obj->get_element(i + 1);
-                    this_obj->set_element(i + 1, this_obj->get_element(high));
-                    this_obj->set_element(high, temp);
-
-                    int32_t pivot_index = i + 1;
-
-                    quicksort(low, pivot_index - 1);
-                    quicksort(pivot_index + 1, high);
+            // Spec: read each present index once (holes get no [[Get]] at all), sort the
+            // snapshot in memory, then [[Set]] the sorted items back and [[Delete]] the rest.
+            std::vector<Value> items;
+            items.reserve(length);
+            for (uint32_t i = 0; i < length; i++) {
+                if (this_obj->has_property(std::to_string(i))) {
+                    items.push_back(this_obj->get_property(std::to_string(i)));
+                    if (ctx.has_exception()) return Value();
                 }
-            };
+            }
 
-            quicksort(0, static_cast<int32_t>(length) - 1);
+            std::stable_sort(items.begin(), items.end(), [&](const Value& a, const Value& b) {
+                return compare(a, b) < 0;
+            });
+            if (ctx.has_exception()) return Value();
+
+            uint32_t item_count = static_cast<uint32_t>(items.size());
+            for (uint32_t j = 0; j < item_count; j++) {
+                this_obj->set_property(std::to_string(j), items[j]);
+                if (ctx.has_exception()) return Value();
+            }
+            for (uint32_t j = item_count; j < length; j++) {
+                this_obj->delete_property(std::to_string(j));
+                if (ctx.has_exception()) return Value();
+            }
 
             return Value(this_obj);
         }, 1);
