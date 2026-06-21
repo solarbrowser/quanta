@@ -858,8 +858,12 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    // Captured before any placeholder (store_in_overflow) write below can make
+    // has_own_property look true for a property that's brand new in this very call.
+    bool existed_before_this_call = has_own_property(key);
+
     // Reject new properties on non-extensible objects
-    if (!is_extensible() && !has_own_property(key)) {
+    if (!is_extensible() && !existed_before_this_call) {
         return false;
     }
 
@@ -1019,8 +1023,11 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.has_configurable()) existing.set_configurable(desc.is_configurable());
         } else {
             // No existing descriptor entry -- create one preserving the current value.
+            // Brand-new properties default to WEC=false (spec); only a property that
+            // genuinely existed before this call inherits the WEC=true shape default.
             Value current_val = get_property(key);
-            PropertyDescriptor merged(current_val);
+            PropertyDescriptor merged(current_val,
+                existed_before_this_call ? PropertyAttributes::Default : PropertyAttributes::None);
             if (desc.has_writable())     merged.set_writable(desc.is_writable());
             if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
             if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
@@ -1067,7 +1074,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             // No existing descriptor entry. For a property already in shape/overflow,
             // preserve the unspecified attributes (shape default is WEC=true) so that
             // defineProperty({value:X}) on an existing enumerable prop keeps it enumerable.
-            if (has_own_property(key)) {
+            if (existed_before_this_call) {
                 PropertyDescriptor current = get_property_descriptor(key);
                 PropertyDescriptor merged = desc;
                 if (!desc.has_writable()     && current.has_writable())     merged.set_writable(current.is_writable());
@@ -1099,10 +1106,14 @@ uint32_t Object::get_length() const {
         Value length_val = get_property("length");
         if (!length_val.is_symbol() && !length_val.is_undefined() && !length_val.is_null()) {
             double n = length_val.to_number();
-            if (!std::isinf(n) && !std::isnan(n) && n >= 0) {
+            if (!std::isnan(n) && n >= 0) {
+                if (std::isinf(n)) return static_cast<uint32_t>(elements_.size()); // Infinity: use actual size
                 return static_cast<uint32_t>(std::min(n, (double)UINT32_MAX));
             }
+            return 0; // NaN or negative: ToLength = 0
         }
+        // length property exists but getter returns undefined/null: ToLength = 0
+        return 0;
     }
     return static_cast<uint32_t>(elements_.size());
 }
