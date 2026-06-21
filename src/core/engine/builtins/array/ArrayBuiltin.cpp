@@ -553,15 +553,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.find callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
@@ -596,6 +596,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty()) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast requires a callback function")));
                 return Value();
@@ -609,9 +612,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             Function* callback_fn = callback.as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
@@ -638,6 +638,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty()) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex requires a callback function")));
                 return Value();
@@ -651,8 +654,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             Function* callback_fn = callback.as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-
-            uint32_t length = this_obj->get_length();
             if (ctx.has_exception()) return Value();
             for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
@@ -872,6 +873,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.flatMap callback must be a function");
             }
@@ -879,8 +883,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
             auto result = ObjectFactory::create_array();
             uint32_t result_index = 0;
 
@@ -1264,6 +1266,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty()) {
                 ctx.throw_type_error("Reduce of empty array with no initial value");
                 return Value();
@@ -1275,9 +1280,6 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
             Function* callback_func = static_cast<Function*>(callback.as_object());
-
-            Value length_val = this_obj->get_property("length");
-            uint32_t length = static_cast<uint32_t>(length_val.is_number() ? length_val.as_number() : 0);
 
             if (length == 0) {
                 if (args.size() < 2) {
@@ -1552,14 +1554,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(false);
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.every callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
@@ -1584,14 +1587,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.filter callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_obj, 0);
@@ -1626,13 +1630,17 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
-            if (args.empty() || !args[0].is_function()) return Value();
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("Array.prototype.forEach callback must be a function");
+                return Value();
+            }
 
             Function* callback = args[0].as_function();
             Value this_arg = args.size() > 1 ? args[1] : Value();
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
                     continue;
@@ -1698,14 +1706,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.map callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_obj, length);
@@ -1738,13 +1747,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+                throw std::runtime_error("TypeError: Array.prototype.reduce callback must be a function");
             }
 
             Function* callback = args[0].as_function();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             if (length == 0 && args.size() < 2) {
                 throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
@@ -1796,14 +1806,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(false);
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.some callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 if (!this_obj->has_property(std::to_string(i))) {
@@ -1829,14 +1840,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(-1.0);
 
+            uint32_t length = this_obj->get_length();
+            if (ctx.has_exception()) return Value();
+
             if (args.empty() || !args[0].is_function()) {
                 throw std::runtime_error("TypeError: Array.prototype.findIndex callback must be a function");
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = this_obj->get_element(i);
