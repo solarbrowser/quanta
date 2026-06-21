@@ -99,19 +99,19 @@ void register_regexp_builtins(Context& ctx) {
 
                 auto regexp_impl = std::make_shared<RegExp>(pattern, flags);
 
-                regex_obj->set_property("_isRegExp", Value(true));
-                regex_obj->set_property("source", Value(regexp_impl->get_source()));
+                regex_obj->set_property("_isRegExp", Value(true), PropertyAttributes::Writable);
+                regex_obj->set_property("source", Value(regexp_impl->get_source()), PropertyAttributes::BuiltinFunction);
                 // ES6: flags must be in alphabetical order
                 std::string sorted_flags = regexp_impl->get_flags();
                 std::sort(sorted_flags.begin(), sorted_flags.end());
-                regex_obj->set_property("flags", Value(sorted_flags));
-                regex_obj->set_property("global", Value(regexp_impl->get_global()));
-                regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
-                regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
-                regex_obj->set_property("unicode", Value(regexp_impl->get_unicode()));
-                regex_obj->set_property("sticky", Value(regexp_impl->get_sticky()));
-                regex_obj->set_property("dotAll", Value(regexp_impl->get_dotall()));
-                regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+                regex_obj->set_property("flags", Value(sorted_flags), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("global", Value(regexp_impl->get_global()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("unicode", Value(regexp_impl->get_unicode()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("sticky", Value(regexp_impl->get_sticky()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("dotAll", Value(regexp_impl->get_dotall()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
                 
                 Object* regex_obj_ptr = regex_obj.get();
 

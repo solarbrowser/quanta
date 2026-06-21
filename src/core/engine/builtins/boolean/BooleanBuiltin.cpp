@@ -23,7 +23,7 @@ void register_boolean_builtins(Context& ctx) {
             // If this_obj exists (constructor call), set [[PrimitiveValue]]
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
-                this_obj->set_property("[[PrimitiveValue]]", Value(value));
+                this_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
             }
 
             // Always return primitive boolean

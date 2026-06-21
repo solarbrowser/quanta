@@ -60,7 +60,7 @@ void register_string_builtins(Context& ctx) {
 
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
-                this_obj->set_property("[[PrimitiveValue]]", Value(str_value));
+                this_obj->set_property("[[PrimitiveValue]]", Value(str_value), PropertyAttributes::Writable);
                 size_t str_utf16_len = utf16_length(str_value);
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),
                     static_cast<PropertyAttributes>(PropertyAttributes::None));

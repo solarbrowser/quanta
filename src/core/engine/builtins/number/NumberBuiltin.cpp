@@ -23,7 +23,7 @@ void register_number_builtins(Context& ctx) {
             // If this_obj exists (constructor call), set [[PrimitiveValue]]
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
-                this_obj->set_property("[[PrimitiveValue]]", Value(num_value));
+                this_obj->set_property("[[PrimitiveValue]]", Value(num_value), PropertyAttributes::Writable);
             }
 
             // Always return primitive number
