@@ -86,6 +86,41 @@ static std::string sort_default_to_string(Context& ctx, const Value& v) {
     return "";
 }
 
+// ToNumber via ToPrimitive("number"): valueOf() then toString(), throwing if neither yields a
+// primitive (Value::to_number() just falls back to NaN instead).
+static double to_number_throwing(Context& ctx, const Value& v) {
+    if (!v.is_object() && !v.is_function()) return v.to_number();
+    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+    Value valueOf_fn = obj->get_property("valueOf");
+    if (ctx.has_exception()) return 0;
+    if (valueOf_fn.is_function()) {
+        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return 0;
+        if (!prim.is_object() && !prim.is_function()) return prim.to_number();
+    }
+    Value toString_fn = obj->get_property("toString");
+    if (ctx.has_exception()) return 0;
+    if (toString_fn.is_function()) {
+        Value prim = toString_fn.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return 0;
+        if (!prim.is_object() && !prim.is_function()) return prim.to_number();
+    }
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return 0;
+}
+
+// LengthOfArrayLike: ToLength(Get(obj, "length")), clamped to [0, 2^53-1] -- unlike
+// Object::get_length() this isn't capped to uint32_t.
+static double array_like_length(Context& ctx, Object* obj) {
+    Value len_val = obj->get_property("length");
+    if (ctx.has_exception()) return 0;
+    double n = to_number_throwing(ctx, len_val);
+    if (ctx.has_exception()) return 0;
+    if (std::isnan(n) || n <= 0) return 0;
+    if (n > 9007199254740991.0) return 9007199254740991.0;
+    return std::floor(n);
+}
+
 // Array.fromAsync (spec 23.1.2.1): drives iteration via recursive Promise
 // chaining, since native functions can't suspend a fiber. Per-step state lives
 // as hidden properties on result_promise (GC-rooted, survives microtask ticks);
@@ -1105,22 +1140,32 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                for (const auto& arg : args) {
-                    this_obj->set_property(std::to_string(length), arg);
-                    length++;
-                }
-                this_obj->set_property("length", Value(static_cast<double>(length)));
-                return Value(static_cast<double>(length));
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
+
+            if (length + static_cast<double>(args.size()) > 9007199254740991.0) {
+                ctx.throw_type_error("Array.prototype.push: length would exceed 2**53 - 1");
+                return Value();
             }
 
             for (const auto& arg : args) {
-                this_obj->push(arg);
+                bool ok = this_obj->set_property(Value(length).to_string(), arg);
+                if (ctx.has_exception()) return Value();
+                if (!ok) {
+                    ctx.throw_type_error("Cannot add property, object is not extensible");
+                    return Value();
+                }
+                length++;
             }
 
-            return Value(static_cast<double>(this_obj->get_length()));
+            bool ok = this_obj->set_property("length", Value(length));
+            if (ctx.has_exception()) return Value();
+            if (!ok) {
+                ctx.throw_type_error("Cannot set property 'length'");
+                return Value();
+            }
+
+            return Value(length);
         }, 1);
 
 
@@ -1934,27 +1979,29 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                if (length == 0) {
-                    this_obj->set_property("length", Value(0.0));
-                    return Value();
-                }
-                uint32_t new_length = length - 1;
-                std::string idx = std::to_string(new_length);
-                Value element = this_obj->get_property(idx);
-                this_obj->delete_property(idx);
-                this_obj->set_property("length", Value(static_cast<double>(new_length)));
-                return element;
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
+
+            if (length == 0) {
+                bool ok = this_obj->set_property("length", Value(0.0));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                return Value();
             }
 
-            uint32_t length = this_obj->get_length();
+            double new_length = length - 1;
+            std::string idx = Value(new_length).to_string();
+            Value element = this_obj->get_property(idx);
             if (ctx.has_exception()) return Value();
-            if (length == 0) return Value();
 
-            Value element = this_obj->get_element(length - 1);
-            this_obj->set_length(length - 1);
+            bool deleted = this_obj->delete_property(idx);
+            if (ctx.has_exception()) return Value();
+            if (!deleted) { ctx.throw_type_error("Cannot delete property '" + idx + "'"); return Value(); }
+
+            bool ok = this_obj->set_property("length", Value(new_length));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+
             return element;
         }, 0);
     PropertyDescriptor pop_desc(Value(pop_fn.release()),
@@ -2015,38 +2062,44 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                if (length == 0) {
-                    this_obj->set_property("length", Value(0.0));
-                    return Value();
-                }
-                Value first = this_obj->get_property("0");
-                for (uint32_t i = 1; i < length; i++) {
-                    std::string from_key = std::to_string(i);
-                    std::string to_key = std::to_string(i - 1);
-                    if (this_obj->has_property(from_key)) {
-                        this_obj->set_property(to_key, this_obj->get_property(from_key));
-                    } else {
-                        this_obj->delete_property(to_key);
-                    }
-                    if (ctx.has_exception()) return Value();
-                }
-                this_obj->delete_property(std::to_string(length - 1));
-                this_obj->set_property("length", Value(static_cast<double>(length - 1)));
-                return first;
-            }
-
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            if (length == 0) return Value();
 
-            Value first = this_obj->get_element(0);
-            for (uint32_t i = 1; i < length; i++) {
-                this_obj->set_element(i - 1, this_obj->get_element(i));
+            if (length == 0) {
+                bool ok = this_obj->set_property("length", Value(0.0));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+                return Value();
             }
-            this_obj->set_length(length - 1);
+
+            Value first = this_obj->get_property("0");
+            if (ctx.has_exception()) return Value();
+
+            for (double i = 1; i < length; i++) {
+                std::string from_key = Value(i).to_string();
+                std::string to_key = Value(i - 1).to_string();
+                if (this_obj->has_property(from_key)) {
+                    Value v = this_obj->get_property(from_key);
+                    if (ctx.has_exception()) return Value();
+                    bool ok = this_obj->set_property(to_key, v);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + to_key + "'"); return Value(); }
+                } else {
+                    bool deleted = this_obj->delete_property(to_key);
+                    if (ctx.has_exception()) return Value();
+                    if (!deleted) { ctx.throw_type_error("Cannot delete property '" + to_key + "'"); return Value(); }
+                }
+            }
+
+            std::string last_key = Value(length - 1).to_string();
+            bool deleted = this_obj->delete_property(last_key);
+            if (ctx.has_exception()) return Value();
+            if (!deleted) { ctx.throw_type_error("Cannot delete property '" + last_key + "'"); return Value(); }
+
+            bool ok = this_obj->set_property("length", Value(length - 1));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+
             return first;
         }, 0);
     PropertyDescriptor shift_desc(Value(shift_fn.release()),
@@ -2344,43 +2397,44 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(0.0);
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                uint32_t argCount = static_cast<uint32_t>(args.size());
-                for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
-                    std::string from_key = std::to_string(i);
-                    std::string to_key = std::to_string(i + argCount);
-                    if (this_obj->has_property(from_key)) {
-                        this_obj->set_property(to_key, this_obj->get_property(from_key));
-                    } else {
-                        this_obj->delete_property(to_key);
-                    }
-                    if (ctx.has_exception()) return Value();
-                }
-                for (uint32_t i = 0; i < argCount; i++) {
-                    this_obj->set_property(std::to_string(i), args[i]);
-                }
-                uint32_t new_length = length + argCount;
-                this_obj->set_property("length", Value(static_cast<double>(new_length)));
-                return Value(static_cast<double>(new_length));
-            }
-
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            uint32_t argCount = args.size();
+            double argCount = static_cast<double>(args.size());
 
-            for (int32_t i = length - 1; i >= 0; i--) {
-                this_obj->set_element(i + argCount, this_obj->get_element(i));
+            if (argCount > 0) {
+                if (length + argCount > 9007199254740991.0) {
+                    ctx.throw_type_error("Array.prototype.unshift: length would exceed 2**53 - 1");
+                    return Value();
+                }
+
+                for (double i = length - 1; i >= 0; i--) {
+                    std::string from_key = Value(i).to_string();
+                    std::string to_key = Value(i + argCount).to_string();
+                    if (this_obj->has_property(from_key)) {
+                        Value v = this_obj->get_property(from_key);
+                        if (ctx.has_exception()) return Value();
+                        bool ok = this_obj->set_property(to_key, v);
+                        if (ctx.has_exception()) return Value();
+                        if (!ok) { ctx.throw_type_error("Cannot set property '" + to_key + "'"); return Value(); }
+                    } else {
+                        bool deleted = this_obj->delete_property(to_key);
+                        if (ctx.has_exception()) return Value();
+                        if (!deleted) { ctx.throw_type_error("Cannot delete property '" + to_key + "'"); return Value(); }
+                    }
+                }
+
+                for (size_t i = 0; i < args.size(); i++) {
+                    bool ok = this_obj->set_property(Value(static_cast<double>(i)).to_string(), args[i]);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot add property, object is not extensible"); return Value(); }
+                }
             }
 
-            for (uint32_t i = 0; i < argCount; i++) {
-                this_obj->set_element(i, args[i]);
-            }
-
-            uint32_t new_length = length + argCount;
-            this_obj->set_length(new_length);
-            return Value(static_cast<double>(new_length));
+            double new_length = length + argCount;
+            bool ok = this_obj->set_property("length", Value(new_length));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+            return Value(new_length);
         }, 1);
     PropertyDescriptor unshift_desc(Value(unshift_fn.release()),
         PropertyAttributes::BuiltinFunction);
