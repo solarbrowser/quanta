@@ -237,6 +237,11 @@ Value Object::get_property(const std::string& key) const {
         if (!own_result.is_undefined()) {
             return own_result;
         }
+        // Own accessor with no getter legitimately yields undefined -- stop here,
+        // don't fall through to the prototype chain or the native-method fallback below.
+        if (has_own_property(key)) {
+            return Value();
+        }
 
         // Check prototype chain for overridden methods
         Object* current = header_.prototype;
@@ -263,6 +268,12 @@ Value Object::get_property(const std::string& key) const {
     Value result = get_own_property(key);
     if (!result.is_undefined()) {
         return result;
+    }
+    // An own accessor property with no getter legitimately yields undefined --
+    // that must NOT fall through to the prototype chain (spec [[Get]] stops at
+    // the first own property, calling its getter or returning undefined if none).
+    if (has_own_property(key)) {
+        return Value();
     }
 
     const Object* original_receiver = this;
@@ -603,6 +614,12 @@ bool Object::delete_property(const std::string& key) {
 }
 
 Value Object::get_element(uint32_t index) const {
+    // TypedArrayBase::get_element(size_t) is a different signature, not a virtual
+    // override of this uint32_t one -- dispatch explicitly so generic Array.prototype
+    // methods invoked via .call()/.apply() on a typed array read real backing-store data.
+    if (header_.type == ObjectType::TypedArray) {
+        return static_cast<const TypedArrayBase*>(this)->get_element(static_cast<size_t>(index));
+    }
     // Arguments: check all descriptors (accessor AND data) since they hold live bindings.
     if (header_.type == ObjectType::Arguments && descriptors_) {
         auto it = descriptors_->find(std::to_string(index));
@@ -637,13 +654,14 @@ Value Object::get_element(uint32_t index) const {
         }
     }
 
-    if (index < elements_.size()) {
+    bool is_hole = deleted_elements_ && deleted_elements_->count(index) > 0;
+    if (index < elements_.size() && !is_hole) {
         return elements_[index];
     }
 
-    // For non-Array/Arguments/TypedArray: check data descriptors and walk prototype chain.
-    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
-        && header_.type != ObjectType::TypedArray) {
+    // For non-Arguments/TypedArray (includes Array holes/out-of-bounds): check
+    // data descriptors, overflow, and walk the prototype chain.
+    if (header_.type != ObjectType::Arguments && header_.type != ObjectType::TypedArray) {
         std::string key = std::to_string(index);
         if (descriptors_) {
             auto it = descriptors_->find(key);
@@ -661,6 +679,13 @@ Value Object::get_element(uint32_t index) const {
 }
 
 bool Object::set_element(uint32_t index, const Value& value) {
+    // Same dispatch problem as get_element: TypedArrayBase::set_element(size_t) doesn't
+    // override this uint32_t signature, so generic Array.prototype methods called via
+    // .call()/.apply() on a typed array must be routed there explicitly.
+    if (header_.type == ObjectType::TypedArray) {
+        return const_cast<TypedArrayBase*>(static_cast<const TypedArrayBase*>(this))
+            ->set_element(static_cast<size_t>(index), value);
+    }
     // Check descriptors_ for all types: respect accessor setters and writable flags.
     if (descriptors_) {
         auto it = descriptors_->find(std::to_string(index));
@@ -1092,6 +1117,9 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
 }
 
 uint32_t Object::get_length() const {
+    if (header_.type == ObjectType::TypedArray) {
+        return static_cast<uint32_t>(static_cast<const TypedArrayBase*>(this)->length());
+    }
     if (header_.type == ObjectType::Array || header_.type == ObjectType::Arguments) {
         Value length_val = get_own_property("length");
         if (length_val.is_number()) {
@@ -1113,6 +1141,11 @@ uint32_t Object::get_length() const {
             return 0; // NaN or negative: ToLength = 0
         }
         // length property exists but getter returns undefined/null: ToLength = 0
+        return 0;
+    }
+    // No "length" property at all on a generic object: ToLength(undefined) = 0.
+    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
+        && header_.type != ObjectType::TypedArray) {
         return 0;
     }
     return static_cast<uint32_t>(elements_.size());
