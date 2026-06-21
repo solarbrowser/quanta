@@ -1134,7 +1134,12 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, const std::vector<Value>
     if (!target) {
         return Value(false);
     }
-    
+
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        bool result = static_cast<Proxy*>(target)->prevent_extensions_trap();
+        if (ctx.has_exception()) return Value();
+        return Value(result);
+    }
     target->prevent_extensions();
     return Value(true);
 }

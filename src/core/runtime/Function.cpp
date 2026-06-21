@@ -634,6 +634,16 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
                     return Value();
                 });
+            // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
+            {
+                PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
+                len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
+                thrower->set_property_descriptor("length", len_desc);
+                PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
+                name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
+                thrower->set_property_descriptor("name", name_desc);
+                thrower->prevent_extensions();
+            }
 
             PropertyDescriptor callee_desc;
             callee_desc.set_getter(thrower.get());

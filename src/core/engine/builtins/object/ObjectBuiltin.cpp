@@ -1001,10 +1001,10 @@ void register_object_builtins(Context& ctx) {
 
     auto seal_fn = ObjectFactory::create_native_function("seal",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
             if (args.empty()) return Value();
-            if (!args[0].is_object()) return args[0];
-
-            Object* obj = args[0].as_object();
+            if (!args[0].is_object() && !args[0].is_function()) return args[0];
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             obj->seal();
 
             return args[0];
@@ -1014,9 +1014,8 @@ void register_object_builtins(Context& ctx) {
     auto freeze_fn = ObjectFactory::create_native_function("freeze",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value();
-            if (!args[0].is_object()) return args[0];
-
-            Object* obj = args[0].as_object();
+            if (!args[0].is_object() && !args[0].is_function()) return args[0];
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 // SetIntegrityLevel("frozen") via proxy traps
                 Proxy* proxy = static_cast<Proxy*>(obj);
@@ -1052,9 +1051,9 @@ void register_object_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             if (args.empty()) return Value();
-            if (!args[0].is_object()) return args[0];
+            if (!args[0].is_object() && !args[0].is_function()) return args[0];
 
-            Object* obj = args[0].as_object();
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 static_cast<Proxy*>(obj)->prevent_extensions_trap();
             } else {
@@ -1067,18 +1066,19 @@ void register_object_builtins(Context& ctx) {
 
     auto isSealed_fn = ObjectFactory::create_native_function("isSealed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) return Value(true);
-
-            Object* obj = args[0].as_object();
+            (void)ctx;
+            if (args.empty()) return Value(true);
+            if (!args[0].is_object() && !args[0].is_function()) return Value(true);
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             return Value(obj->is_sealed());
         }, 1);
     object_constructor->set_property("isSealed", Value(isSealed_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto isFrozen_fn = ObjectFactory::create_native_function("isFrozen",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) return Value(true);
-
-            Object* obj = args[0].as_object();
+            if (args.empty()) return Value(true);
+            if (!args[0].is_object() && !args[0].is_function()) return Value(true);
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (obj->get_type() == Object::ObjectType::Proxy) {
                 // TestIntegrityLevel("frozen") via proxy traps
                 Proxy* proxy = static_cast<Proxy*>(obj);
