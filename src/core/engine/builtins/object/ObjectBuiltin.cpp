@@ -197,17 +197,18 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
             
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.values called on non-object")));
-                return Value();
+            // ES2022: ToObject — primitives (non-null/undefined) return empty result, not throw
+            if (!args[0].is_object() && !args[0].is_function()) {
+                return Value(ObjectFactory::create_array().release());
             }
-            
-            Object* obj = args[0].as_object();
+
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             auto keys = obj->get_enumerable_keys();
 
             auto result_array = ObjectFactory::create_array(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
                 Value value = obj->get_property(keys[i]);
+                if (ctx.has_exception()) return Value();
                 result_array->set_element(i, value);
             }
 
@@ -231,19 +232,20 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
             
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.entries called on non-object")));
-                return Value();
+            if (!args[0].is_object() && !args[0].is_function()) {
+                return Value(ObjectFactory::create_array().release());
             }
-            
-            Object* obj = args[0].as_object();
+
+            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             auto keys = obj->get_enumerable_keys();
 
             auto result_array = ObjectFactory::create_array(keys.size());
             for (size_t i = 0; i < keys.size(); i++) {
                 auto pair_array = ObjectFactory::create_array(2);
                 pair_array->set_element(0, Value(keys[i]));
-                pair_array->set_element(1, obj->get_property(keys[i]));
+                Value v = obj->get_property(keys[i]);
+                if (ctx.has_exception()) return Value();
+                pair_array->set_element(1, v);
                 result_array->set_element(i, Value(pair_array.release()));
             }
 
@@ -367,34 +369,27 @@ void register_object_builtins(Context& ctx) {
                     Object* desc = descriptor_val.as_object();
                     PropertyDescriptor prop_desc;
 
-                    if (desc->has_own_property("get")) {
+                    if (desc->has_property("get")) {
                         Value getter = desc->get_property("get");
                         // set_getter even when undefined -- makes it an accessor descriptor (spec 6.2.6.1)
                         prop_desc.set_getter(getter.is_function() ? getter.as_object() : nullptr);
                     }
-                    if (desc->has_own_property("set")) {
+                    if (desc->has_property("set")) {
                         Value setter = desc->get_property("set");
                         prop_desc.set_setter(setter.is_function() ? setter.as_object() : nullptr);
                     }
 
-                    if (desc->has_own_property("value")) {
+                    if (desc->has_property("value")) {
                         prop_desc.set_value(desc->get_property("value"));
                     }
-                    if (desc->has_own_property("writable")) {
+                    if (desc->has_property("writable")) {
                         prop_desc.set_writable(desc->get_property("writable").to_boolean());
-                    } else {
-                        prop_desc.set_writable(false);
                     }
-
-                    if (desc->has_own_property("enumerable")) {
+                    if (desc->has_property("enumerable")) {
                         prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
-                    } else {
-                        prop_desc.set_enumerable(false);
                     }
-                    if (desc->has_own_property("configurable")) {
+                    if (desc->has_property("configurable")) {
                         prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
-                    } else {
-                        prop_desc.set_configurable(false);
                     }
 
                     new_obj_ptr->set_property_descriptor(prop_name, prop_desc);
@@ -705,7 +700,7 @@ void register_object_builtins(Context& ctx) {
 
                 PropertyDescriptor prop_desc;
 
-                if (desc->has_own_property("get")) {
+                if (desc->has_property("get")) {
                     Value getter = desc->get_property("get");
                     if (getter.is_undefined()) {
                         prop_desc.set_getter(nullptr); // marks as accessor descriptor
@@ -717,7 +712,7 @@ void register_object_builtins(Context& ctx) {
                     }
                 }
 
-                if (desc->has_own_property("set")) {
+                if (desc->has_property("set")) {
                     Value setter = desc->get_property("set");
                     if (setter.is_undefined()) {
                         prop_desc.set_setter(nullptr); // marks as accessor descriptor
@@ -729,26 +724,26 @@ void register_object_builtins(Context& ctx) {
                     }
                 }
 
-                if (desc->has_own_property("value")) {
+                if (desc->has_property("value")) {
                     Value value = desc->get_property("value");
                     prop_desc.set_value(value);
                 }
 
-                if (desc->has_own_property("writable")) {
+                if (desc->has_property("writable")) {
                     prop_desc.set_writable(desc->get_property("writable").to_boolean());
                 }
 
-                if (desc->has_own_property("enumerable")) {
+                if (desc->has_property("enumerable")) {
                     prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
                 }
 
-                if (desc->has_own_property("configurable")) {
+                if (desc->has_property("configurable")) {
                     prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
                 }
 
                 // Spec: accessor descriptor (get/set) and data descriptor (value/writable) are mutually exclusive
                 // Only check for plain objects to avoid false positives from internal String wrapper "value" property
-                bool has_accessor = desc->has_own_property("get") || desc->has_own_property("set");
+                bool has_accessor = desc->has_property("get") || desc->has_property("set");
                 bool has_data = desc->has_own_property("value") || desc->has_own_property("writable");
                 if (has_accessor && has_data) {
                     ctx.throw_type_error("Invalid property descriptor: cannot combine get/set with value/writable");
@@ -941,37 +936,26 @@ void register_object_builtins(Context& ctx) {
                 Object* desc = descriptor_val.as_object();
                 PropertyDescriptor prop_desc;
 
-                if (desc->has_own_property("get")) {
+                if (desc->has_property("get")) {
                     Value getter = desc->get_property("get");
-                    if (getter.is_function()) {
-                        prop_desc.set_getter(getter.as_object());
-                    }
+                    prop_desc.set_getter(getter.is_function() ? getter.as_object() : nullptr);
                 }
-                if (desc->has_own_property("set")) {
+                if (desc->has_property("set")) {
                     Value setter = desc->get_property("set");
-                    if (setter.is_function()) {
-                        prop_desc.set_setter(setter.as_object());
-                    }
+                    prop_desc.set_setter(setter.is_function() ? setter.as_object() : nullptr);
                 }
 
-                if (desc->has_own_property("value")) {
+                if (desc->has_property("value")) {
                     prop_desc.set_value(desc->get_property("value"));
                 }
-                if (desc->has_own_property("writable")) {
+                if (desc->has_property("writable")) {
                     prop_desc.set_writable(desc->get_property("writable").to_boolean());
-                } else {
-                    prop_desc.set_writable(false);
                 }
-
-                if (desc->has_own_property("enumerable")) {
+                if (desc->has_property("enumerable")) {
                     prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
-                } else {
-                    prop_desc.set_enumerable(false);
                 }
-                if (desc->has_own_property("configurable")) {
+                if (desc->has_property("configurable")) {
                     prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
-                } else {
-                    prop_desc.set_configurable(false);
                 }
 
                 bool ok = obj->set_property_descriptor(prop_name, prop_desc);
@@ -1551,6 +1535,44 @@ void register_object_builtins(Context& ctx) {
         PropertyDescriptor(Value(define_getter_fn.release()), define_getter_setter_attrs));
     object_proto_ptr->set_property_descriptor("__defineSetter__",
         PropertyDescriptor(Value(define_setter_fn.release()), define_getter_setter_attrs));
+
+    // ES2017 Annex B: Object.prototype.__lookupGetter__ / __lookupSetter__
+    auto lookup_getter_fn = ObjectFactory::create_native_function("__lookupGetter__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("__lookupGetter__ called on null/undefined"); return Value(); }
+            Object* obj = ctx.get_this_binding();
+            if (!obj || args.empty()) return Value();
+            std::string key = args[0].to_string();
+            Object* cur = obj;
+            while (cur) {
+                PropertyDescriptor d = cur->get_property_descriptor(key);
+                if (d.is_accessor_descriptor() && d.has_getter())
+                    return d.get_getter() ? Value(d.get_getter()) : Value();
+                if (cur->has_own_property(key)) break;
+                cur = cur->get_prototype();
+            }
+            return Value();
+        }, 1);
+    auto lookup_setter_fn = ObjectFactory::create_native_function("__lookupSetter__",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("__lookupSetter__ called on null/undefined"); return Value(); }
+            Object* obj = ctx.get_this_binding();
+            if (!obj || args.empty()) return Value();
+            std::string key = args[0].to_string();
+            Object* cur = obj;
+            while (cur) {
+                PropertyDescriptor d = cur->get_property_descriptor(key);
+                if (d.is_accessor_descriptor() && d.has_setter())
+                    return d.get_setter() ? Value(d.get_setter()) : Value();
+                if (cur->has_own_property(key)) break;
+                cur = cur->get_prototype();
+            }
+            return Value();
+        }, 1);
+    object_proto_ptr->set_property_descriptor("__lookupGetter__",
+        PropertyDescriptor(Value(lookup_getter_fn.release()), define_getter_setter_attrs));
+    object_proto_ptr->set_property_descriptor("__lookupSetter__",
+        PropertyDescriptor(Value(lookup_setter_fn.release()), define_getter_setter_attrs));
 
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 

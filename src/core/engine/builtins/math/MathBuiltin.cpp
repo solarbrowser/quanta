@@ -16,7 +16,7 @@
 namespace Quanta {
 
 void register_math_builtins(Context& ctx) {
-    auto math_object = std::make_unique<Object>();
+    auto math_object = ObjectFactory::create_object();
 
     PropertyDescriptor pi_desc(Value(3.141592653589793), PropertyAttributes::None);
     math_object->set_property_descriptor("PI", pi_desc);
