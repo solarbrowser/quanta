@@ -112,8 +112,16 @@ void register_symbol_builtins(Context& ctx) {
         }
         auto desc_getter = ObjectFactory::create_native_function("get description",
             [](Context& ctx, const std::vector<Value>&) -> Value {
+                // Primitive symbol this
                 Value prim = ctx.get_binding("__primitive_this__");
                 if (prim.is_symbol()) return prim.as_symbol()->get_has_description() ? Value(prim.as_symbol()->get_description()) : Value();
+                // Symbol wrapper object this (e.g. Object(sym))
+                Object* obj = ctx.get_this_binding();
+                if (obj) {
+                    Value inner = obj->get_property("[[PrimitiveValue]]");
+                    if (inner.is_symbol()) return inner.as_symbol()->get_has_description() ? Value(inner.as_symbol()->get_description()) : Value();
+                }
+                ctx.throw_type_error("Symbol.prototype.description requires a symbol");
                 return Value();
             });
         PropertyDescriptor desc_prop;

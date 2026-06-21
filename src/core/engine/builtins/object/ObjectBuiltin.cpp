@@ -73,7 +73,8 @@ void register_object_builtins(Context& ctx) {
                         symbol_obj->set_prototype(sym_proto.as_object());
                     }
                 }
-                // Store primitive symbol for valueOf
+                // Store primitive symbol value for description getter and valueOf
+                symbol_obj->set_property("[[PrimitiveValue]]", value);
                 Value captured_sym = value;
                 auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
                     [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {

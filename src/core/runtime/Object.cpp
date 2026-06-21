@@ -621,6 +621,34 @@ Value Object::get_element(uint32_t index) const {
     if (index < elements_.size()) {
         return elements_[index];
     }
+    // For non-Array/Arguments types, check own descriptors then walk prototype chain.
+    // Cannot call get_property(this) here -- it calls get_own_property which calls get_element, causing infinite recursion.
+    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
+        && header_.type != ObjectType::TypedArray) {
+        std::string key = std::to_string(index);
+        if (descriptors_) {
+            auto it = descriptors_->find(key);
+            if (it != descriptors_->end()) {
+                if (it->second.is_data_descriptor()) return it->second.get_value();
+                if (it->second.is_accessor_descriptor()) {
+                    if (it->second.has_getter()) {
+                        Object* getter = it->second.get_getter();
+                        if (getter && current_context_) {
+                            Function* gfn = dynamic_cast<Function*>(getter);
+                            if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
+                        }
+                    }
+                    return Value(); // setter-only: own property shadows prototype
+                }
+            }
+        }
+        if (overflow_properties_) {
+            auto it = overflow_properties_->find(key);
+            if (it != overflow_properties_->end()) return it->second;
+        }
+        Object* proto = get_prototype();
+        return proto ? proto->get_property(key) : Value();
+    }
     return Value();
 }
 
@@ -1002,9 +1030,10 @@ uint32_t Object::get_length() const {
         }
     }
     // plain array-likes (e.g. Array.prototype.every.call(plainObj)) store length as a property
-    // ToLength per spec: coerce length via ToNumber (handles strings "2", booleans, and
-    // objects with valueOf) but skip Symbol which throws on ToNumber.
-    if (header_.type == ObjectType::Ordinary && has_property("length")) {
+    // ToLength per spec: coerce length via ToNumber. Apply to all non-Array/Arguments types
+    // so that Boolean/Number/String wrappers and custom objects with prototype-chain length work.
+    if (header_.type != ObjectType::Array && header_.type != ObjectType::Arguments
+        && header_.type != ObjectType::TypedArray && has_property("length")) {
         Value length_val = get_property("length");
         if (!length_val.is_symbol() && !length_val.is_undefined() && !length_val.is_null()) {
             double n = length_val.to_number();
@@ -2016,8 +2045,13 @@ std::unique_ptr<Object> create_string(const std::string& value) {
     PropertyDescriptor length_desc(Value(static_cast<double>(value.length())),
         static_cast<PropertyAttributes>(PropertyAttributes::None));
     str_obj->set_property_descriptor("length", length_desc);
-    // to_string()/String.prototype methods read [[PrimitiveValue]] to recover the wrapped value.
     str_obj->set_property("[[PrimitiveValue]]", Value(value));
+    // String exotic: each index is a non-writable, non-configurable, enumerable character property
+    for (size_t i = 0; i < value.size(); i++) {
+        PropertyDescriptor char_desc(Value(std::string(1, value[i])),
+            static_cast<PropertyAttributes>(PropertyAttributes::Enumerable));
+        str_obj->set_property_descriptor(std::to_string(i), char_desc);
+    }
     return str_obj;
 }
 

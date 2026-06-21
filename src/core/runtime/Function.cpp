@@ -226,12 +226,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
         ctx.set_binding("this", actual_this);
 
+        // Track whether current call's this is primitive (always reset to avoid stale values).
         if (actual_this.is_number() || actual_this.is_string() || actual_this.is_boolean() ||
             actual_this.is_null() || actual_this.is_undefined() || actual_this.is_symbol()) {
             if (!ctx.has_binding("__primitive_this__")) {
                 ctx.create_binding("__primitive_this__", actual_this, true);
             } else {
                 ctx.set_binding("__primitive_this__", actual_this);
+            }
+        } else {
+            // Object this: clear so array helpers can detect primitive vs object.
+            if (ctx.has_binding("__primitive_this__")) {
+                ctx.set_binding("__primitive_this__", Value());
             }
         }
 
