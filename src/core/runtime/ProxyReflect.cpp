@@ -978,8 +978,14 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
         }
     }
 
-    bool result = ordinary_set_with_receiver(target, key, value, receiver, ctx);
-    if (ctx.has_exception()) return Value();
+    bool result;
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        result = static_cast<Proxy*>(target)->set_trap(Value(key), value, Value(static_cast<Object*>(receiver)));
+        if (ctx.has_exception()) return Value();
+    } else {
+        result = ordinary_set_with_receiver(target, key, value, receiver, ctx);
+        if (ctx.has_exception()) return Value();
+    }
     return Value(result);
 }
 

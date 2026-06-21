@@ -5,6 +5,7 @@
  */
 
 #include "quanta/core/runtime/JSON.h"
+#include "quanta/core/runtime/Object.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
 #include "quanta/core/runtime/ProxyReflect.h"
@@ -44,7 +45,10 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
                 if (new_element.is_undefined()) {
                     obj->delete_property(idx);
                 } else {
-                    obj->set_property(idx, new_element);
+                    // CreateDataProperty: {value:V, writable:true, enumerable:true, configurable:true}
+                    PropertyDescriptor d(new_element, static_cast<PropertyAttributes>(
+                        PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                    obj->set_property_descriptor(idx, d);
                 }
             }
         } else {
@@ -56,7 +60,9 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
                 if (new_element.is_undefined()) {
                     obj->delete_property(key);
                 } else {
-                    obj->set_property(key, new_element);
+                    PropertyDescriptor d(new_element, static_cast<PropertyAttributes>(
+                        PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                    obj->set_property_descriptor(key, d);
                 }
             }
         }

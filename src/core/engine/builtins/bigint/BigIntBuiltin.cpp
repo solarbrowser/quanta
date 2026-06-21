@@ -8,6 +8,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/parser/AST.h"
+#include "quanta/core/runtime/Symbol.h"
 
 namespace Quanta {
 
@@ -71,6 +72,18 @@ void register_bigint_builtins(Context& ctx) {
                 return Value(new BigInt(static_cast<int64_t>(result)));
             });
         bigint_constructor->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
+    }
+    // ES2022 20.2.3.10: BigInt.prototype[@@toStringTag] = "BigInt", configurable:true
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            Value proto_val = bigint_constructor->get_property("prototype");
+            if (proto_val.is_object()) {
+                PropertyDescriptor tag_desc(Value(std::string("BigInt")),
+                    static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+                proto_val.as_object()->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+            }
+        }
     }
     ctx.register_built_in_object("BigInt", bigint_constructor.release());
 }
