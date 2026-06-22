@@ -62,7 +62,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         return Value(boolean_obj.release());
     } else if (value.is_symbol()) {
         Symbol* sym = value.as_symbol();
-        auto symbol_obj = ObjectFactory::create_object();
+        auto symbol_obj = std::make_unique<Object>(Object::ObjectType::Symbol);
         Value sym_ctor = ctx.get_binding("Symbol");
         if (sym_ctor.is_function()) {
             Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
@@ -84,7 +84,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         symbol_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
         return Value(symbol_obj.release());
     } else if (value.is_bigint()) {
-        auto bigint_obj = ObjectFactory::create_object();
+        auto bigint_obj = std::make_unique<Object>(Object::ObjectType::BigInt);
         Value bigint_ctor = ctx.get_binding("BigInt");
         if (bigint_ctor.is_function()) {
             Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
@@ -312,49 +312,73 @@ void register_object_builtins(Context& ctx) {
     is_fn->set_property_descriptor("length", is_length_desc);
     object_constructor->set_property("is", Value(is_fn.release()), PropertyAttributes::BuiltinFunction);
     
-    auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries", 
+    auto fromEntries_fn = ObjectFactory::create_native_function("fromEntries",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() == 0) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries requires at least 1 argument")));
+            if (args.empty() || args[0].is_null() || args[0].is_undefined()) {
+                ctx.throw_type_error("Object.fromEntries requires an iterable argument");
                 return Value();
             }
-            
-            if (!args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.fromEntries called on non-object")));
-                return Value();
-            }
-            
-            Object* iterable = args[0].as_object();
+
             auto result_obj = ObjectFactory::create_object();
 
-            auto process_entry = [&](Value entry) {
-                if (!entry.is_object()) return;
-                Object* pair = entry.as_object();
-                Value key = pair->get_element(0);
-                Value val = pair->get_element(1);
-                result_obj->set_property(key.to_string(), val);
+            // Per spec: use [[DefineOwnProperty]] not [[Set]] (avoids triggering inherited setters).
+            auto add_entry = [&](const Value& entry) -> bool {
+                if (!entry.is_object() && !entry.is_function()) {
+                    ctx.throw_type_error("Iterator value must be an object");
+                    return false;
+                }
+                Object* pair = entry.is_function()
+                    ? static_cast<Object*>(entry.as_function()) : entry.as_object();
+                Value key_val = pair->get_property("0");
+                if (ctx.has_exception()) return false;
+                Value val = pair->get_property("1");
+                if (ctx.has_exception()) return false;
+                std::string key = key_val.to_property_key();
+                if (ctx.has_exception()) return false;
+                PropertyDescriptor pd(val, PropertyAttributes::Default);
+                result_obj->set_property_descriptor(key, pd);
+                if (ctx.has_exception()) return false;
+                return true;
             };
 
+            Value target = args[0];
+            Object* iterable = target.is_function()
+                ? static_cast<Object*>(target.as_function()) : target.as_object();
             Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (!iter_sym) return Value(result_obj.release());
             Value iter_method = iterable->get_property(iter_sym->to_property_key());
+            if (ctx.has_exception()) return Value();
             if (iter_method.is_function()) {
                 Value iterator_obj = iter_method.as_function()->call(ctx, {}, Value(iterable));
-                if (iterator_obj.is_object()) {
-                    Object* iterator = iterator_obj.as_object();
-                    Value next_method = iterator->get_property("next");
-                    if (next_method.is_function()) {
-                        while (true) {
-                            Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
-                            if (!result.is_object()) break;
-                            if (result.as_object()->get_property("done").to_boolean()) break;
-                            process_entry(result.as_object()->get_property("value"));
-                        }
+                if (ctx.has_exception()) return Value();
+                if (!iterator_obj.is_object()) {
+                    ctx.throw_type_error("Iterator must return an object");
+                    return Value();
+                }
+                Object* iterator = iterator_obj.as_object();
+                Value next_method = iterator->get_property("next");
+                if (ctx.has_exception()) return Value();
+                if (!next_method.is_function()) {
+                    ctx.throw_type_error("Iterator next must be a function");
+                    return Value();
+                }
+                while (true) {
+                    Value result = next_method.as_function()->call(ctx, {}, iterator_obj);
+                    if (ctx.has_exception()) return Value();
+                    if (!result.is_object()) {
+                        ctx.throw_type_error("Iterator result must be an object");
+                        return Value();
                     }
+                    if (result.as_object()->get_property("done").to_boolean()) break;
+                    Value entry = result.as_object()->get_property("value");
+                    if (ctx.has_exception()) return Value();
+                    if (!add_entry(entry)) return Value();
                 }
             } else {
                 uint32_t length = iterable->get_length();
                 for (uint32_t i = 0; i < length; i++) {
-                    process_entry(iterable->get_element(i));
+                    Value entry = iterable->get_element(i);
+                    if (!add_entry(entry)) return Value();
                 }
             }
 
@@ -1325,6 +1349,14 @@ void register_object_builtins(Context& ctx) {
             } else if (this_val.is_boolean()) {
                 builtinTag = "Boolean";
                 tag_obj = get_proto_from_global("Boolean");
+            } else if (this_val.is_symbol()) {
+                // No dedicated internal-slot tag (spec step 14 default); "[object Symbol/BigInt]"
+                // comes from the prototype's own deletable @@toStringTag property below.
+                builtinTag = "Object";
+                tag_obj = get_proto_from_global("Symbol");
+            } else if (this_val.is_bigint()) {
+                builtinTag = "Object";
+                tag_obj = get_proto_from_global("BigInt");
             } else if (this_val.is_object() || this_val.is_function()) {
                 Object* this_obj = this_val.is_function()
                     ? static_cast<Object*>(this_val.as_function())
@@ -1333,9 +1365,22 @@ void register_object_builtins(Context& ctx) {
 
                 Object::ObjectType obj_type = this_obj->get_type();
 
+                // Resolve IsArray/IsCallable through Proxy chains NOW (before the @@toStringTag
+                // Get below, which may revoke a proxy along the chain mid-lookup).
+                bool is_arr = this_obj->is_array();
+                bool is_callable = this_obj->is_function();
+                if (obj_type == Object::ObjectType::Proxy) {
+                    Object* target = this_obj;
+                    while (target && target->get_type() == Object::ObjectType::Proxy) {
+                        target = static_cast<Proxy*>(target)->get_proxy_target();
+                    }
+                    is_arr = target && target->is_array();
+                    is_callable = target && target->is_function();
+                }
+
                 if (obj_type == Object::ObjectType::Arguments) {
                     builtinTag = "Arguments";
-                } else if (this_obj->is_array()) {
+                } else if (is_arr) {
                     builtinTag = "Array";
                 } else if (obj_type == Object::ObjectType::String) {
                     builtinTag = "String";
@@ -1349,7 +1394,7 @@ void register_object_builtins(Context& ctx) {
                     builtinTag = "RegExp";
                 } else if (obj_type == Object::ObjectType::Error) {
                     builtinTag = "Error";
-                } else if (obj_type == Object::ObjectType::Function || this_obj->is_function()) {
+                } else if (obj_type == Object::ObjectType::Function || is_callable) {
                     builtinTag = "Function";
                 } else {
                     builtinTag = "Object";

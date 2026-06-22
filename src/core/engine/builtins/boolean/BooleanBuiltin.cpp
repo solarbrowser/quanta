@@ -20,14 +20,16 @@ void register_boolean_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             bool value = args.empty() ? false : args[0].to_boolean();
 
-            // If this_obj exists (constructor call), set [[PrimitiveValue]]
+            // Return an ObjectType::Boolean-tagged wrapper so Object.prototype.toString
+            // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
-                this_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
+                auto bool_obj = ObjectFactory::create_boolean(value);
+                bool_obj->set_prototype(this_obj->get_prototype());
+                return Value(bool_obj.release());
             }
 
-            // Always return primitive boolean
-            // Function::construct will return the created object if called as constructor
+            // Called as a plain function: ToBoolean, no wrapper
             return Value(value);
         });
 

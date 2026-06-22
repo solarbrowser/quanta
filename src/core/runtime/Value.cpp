@@ -181,10 +181,22 @@ std::string Value::to_property_key() const {
     if (is_symbol()) {
         return as_symbol()->to_property_key();
     }
-    // For objects, ToPrimitive with "string" hint: toString() first, then valueOf()
+    // For objects, ToPrimitive with "string" hint: check @@toPrimitive first, then toString/valueOf
     if ((is_object() || is_function()) && Object::current_context_) {
         Context& ctx = *Object::current_context_;
         Object* obj = is_function() ? static_cast<Object*>(as_function()) : as_object();
+        // @@toPrimitive takes priority with hint "string"
+        Value toPrim_fn = obj->get_property("Symbol.toPrimitive");
+        if (!ctx.has_exception() && toPrim_fn.is_function()) {
+            Value prim = toPrim_fn.as_function()->call(ctx, {Value(std::string("string"))}, Value(obj));
+            if (!ctx.has_exception()) {
+                if (prim.is_symbol()) return prim.as_symbol()->to_property_key();
+                if (!prim.is_object() && !prim.is_function()) return prim.to_string();
+                ctx.throw_type_error("Cannot convert object to property key");
+            }
+            return "";
+        }
+        if (ctx.has_exception()) return "";
         // String hint: try toString first
         Value toString_fn = obj->get_property("toString");
         if (toString_fn.is_function()) {

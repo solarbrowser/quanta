@@ -58,8 +58,12 @@ void register_string_builtins(Context& ctx) {
                 }
             }
 
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
+            // Return an ObjectType::String-tagged wrapper so Object.prototype.toString
+            // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
+            Object* old_this = ctx.get_this_binding();
+            if (old_this) {
+                auto this_obj = std::make_unique<Object>(Object::ObjectType::String);
+                this_obj->set_prototype(old_this->get_prototype());
                 this_obj->set_property("[[PrimitiveValue]]", Value(str_value), PropertyAttributes::Writable);
                 size_t str_utf16_len = utf16_length(str_value);
                 PropertyDescriptor length_desc(Value(static_cast<double>(str_utf16_len)),
@@ -83,6 +87,7 @@ void register_string_builtins(Context& ctx) {
                         return Value(std::string(""));
                     });
                 this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+                return Value(this_obj.release());
             }
 
             return Value(str_value);

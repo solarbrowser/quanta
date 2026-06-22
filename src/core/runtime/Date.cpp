@@ -699,7 +699,9 @@ Value Date::date_constructor(Context& ctx, const std::vector<Value>& args) {
         date_impl = std::make_unique<Date>(year, month, day, hour, minute, second, millisecond);
     }
     
-    auto js_date_obj = ObjectFactory::create_object();
+    // ObjectType::Date (not the generic create_object()) so Object.prototype.toString's
+    // internal-slot tag check recognizes this as a Date.
+    auto js_date_obj = std::make_unique<Object>(Object::ObjectType::Date);
 
     js_date_obj->set_property("_isDate", Value(true), PropertyAttributes::Writable);
     js_date_obj->set_property("_timestamp", Value(date_impl->getTimestamp()), PropertyAttributes::Writable);
