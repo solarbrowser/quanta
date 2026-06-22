@@ -18,6 +18,7 @@
 #include <limits>
 #include <iostream>
 #include <cstdio>
+#include <charconv>
 #include <cstring>
 
 namespace Quanta {
@@ -119,8 +120,12 @@ std::string Value::to_string() const {
             if (num == std::floor(num)) {
                 oss << std::fixed << std::setprecision(0) << num;
             } else {
-                // For non-integers, use enough precision
-                oss << std::setprecision(16) << num;
+                // setprecision alone still falls back to scientific notation for small
+                // magnitudes (e.g. 1e-6); to_chars with chars_format::fixed forces fixed
+                // notation with the shortest round-tripping digit sequence.
+                char buf[64];
+                auto res = std::to_chars(buf, buf + sizeof(buf), num, std::chars_format::fixed);
+                oss << std::string(buf, res.ptr);
             }
         }
         std::string result = oss.str();
