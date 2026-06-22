@@ -141,8 +141,18 @@ static void fa_request_next(Context& ctx, Promise* result_promise);
 static void fa_request_arraylike_next(Context& ctx, Promise* result_promise);
 
 static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason) {
-    (void)ctx;
-    if (result_promise->is_pending()) result_promise->reject(reason);
+    // Close the iterator (if any) before rejecting -- spec requires IteratorClose on
+    // abrupt completion so generator finally blocks run (e.g. rejecting thenables).
+    if (!result_promise->is_pending()) return;
+    Value iter_v = result_promise->get_property("__fa_iter__");
+    if (iter_v.is_object()) {
+        Value ret_fn = iter_v.as_object()->get_property("return");
+        if (ret_fn.is_function()) {
+            ret_fn.as_function()->call(ctx, {}, iter_v);
+            ctx.clear_exception();
+        }
+    }
+    result_promise->reject(reason);
 }
 
 static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Value& value) {
@@ -252,11 +262,13 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
         return;
     }
     Value arraylike = result_promise->get_property("__fa_arraylike__");
-    if (!arraylike.is_object()) {
+    Object* al_obj = arraylike.is_function()
+        ? static_cast<Object*>(arraylike.as_function()) : (arraylike.is_object() ? arraylike.as_object() : nullptr);
+    if (!al_obj) {
         fa_reject(ctx, result_promise, Value(std::string("TypeError: Array.fromAsync: array-like is not an object")));
         return;
     }
-    Value element = arraylike.as_object()->get_element(idx);
+    Value element = al_obj->get_property(std::to_string(idx));
     if (ctx.has_exception()) {
         Value e = ctx.get_exception(); ctx.clear_exception();
         fa_reject(ctx, result_promise, e);
@@ -615,23 +627,39 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto fromAsync_fn = ObjectFactory::create_native_function("fromAsync",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value items = args.empty() ? Value() : args[0];
-            Function* mapfn = (args.size() > 1 && args[1].is_function()) ? args[1].as_function() : nullptr;
             Value this_arg = args.size() > 2 ? args[2] : Value();
-
-            Function* this_ctor = nullptr;
-            Object* this_obj = array_to_object(ctx);
-            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
 
             auto result_promise_obj = ObjectFactory::create_promise(&ctx);
             Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
-            if (this_ctor) {
-                Value proto = this_ctor->get_property("prototype");
-                if (proto.is_object()) result_promise->set_prototype(proto.as_object());
+
+            // Validate mapfn before anything else (spec step 3b: IsCallable check).
+            Function* mapfn = nullptr;
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                if (!args[1].is_function()) {
+                    ctx.throw_type_error("Array.fromAsync mapfn argument must be callable");
+                    Value e = ctx.get_exception(); ctx.clear_exception();
+                    result_promise->reject(e);
+                    return Value(result_promise_obj.release());
+                }
+                mapfn = args[1].as_function();
             }
 
-            if (!items.is_object() && !items.is_string()) {
-                result_promise->reject(Value(std::string("TypeError: Array.fromAsync requires an iterable or array-like object")));
+            if (items.is_null() || items.is_undefined()) {
+                ctx.throw_type_error("Array.fromAsync requires an iterable or array-like object");
+                Value e = ctx.get_exception(); ctx.clear_exception();
+                result_promise->reject(e);
                 return Value(result_promise_obj.release());
+            }
+
+            // ToObject: box primitives so we can check for iterator methods and .length.
+            Value items_boxed = items;
+            if (!items.is_object() && !items.is_function()) {
+                Value obj_ctor = ctx.get_binding("Object");
+                if (obj_ctor.is_function()) {
+                    Value boxed = obj_ctor.as_function()->call(ctx, {items});
+                    if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
+                    if (boxed.is_object() || boxed.is_function()) items_boxed = boxed;
+                }
             }
 
             // Resolve the iterator: prefer @@asyncIterator, then @@iterator
@@ -640,34 +668,68 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Value iterator_val;
             Value next_fn_val;
             bool used_async_iterator = false;
-            if (items.is_object()) {
-                Object* items_obj = items.as_object();
+            if (items_boxed.is_object() || items_boxed.is_function()) {
+                Object* items_obj = items_boxed.is_function()
+                    ? static_cast<Object*>(items_boxed.as_function()) : items_boxed.as_object();
                 Value iter_method;
                 Symbol* async_iter_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
-                if (async_iter_sym) iter_method = items_obj->get_property(async_iter_sym->to_property_key());
+                if (async_iter_sym) {
+                    iter_method = items_obj->get_property(async_iter_sym->to_property_key());
+                    if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
+                }
+                if (!iter_method.is_undefined() && !iter_method.is_null() && !iter_method.is_function()) {
+                    ctx.throw_type_error("@@asyncIterator is not callable");
+                    Value e = ctx.get_exception(); ctx.clear_exception();
+                    result_promise->reject(e);
+                    return Value(result_promise_obj.release());
+                }
                 if (iter_method.is_function()) {
                     used_async_iterator = true;
                 } else {
                     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                    if (iter_sym) iter_method = items_obj->get_property(iter_sym->to_property_key());
+                    if (iter_sym) {
+                        iter_method = items_obj->get_property(iter_sym->to_property_key());
+                        if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
+                    }
+                    if (!iter_method.is_undefined() && !iter_method.is_null() && !iter_method.is_function()) {
+                        ctx.throw_type_error("@@iterator is not callable");
+                        Value e = ctx.get_exception(); ctx.clear_exception();
+                        result_promise->reject(e);
+                        return Value(result_promise_obj.release());
+                    }
                 }
                 if (iter_method.is_function()) {
-                    iterator_val = iter_method.as_function()->call(ctx, {}, items);
+                    iterator_val = iter_method.as_function()->call(ctx, {}, items_boxed);
                     if (ctx.has_exception()) {
                         Value e = ctx.get_exception(); ctx.clear_exception();
                         result_promise->reject(e);
                         return Value(result_promise_obj.release());
                     }
                     if (!iterator_val.is_object()) {
-                        result_promise->reject(Value(std::string("TypeError: Array.fromAsync: iterator must be an object")));
+                        ctx.throw_type_error("Array.fromAsync: iterator must be an object");
+                        Value ite = ctx.get_exception(); ctx.clear_exception();
+                        result_promise->reject(ite);
                         return Value(result_promise_obj.release());
                     }
                     next_fn_val = iterator_val.as_object()->get_property("next");
                 }
             }
 
-            auto result_arr_owner = ObjectFactory::create_array(0);
-            Object* result_arr = result_arr_owner.release();
+            // Use the `this` constructor for the result array if it's a constructor
+            // (Array.fromAsync.call(MyClass, ...) should produce instanceof MyClass).
+            Object* this_obj2 = ctx.get_this_binding();
+            Function* this_ctor = (this_obj2 && this_obj2->is_function())
+                ? static_cast<Function*>(this_obj2) : nullptr;
+            Object* result_arr;
+            if (this_ctor) {
+                Value arr_val = this_ctor->construct(ctx, {});
+                if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
+                result_arr = (arr_val.is_object() || arr_val.is_function())
+                    ? (arr_val.is_function() ? static_cast<Object*>(arr_val.as_function()) : arr_val.as_object())
+                    : ObjectFactory::create_array(0).release();
+            } else {
+                result_arr = ObjectFactory::create_array(0).release();
+            }
 
             if (next_fn_val.is_function()) {
                 result_promise->set_property("__fa_arr__", Value(result_arr));
@@ -684,11 +746,18 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             // Array-like fallback (no iterator method): spec iterates via .length,
             // Awaiting each element before mapping.
-            Value length_v = items.is_object() ? items.as_object()->get_property("length") : Value();
-            uint32_t length = length_v.is_number() && length_v.to_number() > 0
-                ? static_cast<uint32_t>(length_v.to_number()) : 0;
+            Object* al_obj = (items_boxed.is_object() || items_boxed.is_function())
+                ? (items_boxed.is_function() ? static_cast<Object*>(items_boxed.as_function()) : items_boxed.as_object())
+                : nullptr;
+            double length_d = al_obj ? array_like_length(ctx, al_obj) : 0.0;
+            if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
+            if (length_d > 4294967295.0) {
+                result_promise->reject(Value(std::string("RangeError: Invalid array length")));
+                return Value(result_promise_obj.release());
+            }
+            uint32_t length = static_cast<uint32_t>(length_d < 0 ? 0 : length_d);
             result_promise->set_property("__fa_arr__", Value(result_arr));
-            result_promise->set_property("__fa_arraylike__", items);
+            result_promise->set_property("__fa_arraylike__", items_boxed);
             result_promise->set_property("__fa_len__", Value(static_cast<double>(length)));
             result_promise->set_property("__fa_mapfn__", mapfn ? Value(mapfn) : Value());
             result_promise->set_property("__fa_thisarg__", this_arg);

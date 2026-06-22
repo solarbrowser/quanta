@@ -82,6 +82,55 @@ void Promise::fulfill(const Value& value) {
         return;
     }
 
+    // Promise Resolution Procedure: if value is a thenable (plain object with callable .then),
+    // schedule a PromiseResolveThenableJob rather than settling immediately.
+    if ((value.is_object() || value.is_function()) && Object::current_context_) {
+        Object* obj = value.is_function() ? static_cast<Object*>(value.as_function()) : value.as_object();
+        Value then_val = obj->get_property("then");
+        if (Object::current_context_->has_exception()) {
+            Object::current_context_->clear_exception();
+        } else if (then_val.is_function()) {
+            // Enqueue as a microtask so it doesn't run synchronously inside fulfill().
+            Promise* self = this;
+            Function* then_fn = then_val.as_function();
+            Value thenable = value;
+            set_property("__trp_then__", Value(then_fn));
+            set_property("__trp_val__", thenable);
+            Context* queue_ctx = get_exec_ctx(engine_, context_);
+            if (queue_ctx) {
+                queue_ctx->queue_microtask([self, then_fn, thenable]() mutable {
+                    self->delete_property("__trp_then__");
+                    self->delete_property("__trp_val__");
+                    auto res_fn = ObjectFactory::create_native_function("",
+                        [self](Context&, const std::vector<Value>& args) -> Value {
+                            self->fulfill(args.empty() ? Value() : args[0]);
+                            return Value();
+                        });
+                    auto rej_fn = ObjectFactory::create_native_function("",
+                        [self](Context&, const std::vector<Value>& args) -> Value {
+                            self->reject(args.empty() ? Value() : args[0]);
+                            return Value();
+                        });
+                    Function* rf = res_fn.get();
+                    Function* rj = rej_fn.get();
+                    self->set_property("__trp_res__", Value(res_fn.release()));
+                    self->set_property("__trp_rej__", Value(rej_fn.release()));
+                    if (Object::current_context_) {
+                        then_fn->call(*Object::current_context_, {Value(rf), Value(rj)}, thenable);
+                        if (Object::current_context_->has_exception()) {
+                            Value exc = Object::current_context_->get_exception();
+                            Object::current_context_->clear_exception();
+                            self->delete_property("__trp_res__");
+                            self->delete_property("__trp_rej__");
+                            self->reject(exc);
+                        }
+                    }
+                });
+                return;
+            }
+        }
+    }
+
     state_ = PromiseState::FULFILLED;
     value_ = value;
     execute_handlers();
@@ -193,21 +242,23 @@ Promise* Promise::finally_method(Function* on_finally) {
 }
 
 Promise* Promise::resolve(const Value& value) {
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    // Use the live execution context so execute_handlers() can queue microtasks;
+    // nullptr produces a null queue_ctx, silently dropping all .then() callbacks.
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->fulfill(value);
     return promise;
 }
 
 Promise* Promise::reject_static(const Value& reason) {
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     promise->reject(reason);
     return promise;
 }
 
 Promise* Promise::all(const std::vector<Promise*>& promises) {
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* result_promise = static_cast<Promise*>(promise_obj.release());
 
     if (promises.empty()) {
@@ -220,7 +271,7 @@ Promise* Promise::all(const std::vector<Promise*>& promises) {
 }
 
 Promise* Promise::race(const std::vector<Promise*>& promises) {
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* result_promise = static_cast<Promise*>(promise_obj.release());
 
     if (promises.empty()) {
@@ -314,7 +365,7 @@ void Promise::execute_handlers() {
 Value Promise::withResolvers(Context& ctx, const std::vector<Value>& args) {
     (void)ctx; (void)args;
 
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* promise = static_cast<Promise*>(promise_obj.release());
     auto result_obj = ObjectFactory::create_object();
 
@@ -348,7 +399,7 @@ Value Promise::try_method(Context& ctx, const std::vector<Value>& args) {
     }
 
     Function* callback = args[0].as_function();
-    auto promise_obj = ObjectFactory::create_promise(nullptr);
+    auto promise_obj = ObjectFactory::create_promise(Object::current_context_);
     auto* promise = static_cast<Promise*>(promise_obj.release());
 
     try {
