@@ -190,9 +190,9 @@ bool Context::is_strict_const(const std::string& name) const {
     return false;
 }
 
-bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
+bool Context::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
     if (variable_environment_) {
-        return variable_environment_->create_binding(name, value, mutable_binding, deletable);
+        return variable_environment_->create_binding(name, value, mutable_binding, deletable, enumerable);
     }
     return false;
 }
@@ -880,13 +880,14 @@ void Environment::create_global_function_binding(const std::string& name, const 
     }
 }
 
-bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable) {
+bool Environment::create_binding(const std::string& name, const Value& value, bool mutable_binding, bool deletable, bool enumerable) {
     if (has_own_binding(name)) {
         return false;
     }
 
     if (type_ == Type::Object && binding_object_) {
-        int attrs_value = PropertyAttributes::Enumerable;
+        int attrs_value = 0;
+        if (enumerable) attrs_value |= PropertyAttributes::Enumerable;
         if (mutable_binding) attrs_value |= PropertyAttributes::Writable;
         if (deletable) attrs_value |= PropertyAttributes::Configurable;
         PropertyAttributes attrs = static_cast<PropertyAttributes>(attrs_value);

@@ -17,6 +17,108 @@
 
 namespace Quanta {
 
+// Recovers the actual `this` value passed to a native call, including null/undefined
+// (ctx.get_this_binding() only reflects object/function `this`).
+static Value get_actual_this(Context& ctx) {
+    try {
+        return ctx.get_binding("this");
+    } catch (...) {
+        if (ctx.original_this_was_nullish()) return Value();
+        Object* obj = ctx.get_this_binding();
+        return obj ? Value(obj) : Value();
+    }
+}
+
+// Wraps a primitive (string/number/boolean/symbol/bigint) in its wrapper object, mirroring
+// what `new Object(value)` does -- but called directly so ToObject (used internally by many
+// built-ins) never observably invokes a possibly-overridden global "Object" binding.
+static Value box_primitive(Context& ctx, const Value& value) {
+    if (value.is_string()) {
+        auto string_obj = ObjectFactory::create_string(value.to_string());
+        Value str_ctor = ctx.get_binding("String");
+        if (str_ctor.is_function()) {
+            Value str_proto = static_cast<Object*>(str_ctor.as_function())->get_property("prototype");
+            if (str_proto.is_object()) string_obj->set_prototype(str_proto.as_object());
+        }
+        return Value(string_obj.release());
+    } else if (value.is_number()) {
+        auto number_obj = ObjectFactory::create_object();
+        number_obj->set_property("[[PrimitiveValue]]", Value(value.as_number()), PropertyAttributes::Writable);
+        Value num_ctor = ctx.get_binding("Number");
+        if (num_ctor.is_function()) {
+            Value num_proto = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
+            if (num_proto.is_object()) {
+                number_obj->set_prototype(num_proto.as_object());
+            }
+        }
+        return Value(number_obj.release());
+    } else if (value.is_boolean()) {
+        auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
+        Value bool_ctor = ctx.get_binding("Boolean");
+        if (bool_ctor.is_function()) {
+            Value bool_proto = static_cast<Object*>(bool_ctor.as_function())->get_property("prototype");
+            if (bool_proto.is_object()) boolean_obj->set_prototype(bool_proto.as_object());
+        }
+        return Value(boolean_obj.release());
+    } else if (value.is_symbol()) {
+        Symbol* sym = value.as_symbol();
+        auto symbol_obj = ObjectFactory::create_object();
+        Value sym_ctor = ctx.get_binding("Symbol");
+        if (sym_ctor.is_function()) {
+            Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
+            if (sym_proto.is_object()) {
+                symbol_obj->set_prototype(sym_proto.as_object());
+            }
+        }
+        symbol_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
+        Value captured_sym = value;
+        auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
+            [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                return captured_sym;
+            }, 0);
+        symbol_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
+        auto toString_fn = ObjectFactory::create_native_function("toString",
+            [sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                return Value(sym->to_string());
+            }, 0);
+        symbol_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+        return Value(symbol_obj.release());
+    } else if (value.is_bigint()) {
+        auto bigint_obj = ObjectFactory::create_object();
+        Value bigint_ctor = ctx.get_binding("BigInt");
+        if (bigint_ctor.is_function()) {
+            Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
+            if (bigint_proto.is_object()) bigint_obj->set_prototype(bigint_proto.as_object());
+        }
+        Value captured_bigint = value;
+        auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
+            [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                return captured_bigint;
+            }, 0);
+        bigint_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
+        auto toString_fn = ObjectFactory::create_native_function("toString",
+            [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
+                return Value(captured_bigint.as_bigint()->to_string());
+            }, 0);
+        bigint_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+        return Value(bigint_obj.release());
+    }
+    return Value(ObjectFactory::create_object().release());
+}
+
+// ToObject: throws for null/undefined, boxes other primitives via box_primitive(),
+// passes objects/functions through unchanged.
+static Object* to_object_or_throw(Context& ctx, const Value& this_val) {
+    if (this_val.is_null() || this_val.is_undefined()) {
+        ctx.throw_type_error("Cannot convert undefined or null to object");
+        return nullptr;
+    }
+    if (this_val.is_object()) return this_val.as_object();
+    if (this_val.is_function()) return static_cast<Object*>(this_val.as_function());
+    Value boxed = box_primitive(ctx, this_val);
+    return boxed.is_object() ? boxed.as_object() : nullptr;
+}
+
 void register_object_builtins(Context& ctx) {
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -33,82 +135,8 @@ void register_object_builtins(Context& ctx) {
             if (value.is_object() || value.is_function()) {
                 return value;
             }
-            
-            if (value.is_string()) {
-                auto string_obj = ObjectFactory::create_string(value.to_string());
-                Value str_ctor = ctx.get_binding("String");
-                if (str_ctor.is_function()) {
-                    Value str_proto = static_cast<Object*>(str_ctor.as_function())->get_property("prototype");
-                    if (str_proto.is_object()) string_obj->set_prototype(str_proto.as_object());
-                }
-                return Value(string_obj.release());
-            } else if (value.is_number()) {
-                auto number_obj = ObjectFactory::create_object();
-                number_obj->set_property("[[PrimitiveValue]]", Value(value.as_number()));
-                Value num_ctor = ctx.get_binding("Number");
-                if (num_ctor.is_function()) {
-                    Value num_proto = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
-                    if (num_proto.is_object()) {
-                        number_obj->set_prototype(num_proto.as_object());
-                    }
-                }
-                return Value(number_obj.release());
-            } else if (value.is_boolean()) {
-                auto boolean_obj = ObjectFactory::create_boolean(value.to_boolean());
-                Value bool_ctor = ctx.get_binding("Boolean");
-                if (bool_ctor.is_function()) {
-                    Value bool_proto = static_cast<Object*>(bool_ctor.as_function())->get_property("prototype");
-                    if (bool_proto.is_object()) boolean_obj->set_prototype(bool_proto.as_object());
-                }
-                return Value(boolean_obj.release());
-            } else if (value.is_symbol()) {
-                // ES6: Create a Symbol wrapper object
-                Symbol* sym = value.as_symbol();
-                auto symbol_obj = ObjectFactory::create_object();
-                // Set Symbol.prototype for instanceof
-                Value sym_ctor = ctx.get_binding("Symbol");
-                if (sym_ctor.is_function()) {
-                    Value sym_proto = static_cast<Object*>(sym_ctor.as_function())->get_property("prototype");
-                    if (sym_proto.is_object()) {
-                        symbol_obj->set_prototype(sym_proto.as_object());
-                    }
-                }
-                // Store primitive symbol value for description getter and valueOf
-                symbol_obj->set_property("[[PrimitiveValue]]", value);
-                Value captured_sym = value;
-                auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-                    [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                        return captured_sym;
-                    }, 0);
-                symbol_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
-                auto toString_fn = ObjectFactory::create_native_function("toString",
-                    [sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                        return Value(sym->to_string());
-                    }, 0);
-                symbol_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
-                return Value(symbol_obj.release());
-            } else if (value.is_bigint()) {
-                auto bigint_obj = ObjectFactory::create_object();
-                Value bigint_ctor = ctx.get_binding("BigInt");
-                if (bigint_ctor.is_function()) {
-                    Value bigint_proto = static_cast<Object*>(bigint_ctor.as_function())->get_property("prototype");
-                    if (bigint_proto.is_object()) bigint_obj->set_prototype(bigint_proto.as_object());
-                }
-                Value captured_bigint = value;
-                auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-                    [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                        return captured_bigint;
-                    }, 0);
-                bigint_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
-                auto toString_fn = ObjectFactory::create_native_function("toString",
-                    [captured_bigint](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                        return Value(captured_bigint.as_bigint()->to_string());
-                    }, 0);
-                bigint_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
-                return Value(bigint_obj.release());
-            }
-            
-            return Value(ObjectFactory::create_object().release());
+
+            return box_primitive(ctx, value);
         });
     
     auto keys_fn = ObjectFactory::create_native_function("keys", 
@@ -181,72 +209,87 @@ void register_object_builtins(Context& ctx) {
         }, 1);
     object_constructor->set_property("keys", Value(keys_fn.release()), PropertyAttributes::BuiltinFunction);
     
-    auto values_fn = ObjectFactory::create_native_function("values", 
+    auto values_fn = ObjectFactory::create_native_function("values",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() == 0) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.values requires at least 1 argument")));
-                return Value();
-            }
-            
-            if (args[0].is_null()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
-                return Value();
-            }
-            if (args[0].is_undefined()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
-                return Value();
-            }
-            
-            // ES2022: ToObject — primitives (non-null/undefined) return empty result, not throw
-            if (!args[0].is_object() && !args[0].is_function()) {
-                return Value(ObjectFactory::create_array().release());
-            }
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
 
-            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
-            auto keys = obj->get_enumerable_keys();
+            bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
+            std::vector<std::string> own_keys;
+            if (is_proxy) {
+                own_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+            } else {
+                own_keys = obj->get_own_property_keys();
+            }
+            if (ctx.has_exception()) return Value();
 
-            auto result_array = ObjectFactory::create_array(keys.size());
-            for (size_t i = 0; i < keys.size(); i++) {
-                Value value = obj->get_property(keys[i]);
+            auto result_array = ObjectFactory::create_array();
+            uint32_t out_i = 0;
+            for (const auto& key : own_keys) {
+                // Symbol keys are never included in values()/entries().
+                if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
+
+                // [[GetOwnPropertyDescriptor]] is re-checked per key, not snapshotted up
+                // front -- an earlier key's getter may delete or hide a later one.
+                Value value;
+                if (is_proxy) {
+                    Proxy* p = static_cast<Proxy*>(obj);
+                    PropertyDescriptor desc = p->get_own_property_descriptor_trap(Value(key));
+                    if (ctx.has_exception()) return Value();
+                    if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                    if (!desc.is_enumerable()) continue;
+                    value = p->get_trap(Value(key));
+                } else {
+                    PropertyDescriptor desc = obj->get_property_descriptor(key);
+                    if (!obj->has_own_property(key) || !desc.is_enumerable()) continue;
+                    value = obj->get_property(key);
+                }
                 if (ctx.has_exception()) return Value();
-                result_array->set_element(i, value);
+                result_array->set_element(out_i++, value);
             }
 
             return Value(result_array.release());
         }, 1);
     object_constructor->set_property("values", Value(values_fn.release()), PropertyAttributes::BuiltinFunction);
-    
-    auto entries_fn = ObjectFactory::create_native_function("entries", 
+
+    auto entries_fn = ObjectFactory::create_native_function("entries",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() == 0) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.entries requires at least 1 argument")));
-                return Value();
-            }
-            
-            if (args[0].is_null()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
-                return Value();
-            }
-            if (args[0].is_undefined()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
-                return Value();
-            }
-            
-            if (!args[0].is_object() && !args[0].is_function()) {
-                return Value(ObjectFactory::create_array().release());
-            }
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
 
-            Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
-            auto keys = obj->get_enumerable_keys();
+            bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
+            std::vector<std::string> own_keys;
+            if (is_proxy) {
+                own_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+            } else {
+                own_keys = obj->get_own_property_keys();
+            }
+            if (ctx.has_exception()) return Value();
 
-            auto result_array = ObjectFactory::create_array(keys.size());
-            for (size_t i = 0; i < keys.size(); i++) {
-                auto pair_array = ObjectFactory::create_array(2);
-                pair_array->set_element(0, Value(keys[i]));
-                Value v = obj->get_property(keys[i]);
+            auto result_array = ObjectFactory::create_array();
+            uint32_t out_i = 0;
+            for (const auto& key : own_keys) {
+                if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
+
+                Value value;
+                if (is_proxy) {
+                    Proxy* p = static_cast<Proxy*>(obj);
+                    PropertyDescriptor desc = p->get_own_property_descriptor_trap(Value(key));
+                    if (ctx.has_exception()) return Value();
+                    if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                    if (!desc.is_enumerable()) continue;
+                    value = p->get_trap(Value(key));
+                } else {
+                    PropertyDescriptor desc = obj->get_property_descriptor(key);
+                    if (!obj->has_own_property(key) || !desc.is_enumerable()) continue;
+                    value = obj->get_property(key);
+                }
                 if (ctx.has_exception()) return Value();
-                pair_array->set_element(1, v);
-                result_array->set_element(i, Value(pair_array.release()));
+
+                auto pair_array = ObjectFactory::create_array(2);
+                pair_array->set_element(0, Value(key));
+                pair_array->set_element(1, value);
+                result_array->set_element(out_i++, Value(pair_array.release()));
             }
 
             return Value(result_array.release());
@@ -352,12 +395,11 @@ void register_object_builtins(Context& ctx) {
             }
 
             if (args.size() > 1 && !args[1].is_undefined()) {
-                if (!args[1].is_object()) {
-                    ctx.throw_type_error("Property descriptors must be an object");
-                    return Value();
-                }
+                // ToObject only throws for null/undefined; other primitives box into a wrapper
+                // with no own enumerable properties, so the loop below just does nothing.
+                Object* properties = to_object_or_throw(ctx, args[1]);
+                if (!properties) return Value();
 
-                Object* properties = args[1].as_object();
                 auto prop_names = properties->get_enumerable_keys();
 
                 for (const auto& prop_name : prop_names) {
@@ -374,28 +416,59 @@ void register_object_builtins(Context& ctx) {
 
                     if (desc->has_property("get")) {
                         Value getter = desc->get_property("get");
-                        // set_getter even when undefined -- makes it an accessor descriptor (spec 6.2.6.1)
-                        prop_desc.set_getter(getter.is_function() ? getter.as_object() : nullptr);
+                        if (ctx.has_exception()) return Value();
+                        if (getter.is_undefined()) {
+                            prop_desc.set_getter(nullptr); // marks as accessor descriptor
+                        } else if (!getter.is_function()) {
+                            ctx.throw_type_error("Property descriptor getter must be callable");
+                            return Value();
+                        } else {
+                            prop_desc.set_getter(getter.as_object());
+                        }
                     }
                     if (desc->has_property("set")) {
                         Value setter = desc->get_property("set");
-                        prop_desc.set_setter(setter.is_function() ? setter.as_object() : nullptr);
+                        if (ctx.has_exception()) return Value();
+                        if (setter.is_undefined()) {
+                            prop_desc.set_setter(nullptr); // marks as accessor descriptor
+                        } else if (!setter.is_function()) {
+                            ctx.throw_type_error("Property descriptor setter must be callable");
+                            return Value();
+                        } else {
+                            prop_desc.set_setter(setter.as_object());
+                        }
                     }
 
                     if (desc->has_property("value")) {
                         prop_desc.set_value(desc->get_property("value"));
+                        if (ctx.has_exception()) return Value();
                     }
                     if (desc->has_property("writable")) {
                         prop_desc.set_writable(desc->get_property("writable").to_boolean());
+                        if (ctx.has_exception()) return Value();
                     }
                     if (desc->has_property("enumerable")) {
                         prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
+                        if (ctx.has_exception()) return Value();
                     }
                     if (desc->has_property("configurable")) {
                         prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
+                        if (ctx.has_exception()) return Value();
                     }
 
-                    new_obj_ptr->set_property_descriptor(prop_name, prop_desc);
+                    bool has_accessor = desc->has_property("get") || desc->has_property("set");
+                    bool has_data = desc->has_own_property("value") || desc->has_own_property("writable");
+                    if (has_accessor && has_data) {
+                        ctx.throw_type_error("Invalid property descriptor: cannot combine get/set with value/writable");
+                        return Value();
+                    }
+
+                    bool ok = new_obj_ptr->set_property_descriptor(prop_name, prop_desc);
+                    if (!ok && !ctx.has_exception()) {
+                        ctx.throw_type_error("Cannot define property '" + prop_name + "'");
+                        return Value();
+                    }
+                    if (ctx.has_exception()) return Value();
                 }
             }
 
@@ -406,72 +479,61 @@ void register_object_builtins(Context& ctx) {
     auto assign_fn = ObjectFactory::create_native_function("assign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.assign requires at least one argument")));
+                ctx.throw_type_error("Object.assign requires at least one argument");
                 return Value();
             }
-            
-            Value target = args[0];
-            if (!target.is_object()) {
-                if (target.is_null() || target.is_undefined()) {
-                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
-                    return Value();
-                }
-                auto obj = ObjectFactory::create_object();
-                obj->set_property("valueOf", Value(target));
-                target = Value(obj.release());
-            }
-            
-            Object* target_obj = target.as_object();
-            
+
+            Object* target_obj = to_object_or_throw(ctx, args[0]);
+            if (!target_obj) return Value();
+
             for (size_t i = 1; i < args.size(); i++) {
                 Value source = args[i];
                 if (source.is_null() || source.is_undefined()) {
                     continue;
                 }
-                
-                if (source.is_object()) {
-                    Object* source_obj = source.as_object();
-                    bool source_is_proxy = (source_obj->get_type() == Object::ObjectType::Proxy);
-                    std::vector<std::string> property_keys;
-                    if (source_is_proxy) {
-                        property_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
-                    } else {
-                        property_keys = source_obj->get_own_property_keys();
-                    }
 
-                    for (const std::string& prop : property_keys) {
-                        Value value;
-                        bool is_enumerable = true;
-                        if (source_is_proxy) {
-                            // Spec: Object.assign calls [[GetOwnProperty]] then [[Get]] for each key
-                            Proxy* source_proxy = static_cast<Proxy*>(source_obj);
-                            PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(Value(prop));
-                            if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
-                            if (!desc.is_enumerable()) continue;
-                            value = source_proxy->get_trap(Value(prop));
-                        } else {
-                            PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
-                            if (!desc.is_enumerable() && desc.has_value()) {
-                                is_enumerable = false;
-                            }
-                            value = source_obj->get_property(prop);
+                Object* source_obj = to_object_or_throw(ctx, source);
+                if (!source_obj) return Value();
+
+                bool source_is_proxy = (source_obj->get_type() == Object::ObjectType::Proxy);
+                std::vector<std::string> property_keys;
+                if (source_is_proxy) {
+                    property_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    property_keys = source_obj->get_own_property_keys();
+                }
+
+                for (const std::string& prop : property_keys) {
+                    Value value;
+                    bool is_enumerable = true;
+                    if (source_is_proxy) {
+                        // Spec: Object.assign calls [[GetOwnProperty]] then [[Get]] for each key
+                        Proxy* source_proxy = static_cast<Proxy*>(source_obj);
+                        PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(Value(prop));
+                        if (ctx.has_exception()) return Value();
+                        if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
+                        if (!desc.is_enumerable()) continue;
+                        value = source_proxy->get_trap(Value(prop));
+                    } else {
+                        PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
+                        if (!desc.is_enumerable() && desc.has_value()) {
+                            is_enumerable = false;
                         }
-                        if (!is_enumerable) continue;
-                        // Use [[Set]] semantics: invoke setter if target has accessor
-                        PropertyDescriptor target_desc = target_obj->get_property_descriptor(prop);
-                        if (target_desc.is_accessor_descriptor() && target_desc.has_setter()) {
-                            Function* setter = dynamic_cast<Function*>(target_desc.get_setter());
-                            if (setter) {
-                                setter->call(ctx, {value}, Value(target_obj));
-                            }
-                        } else {
-                            target_obj->set_property(prop, value);
-                        }
+                        value = source_obj->get_property(prop);
+                    }
+                    if (ctx.has_exception()) return Value();
+                    if (!is_enumerable) continue;
+                    bool ok = target_obj->set_property(prop, value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) {
+                        ctx.throw_type_error("Cannot assign to read only property '" + prop + "' of object");
+                        return Value();
                     }
                 }
             }
-            
-            return target;
+
+            return Value(target_obj);
         }, 2);
     object_constructor->set_property("assign", Value(assign_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -607,13 +669,11 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
 
-            if (!args[0].is_object() && !args[0].is_function()) {
-                return Value();
-            }
-
-            Object* obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
+            Object* obj = to_object_or_throw(ctx, args[0]);
+            if (!obj) return Value();
 
             std::string prop_name = args[1].to_property_key();
+            if (ctx.has_exception()) return Value();
 
             PropertyDescriptor desc;
             if (obj->get_type() == Object::ObjectType::Proxy) {
@@ -698,8 +758,9 @@ void register_object_builtins(Context& ctx) {
                 ctx.throw_type_error("Property descriptor must be an object");
                 return Value();
             }
-            if (args[2].is_object()) {
-                Object* desc = args[2].as_object();
+            {
+                Object* desc = args[2].is_function()
+                    ? static_cast<Object*>(args[2].as_function()) : args[2].as_object();
 
                 PropertyDescriptor prop_desc;
 
@@ -833,30 +894,8 @@ void register_object_builtins(Context& ctx) {
 
     auto getOwnPropertyNames_fn = ObjectFactory::create_native_function("getOwnPropertyNames",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyNames requires 1 argument")));
-                return Value();
-            }
-
-            // ES6: Accept primitives — wrap strings to String objects
-            if (args[0].is_string()) {
-                std::string str = args[0].to_string();
-                auto result = ObjectFactory::create_array();
-                uint32_t idx = 0;
-                for (uint32_t i = 0; i < str.length(); i++) {
-                    result->set_element(idx++, Value(std::to_string(i)));
-                }
-                result->set_element(idx++, Value(std::string("length")));
-                result->set_property("length", Value(static_cast<double>(idx)));
-                return Value(result.release());
-            }
-            if (!args[0].is_object() && !args[0].is_function()) {
-                return Value(ObjectFactory::create_array().release());
-            }
-
-            Object* obj = args[0].is_function() ?
-                static_cast<Object*>(args[0].as_function()) :
-                args[0].as_object();
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
             auto result = ObjectFactory::create_array();
 
             std::vector<std::string> props;
@@ -960,24 +999,51 @@ void register_object_builtins(Context& ctx) {
 
                 if (desc->has_property("get")) {
                     Value getter = desc->get_property("get");
-                    prop_desc.set_getter(getter.is_function() ? getter.as_object() : nullptr);
+                    if (ctx.has_exception()) return Value();
+                    if (getter.is_undefined()) {
+                        prop_desc.set_getter(nullptr); // marks as accessor descriptor
+                    } else if (!getter.is_function()) {
+                        ctx.throw_type_error("Property descriptor getter must be callable");
+                        return Value();
+                    } else {
+                        prop_desc.set_getter(getter.as_object());
+                    }
                 }
                 if (desc->has_property("set")) {
                     Value setter = desc->get_property("set");
-                    prop_desc.set_setter(setter.is_function() ? setter.as_object() : nullptr);
+                    if (ctx.has_exception()) return Value();
+                    if (setter.is_undefined()) {
+                        prop_desc.set_setter(nullptr); // marks as accessor descriptor
+                    } else if (!setter.is_function()) {
+                        ctx.throw_type_error("Property descriptor setter must be callable");
+                        return Value();
+                    } else {
+                        prop_desc.set_setter(setter.as_object());
+                    }
                 }
 
                 if (desc->has_property("value")) {
                     prop_desc.set_value(desc->get_property("value"));
+                    if (ctx.has_exception()) return Value();
                 }
                 if (desc->has_property("writable")) {
                     prop_desc.set_writable(desc->get_property("writable").to_boolean());
+                    if (ctx.has_exception()) return Value();
                 }
                 if (desc->has_property("enumerable")) {
                     prop_desc.set_enumerable(desc->get_property("enumerable").to_boolean());
+                    if (ctx.has_exception()) return Value();
                 }
                 if (desc->has_property("configurable")) {
                     prop_desc.set_configurable(desc->get_property("configurable").to_boolean());
+                    if (ctx.has_exception()) return Value();
+                }
+
+                bool has_accessor = desc->has_property("get") || desc->has_property("set");
+                bool has_data = desc->has_own_property("value") || desc->has_own_property("writable");
+                if (has_accessor && has_data) {
+                    ctx.throw_type_error("Invalid property descriptor: cannot combine get/set with value/writable");
+                    return Value();
                 }
 
                 bool ok = obj->set_property_descriptor(prop_name, prop_desc);
@@ -994,21 +1060,25 @@ void register_object_builtins(Context& ctx) {
 
     auto getOwnPropertyDescriptors_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptors",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyDescriptors requires 1 argument")));
-                return Value();
-            }
-
-            if (!args[0].is_object()) {
-                return Value(ObjectFactory::create_object().release());
-            }
-
-            Object* obj = args[0].as_object();
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
             auto result = ObjectFactory::create_object();
-            auto prop_names = obj->get_own_property_keys();
+
+            bool is_proxy = obj->get_type() == Object::ObjectType::Proxy;
+            std::vector<std::string> prop_names;
+            if (is_proxy) {
+                prop_names = static_cast<Proxy*>(obj)->own_keys_trap();
+            } else {
+                prop_names = obj->get_own_property_keys();
+            }
+            if (ctx.has_exception()) return Value();
 
             for (const auto& prop_name : prop_names) {
-                PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+                PropertyDescriptor desc = is_proxy
+                    ? static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(Value(prop_name))
+                    : obj->get_property_descriptor(prop_name);
+                if (ctx.has_exception()) return Value();
+                if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                 auto descriptor = ObjectFactory::create_object();
 
                 if (desc.is_data_descriptor()) {
@@ -1100,7 +1170,9 @@ void register_object_builtins(Context& ctx) {
 
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                static_cast<Proxy*>(obj)->prevent_extensions_trap();
+                bool ok = static_cast<Proxy*>(obj)->prevent_extensions_trap();
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot prevent extensions"); return Value(); }
             } else {
                 obj->prevent_extensions();
             }
@@ -1160,17 +1232,10 @@ void register_object_builtins(Context& ctx) {
 
     auto hasOwn_fn = ObjectFactory::create_native_function("hasOwn",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) return Value(false);
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
 
-            if (args[0].is_null() || args[0].is_undefined()) {
-                ctx.throw_type_error("Cannot convert undefined or null to object");
-                return Value();
-            }
-
-            if (!args[0].is_object()) return Value(false);
-
-            Object* obj = args[0].as_object();
-            std::string prop_name = args[1].to_property_key();
+            std::string prop_name = (args.size() < 2 ? Value() : args[1]).to_property_key();
             if (ctx.has_exception()) return Value();
 
             return Value(obj->has_own_property(prop_name));
@@ -1230,17 +1295,7 @@ void register_object_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
 
-            Value this_val;
-
-            try {
-                this_val = ctx.get_binding("this");
-            } catch (...) {
-                Object* this_obj = ctx.get_this_binding();
-                if (this_obj) {
-                    this_val = Value(this_obj);
-                }
-            }
-
+            Value this_val = get_actual_this(ctx);
 
             if (this_val.is_undefined()) {
                 return Value(std::string("[object Undefined]"));
@@ -1431,11 +1486,9 @@ void register_object_builtins(Context& ctx) {
     auto proto_valueOf_fn = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                return Value(this_obj);
-            }
-            return Value();
+            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!this_obj) return Value();
+            return Value(this_obj);
         }, 0);
 
     object_prototype->set_property("toString", Value(proto_toString_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1447,17 +1500,14 @@ void register_object_builtins(Context& ctx) {
     auto obj_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (this_value.is_object()) {
-                Object* obj = this_value.as_object();
-                Value toString_method = obj->get_property("toString");
-                if (toString_method.is_function()) {
-                    Function* fn = toString_method.as_function();
-                    std::vector<Value> empty_args;
-                    return fn->call(ctx, empty_args, this_value);
-                }
+            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!this_obj) return Value();
+            Value toString_method = this_obj->get_property("toString");
+            if (ctx.has_exception()) return Value();
+            if (toString_method.is_function()) {
+                return toString_method.as_function()->call(ctx, {}, Value(this_obj));
             }
-            return Value(this_value.to_string());
+            return Value(this_obj);
         });
     object_prototype->set_property("toLocaleString", Value(obj_toLocaleString_fn.release()), PropertyAttributes::BuiltinFunction);
 

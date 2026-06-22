@@ -201,14 +201,10 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
 
+        // Annex B's sloppy-mode null/undefined-this-becomes-global substitution only
+        // applies to ECMAScript function code, never to native functions -- they must see
+        // the real this_value (e.g. Object.prototype.toString branches on it).
         Value actual_this = this_value;
-
-        if (!ctx.is_strict_mode() && (this_value.is_undefined() || this_value.is_null())) {
-            Object* global = ctx.get_global_object();
-            if (global) {
-                actual_this = Value(global);
-            }
-        }
 
         if (actual_this.is_object() || actual_this.is_function()) {
             Object* this_obj = actual_this.is_object() ? actual_this.as_object() : actual_this.as_function();

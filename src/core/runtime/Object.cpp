@@ -742,6 +742,12 @@ bool Object::set_element(uint32_t index, const Value& value) {
             }
         }
     }
+    bool is_new_element = index >= elements_.size() ||
+                          (deleted_elements_ && deleted_elements_->count(index) > 0);
+    if (is_new_element && !is_extensible()) {
+        return false;
+    }
+
     if (__builtin_expect(index >= elements_.size(), 0)) {
         if (__builtin_expect(index > 10000000, 0)) {
             return false;
@@ -943,12 +949,21 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             if (desc.has_configurable() && desc.is_configurable()) {
                 return false; // caller (defineProperty_fn/defineProperties_fn) handles throwing
             }
+            if (desc.has_enumerable() && desc.is_enumerable() != existing_desc.is_enumerable()) {
+                return false;
+            }
             if (!desc.is_generic_descriptor()) {
                 bool existing_is_accessor = existing_desc.is_accessor_descriptor();
                 bool new_is_accessor = desc.is_accessor_descriptor();
                 if (existing_is_accessor != new_is_accessor) return false;
-                if (!existing_is_accessor && existing_desc.has_writable() && !existing_desc.is_writable()) {
-                    if (desc.has_writable() && desc.is_writable()) return false;
+                if (existing_is_accessor) {
+                    if (desc.has_getter() && desc.get_getter() != existing_desc.get_getter()) return false;
+                    if (desc.has_setter() && desc.get_setter() != existing_desc.get_setter()) return false;
+                } else {
+                    if (existing_desc.has_writable() && !existing_desc.is_writable()) {
+                        if (desc.has_writable() && desc.is_writable()) return false;
+                        if (desc.has_value() && !desc.get_value().same_value(existing_desc.get_value())) return false;
+                    }
                 }
             }
         }
@@ -1013,29 +1028,80 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 }
                 elements_[index] = desc.get_value();
                 if (deleted_elements_) deleted_elements_->erase(index);
+                // ArraySetLength side effect: defining index N on an Array bumps length to N+1
+                // if N >= current length (15.4.5.1 step 4.e.ii).
+                if (header_.type == ObjectType::Array && overflow_properties_) {
+                    auto len_it = overflow_properties_->find("length");
+                    if (len_it != overflow_properties_->end() &&
+                        static_cast<double>(index) + 1 > len_it->second.to_number()) {
+                        Value new_len(static_cast<double>(index) + 1);
+                        len_it->second = new_len;
+                        if (descriptors_) {
+                            auto desc_it = descriptors_->find("length");
+                            if (desc_it != descriptors_->end()) desc_it->second.set_value(new_len);
+                        }
+                    }
+                }
             }
         } else {
             // Array "length" must still go through ToUint32 validation (RangeError for
             // NaN/negative/non-integer/>2^32-1) even via defineProperty -- the overflow
             // fast path below bypasses Object::set_property's length-specific checks.
+            Value coerced_value = desc.get_value();
             if (header_.type == ObjectType::Array && key == "length" && desc.has_value()) {
                 double length_double = desc.get_value().to_number();
                 if (current_context_ && current_context_->has_exception()) return false;
+                // to_number() swallows the "valueOf/toString both non-primitive" case as NaN;
+                // re-check explicitly here so it throws instead of yielding a bogus RangeError.
+                if (std::isnan(length_double) && desc.get_value().is_object() && current_context_) {
+                    Object* val_obj = desc.get_value().as_object();
+                    bool got_primitive = false;
+                    Value valueOf_fn = val_obj->get_property("valueOf");
+                    if (current_context_->has_exception()) return false;
+                    if (valueOf_fn.is_function()) {
+                        Value prim = valueOf_fn.as_function()->call(*current_context_, {}, desc.get_value());
+                        if (current_context_->has_exception()) return false;
+                        got_primitive = !prim.is_object() && !prim.is_function();
+                    }
+                    if (!got_primitive) {
+                        Value toString_fn = val_obj->get_property("toString");
+                        if (current_context_->has_exception()) return false;
+                        if (toString_fn.is_function()) {
+                            Value prim = toString_fn.as_function()->call(*current_context_, {}, desc.get_value());
+                            if (current_context_->has_exception()) return false;
+                            got_primitive = !prim.is_object() && !prim.is_function();
+                        }
+                    }
+                    if (!got_primitive) {
+                        current_context_->throw_type_error("Cannot convert object to primitive value");
+                        return false;
+                    }
+                }
                 if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
                     if (current_context_) current_context_->throw_range_error("Invalid array length");
                     return false;
+                }
+                coerced_value = Value(length_double);
+                // ArraySetLength: shrinking deletes elements at/above the new length.
+                if (length_double < elements_.size()) {
+                    elements_.resize(static_cast<size_t>(length_double));
                 }
             }
             // Directly update overflow to bypass writable check on existing props
             if (desc.has_value()) {
                 if (overflow_properties_ && overflow_properties_->count(key)) {
-                    (*overflow_properties_)[key] = desc.get_value();
+                    (*overflow_properties_)[key] = coerced_value;
+                    // get_property_descriptor() checks descriptors_ first -- keep it in sync.
+                    if (descriptors_) {
+                        auto it = descriptors_->find(key);
+                        if (it != descriptors_->end()) it->second.set_value(coerced_value);
+                    }
                     // A bare value write must not silently drop an explicit attribute
                     // change (e.g. defineProperty({value, configurable:true}) on a
                     // property whose attrs so far only lived implicitly/in shape defaults).
                     if (desc.has_writable() || desc.has_enumerable() || desc.has_configurable()) {
                         PropertyDescriptor merged = get_property_descriptor(key);
-                        merged.set_value(desc.get_value());
+                        merged.set_value(coerced_value);
                         if (desc.has_writable())     merged.set_writable(desc.is_writable());
                         if (desc.has_enumerable())   merged.set_enumerable(desc.is_enumerable());
                         if (desc.has_configurable()) merged.set_configurable(desc.is_configurable());
@@ -1043,7 +1109,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         (*descriptors_)[key] = merged;
                     }
                 } else {
-                    set_property(key, desc.get_value(), desc.get_attributes());
+                    set_property(key, coerced_value, desc.get_attributes());
                 }
             }
         }
@@ -1116,7 +1182,9 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             // No existing descriptor entry -- create one preserving the current value.
             // Brand-new properties default to WEC=false (spec); only a property that
             // genuinely existed before this call inherits the WEC=true shape default.
-            Value current_val = get_property(key);
+            // get_own_property() (not get_property()) since a brand-new own property must
+            // default to undefined, not whatever the prototype chain happens to expose.
+            Value current_val = existed_before_this_call ? get_own_property(key) : Value();
             PropertyDescriptor merged(current_val,
                 existed_before_this_call ? PropertyAttributes::Default : PropertyAttributes::None);
             if (desc.has_writable())     merged.set_writable(desc.is_writable());
@@ -2217,7 +2285,7 @@ std::unique_ptr<Object> create_string(const std::string& value) {
     PropertyDescriptor length_desc(Value(static_cast<double>(value.length())),
         static_cast<PropertyAttributes>(PropertyAttributes::None));
     str_obj->set_property_descriptor("length", length_desc);
-    str_obj->set_property("[[PrimitiveValue]]", Value(value));
+    str_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
     // String exotic: each index is a non-writable, non-configurable, enumerable character property
     for (size_t i = 0; i < value.size(); i++) {
         PropertyDescriptor char_desc(Value(std::string(1, value[i])),
@@ -2235,7 +2303,7 @@ std::unique_ptr<Object> create_number(double value) {
 
 std::unique_ptr<Object> create_boolean(bool value) {
     auto bool_obj = std::make_unique<Object>(Object::ObjectType::Boolean);
-    bool_obj->set_property("[[PrimitiveValue]]", Value(value));
+    bool_obj->set_property("[[PrimitiveValue]]", Value(value), PropertyAttributes::Writable);
     return bool_obj;
 }
 

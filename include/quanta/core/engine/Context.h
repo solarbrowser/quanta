@@ -174,7 +174,7 @@ public:
     void restore_bindings(const std::unordered_map<std::string, Value>& snapshot);
     bool is_lexical_const(const std::string& name) const;
     bool is_strict_const(const std::string& name) const;
-    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
+    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
     void create_binding_force(const std::string& name, const Value& value);
     void create_lexical_binding_force(const std::string& name, const Value& value);
     bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
@@ -377,7 +377,7 @@ public:
     Value get_binding_direct(const std::string& name, Context* ctx = nullptr) const;
     bool set_binding_direct(const std::string& name, const Value& value);
     Environment* find_binding_env(const std::string& name);
-    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true);
+    bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
     void force_set_binding(const std::string& name, const Value& value);
     bool delete_binding(const std::string& name);
 
