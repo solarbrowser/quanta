@@ -104,7 +104,7 @@ void register_symbol_builtins(Context& ctx) {
 
     {
         auto sym_proto = ObjectFactory::create_object();
-        sym_proto->set_property("constructor", Value(symbol_constructor.get()));
+        sym_proto->set_property("constructor", Value(symbol_constructor.get()), PropertyAttributes::BuiltinFunction);
         Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
         if (tag_sym) {
             PropertyDescriptor tag_desc(Value(std::string("Symbol")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -129,6 +129,35 @@ void register_symbol_builtins(Context& ctx) {
         desc_prop.set_enumerable(false);
         desc_prop.set_configurable(true);
         sym_proto->set_property_descriptor("description", desc_prop);
+
+        auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Value prim = ctx.get_binding("__primitive_this__");
+                if (prim.is_symbol()) return prim;
+                Object* obj = ctx.get_this_binding();
+                if (obj) {
+                    Value inner = obj->get_property("[[PrimitiveValue]]");
+                    if (inner.is_symbol()) return inner;
+                }
+                ctx.throw_type_error("Symbol.prototype.valueOf requires a symbol");
+                return Value();
+            });
+        sym_proto->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
+
+        auto toString_fn = ObjectFactory::create_native_function("toString",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Value prim = ctx.get_binding("__primitive_this__");
+                if (prim.is_symbol()) return Value(prim.as_symbol()->to_string());
+                Object* obj = ctx.get_this_binding();
+                if (obj) {
+                    Value inner = obj->get_property("[[PrimitiveValue]]");
+                    if (inner.is_symbol()) return Value(inner.as_symbol()->to_string());
+                }
+                ctx.throw_type_error("Symbol.prototype.toString requires a symbol");
+                return Value();
+            });
+        sym_proto->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
         symbol_constructor->set_property("prototype", Value(sym_proto.release()));
     }
 

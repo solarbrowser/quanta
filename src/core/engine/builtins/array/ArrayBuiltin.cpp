@@ -1283,25 +1283,20 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return join_fn->call(ctx, call_args, Value(this_obj));
             }
 
-            if (this_obj->is_array()) {
-                std::ostringstream result;
-                uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
-
-                for (uint32_t i = 0; i < length; i++) {
-                    if (i > 0) {
-                        result << ",";
-                    }
-                    Value element = this_obj->get_element(i);
-                    if (!element.is_null() && !element.is_undefined()) {
-                        result << element.to_string();
+            // Spec step 3: if join isn't callable, fall back to %Object.prototype.toString%
+            // (NOT a hardcoded "[object Object]" -- it must still report e.g. "[object Array]"
+            // for an array missing its own join, or "[object Boolean]" for a boxed primitive).
+            Value obj_proto = ctx.get_binding("Object");
+            if (obj_proto.is_function()) {
+                Value proto = static_cast<Object*>(obj_proto.as_function())->get_property("prototype");
+                if (proto.is_object()) {
+                    Value obj_toString = proto.as_object()->get_property("toString");
+                    if (obj_toString.is_function()) {
+                        return obj_toString.as_function()->call(ctx, {}, Value(this_obj));
                     }
                 }
-
-                return Value(result.str());
-            } else {
-                return Value(std::string("[object Object]"));
             }
+            return Value(std::string("[object Object]"));
         });
     PropertyDescriptor array_toString_desc(Value(array_toString_fn.release()),
         PropertyAttributes::BuiltinFunction);

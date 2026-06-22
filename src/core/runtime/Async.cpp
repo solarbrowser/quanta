@@ -963,7 +963,7 @@ void setup_async_functions(Context& ctx) {
         promise_fn->set_property("reject", Value(reject_fn.release()));
     }
 
-    auto async_function_constructor = ObjectFactory::create_native_function("AsyncFunction",
+    auto async_function_constructor = ObjectFactory::create_native_constructor("AsyncFunction",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             std::string params_str = "";
             std::string body_str = "";

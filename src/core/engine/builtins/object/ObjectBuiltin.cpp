@@ -42,7 +42,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
         }
         return Value(string_obj.release());
     } else if (value.is_number()) {
-        auto number_obj = ObjectFactory::create_object();
+        auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
         number_obj->set_property("[[PrimitiveValue]]", Value(value.as_number()), PropertyAttributes::Writable);
         Value num_ctor = ctx.get_binding("Number");
         if (num_ctor.is_function()) {
@@ -61,7 +61,6 @@ static Value box_primitive(Context& ctx, const Value& value) {
         }
         return Value(boolean_obj.release());
     } else if (value.is_symbol()) {
-        Symbol* sym = value.as_symbol();
         auto symbol_obj = std::make_unique<Object>(Object::ObjectType::Symbol);
         Value sym_ctor = ctx.get_binding("Symbol");
         if (sym_ctor.is_function()) {
@@ -71,17 +70,6 @@ static Value box_primitive(Context& ctx, const Value& value) {
             }
         }
         symbol_obj->set_property("[[PrimitiveValue]]", value, PropertyAttributes::Writable);
-        Value captured_sym = value;
-        auto valueOf_fn = ObjectFactory::create_native_function("valueOf",
-            [captured_sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                return captured_sym;
-            }, 0);
-        symbol_obj->set_property("valueOf", Value(valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
-        auto toString_fn = ObjectFactory::create_native_function("toString",
-            [sym](Context& /* ctx */, const std::vector<Value>& /* args */) -> Value {
-                return Value(sym->to_string());
-            }, 0);
-        symbol_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
         return Value(symbol_obj.release());
     } else if (value.is_bigint()) {
         auto bigint_obj = std::make_unique<Object>(Object::ObjectType::BigInt);
@@ -321,20 +309,35 @@ void register_object_builtins(Context& ctx) {
 
             auto result_obj = ObjectFactory::create_object();
 
+            // Per spec: closes the iterator if the entry itself (not the next()/done step) is malformed.
+            auto close_on_entry_failure = [&](Object* iterator) {
+                bool had_exc = ctx.has_exception();
+                Value saved_exc = had_exc ? ctx.get_exception() : Value();
+                if (had_exc) ctx.clear_exception();
+                Value rm = iterator->get_property("return");
+                ctx.clear_exception();
+                if (rm.is_function()) {
+                    rm.as_function()->call(ctx, {}, Value(iterator));
+                    ctx.clear_exception();
+                }
+                if (had_exc) ctx.throw_exception(saved_exc);
+            };
+
             // Per spec: use [[DefineOwnProperty]] not [[Set]] (avoids triggering inherited setters).
-            auto add_entry = [&](const Value& entry) -> bool {
+            auto add_entry = [&](const Value& entry, Object* iterator) -> bool {
                 if (!entry.is_object() && !entry.is_function()) {
                     ctx.throw_type_error("Iterator value must be an object");
+                    if (iterator) close_on_entry_failure(iterator);
                     return false;
                 }
                 Object* pair = entry.is_function()
                     ? static_cast<Object*>(entry.as_function()) : entry.as_object();
                 Value key_val = pair->get_property("0");
-                if (ctx.has_exception()) return false;
+                if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
                 Value val = pair->get_property("1");
-                if (ctx.has_exception()) return false;
+                if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
                 std::string key = key_val.to_property_key();
-                if (ctx.has_exception()) return false;
+                if (ctx.has_exception()) { if (iterator) close_on_entry_failure(iterator); return false; }
                 PropertyDescriptor pd(val, PropertyAttributes::Default);
                 result_obj->set_property_descriptor(key, pd);
                 if (ctx.has_exception()) return false;
@@ -372,13 +375,13 @@ void register_object_builtins(Context& ctx) {
                     if (result.as_object()->get_property("done").to_boolean()) break;
                     Value entry = result.as_object()->get_property("value");
                     if (ctx.has_exception()) return Value();
-                    if (!add_entry(entry)) return Value();
+                    if (!add_entry(entry, iterator)) return Value();
                 }
             } else {
                 uint32_t length = iterable->get_length();
                 for (uint32_t i = 0; i < length; i++) {
                     Value entry = iterable->get_element(i);
-                    if (!add_entry(entry)) return Value();
+                    if (!add_entry(entry, nullptr)) return Value();
                 }
             }
 
@@ -950,24 +953,19 @@ void register_object_builtins(Context& ctx) {
     // ES6: Object.getOwnPropertySymbols
     auto getOwnPropertySymbols_fn = ObjectFactory::create_native_function("getOwnPropertySymbols",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_type_error("Object.getOwnPropertySymbols requires 1 argument");
-                return Value();
-            }
-            if (!args[0].is_object() && !args[0].is_function()) {
-                return Value(ObjectFactory::create_array().release());
-            }
-            Object* obj = args[0].is_function()
-                ? static_cast<Object*>(args[0].as_function())
-                : args[0].as_object();
+            Object* obj = to_object_or_throw(ctx, args.empty() ? Value() : args[0]);
+            if (!obj) return Value();
             auto result = ObjectFactory::create_array();
-            auto props = obj->get_own_property_keys();
+            std::vector<std::string> props;
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                props = static_cast<Proxy*>(obj)->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+            } else {
+                props = obj->get_own_property_keys();
+            }
             uint32_t idx = 0;
             for (const auto& key : props) {
                 if (key.find("@@sym:") == 0) {
-                    // Find the symbol by its property key
-                    Value prop_val = obj->get_property(key);
-                    // We need to return the Symbol object, look it up from registry
                     Symbol* sym = Symbol::find_by_property_key(key);
                     if (sym) {
                         result->set_element(idx++, Value(sym));
@@ -1475,9 +1473,33 @@ void register_object_builtins(Context& ctx) {
                 builtinTag = "Object";
             }
 
-            // ES6: Check Symbol.toStringTag (overrides builtinTag)
+            // ES6: Check Symbol.toStringTag (overrides builtinTag). Walked manually (rather than
+            // tag_obj->get_property) because Object::get_property's native-getter path doesn't
+            // invoke the getter -- it returns `this` instead, which breaks inherited accessor tags
+            // like %IteratorPrototype%[@@toStringTag].
             if (tag_obj) {
-                Value tag = tag_obj->get_property("Symbol.toStringTag");
+                Value tag;
+                if (tag_obj->get_type() == Object::ObjectType::Proxy) {
+                    tag = tag_obj->get_property("Symbol.toStringTag");
+                } else {
+                    Object* cur = tag_obj;
+                    while (cur) {
+                        PropertyDescriptor d = cur->get_property_descriptor("Symbol.toStringTag");
+                        if (d.is_accessor_descriptor()) {
+                            if (d.has_getter()) {
+                                Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+                                if (getter_fn) tag = getter_fn->call(ctx, {}, Value(tag_obj));
+                            }
+                            break;
+                        }
+                        if (d.is_data_descriptor()) {
+                            tag = d.get_value();
+                            break;
+                        }
+                        cur = cur->get_prototype();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
                 if (tag.is_string()) {
                     builtinTag = tag.to_string();
                 }
@@ -1608,12 +1630,16 @@ void register_object_builtins(Context& ctx) {
     auto obj_toLocaleString_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            // Invoke(O, "toString"): GetV boxes only for the method lookup; Call binds
+            // `this` to the ORIGINAL value O (e.g. a primitive boolean), not the boxed copy --
+            // otherwise an overridden Boolean.prototype.toString sees `this` as an object.
+            Value this_val = get_actual_this(ctx);
+            Object* this_obj = to_object_or_throw(ctx, this_val);
             if (!this_obj) return Value();
             Value toString_method = this_obj->get_property("toString");
             if (ctx.has_exception()) return Value();
             if (toString_method.is_function()) {
-                return toString_method.as_function()->call(ctx, {}, Value(this_obj));
+                return toString_method.as_function()->call(ctx, {}, this_val);
             }
             return Value(this_obj);
         });

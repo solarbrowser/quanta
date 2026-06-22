@@ -397,6 +397,9 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
         return result;
     }
 
+    if (target_->get_type() == Object::ObjectType::Proxy) {
+        return static_cast<Proxy*>(target_)->get_own_property_descriptor_trap(key);
+    }
     return target_->get_property_descriptor(key.to_string());
 }
 
@@ -581,7 +584,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->get_property(key.to_string());
             std::vector<Value> args = {Value(target_), key, receiver};
-            return fn->call(*ctx, args);
+            return fn->call(*ctx, args, Value(handler_));
         };
     }
 
@@ -593,7 +596,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->set_property(key.to_string(), value);
             std::vector<Value> args = {Value(target_), key, value, receiver};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -606,7 +609,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->has_property(key.to_string());
             std::vector<Value> args = {Value(target_), key};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -619,7 +622,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->delete_property(key.to_string());
             std::vector<Value> args = {Value(target_), key};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -632,7 +635,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->get_own_property_keys();
             std::vector<Value> args = {Value(target_)};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             std::vector<std::string> keys;
             if (result.is_object()) {
                 Object* arr = result.as_object();
@@ -661,7 +664,7 @@ void Proxy::parse_handler() {
                 return p ? Value(p) : Value::null();
             }
             std::vector<Value> args = {Value(target_)};
-            return fn->call(*ctx, args);
+            return fn->call(*ctx, args, Value(handler_));
         };
     }
 
@@ -674,7 +677,7 @@ void Proxy::parse_handler() {
             if (!ctx) { target_->set_prototype(proto); return true; }
             Value proto_val = proto ? Value(proto) : Value::null();
             std::vector<Value> args = {Value(target_), proto_val};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -687,7 +690,7 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) return target_->is_extensible();
             std::vector<Value> args = {Value(target_)};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -700,23 +703,39 @@ void Proxy::parse_handler() {
             Context* ctx = Object::current_context_;
             if (!ctx) { target_->prevent_extensions(); return true; }
             std::vector<Value> args = {Value(target_)};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
 
     // --- getOwnPropertyDescriptor trap: handler(target, key) ---
     Value gopd_method = handler_->get_property("getOwnPropertyDescriptor");
-    if (gopd_method.is_function()) {
+    if (!gopd_method.is_undefined() && !gopd_method.is_null() && !gopd_method.is_function()) {
+        // Trap property exists but isn't callable: defer the throw to invocation time
+        // (matching spec timing -- `new Proxy(...)` itself must not throw for this).
+        parsed_handler_.getOwnPropertyDescriptor = [this](const Value&) -> PropertyDescriptor {
+            if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' trap is not callable");
+            throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' trap is not callable");
+        };
+    } else if (gopd_method.is_function()) {
         Function* fn = gopd_method.as_function();
         parsed_handler_.getOwnPropertyDescriptor = [fn, this](const Value& key) -> PropertyDescriptor {
             Context* ctx = Object::current_context_;
-            if (!ctx) return target_->get_property_descriptor(key.to_string());
+            if (!ctx) {
+                if (target_->get_type() == Object::ObjectType::Proxy) {
+                    return static_cast<Proxy*>(target_)->get_own_property_descriptor_trap(key);
+                }
+                return target_->get_property_descriptor(key.to_string());
+            }
             std::vector<Value> args = {Value(target_), key};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             if (result.is_undefined() || result.is_null()) return PropertyDescriptor();
-            if (!result.is_object()) return PropertyDescriptor();
-            Object* desc_obj = result.as_object();
+            if (!result.is_object() && !result.is_function()) {
+                ctx->throw_type_error("'getOwnPropertyDescriptor' trap result must be an object or undefined");
+                return PropertyDescriptor();
+            }
+            Object* desc_obj = result.is_function()
+                ? static_cast<Object*>(result.as_function()) : result.as_object();
             PropertyDescriptor desc;
             if (desc_obj->has_own_property("value")) desc.set_value(desc_obj->get_property("value"));
             if (desc_obj->has_own_property("writable")) desc.set_writable(desc_obj->get_property("writable").to_boolean());
@@ -747,7 +766,7 @@ void Proxy::parse_handler() {
             desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
             desc_obj->set_property("configurable", Value(desc.is_configurable()));
             std::vector<Value> args = {Value(target_), key, Value(desc_obj.release())};
-            Value result = fn->call(*ctx, args);
+            Value result = fn->call(*ctx, args, Value(handler_));
             return result.to_boolean();
         };
     }
@@ -763,7 +782,7 @@ void Proxy::parse_handler() {
             for (size_t i = 0; i < call_args.size(); ++i)
                 args_array->set_element(static_cast<uint32_t>(i), call_args[i]);
             std::vector<Value> args = {Value(target_), this_val, Value(args_array.release())};
-            return fn->call(*ctx, args);
+            return fn->call(*ctx, args, Value(handler_));
         };
     }
 
@@ -778,7 +797,7 @@ void Proxy::parse_handler() {
             for (size_t i = 0; i < call_args.size(); ++i)
                 args_array->set_element(static_cast<uint32_t>(i), call_args[i]);
             std::vector<Value> args = {Value(target_), Value(args_array.release()), Value(target_)};
-            return fn->call(*ctx, args);
+            return fn->call(*ctx, args, Value(handler_));
         };
     }
 }
@@ -1258,10 +1277,15 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vect
     if (!target) {
         return Value();
     }
-    
+
     std::string key = to_property_key(args[1]);
-    PropertyDescriptor desc = target->get_property_descriptor(key);
-    
+    if (ctx.has_exception()) return Value();
+
+    PropertyDescriptor desc = target->get_type() == Object::ObjectType::Proxy
+        ? static_cast<Proxy*>(target)->get_own_property_descriptor_trap(Value(key))
+        : target->get_property_descriptor(key);
+    if (ctx.has_exception()) return Value();
+
     return from_property_descriptor(desc);
 }
 
@@ -1367,7 +1391,7 @@ Object* Reflect::to_object(const Value& value, Context& ctx) {
 }
 
 std::string Reflect::to_property_key(const Value& value) {
-    return value.to_string();
+    return value.to_property_key();
 }
 
 PropertyDescriptor Reflect::to_property_descriptor(const Value& value) {
@@ -1375,9 +1399,22 @@ PropertyDescriptor Reflect::to_property_descriptor(const Value& value) {
 }
 
 Value Reflect::from_property_descriptor(const PropertyDescriptor& desc) {
+    // get_property_descriptor()/get_own_property_descriptor_trap() only return a Generic-typed
+    // descriptor for a property that doesn't exist at all (existing data/accessor properties are
+    // always typed Data/Accessor) -- so Generic here means "undefined" per spec.
+    if (desc.is_generic_descriptor()) {
+        return Value();
+    }
     auto desc_obj = ObjectFactory::create_object();
-    desc_obj->set_property("value", desc.get_value());
-    desc_obj->set_property("writable", Value(desc.is_writable()));
+    if (desc.is_accessor_descriptor()) {
+        Object* getter = desc.has_getter() ? desc.get_getter() : nullptr;
+        Object* setter = desc.has_setter() ? desc.get_setter() : nullptr;
+        desc_obj->set_property("get", getter ? Value(static_cast<Function*>(getter)) : Value());
+        desc_obj->set_property("set", setter ? Value(static_cast<Function*>(setter)) : Value());
+    } else {
+        desc_obj->set_property("value", desc.get_value());
+        desc_obj->set_property("writable", Value(desc.is_writable()));
+    }
     desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
     desc_obj->set_property("configurable", Value(desc.is_configurable()));
     return Value(desc_obj.release());
