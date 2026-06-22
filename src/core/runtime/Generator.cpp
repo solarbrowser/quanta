@@ -561,9 +561,9 @@ void Generator::setup_generator_prototype(Context& ctx) {
     generator_function_constructor->set_property("name", Value(std::string("GeneratorFunction")));
 
     if (s_generator_function_prototype_) {
-        s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()));
+        s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
     }
-    s_generator_prototype_->set_property("constructor", Value(generator_function_constructor.get()));
+    s_generator_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
 
     ctx.create_binding("GeneratorFunction", Value(generator_function_constructor.release()));
 }

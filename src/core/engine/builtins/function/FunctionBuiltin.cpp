@@ -156,7 +156,40 @@ void register_function_builtins(Context& ctx) {
     // Set function prototype early so create_native_function can use it
     Object* function_proto_ptr = function_prototype.get();
     ObjectFactory::set_function_prototype(function_proto_ptr);
-    
+
+    // register_object_builtins() ran before this point, so every native function it created
+    // (Object.prototype.* and Object.* statics) saw get_function_prototype() == nullptr and
+    // skipped setting [[Prototype]]. Patch those up now that Function.prototype exists.
+    auto patch_null_function_protos = [function_proto_ptr](Object* container) {
+        if (!container) return;
+        for (const auto& key : container->get_own_property_keys()) {
+            PropertyDescriptor d = container->get_property_descriptor(key);
+            if (d.is_data_descriptor()) {
+                Value v = d.get_value();
+                if (v.is_function() && v.as_function()->get_prototype() == nullptr) {
+                    v.as_function()->set_prototype(function_proto_ptr);
+                }
+            } else if (d.is_accessor_descriptor()) {
+                if (d.has_getter() && d.get_getter() && d.get_getter()->get_prototype() == nullptr) {
+                    d.get_getter()->set_prototype(function_proto_ptr);
+                }
+                if (d.has_setter() && d.get_setter() && d.get_setter()->get_prototype() == nullptr) {
+                    d.get_setter()->set_prototype(function_proto_ptr);
+                }
+            }
+        }
+    };
+    patch_null_function_protos(ObjectFactory::get_object_prototype());
+    if (ctx.has_binding("Object")) {
+        Value object_ctor = ctx.get_binding("Object");
+        if (object_ctor.is_function()) {
+            patch_null_function_protos(static_cast<Object*>(object_ctor.as_function()));
+            if (object_ctor.as_function()->get_prototype() == nullptr) {
+                object_ctor.as_function()->set_prototype(function_proto_ptr);
+            }
+        }
+    }
+
     auto call_fn = ObjectFactory::create_native_function("call",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();

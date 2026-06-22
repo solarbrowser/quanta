@@ -1890,7 +1890,7 @@ void register_string_builtins(Context& ctx) {
 
     Object* proto_ptr = string_prototype.get();
     string_constructor->set_property("prototype", Value(string_prototype.release()), PropertyAttributes::None);
-    proto_ptr->set_property("constructor", Value(string_constructor.get()));
+    proto_ptr->set_property("constructor", Value(string_constructor.get()), PropertyAttributes::BuiltinFunction);
 
     auto string_raw_fn = ObjectFactory::create_native_function("raw",
         [](Context& ctx, const std::vector<Value>& args) -> Value {

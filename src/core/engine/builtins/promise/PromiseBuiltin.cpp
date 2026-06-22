@@ -1053,7 +1053,7 @@ void register_promise_builtins(Context& ctx) {
             return Value(registry_obj.release());
         });
     finalizationregistry_constructor->set_property("prototype", Value(fr_proto_ptr));
-    fr_proto_ptr->set_property("constructor", Value(finalizationregistry_constructor.get()));
+    fr_proto_ptr->set_property("constructor", Value(finalizationregistry_constructor.get()), PropertyAttributes::BuiltinFunction);
     ctx.register_built_in_object("FinalizationRegistry", finalizationregistry_constructor.release());
 }
 

@@ -21,7 +21,9 @@ void register_bigint_builtins(Context& ctx) {
             }
             
             try {
-                if (args[0].is_number()) {
+                if (args[0].is_bigint()) {
+                    return args[0];
+                } else if (args[0].is_number()) {
                     double num = args[0].as_number();
                     if (std::floor(num) != num) {
                         ctx.throw_exception(Value(std::string("Cannot convert non-integer Number to BigInt")));
@@ -31,6 +33,9 @@ void register_bigint_builtins(Context& ctx) {
                     return Value(bigint.release());
                 } else if (args[0].is_string()) {
                     auto bigint = std::make_unique<BigInt>(args[0].to_string());
+                    return Value(bigint.release());
+                } else if (args[0].is_boolean()) {
+                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(args[0].to_boolean() ? 1 : 0));
                     return Value(bigint.release());
                 } else {
                     ctx.throw_exception(Value(std::string("Cannot convert value to BigInt")));

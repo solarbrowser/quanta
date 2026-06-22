@@ -750,7 +750,22 @@ bool Object::set_element(uint32_t index, const Value& value) {
 
     if (__builtin_expect(index >= elements_.size(), 0)) {
         if (__builtin_expect(index > 10000000, 0)) {
-            return false;
+            // Too sparse to grow the dense elements_ vector -- store in overflow_properties_
+            // instead (get_element()/has_own_property() already fall back to it), still
+            // bumping Array length per ArraySetLength side effect (15.4.5.1 step 4.e.ii).
+            if (header_.type == ObjectType::Array && overflow_properties_) {
+                auto len_it = overflow_properties_->find("length");
+                if (len_it != overflow_properties_->end() &&
+                    static_cast<double>(index) + 1 > len_it->second.to_number()) {
+                    Value new_len(static_cast<double>(index) + 1);
+                    len_it->second = new_len;
+                    if (descriptors_) {
+                        auto dit = descriptors_->find("length");
+                        if (dit != descriptors_->end()) dit->second.set_value(new_len);
+                    }
+                }
+            }
+            return store_in_overflow(std::to_string(index), value);
         }
         size_t old_size = elements_.size();
         size_t new_size = index + 1;
@@ -859,6 +874,9 @@ std::vector<std::string> Object::get_own_property_keys() const {
         keys.push_back(ik.second);
     }
     for (const auto& sk : string_keys) {
+        // "[[PrimitiveValue]]" simulates a spec internal slot via a regular property
+        // (see box_primitive) -- it must never surface as an observable own key.
+        if (sk == "[[PrimitiveValue]]") continue;
         keys.push_back(sk);
     }
 
