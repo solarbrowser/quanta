@@ -914,13 +914,14 @@ void register_promise_builtins(Context& ctx) {
                     p->set_property("__any_r__" + suffix, Value(on_reject.release()));
                     p->then(fulfill_raw, reject_raw);
                 } else {
-                    result_promise_obj = nullptr;
-                    on_reject.release();
-                    on_fulfill.release();
-                    if (!state->settled) {
-                        state->settled = true;
-                        state->result->fulfill(elem);
-                    }
+                    // Non-Promise element: wrap via a promise so thenables are properly
+                    // chained through the state callbacks instead of bypassing them.
+                    auto wrapper_obj = ObjectFactory::create_promise(&ctx);
+                    Promise* wrapper = static_cast<Promise*>(wrapper_obj.release());
+                    wrapper->set_property("__any_f__" + suffix, Value(on_fulfill.release()));
+                    wrapper->set_property("__any_r__" + suffix, Value(on_reject.release()));
+                    wrapper->then(fulfill_raw, reject_raw);
+                    wrapper->fulfill(elem);
                 }
             }
 
