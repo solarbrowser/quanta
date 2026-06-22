@@ -1779,10 +1779,10 @@ void register_object_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_getter())
                     return d.get_getter() ? Value(d.get_getter()) : Value();
-                if (d.is_data_descriptor() || cur->has_own_property(key)) break;
-                cur = (cur->get_type() == Object::ObjectType::Proxy)
-                    ? static_cast<Proxy*>(cur)->get_prototype_raw()
-                    : cur->get_prototype();
+                // Non-generic descriptor found here -- stop (not cur->has_own_property, which for a Proxy walks too far).
+                if (!d.is_generic_descriptor()) break;
+                // Virtual call so a Proxy's getPrototypeOf trap actually fires.
+                cur = cur->get_prototype();
                 if (ctx.has_exception()) return Value();
             }
             return Value();
@@ -1802,10 +1802,10 @@ void register_object_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_setter())
                     return d.get_setter() ? Value(d.get_setter()) : Value();
-                if (d.is_data_descriptor() || cur->has_own_property(key)) break;
-                cur = (cur->get_type() == Object::ObjectType::Proxy)
-                    ? static_cast<Proxy*>(cur)->get_prototype_raw()
-                    : cur->get_prototype();
+                // Non-generic descriptor found here -- stop (not cur->has_own_property, which for a Proxy walks too far).
+                if (!d.is_generic_descriptor()) break;
+                // Virtual call so a Proxy's getPrototypeOf trap actually fires.
+                cur = cur->get_prototype();
                 if (ctx.has_exception()) return Value();
             }
             return Value();

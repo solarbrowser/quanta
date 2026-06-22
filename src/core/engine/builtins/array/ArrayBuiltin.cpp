@@ -15,6 +15,7 @@
 #include <cmath>
 #include <functional>
 #include <sstream>
+#include <unordered_set>
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
@@ -318,6 +319,12 @@ static bool create_data_property_or_throw(Context& ctx, Object* target, const st
     return true;
 }
 
+// GetFunctionRealm-lite: tracks every realm's intrinsic %Array% so a foreign one can be detected.
+static std::unordered_set<Function*>& all_array_intrinsics() {
+    static std::unordered_set<Function*> registry;
+    return registry;
+}
+
 // ArrayCreate's own length check: a plain (non-species) array can't exceed 2^32-1.
 static Value array_create_or_range_error(Context& ctx, double length) {
     if (length > 4294967295.0) {
@@ -349,6 +356,16 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
         Object* ctor = ctor_val.is_function()
             ? static_cast<Object*>(ctor_val.as_function())
             : ctor_val.as_object();
+        // A foreign-realm %Array% is treated as if C were undefined.
+        if (ctor_val.is_function() && static_cast<Function*>(ctor_val.as_function())->is_constructor()) {
+            Function* ctor_fn = ctor_val.as_function();
+            Value this_realm_array = ctx.get_binding("Array");
+            bool is_foreign_array_intrinsic = all_array_intrinsics().count(ctor_fn) > 0 &&
+                !(this_realm_array.is_function() && this_realm_array.as_function() == ctor_fn);
+            if (is_foreign_array_intrinsic) {
+                return array_create_or_range_error(ctx, length);
+            }
+        }
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             Value species_val = ctor->get_property(species_sym->to_property_key());
@@ -2681,6 +2698,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     ObjectFactory::set_array_prototype(array_proto_ptr);
 
+    all_array_intrinsics().insert(array_constructor.get());
     ctx.register_built_in_object("Array", array_constructor.release());
 }
 

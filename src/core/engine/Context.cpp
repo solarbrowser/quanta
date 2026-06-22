@@ -582,6 +582,13 @@ void Context::initialize_global_context() {
     variable_environment_ = lexical_environment_;
 
     initialize_built_ins();
+
+    // global_object_ predates Object.prototype's setup above; patch it now.
+    if (!global_object_->get_prototype()) {
+        Object* object_proto = ObjectFactory::get_object_prototype();
+        if (object_proto) global_object_->set_prototype(object_proto);
+    }
+
     setup_global_bindings();
 }
 
