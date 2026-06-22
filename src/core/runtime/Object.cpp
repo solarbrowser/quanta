@@ -999,9 +999,20 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             // cap growth to avoid huge upfront allocation on a sparse high index
             if (desc.has_value() && index <= 10000000) {
                 if (index >= elements_.size()) {
+                    size_t old_size = elements_.size();
                     elements_.resize(index + 1);
+                    // Mark intermediate positions as holes, matching set_element().
+                    if (index > old_size) {
+                        if (!deleted_elements_) {
+                            deleted_elements_ = std::make_unique<std::unordered_set<uint32_t>>();
+                        }
+                        for (size_t i = old_size; i < index; ++i) {
+                            deleted_elements_->insert(static_cast<uint32_t>(i));
+                        }
+                    }
                 }
                 elements_[index] = desc.get_value();
+                if (deleted_elements_) deleted_elements_->erase(index);
             }
         } else {
             // Array "length" must still go through ToUint32 validation (RangeError for
