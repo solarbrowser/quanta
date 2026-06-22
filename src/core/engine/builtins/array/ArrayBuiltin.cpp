@@ -484,110 +484,147 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto from_fn = ObjectFactory::create_native_function("from",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value(ObjectFactory::create_array().release());
-
-            Value arrayLike = args[0];
-            Function* mapfn = (args.size() > 1 && args[1].is_function()) ? args[1].as_function() : nullptr;
+            Value items = args.empty() ? Value() : args[0];
             Value thisArg = (args.size() > 2) ? args[2] : Value();
 
+            // Validate mapfn (spec step 2-3: if not undefined, must be callable).
+            Function* mapfn = nullptr;
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                if (!args[1].is_function()) {
+                    ctx.throw_type_error("Array.from: mapfn must be callable");
+                    return Value();
+                }
+                mapfn = args[1].as_function();
+            }
+
+            // Determine result array constructor: `this` if it's a constructor, else Array.
             Object* this_binding = array_to_object(ctx);
-            Function* constructor = nullptr;
-            if (this_binding && this_binding->is_function()) {
-                constructor = static_cast<Function*>(this_binding);
+            Function* ctor = (this_binding && this_binding->is_function())
+                ? static_cast<Function*>(this_binding) : nullptr;
+
+            auto make_result = [&](uint32_t length) -> Object* {
+                if (ctor) {
+                    Value v = ctor->construct(ctx, {Value(static_cast<double>(length))});
+                    if (ctx.has_exception()) return nullptr;
+                    if (v.is_object()) return v.as_object();
+                    if (v.is_function()) return static_cast<Object*>(v.as_function());
+                }
+                return ObjectFactory::create_array(length).release();
+            };
+
+            // null/undefined → TypeError
+            if (items.is_null() || items.is_undefined()) {
+                ctx.throw_type_error("Array.from called on null or undefined");
+                return Value();
             }
 
-            // ES6: Check for Symbol.iterator first (iterable protocol)
-            if (arrayLike.is_object() || arrayLike.is_function()) {
-                Object* src_obj = arrayLike.is_function()
-                    ? static_cast<Object*>(arrayLike.as_function())
-                    : arrayLike.as_object();
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    Value iter_method = src_obj->get_property(iter_sym->to_property_key());
-                    if (iter_method.is_function()) {
-                        Value iterator_obj = iter_method.as_function()->call(ctx, {}, arrayLike);
-                        if (ctx.has_exception()) return Value();
-                        if (iterator_obj.is_object()) {
-                            Object* iterator = iterator_obj.as_object();
-                            Value next_method = iterator->get_property("next");
-                            if (next_method.is_function()) {
-                                auto close_iter = [&iterator_obj, &ctx]() {
-                                    if (iterator_obj.is_object()) {
-                                        Value rm = iterator_obj.as_object()->get_property("return");
-                                        if (rm.is_function()) rm.as_function()->call(ctx, {}, iterator_obj);
-                                    }
-                                };
-                                auto result_arr = ObjectFactory::create_array(0);
-                                uint32_t idx = 0;
-                                for (uint32_t ii = 0; ii < 100000; ii++) {
-                                    Value res = next_method.as_function()->call(ctx, {}, iterator_obj);
-                                    if (ctx.has_exception()) return Value();
-                                    if (!res.is_object()) break;
-                                    Value done = res.as_object()->get_property("done");
-                                    if (done.to_boolean()) break;
-                                    Value val = res.as_object()->get_property("value");
-                                    if (mapfn) {
-                                        std::vector<Value> margs = { val, Value(static_cast<double>(idx)) };
-                                        val = mapfn->call(ctx, margs, thisArg);
-                                        if (ctx.has_exception()) { close_iter(); return Value(); }
-                                    }
-                                    result_arr->set_element(idx++, val);
-                                }
-                                result_arr->set_property("length", Value(static_cast<double>(idx)));
-                                return Value(result_arr.release());
-                            }
+            // Iterable protocol
+            if (items.is_object() || items.is_function() || items.is_string()) {
+                Object* src_obj = nullptr;
+                Value items_boxed = items;
+                if (items.is_string()) {
+                    // Box string via Object() to expose its iterator
+                    Value obj_ctor = ctx.get_binding("Object");
+                    if (obj_ctor.is_function()) {
+                        Value boxed = obj_ctor.as_function()->call(ctx, {items});
+                        if (!ctx.has_exception() && boxed.is_object()) { items_boxed = boxed; src_obj = boxed.as_object(); }
+                    }
+                    if (!src_obj) {
+                        // Fallback: iterate over string code units directly
+                        std::string str = items.to_string();
+                        uint32_t len = static_cast<uint32_t>(str.size());
+                        Object* res = make_result(len);
+                        if (!res) return Value();
+                        for (uint32_t i = 0; i < len; i++) {
+                            Value el(std::string(1, str[i]));
+                            if (mapfn) { el = mapfn->call(ctx, {el, Value(static_cast<double>(i))}, thisArg); if (ctx.has_exception()) return Value(); }
+                            if (!create_data_property_or_throw(ctx, res, std::to_string(i), el)) return Value();
                         }
+                        res->set_property("length", Value(static_cast<double>(len)));
+                        return Value(res);
                     }
-                }
-            }
-
-            // Fallback: array-like (has .length)
-            uint32_t length = 0;
-            if (arrayLike.is_string()) {
-                length = static_cast<uint32_t>(arrayLike.to_string().length());
-            } else if (arrayLike.is_object()) {
-                Object* obj = arrayLike.as_object();
-                Value lengthValue = obj->get_property("length");
-                length = lengthValue.is_number() ? static_cast<uint32_t>(lengthValue.to_number()) : 0;
-            }
-
-            Object* result = nullptr;
-            if (constructor) {
-                std::vector<Value> constructor_args = { Value(static_cast<double>(length)) };
-                Value constructed = constructor->construct(ctx, constructor_args);
-                if (constructed.is_object()) {
-                    result = constructed.as_object();
                 } else {
-                    result = ObjectFactory::create_array().release();
+                    src_obj = items.is_function() ? static_cast<Object*>(items.as_function()) : items.as_object();
                 }
-            } else {
-                result = ObjectFactory::create_array().release();
+
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym && src_obj) {
+                    Value iter_method = src_obj->get_property(iter_sym->to_property_key());
+                    if (ctx.has_exception()) return Value();
+                    if (!iter_method.is_undefined() && !iter_method.is_null() && !iter_method.is_function()) {
+                        ctx.throw_type_error("@@iterator is not callable");
+                        return Value();
+                    }
+                    if (iter_method.is_function()) {
+                        // Spec: Construct(C) happens BEFORE GetIterator (calling iter_method).
+                        Object* res = nullptr;
+                        if (ctor) {
+                            Value rv = ctor->construct(ctx, {});
+                            if (ctx.has_exception()) return Value();
+                            res = rv.is_object() ? rv.as_object()
+                                : rv.is_function() ? static_cast<Object*>(rv.as_function()) : nullptr;
+                        }
+                        if (!res) res = ObjectFactory::create_array(0).release();
+
+                        Value iterator_obj = iter_method.as_function()->call(ctx, {}, items_boxed);
+                        if (ctx.has_exception()) return Value();
+                        if (!iterator_obj.is_object()) { ctx.throw_type_error("Array.from: iterator must return an object"); return Value(); }
+                        Object* iterator = iterator_obj.as_object();
+                        Value next_fn = iterator->get_property("next");
+                        if (ctx.has_exception()) return Value();
+                        if (!next_fn.is_function()) { ctx.throw_type_error("Array.from: iterator.next must be a function"); return Value(); }
+                        // IteratorClose: call .return() but preserve the completion value.
+                        auto close_iter = [&]() {
+                            bool had_exc = ctx.has_exception();
+                            Value saved_exc = had_exc ? ctx.get_exception() : Value();
+                            if (had_exc) ctx.clear_exception();
+                            Value rm = iterator->get_property("return");
+                            if (rm.is_function()) { rm.as_function()->call(ctx, {}, iterator_obj); ctx.clear_exception(); }
+                            if (had_exc) ctx.throw_exception(saved_exc);
+                        };
+                        uint32_t idx = 0;
+                        for (uint32_t ii = 0; ii < 0xFFFFFFFFu; ii++) {
+                            Value result = next_fn.as_function()->call(ctx, {}, iterator_obj);
+                            if (ctx.has_exception()) { close_iter(); return Value(); }
+                            if (!result.is_object()) { ctx.throw_type_error("Array.from: iterator result not an object"); return Value(); }
+                            Value done_v = result.as_object()->get_property("done");
+                            if (ctx.has_exception()) { close_iter(); return Value(); }
+                            if (done_v.to_boolean()) break;
+                            Value val = result.as_object()->get_property("value");
+                            if (ctx.has_exception()) { close_iter(); return Value(); }
+                            if (mapfn) {
+                                val = mapfn->call(ctx, {val, Value(static_cast<double>(idx))}, thisArg);
+                                if (ctx.has_exception()) { close_iter(); return Value(); }
+                            }
+                            if (!create_data_property_or_throw(ctx, res, std::to_string(idx), val)) return Value();
+                            idx++;
+                        }
+                        bool ok = res->set_property("length", Value(static_cast<double>(idx)));
+                        if (!ok) { ctx.throw_type_error("Cannot set length"); return Value(); }
+                        return Value(res);
+                    }
+                }
             }
 
-            if (arrayLike.is_string()) {
-                std::string str = arrayLike.to_string();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = Value(std::string(1, str[i]));
-                    if (mapfn) {
-                        std::vector<Value> mapfn_args = { element, Value(static_cast<double>(i)) };
-                        element = mapfn->call(ctx, mapfn_args, thisArg);
-                    }
-                    result->set_element(i, element);
-                }
-            } else if (arrayLike.is_object()) {
-                Object* obj = arrayLike.as_object();
-                for (uint32_t i = 0; i < length; i++) {
-                    Value element = obj->get_element(i);
-                    if (mapfn) {
-                        std::vector<Value> mapfn_args = { element, Value(static_cast<double>(i)) };
-                        element = mapfn->call(ctx, mapfn_args, thisArg);
-                    }
-                    result->set_element(i, element);
-                }
+            // Array-like fallback (.length + indexed access).
+            Object* al_obj = (items.is_object() || items.is_function())
+                ? (items.is_function() ? static_cast<Object*>(items.as_function()) : items.as_object())
+                : nullptr;
+            double len_d = al_obj ? array_like_length(ctx, al_obj) : 0.0;
+            if (ctx.has_exception()) return Value();
+            if (len_d > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
+            Object* res = make_result(length);
+            if (!res) return Value();
+            for (uint32_t i = 0; i < length; i++) {
+                Value el = al_obj ? al_obj->get_property(std::to_string(i)) : Value();
+                if (ctx.has_exception()) return Value();
+                if (mapfn) { el = mapfn->call(ctx, {el, Value(static_cast<double>(i))}, thisArg); if (ctx.has_exception()) return Value(); }
+                if (!create_data_property_or_throw(ctx, res, std::to_string(i), el)) return Value();
             }
-
-            result->set_property("length", Value(static_cast<double>(length)));
-            return Value(result);
+            bool ok = res->set_property("length", Value(static_cast<double>(length)));
+            if (!ok) { ctx.throw_type_error("Cannot set length"); return Value(); }
+            return Value(res);
         }, 1);
     Function* from_ptr = from_fn.release();
     PropertyAttributes from_attrs = PropertyAttributes::BuiltinFunction;
@@ -803,11 +840,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.find callback must be a function");
+                ctx.throw_type_error("Array.prototype.find callback must be a function"); return Value();
             }
 
             Function* callback = args[0].as_function();
@@ -846,8 +884,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast requires a callback function")));
@@ -888,8 +927,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
                 ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex requires a callback function")));
@@ -973,10 +1013,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             // Spec order: LengthOfArrayLike is captured BEFORE ToIntegerOrInfinity(index),
             // since the latter can run user code (valueOf) that mutates the receiver's length.
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            int32_t index = static_cast<int32_t>(args[0].to_number());
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
+            double idx_d = to_integer_or_infinity_throwing(ctx, args[0]);
             if (ctx.has_exception()) return Value();
+            int32_t index = static_cast<int32_t>(std::isnan(idx_d) ? 0.0 : idx_d);
 
             if (index < 0) {
                 index = static_cast<int32_t>(length) + index;
@@ -1149,18 +1191,22 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value(this_obj);
             }
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
-            double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
-            int32_t start = start_arg < 0
-                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
-                : std::min(static_cast<uint32_t>(start_arg), length);
+            double start_raw = args.size() > 1 ? to_integer_or_infinity_throwing(ctx, args[1]) : 0.0;
+            if (ctx.has_exception()) return Value();
+            int32_t start = start_raw < 0
+                ? static_cast<int32_t>(std::max(0.0, static_cast<double>(length) + start_raw))
+                : static_cast<int32_t>(std::min(start_raw, static_cast<double>(length)));
 
-            double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
-            int32_t end = end_arg < 0
-                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
-                : std::min(static_cast<uint32_t>(end_arg), length);
+            double end_raw = args.size() > 2 && !args[2].is_undefined()
+                ? to_integer_or_infinity_throwing(ctx, args[2]) : static_cast<double>(length);
+            if (ctx.has_exception()) return Value();
+            int32_t end = end_raw < 0
+                ? static_cast<int32_t>(std::max(0.0, static_cast<double>(length) + end_raw))
+                : static_cast<int32_t>(std::min(end_raw, static_cast<double>(length)));
 
             for (int32_t i = start; i < end; i++) {
                 this_obj->set_element(static_cast<uint32_t>(i), fill_value);
@@ -1515,16 +1561,32 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value element = this_obj->get_element(i);
 
                 if (!element.is_null() && !element.is_undefined()) {
-                    if (element.is_object()) {
-                        Object* elem_obj = element.as_object();
+                    // Invoke(element, "toLocaleString") per spec.
+                    if (element.is_object() || element.is_function()) {
+                        Object* elem_obj = element.is_function()
+                            ? static_cast<Object*>(element.as_function()) : element.as_object();
                         if (elem_obj->has_property("toLocaleString")) {
-                            Value toLocaleString_val = elem_obj->get_property("toLocaleString");
-                            if (toLocaleString_val.is_function()) {
-                                Function* fn = toLocaleString_val.as_function();
-                                std::vector<Value> empty_args;
-                                Value str_val = fn->call(ctx, empty_args, element);
+                            Value fn_val = elem_obj->get_property("toLocaleString");
+                            if (fn_val.is_function()) {
+                                Value str_val = fn_val.as_function()->call(ctx, {}, element);
+                                if (ctx.has_exception()) return Value();
                                 result += str_val.to_string();
                                 continue;
+                            }
+                        }
+                    } else if (element.is_boolean()) {
+                        // Box boolean to call its prototype chain toLocaleString with primitive this.
+                        Value bool_proto_tls = ctx.get_binding("Boolean");
+                        if (bool_proto_tls.is_function()) {
+                            Value proto = static_cast<Object*>(bool_proto_tls.as_function())->get_property("prototype");
+                            if (proto.is_object()) {
+                                Value fn_val = proto.as_object()->get_property("toLocaleString");
+                                if (fn_val.is_function()) {
+                                    Value str_val = fn_val.as_function()->call(ctx, {}, element);
+                                    if (ctx.has_exception()) return Value();
+                                    result += str_val.to_string();
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -1763,26 +1825,25 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(false);
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.every callback must be a function");
+                ctx.throw_type_error("Array.prototype.every callback must be a function"); return Value();
             }
 
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             for (uint32_t i = 0; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) {
-                    continue;
-                }
-                Value element = this_obj->get_element(i);
+                if (!this_obj->has_property(std::to_string(i))) continue;
+                Value element = this_obj->get_property(std::to_string(i));
+                if (ctx.has_exception()) return Value();
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
-                if (!result.to_boolean()) {
-                    return Value(false);
-                }
+                if (ctx.has_exception()) return Value();
+                if (!result.to_boolean()) return Value(false);
             }
             return Value(true);
         }, 1);
@@ -1845,8 +1906,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty() || !args[0].is_function()) {
                 ctx.throw_type_error("Array.prototype.forEach callback must be a function");
@@ -2019,11 +2081,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(false);
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.some callback must be a function");
+                ctx.throw_type_error("Array.prototype.some callback must be a function"); return Value();
             }
 
             Function* callback = args[0].as_function();
@@ -2053,11 +2116,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(-1.0);
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.findIndex callback must be a function");
+                ctx.throw_type_error("Array.prototype.findIndex callback must be a function"); return Value();
             }
 
             Function* callback = args[0].as_function();
