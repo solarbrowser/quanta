@@ -121,6 +121,14 @@ static double array_like_length(Context& ctx, Object* obj) {
     return std::floor(n);
 }
 
+// ToIntegerOrInfinity, throwing variant of to_number_throwing.
+static double to_integer_or_infinity_throwing(Context& ctx, const Value& v) {
+    double n = to_number_throwing(ctx, v);
+    if (ctx.has_exception() || std::isnan(n)) return 0;
+    if (std::isinf(n)) return n;
+    return std::trunc(n);
+}
+
 // Array.fromAsync (spec 23.1.2.1): drives iteration via recursive Promise
 // chaining, since native functions can't suspend a fiber. Per-step state lives
 // as hidden properties on result_promise (GC-rooted, survives microtask ticks);
@@ -277,35 +285,67 @@ static void fa_request_next(Context& ctx, Promise* result_promise) {
     fa_chain(ctx, result_promise, np, "__fa_on_next_settled__");
 }
 
-static Value array_species_create(Context& ctx, Object* original_array, uint32_t length) {
+// CreateDataPropertyOrThrow: a non-configurable existing property always rejects
+// (the new descriptor always specifies configurable:true); otherwise overwrite freely.
+static bool create_data_property_or_throw(Context& ctx, Object* target, const std::string& key, const Value& v) {
+    if (target->has_own_property(key)) {
+        PropertyDescriptor pd = target->get_property_descriptor(key);
+        if (!pd.is_configurable()) {
+            ctx.throw_type_error("Cannot redefine property: " + key);
+            return false;
+        }
+    } else if (!target->is_extensible()) {
+        ctx.throw_type_error("Cannot add property " + key + ", object is not extensible");
+        return false;
+    }
+    target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
+    return true;
+}
+
+// ArrayCreate's own length check: a plain (non-species) array can't exceed 2^32-1.
+static Value array_create_or_range_error(Context& ctx, double length) {
+    if (length > 4294967295.0) {
+        ctx.throw_range_error("Invalid array length");
+        return Value();
+    }
+    return Value(ObjectFactory::create_array(static_cast<uint32_t>(length)).release());
+}
+
+static Value array_species_create(Context& ctx, Object* original_array, double length) {
+    if (length == 0) length = 0; // normalize -0 to +0
     bool is_actual_array = original_array->is_array();
     if (!is_actual_array && original_array->get_type() == Object::ObjectType::Proxy) {
         Object* target = static_cast<Proxy*>(original_array)->get_proxy_target();
         is_actual_array = target && target->is_array();
     }
     if (!is_actual_array) {
-        return Value(ObjectFactory::create_array(length).release());
+        return array_create_or_range_error(ctx, length);
     }
     Value ctor_val = original_array->get_property("constructor");
-    if (!ctor_val.is_undefined() && !ctor_val.is_null() &&
-        (ctor_val.is_function() || ctor_val.is_object())) {
+    if (ctx.has_exception()) return Value();
+    if (ctor_val.is_function() || ctor_val.is_object()) {
         Object* ctor = ctor_val.is_function()
             ? static_cast<Object*>(ctor_val.as_function())
             : ctor_val.as_object();
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             Value species_val = ctor->get_property(species_sym->to_property_key());
+            if (ctx.has_exception()) return Value();
             if (species_val.is_null() || species_val.is_undefined()) {
                 // null/undefined species -> fallback to plain Array
-            } else if (species_val.is_function()) {
+            } else if (species_val.is_function() &&
+                       static_cast<Function*>(species_val.as_function())->is_constructor()) {
                 Function* species_fn = species_val.as_function();
-                Value result = species_fn->construct(ctx, {Value(static_cast<double>(length))});
+                Value result = species_fn->construct(ctx, {Value(length)});
                 if (ctx.has_exception()) return Value();
                 return result;
+            } else {
+                ctx.throw_type_error("Species constructor is not a constructor");
+                return Value();
             }
         }
     }
-    return Value(ObjectFactory::create_array(length).release());
+    return array_create_or_range_error(ctx, length);
 }
 
 void register_array_builtins(Context& ctx, Object* function_prototype) {
@@ -1552,11 +1592,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto array_concat_fn = ObjectFactory::create_native_function("concat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.concat called on null or undefined"); return Value(); }
             Object* this_array = array_to_object(ctx);
-            if (!this_array) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.concat called on null or undefined")));
-                return Value();
-            }
 
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_array, 0);
@@ -1564,11 +1601,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
-            if (!result) return Value(ObjectFactory::create_array(0).release());
-            uint32_t result_index = 0;
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            auto is_spreadable = [](Object* obj) -> bool {
+            auto is_spreadable = [&ctx](Object* obj) -> bool {
                 Value sv = obj->get_property("Symbol.isConcatSpreadable");
+                if (ctx.has_exception()) return false;
                 if (!sv.is_undefined()) return sv.to_boolean();
                 if (obj->get_type() == Object::ObjectType::Proxy) {
                     Object* target = static_cast<Proxy*>(obj)->get_proxy_target();
@@ -1577,32 +1614,31 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return obj->is_array();
             };
 
-            auto get_length_prop = [](Object* obj) -> uint32_t {
-                Value lv = obj->get_property("length");
-                if (!lv.is_number()) return 0;
-                double n = lv.as_number();
-                if (std::isnan(n) || n <= 0) return 0;
-                if (n > 0xFFFFFFFFu) return 0xFFFFFFFFu;
-                return static_cast<uint32_t>(n);
-            };
-
-            auto get_elem_prop = [](Object* obj, uint32_t idx) -> Value {
-                return obj->get_property(std::to_string(idx));
+            double n = 0;
+            auto spread_into = [&](Object* obj) -> bool {
+                double obj_length = array_like_length(ctx, obj);
+                if (ctx.has_exception()) return false;
+                for (double i = 0; i < obj_length; i++) {
+                    std::string key = Value(i).to_string();
+                    bool present = obj->has_property(key);
+                    if (ctx.has_exception()) return false;
+                    if (present) {
+                        Value elem = obj->get_property(key);
+                        if (ctx.has_exception()) return false;
+                        if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), elem)) return false;
+                    }
+                    n++;
+                }
+                return true;
             };
 
             if (is_spreadable(this_array)) {
-                uint32_t this_length = get_length_prop(this_array);
-                for (uint32_t i = 0; i < this_length; i++) {
-                    if (this_array->has_property(std::to_string(i))) {
-                        Value elem = get_elem_prop(this_array, i);
-                        if (ctx.has_exception()) return Value();
-                        result->set_element(result_index, elem);
-                    }
-                    result_index++;
-                }
+                if (!spread_into(this_array)) return Value();
             } else {
-                result->set_element(result_index++, Value(this_array));
+                if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), Value(this_array))) return Value();
+                n++;
             }
+            if (ctx.has_exception()) return Value();
 
             for (const auto& arg : args) {
                 if (arg.is_object() || arg.is_function()) {
@@ -1610,24 +1646,19 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         ? static_cast<Object*>(arg.as_function())
                         : arg.as_object();
                     if (is_spreadable(arg_obj)) {
-                        uint32_t arg_length = get_length_prop(arg_obj);
-                        for (uint32_t i = 0; i < arg_length; i++) {
-                            if (arg_obj->has_property(std::to_string(i))) {
-                                Value elem = get_elem_prop(arg_obj, i);
-                                if (ctx.has_exception()) return Value();
-                                result->set_element(result_index, elem);
-                            }
-                            result_index++;
-                        }
-                    } else {
-                        result->set_element(result_index++, arg);
+                        if (ctx.has_exception()) return Value();
+                        if (!spread_into(arg_obj)) return Value();
+                        continue;
                     }
-                } else {
-                    result->set_element(result_index++, arg);
+                    if (ctx.has_exception()) return Value();
                 }
+                if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), arg)) return Value();
+                n++;
             }
 
-            result->set_length(result_index);
+            bool ok = result->set_property("length", Value(n));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
             return result_val;
         });
     PropertyDescriptor concat_desc(Value(array_concat_fn.release()),
@@ -2117,40 +2148,47 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value(empty.release());
             }
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
-            int32_t start = 0;
-            int32_t end = static_cast<int32_t>(length);
-
+            double start = 0;
             if (!args.empty()) {
-                start = static_cast<int32_t>(args[0].to_number());
+                start = to_integer_or_infinity_throwing(ctx, args[0]);
+                if (ctx.has_exception()) return Value();
             }
-            if (args.size() >= 2) {
-                end = static_cast<int32_t>(args[1].to_number());
+            start = start < 0 ? std::max(length + start, 0.0) : std::min(start, length);
+
+            double end = length;
+            if (args.size() >= 2 && !args[1].is_undefined()) {
+                end = to_integer_or_infinity_throwing(ctx, args[1]);
+                if (ctx.has_exception()) return Value();
             }
+            end = end < 0 ? std::max(length + end, 0.0) : std::min(end, length);
 
-            if (start < 0) start = std::max(0, static_cast<int32_t>(length) + start);
-            if (end < 0) end = std::max(0, static_cast<int32_t>(length) + end);
-            if (start < 0) start = 0;
-            if (end > static_cast<int32_t>(length)) end = length;
-            if (start > end) start = end;
-
-            uint32_t count = (end > start) ? static_cast<uint32_t>(end - start) : 0;
+            double count = end > start ? end - start : 0;
             // ES6: use @@species constructor for result
             Value result_val = array_species_create(ctx, this_obj, count);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
-            if (!result) { auto a = ObjectFactory::create_array(count); return Value(a.release()); }
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            uint32_t result_index = 0;
-            for (int32_t i = start; i < end; i++) {
-                Value elem = this_obj->get_element(static_cast<uint32_t>(i));
-                result->set_element(result_index++, elem);
+            double n = 0;
+            for (double k = start; k < end; k++) {
+                std::string pk = Value(k).to_string();
+                bool present = this_obj->has_property(pk);
+                if (ctx.has_exception()) return Value();
+                if (present) {
+                    Value elem = this_obj->get_property(pk);
+                    if (ctx.has_exception()) return Value();
+                    if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), elem)) return Value();
+                }
+                n++;
             }
-            result->set_length(result_index);
+            bool ok = result->set_property("length", Value(n));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
             return result_val;
         }, 2);
     PropertyDescriptor slice_desc(Value(slice_fn.release()),
@@ -2235,155 +2273,108 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-
-                int32_t start = 0;
-                if (!args.empty()) {
-                    double start_arg = args[0].to_number();
-                    if (start_arg < 0) {
-                        start = std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg));
-                    } else {
-                        start = std::min(static_cast<uint32_t>(start_arg), length);
-                    }
-                }
-
-                uint32_t delete_count = 0;
-                if (args.empty()) {
-                    return Value(ObjectFactory::create_array().release());
-                } else if (args.size() < 2) {
-                    delete_count = length - start;
-                } else {
-                    double delete_arg = args[1].to_number();
-                    if (delete_arg < 0) {
-                        delete_count = 0;
-                    } else {
-                        delete_count = std::min(static_cast<uint32_t>(delete_arg), length - static_cast<uint32_t>(start));
-                    }
-                }
-
-                std::vector<Value> items_to_insert;
-                for (size_t i = 2; i < args.size(); i++) {
-                    items_to_insert.push_back(args[i]);
-                }
-
-                Value result_val = array_species_create(ctx, this_obj, delete_count);
-                if (ctx.has_exception()) return Value();
-                Object* result = result_val.is_object() ? result_val.as_object()
-                               : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
-                               : nullptr;
-                if (!result) { auto a = ObjectFactory::create_array(delete_count); return Value(a.release()); }
-                for (uint32_t i = 0; i < delete_count; i++) {
-                    result->set_element(i, this_obj->get_property(std::to_string(start + i)));
-                }
-                result->set_length(delete_count);
-
-                uint32_t item_count = static_cast<uint32_t>(items_to_insert.size());
-                uint32_t new_length = length - delete_count + item_count;
-
-                if (item_count > delete_count) {
-                    uint32_t shift = item_count - delete_count;
-                    for (int32_t i = static_cast<int32_t>(length) - 1; i >= static_cast<int32_t>(start + delete_count); i--) {
-                        std::string from_key = std::to_string(i);
-                        std::string to_key = std::to_string(i + shift);
-                        if (this_obj->has_property(from_key)) {
-                            this_obj->set_property(to_key, this_obj->get_property(from_key));
-                        } else {
-                            this_obj->delete_property(to_key);
-                        }
-                        if (ctx.has_exception()) return Value();
-                    }
-                } else if (delete_count > item_count) {
-                    uint32_t shift = delete_count - item_count;
-                    for (uint32_t i = static_cast<uint32_t>(start) + delete_count; i < length; i++) {
-                        std::string from_key = std::to_string(i);
-                        std::string to_key = std::to_string(i - shift);
-                        if (this_obj->has_property(from_key)) {
-                            this_obj->set_property(to_key, this_obj->get_property(from_key));
-                        } else {
-                            this_obj->delete_property(to_key);
-                        }
-                        if (ctx.has_exception()) return Value();
-                    }
-                    for (uint32_t i = new_length; i < length; i++) {
-                        this_obj->delete_property(std::to_string(i));
-                    }
-                }
-
-                for (uint32_t i = 0; i < item_count; i++) {
-                    this_obj->set_property(std::to_string(start + i), items_to_insert[i]);
-                }
-
-                this_obj->set_property("length", Value(static_cast<double>(new_length)));
-                return result_val;
-            }
-
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
-            int32_t start = 0;
+            double start = 0;
             if (!args.empty()) {
-                double start_arg = args[0].to_number();
-                if (start_arg < 0) {
-                    start = std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg));
-                } else {
-                    start = std::min(static_cast<uint32_t>(start_arg), length);
-                }
+                start = to_integer_or_infinity_throwing(ctx, args[0]);
+                if (ctx.has_exception()) return Value();
             }
+            start = start < 0 ? std::max(length + start, 0.0) : std::min(start, length);
 
-            uint32_t delete_count = 0;
+            double item_count = args.size() > 2 ? static_cast<double>(args.size() - 2) : 0;
+            double delete_count;
             if (args.empty()) {
-                return Value(ObjectFactory::create_array().release());
-            } else if (args.size() < 2) {
+                delete_count = 0;
+            } else if (args.size() == 1) {
                 delete_count = length - start;
             } else {
-                double delete_arg = args[1].to_number();
-                if (delete_arg < 0) {
-                    delete_count = 0;
-                } else {
-                    delete_count = std::min(static_cast<uint32_t>(delete_arg), length - start);
-                }
+                double dc = to_integer_or_infinity_throwing(ctx, args[1]);
+                if (ctx.has_exception()) return Value();
+                delete_count = std::min(std::max(dc, 0.0), length - start);
             }
 
-            std::vector<Value> items_to_insert;
-            for (size_t i = 2; i < args.size(); i++) {
-                items_to_insert.push_back(args[i]);
+            if (length + item_count - delete_count > 9007199254740991.0) {
+                ctx.throw_type_error("Array.prototype.splice: resulting length would exceed 2**53 - 1");
+                return Value();
             }
 
-            // ES6: use @@species constructor for removed-elements result
             Value result_val = array_species_create(ctx, this_obj, delete_count);
             if (ctx.has_exception()) return Value();
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
-            if (!result) { auto a = ObjectFactory::create_array(delete_count); return Value(a.release()); }
-            for (uint32_t i = 0; i < delete_count; i++) {
-                result->set_element(i, this_obj->get_element(start + i));
-            }
-            result->set_length(delete_count);
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            uint32_t item_count = items_to_insert.size();
-            uint32_t new_length = length - delete_count + item_count;
-
-            if (item_count > delete_count) {
-                uint32_t shift = item_count - delete_count;
-                for (int32_t i = length - 1; i >= static_cast<int32_t>(start + delete_count); i--) {
-                    this_obj->set_element(i + shift, this_obj->get_element(i));
+            for (double k = 0; k < delete_count; k++) {
+                std::string from_key = Value(start + k).to_string();
+                bool present = this_obj->has_property(from_key);
+                if (ctx.has_exception()) return Value();
+                if (present) {
+                    Value v = this_obj->get_property(from_key);
+                    if (ctx.has_exception()) return Value();
+                    if (!create_data_property_or_throw(ctx, result, Value(k).to_string(), v)) return Value();
                 }
             }
-            else if (delete_count > item_count) {
-                uint32_t shift = delete_count - item_count;
-                for (uint32_t i = start + delete_count; i < length; i++) {
-                    this_obj->set_element(i - shift, this_obj->get_element(i));
+            bool len_ok = result->set_property("length", Value(delete_count));
+            if (ctx.has_exception()) return Value();
+            if (!len_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
+
+            std::vector<Value> items_to_insert(args.begin() + (args.size() > 2 ? 2 : args.size()), args.end());
+
+            if (item_count < delete_count) {
+                for (double k = start; k < length - delete_count; k++) {
+                    std::string from_key = Value(k + delete_count).to_string();
+                    std::string to_key = Value(k + item_count).to_string();
+                    bool present = this_obj->has_property(from_key);
+                    if (ctx.has_exception()) return Value();
+                    if (present) {
+                        Value v = this_obj->get_property(from_key);
+                        if (ctx.has_exception()) return Value();
+                        bool ok = this_obj->set_property(to_key, v);
+                        if (ctx.has_exception()) return Value();
+                        if (!ok) { ctx.throw_type_error("Cannot set property '" + to_key + "'"); return Value(); }
+                    } else {
+                        bool ok = this_obj->delete_property(to_key);
+                        if (ctx.has_exception()) return Value();
+                        if (!ok) { ctx.throw_type_error("Cannot delete property '" + to_key + "'"); return Value(); }
+                    }
+                }
+                for (double k = length; k > length - delete_count + item_count; k--) {
+                    bool ok = this_obj->delete_property(Value(k - 1).to_string());
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot delete property"); return Value(); }
+                }
+            } else if (item_count > delete_count) {
+                for (double k = length - delete_count; k > start; k--) {
+                    std::string from_key = Value(k + delete_count - 1).to_string();
+                    std::string to_key = Value(k + item_count - 1).to_string();
+                    bool present = this_obj->has_property(from_key);
+                    if (ctx.has_exception()) return Value();
+                    if (present) {
+                        Value v = this_obj->get_property(from_key);
+                        if (ctx.has_exception()) return Value();
+                        bool ok = this_obj->set_property(to_key, v);
+                        if (ctx.has_exception()) return Value();
+                        if (!ok) { ctx.throw_type_error("Cannot set property '" + to_key + "'"); return Value(); }
+                    } else {
+                        bool ok = this_obj->delete_property(to_key);
+                        if (ctx.has_exception()) return Value();
+                        if (!ok) { ctx.throw_type_error("Cannot delete property '" + to_key + "'"); return Value(); }
+                    }
                 }
             }
 
-            for (uint32_t i = 0; i < item_count; i++) {
-                this_obj->set_element(start + i, items_to_insert[i]);
+            for (size_t i = 0; i < items_to_insert.size(); i++) {
+                bool ok = this_obj->set_property(Value(start + static_cast<double>(i)).to_string(), items_to_insert[i]);
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property"); return Value(); }
             }
 
-            this_obj->set_length(new_length);
+            bool final_ok = this_obj->set_property("length", Value(length - delete_count + item_count));
+            if (ctx.has_exception()) return Value();
+            if (!final_ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
             return result_val;
         }, 2);
