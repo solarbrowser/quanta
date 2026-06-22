@@ -357,6 +357,7 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
 
     if (parsed_handler_.getOwnPropertyDescriptor) {
         PropertyDescriptor result = parsed_handler_.getOwnPropertyDescriptor(key);
+        if (Object::current_context_ && Object::current_context_->has_exception()) return PropertyDescriptor();
         std::string key_str = key.to_string();
         bool result_exists = result.is_data_descriptor() || result.is_accessor_descriptor();
         PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
@@ -566,6 +567,7 @@ Object* Proxy::get_prototype() const {
     if (is_revoked()) throw std::runtime_error("TypeError: Proxy has been revoked");
     if (parsed_handler_.getPrototypeOf) {
         Value result = parsed_handler_.getPrototypeOf();
+        if (Object::current_context_ && Object::current_context_->has_exception()) return nullptr;
         if (result.is_null()) return nullptr;
         if (result.is_object()) return result.as_object();
         if (result.is_function()) return result.as_function();
@@ -729,6 +731,7 @@ void Proxy::parse_handler() {
             }
             std::vector<Value> args = {Value(target_), key};
             Value result = fn->call(*ctx, args, Value(handler_));
+            if (ctx->has_exception()) return PropertyDescriptor();
             if (result.is_undefined() || result.is_null()) return PropertyDescriptor();
             if (!result.is_object() && !result.is_function()) {
                 ctx->throw_type_error("'getOwnPropertyDescriptor' trap result must be an object or undefined");

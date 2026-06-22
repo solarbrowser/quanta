@@ -1034,6 +1034,14 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
         }
         uint32_t index;
         if (is_array_index(key, &index)) {
+            // Growing past a non-writable "length" must throw, not silently grow.
+            if (header_.type == ObjectType::Array && desc.has_value() &&
+                static_cast<double>(index) >= static_cast<double>(get_length())) {
+                PropertyDescriptor length_desc = get_property_descriptor("length");
+                if (length_desc.has_writable() && !length_desc.is_writable()) {
+                    return false;
+                }
+            }
             // cap growth to avoid huge upfront allocation on a sparse high index
             if (desc.has_value() && index <= 10000000) {
                 if (index >= elements_.size()) {
@@ -1053,6 +1061,21 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 if (deleted_elements_) deleted_elements_->erase(index);
                 // ArraySetLength side effect: defining index N on an Array bumps length to N+1
                 // if N >= current length (15.4.5.1 step 4.e.ii).
+                if (header_.type == ObjectType::Array && overflow_properties_) {
+                    auto len_it = overflow_properties_->find("length");
+                    if (len_it != overflow_properties_->end() &&
+                        static_cast<double>(index) + 1 > len_it->second.to_number()) {
+                        Value new_len(static_cast<double>(index) + 1);
+                        len_it->second = new_len;
+                        if (descriptors_) {
+                            auto desc_it = descriptors_->find("length");
+                            if (desc_it != descriptors_->end()) desc_it->second.set_value(new_len);
+                        }
+                    }
+                }
+            } else if (desc.has_value()) {
+                // Beyond the dense-array growth cap -- same overflow_properties_ fallback as set_element().
+                store_in_overflow(key, desc.get_value());
                 if (header_.type == ObjectType::Array && overflow_properties_) {
                     auto len_it = overflow_properties_->find("length");
                     if (len_it != overflow_properties_->end() &&
