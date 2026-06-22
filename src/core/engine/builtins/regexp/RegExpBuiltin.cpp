@@ -95,7 +95,9 @@ void register_regexp_builtins(Context& ctx) {
             }
 
             try {
-                auto regex_obj = ObjectFactory::create_object();
+                // ObjectType::RegExp so toString's internal-slot tag and String.prototype's
+                // is_native_regexp checks (match/replace/split) see this the same as regex literals.
+                auto regex_obj = std::make_unique<Object>(Object::ObjectType::RegExp);
 
                 auto regexp_impl = std::make_shared<RegExp>(pattern, flags);
 

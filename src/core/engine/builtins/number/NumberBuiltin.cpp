@@ -20,14 +20,17 @@ void register_number_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             double num_value = args.empty() ? 0.0 : args[0].to_number();
 
-            // If this_obj exists (constructor call), set [[PrimitiveValue]]
+            // Return an ObjectType::Number-tagged wrapper so Object.prototype.toString
+            // sees the correct internal-slot tag (generic Function::construct gives Ordinary).
             Object* this_obj = ctx.get_this_binding();
             if (this_obj) {
-                this_obj->set_property("[[PrimitiveValue]]", Value(num_value), PropertyAttributes::Writable);
+                auto number_obj = std::make_unique<Object>(Object::ObjectType::Number);
+                number_obj->set_prototype(this_obj->get_prototype());
+                number_obj->set_property("[[PrimitiveValue]]", Value(num_value), PropertyAttributes::Writable);
+                return Value(number_obj.release());
             }
 
-            // Always return primitive number
-            // Function::construct will return the created object if called as constructor
+            // Called as a plain function: ToNumber, no wrapper
             return Value(num_value);
         });
     PropertyDescriptor max_value_desc(Value(std::numeric_limits<double>::max()), PropertyAttributes::None);

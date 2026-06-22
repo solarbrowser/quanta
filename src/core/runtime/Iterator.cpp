@@ -137,10 +137,22 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
             });
         iter_proto->set_property(iter_sym->to_property_key(), Value(self_fn.release()));
     }
-    s_iterator_prototype_ = iter_proto.get();
-    ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
 
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (tag_sym) {
+        // %Iterator.prototype%[Symbol.toStringTag] getter ("Iterator"): the fallback every
+        // per-type iterator prototype below inherits when its own tag is deleted/overridden.
+        auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
+            [](Context&, const std::vector<Value>&) -> Value {
+                return Value(std::string("Iterator"));
+            }, 0);
+        PropertyDescriptor tag_desc(tag_getter.release(), nullptr,
+            static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+    }
+
+    s_iterator_prototype_ = iter_proto.get();
+    ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
 
     // %ArrayIteratorPrototype%
     auto arr_iter_proto = ObjectFactory::create_object();

@@ -773,7 +773,12 @@ bool Object::set_element(uint32_t index, const Value& value) {
                 auto it = overflow_properties_->find("length");
                 // never shrink length on a write within bounds
                 if (it != overflow_properties_->end() && it->second.to_number() < new_size) {
-                    it->second = Value(static_cast<double>(new_size));
+                    Value new_len(static_cast<double>(new_size));
+                    it->second = new_len;
+                    if (descriptors_) {
+                        auto dit = descriptors_->find("length");
+                        if (dit != descriptors_->end()) dit->second.set_value(new_len);
+                    }
                 }
             }
         }
@@ -1048,6 +1053,7 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
             // NaN/negative/non-integer/>2^32-1) even via defineProperty -- the overflow
             // fast path below bypasses Object::set_property's length-specific checks.
             Value coerced_value = desc.get_value();
+            bool length_shrink_blocked = false;
             if (header_.type == ObjectType::Array && key == "length" && desc.has_value()) {
                 double length_double = desc.get_value().to_number();
                 if (current_context_ && current_context_->has_exception()) return false;
@@ -1082,9 +1088,30 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                     return false;
                 }
                 coerced_value = Value(length_double);
-                // ArraySetLength: shrinking deletes elements at/above the new length.
+                // Shrink stops at the first non-configurable element; final length = that index+1.
                 if (length_double < elements_.size()) {
-                    elements_.resize(static_cast<size_t>(length_double));
+                    size_t old_size = elements_.size();
+                    size_t requested_size = static_cast<size_t>(length_double);
+                    size_t actual_size = old_size;
+                    for (size_t i = old_size; i-- > requested_size; ) {
+                        bool is_hole = deleted_elements_ && deleted_elements_->count(static_cast<uint32_t>(i));
+                        if (!is_hole && descriptors_) {
+                            auto dit = descriptors_->find(std::to_string(i));
+                            if (dit != descriptors_->end() && !dit->second.is_configurable()) {
+                                length_shrink_blocked = true;
+                                actual_size = i + 1;
+                                break;
+                            }
+                        }
+                        actual_size = i;
+                    }
+                    elements_.resize(actual_size);
+                    if (descriptors_) {
+                        for (size_t i = actual_size; i < old_size; ++i) {
+                            descriptors_->erase(std::to_string(i));
+                        }
+                    }
+                    if (length_shrink_blocked) coerced_value = Value(static_cast<double>(actual_size));
                 }
             }
             // Directly update overflow to bypass writable check on existing props
@@ -1111,6 +1138,10 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                 } else {
                     set_property(key, coerced_value, desc.get_attributes());
                 }
+            }
+            if (length_shrink_blocked) {
+                if (current_context_) current_context_->throw_type_error("Cannot redefine non-configurable array element");
+                return false;
             }
         }
     } else if (desc.is_accessor_descriptor() || desc.is_generic_descriptor()) {
