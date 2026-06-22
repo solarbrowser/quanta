@@ -201,16 +201,18 @@ std::string Value::to_property_key() const {
         Value toString_fn = obj->get_property("toString");
         if (toString_fn.is_function()) {
             Value prim = toString_fn.as_function()->call(ctx, {}, Value(obj));
-            if (!ctx.has_exception() && !prim.is_object() && !prim.is_function()) {
-                return prim.to_string();
+            if (!ctx.has_exception()) {
+                if (prim.is_symbol()) return prim.as_symbol()->to_property_key();
+                if (!prim.is_object() && !prim.is_function()) return prim.to_string();
             }
         }
         if (!ctx.has_exception()) {
             Value valueOf_fn = obj->get_property("valueOf");
             if (valueOf_fn.is_function()) {
                 Value prim = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
-                if (!ctx.has_exception() && !prim.is_object() && !prim.is_function()) {
-                    return prim.to_string();
+                if (!ctx.has_exception()) {
+                    if (prim.is_symbol()) return prim.as_symbol()->to_property_key();
+                    if (!prim.is_object() && !prim.is_function()) return prim.to_string();
                 }
             }
         }

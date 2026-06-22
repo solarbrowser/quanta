@@ -639,15 +639,13 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
 
-            Object* obj = nullptr;
-            if (obj_val.is_object()) {
-                obj = obj_val.as_object();
-            } else if (obj_val.is_function()) {
-                obj = obj_val.as_function();
-            } else {
-                ctx.throw_exception(Value(std::string("TypeError: Object.setPrototypeOf called on non-object")));
-                return Value();
+            // Primitives: RequireObjectCoercible succeeds, but [[SetPrototypeOf]] only
+            // applies to real Objects -- return the primitive as-is per spec step 2b.
+            if (!obj_val.is_object() && !obj_val.is_function()) {
+                return obj_val;
             }
+            Object* obj = obj_val.is_function()
+                ? static_cast<Object*>(obj_val.as_function()) : obj_val.as_object();
 
             // For Proxy, call setPrototypeOf trap
             if (obj->get_type() == Object::ObjectType::Proxy) {
@@ -900,6 +898,15 @@ void register_object_builtins(Context& ctx) {
                     }
                 }
 
+                // Brand-new property (not existing): fill spec-default false for any
+                // unspecified attribute so subsequent SameValue/writable checks work.
+                if (!obj->has_own_property(prop_name)) {
+                    if (!prop_desc.has_configurable()) prop_desc.set_configurable(false);
+                    if (!prop_desc.has_enumerable())   prop_desc.set_enumerable(false);
+                    if (prop_desc.is_data_descriptor() && !prop_desc.has_writable())
+                        prop_desc.set_writable(false);
+                }
+
                 bool success;
                 if (obj->get_type() == Object::ObjectType::Proxy) {
                     success = static_cast<Proxy*>(obj)->define_property_trap(Value(prop_name), prop_desc);
@@ -1068,6 +1075,13 @@ void register_object_builtins(Context& ctx) {
                 if (has_accessor && has_data) {
                     ctx.throw_type_error("Invalid property descriptor: cannot combine get/set with value/writable");
                     return Value();
+                }
+
+                if (!obj->has_own_property(prop_name)) {
+                    if (!prop_desc.has_configurable()) prop_desc.set_configurable(false);
+                    if (!prop_desc.has_enumerable())   prop_desc.set_enumerable(false);
+                    if (prop_desc.is_data_descriptor() && !prop_desc.has_writable())
+                        prop_desc.set_writable(false);
                 }
 
                 bool ok = obj->set_property_descriptor(prop_name, prop_desc);
@@ -1268,45 +1282,103 @@ void register_object_builtins(Context& ctx) {
 
     auto groupBy_fn = ObjectFactory::create_native_function("groupBy",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) {
-                ctx.throw_type_error("Object.groupBy requires an iterable");
-                return Value();
-            }
-
-            Object* iterable = args[0].as_object();
-            if (!iterable->is_array()) {
-                ctx.throw_type_error("Object.groupBy expects an array");
-                return Value();
-            }
-
             if (args.size() < 2 || !args[1].is_function()) {
                 ctx.throw_type_error("Object.groupBy requires a callback function");
                 return Value();
             }
-
+            Value items = args.empty() ? Value() : args[0];
+            if (items.is_null() || items.is_undefined()) {
+                ctx.throw_type_error("Object.groupBy requires an iterable");
+                return Value();
+            }
             Function* callback = args[1].as_function();
+
+            // Result has null prototype per spec.
             auto result = ObjectFactory::create_object();
-            uint32_t length = iterable->get_length();
+            result->set_prototype(nullptr);
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = iterable->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), args[0] };
-                Value key = callback->call(ctx, callback_args);
-                std::string key_str = key.to_string();
-
-                Value group = result->get_property(key_str);
+            // Iterate via Symbol.iterator if available, else array-like.
+            auto add_to_group = [&](const Value& element, double idx) -> bool {
+                Value key_val = callback->call(ctx, {element, Value(idx)});
+                if (ctx.has_exception()) return false;
+                std::string key = key_val.to_property_key();
+                if (ctx.has_exception()) return false;
+                Value group = result->get_property(key);
                 Object* group_array;
                 if (group.is_object()) {
                     group_array = group.as_object();
                 } else {
-                    auto new_array = ObjectFactory::create_array();
-                    group_array = new_array.get();
-                    result->set_property(key_str, Value(new_array.release()));
+                    auto arr = ObjectFactory::create_array(0);
+                    group_array = arr.get();
+                    result->set_property(key, Value(arr.release()));
                 }
+                group_array->set_element(group_array->get_length(), element);
+                return true;
+            };
 
-                uint32_t group_length = group_array->get_length();
-                group_array->set_element(group_length, element);
-                group_array->set_length(group_length + 1);
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            bool used_iterator = false;
+            if (iter_sym && (items.is_object() || items.is_function() || items.is_string())) {
+                Object* src = items.is_function() ? static_cast<Object*>(items.as_function())
+                    : items.is_object() ? items.as_object() : nullptr;
+                if (src) {
+                    Value iter_method = src->get_property(iter_sym->to_property_key());
+                    if (ctx.has_exception()) return Value();
+                    // groupBy only accepts iterables -- no array-like fallback.
+                    // GetMethod: non-callable (incl. null) → TypeError; undefined → not iterable.
+                    if (!iter_method.is_function()) {
+                        if (!iter_method.is_undefined()) {
+                            ctx.throw_type_error("items[Symbol.iterator] is not callable");
+                        } else {
+                            ctx.throw_type_error("items is not iterable");
+                        }
+                        return Value();
+                    }
+                    if (iter_method.is_function()) {
+                        used_iterator = true;
+                        Value iter_obj = iter_method.as_function()->call(ctx, {}, items);
+                        if (ctx.has_exception()) return Value();
+                        if (!iter_obj.is_object()) { ctx.throw_type_error("Iterator must be object"); return Value(); }
+                        Object* iter = iter_obj.as_object();
+                        Value next_fn = iter->get_property("next");
+                        if (ctx.has_exception()) return Value();
+                        if (!next_fn.is_function()) { ctx.throw_type_error("Iterator.next must be function"); return Value(); }
+                        double idx = 0;
+                        while (true) {
+                            Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                            if (ctx.has_exception()) return Value();
+                            if (!res.is_object()) { ctx.throw_type_error("Iterator result must be object"); return Value(); }
+                            if (res.as_object()->get_property("done").to_boolean()) break;
+                            Value el = res.as_object()->get_property("value");
+                            if (ctx.has_exception()) return Value();
+                            if (!add_to_group(el, idx++)) return Value();
+                        }
+                    }
+                }
+                if (!used_iterator && items.is_string()) {
+                    std::string s = items.to_string();
+                    for (size_t i = 0; i < s.size(); i++) {
+                        if (!add_to_group(Value(std::string(1, s[i])), (double)i)) return Value();
+                    }
+                    used_iterator = true;
+                }
+            }
+            if (!used_iterator) {
+                Object* al = (items.is_object() || items.is_function())
+                    ? (items.is_function() ? static_cast<Object*>(items.as_function()) : items.as_object())
+                    : nullptr;
+                if (al) {
+                    Value len_v = al->get_property("length");
+                    if (ctx.has_exception()) return Value();
+                    double len_d = len_v.to_number();
+                    uint32_t len = static_cast<uint32_t>(std::isnan(len_d) || len_d < 0 ? 0.0
+                        : len_d > 4294967295.0 ? 4294967295.0 : len_d);
+                    for (uint32_t i = 0; i < len; i++) {
+                        Value el = al->get_property(std::to_string(i));
+                        if (ctx.has_exception()) return Value();
+                        if (!add_to_group(el, (double)i)) return Value();
+                    }
+                }
             }
 
             return Value(result.release());
@@ -1425,21 +1497,14 @@ void register_object_builtins(Context& ctx) {
 
     auto proto_hasOwnProperty_fn = ObjectFactory::create_native_function("hasOwnProperty",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                return Value(false);
-            }
-
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: hasOwnProperty called on null or undefined")));
-                return Value(false);
-            }
-
-            std::string prop_name = args[0].to_property_key();
+            // Spec: ToPropertyKey(P) happens BEFORE ToObject(this).
+            std::string prop_name = (args.empty() ? Value() : args[0]).to_property_key();
             if (ctx.has_exception()) return Value();
-            // Spec: HasOwnProperty calls [[GetOwnProperty]], which fires getOwnPropertyDescriptor trap
+            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!this_obj) return Value();
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
                 PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(Value(prop_name));
+                if (ctx.has_exception()) return Value();
                 return Value(desc.is_data_descriptor() || desc.is_accessor_descriptor());
             }
             return Value(this_obj->has_own_property(prop_name));
@@ -1456,14 +1521,12 @@ void register_object_builtins(Context& ctx) {
 
     auto proto_isPrototypeOf_fn = ObjectFactory::create_native_function("isPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                return Value(false);
-            }
-
+            // Spec step 1: if V is not an Object, return false BEFORE ToObject(this).
             if (args.empty() || !args[0].is_object_like()) {
                 return Value(false);
             }
+            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!this_obj) return Value();
 
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
 
@@ -1566,26 +1629,47 @@ void register_object_builtins(Context& ctx) {
     // ES6 Annex B: Object.prototype.__proto__ accessor property
     auto proto_getter = ObjectFactory::create_native_function("get __proto__",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                Object* proto = this_obj->get_prototype();
-                if (proto) {
-                    return Value(static_cast<Object*>(proto));
-                }
-                return Value::null();
-            }
-            return Value::null();
+            (void)args;
+            Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!this_obj) return Value();
+            Object* proto = this_obj->get_prototype();
+            return proto ? Value(proto) : Value::null();
         }, 0);
     auto proto_setter = ObjectFactory::create_native_function("set __proto__",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj && !args.empty()) {
-                if (args[0].is_object()) {
-                    this_obj->set_prototype(args[0].as_object());
-                } else if (args[0].is_null()) {
-                    this_obj->set_prototype(nullptr);
-                }
+            Value this_val = get_actual_this(ctx);
+            if (this_val.is_undefined() || this_val.is_null()) {
+                ctx.throw_type_error("Cannot set __proto__ on undefined or null");
+                return Value();
             }
+            if (!this_val.is_object() && !this_val.is_function()) return Value(); // primitives: no-op
+            Object* this_obj = this_val.is_function()
+                ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+            if (args.empty() || (!args[0].is_object() && !args[0].is_function() && !args[0].is_null()))
+                return Value(); // non-object, non-null: no-op per spec
+            Object* new_proto = args[0].is_null() ? nullptr
+                : (args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object());
+            // Proxy: call [[SetPrototypeOf]] trap
+            bool ok;
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                ok = static_cast<Proxy*>(this_obj)->set_prototype_of_trap(new_proto);
+                if (ctx.has_exception()) return Value();
+            } else {
+                // Cycle detection: walk new_proto chain, fail if we reach this_obj
+                Object* p = new_proto;
+                while (p) {
+                    if (p == this_obj) {
+                        ctx.throw_type_error("Cyclic __proto__ value");
+                        return Value();
+                    }
+                    // Proxy exotic objects have non-ordinary [[GetPrototypeOf]] -- stop.
+                    if (p->get_type() == Object::ObjectType::Proxy) break;
+                    p = p->get_prototype();
+                }
+                this_obj->set_prototype(new_proto);
+                ok = true;
+            }
+            if (!ok) { ctx.throw_type_error("Cannot set __proto__"); return Value(); }
             return Value();
         }, 1);
     PropertyDescriptor proto_desc;
@@ -1613,11 +1697,11 @@ void register_object_builtins(Context& ctx) {
             desc.set_getter(args[1].as_function());
             desc.set_enumerable(true);
             desc.set_configurable(true);
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc);
-            } else {
-                this_obj->set_property_descriptor(key, desc);
-            }
+            bool ok = (this_obj->get_type() == Object::ObjectType::Proxy)
+                ? static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc)
+                : this_obj->set_property_descriptor(key, desc);
+            if (!ok && !ctx.has_exception()) ctx.throw_type_error("Cannot define getter");
+            if (ctx.has_exception()) return Value();
             return Value();
         }, 2);
 
@@ -1638,11 +1722,11 @@ void register_object_builtins(Context& ctx) {
             desc.set_setter(args[1].as_function());
             desc.set_enumerable(true);
             desc.set_configurable(true);
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc);
-            } else {
-                this_obj->set_property_descriptor(key, desc);
-            }
+            bool ok = (this_obj->get_type() == Object::ObjectType::Proxy)
+                ? static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc)
+                : this_obj->set_property_descriptor(key, desc);
+            if (!ok && !ctx.has_exception()) ctx.throw_type_error("Cannot define setter");
+            if (ctx.has_exception()) return Value();
             return Value();
         }, 2);
 
@@ -1656,33 +1740,47 @@ void register_object_builtins(Context& ctx) {
     // ES2017 Annex B: Object.prototype.__lookupGetter__ / __lookupSetter__
     auto lookup_getter_fn = ObjectFactory::create_native_function("__lookupGetter__",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("__lookupGetter__ called on null/undefined"); return Value(); }
-            Object* obj = ctx.get_this_binding();
-            if (!obj || args.empty()) return Value();
-            std::string key = args[0].to_string();
+            Object* obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!obj) return Value();
+            if (args.empty()) return Value();
+            std::string key = args[0].to_property_key();
+            if (ctx.has_exception()) return Value();
             Object* cur = obj;
             while (cur) {
-                PropertyDescriptor d = cur->get_property_descriptor(key);
+                PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)
+                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(Value(key))
+                    : cur->get_property_descriptor(key);
+                if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_getter())
                     return d.get_getter() ? Value(d.get_getter()) : Value();
-                if (cur->has_own_property(key)) break;
-                cur = cur->get_prototype();
+                if (d.is_data_descriptor() || cur->has_own_property(key)) break;
+                cur = (cur->get_type() == Object::ObjectType::Proxy)
+                    ? static_cast<Proxy*>(cur)->get_prototype_raw()
+                    : cur->get_prototype();
+                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);
     auto lookup_setter_fn = ObjectFactory::create_native_function("__lookupSetter__",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("__lookupSetter__ called on null/undefined"); return Value(); }
-            Object* obj = ctx.get_this_binding();
-            if (!obj || args.empty()) return Value();
-            std::string key = args[0].to_string();
+            Object* obj = to_object_or_throw(ctx, get_actual_this(ctx));
+            if (!obj) return Value();
+            if (args.empty()) return Value();
+            std::string key = args[0].to_property_key();
+            if (ctx.has_exception()) return Value();
             Object* cur = obj;
             while (cur) {
-                PropertyDescriptor d = cur->get_property_descriptor(key);
+                PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)
+                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(Value(key))
+                    : cur->get_property_descriptor(key);
+                if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_setter())
                     return d.get_setter() ? Value(d.get_setter()) : Value();
-                if (cur->has_own_property(key)) break;
-                cur = cur->get_prototype();
+                if (d.is_data_descriptor() || cur->has_own_property(key)) break;
+                cur = (cur->get_type() == Object::ObjectType::Proxy)
+                    ? static_cast<Proxy*>(cur)->get_prototype_raw()
+                    : cur->get_prototype();
+                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);
