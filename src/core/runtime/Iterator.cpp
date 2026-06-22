@@ -522,11 +522,8 @@ void setup_array_iterator_methods(Context& ctx) {
     auto keys_fn = ObjectFactory::create_native_function("keys",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.keys called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
-            if (!array) {
-                ctx.throw_exception(Value(std::string("Array.prototype.keys called on non-object")));
-                return Value();
-            }
             auto iterator = ArrayIterator::create_keys_iterator(array);
             return Value(iterator.release());
         });
@@ -534,11 +531,8 @@ void setup_array_iterator_methods(Context& ctx) {
     auto values_fn = ObjectFactory::create_native_function("values",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.values called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
-            if (!array) {
-                ctx.throw_exception(Value(std::string("Array.prototype.values called on non-object")));
-                return Value();
-            }
             auto iterator = ArrayIterator::create_values_iterator(array);
             return Value(iterator.release());
         });
@@ -546,11 +540,8 @@ void setup_array_iterator_methods(Context& ctx) {
     auto entries_fn = ObjectFactory::create_native_function("entries",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array.prototype.entries called on null or undefined"); return Value(); }
             Object* array = ctx.get_this_binding();
-            if (!array) {
-                ctx.throw_exception(Value(std::string("Array.prototype.entries called on non-object")));
-                return Value();
-            }
             auto iterator = ArrayIterator::create_entries_iterator(array);
             return Value(iterator.release());
         });

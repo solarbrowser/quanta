@@ -89,6 +89,10 @@ static std::string sort_default_to_string(Context& ctx, const Value& v) {
 // ToNumber via ToPrimitive("number"): valueOf() then toString(), throwing if neither yields a
 // primitive (Value::to_number() just falls back to NaN instead).
 static double to_number_throwing(Context& ctx, const Value& v) {
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a number");
+        return 0;
+    }
     if (!v.is_object() && !v.is_function()) return v.to_number();
     Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
     Value valueOf_fn = obj->get_property("valueOf");
@@ -316,6 +320,9 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
     bool is_actual_array = original_array->is_array();
     if (!is_actual_array && original_array->get_type() == Object::ObjectType::Proxy) {
         Object* target = static_cast<Proxy*>(original_array)->get_proxy_target();
+        while (target && target->get_type() == Object::ObjectType::Proxy) {
+            target = static_cast<Proxy*>(target)->get_proxy_target();
+        }
         is_actual_array = target && target->is_array();
     }
     if (!is_actual_array) {
@@ -323,6 +330,9 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
     }
     Value ctor_val = original_array->get_property("constructor");
     if (ctx.has_exception()) return Value();
+    if (ctor_val.is_undefined()) {
+        return array_create_or_range_error(ctx, length);
+    }
     if (ctor_val.is_function() || ctor_val.is_object()) {
         Object* ctor = ctor_val.is_function()
             ? static_cast<Object*>(ctor_val.as_function())
@@ -332,7 +342,7 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
             Value species_val = ctor->get_property(species_sym->to_property_key());
             if (ctx.has_exception()) return Value();
             if (species_val.is_null() || species_val.is_undefined()) {
-                // null/undefined species -> fallback to plain Array
+                return array_create_or_range_error(ctx, length);
             } else if (species_val.is_function() &&
                        static_cast<Function*>(species_val.as_function())->is_constructor()) {
                 Function* species_fn = species_val.as_function();
@@ -344,8 +354,63 @@ static Value array_species_create(Context& ctx, Object* original_array, double l
                 return Value();
             }
         }
+        return array_create_or_range_error(ctx, length);
     }
-    return array_create_or_range_error(ctx, length);
+    // Non-undefined, non-object constructor (null/number/string/boolean): never
+    // a constructor, so step 9 of ArraySpeciesCreate throws unconditionally.
+    ctx.throw_type_error("constructor property is not a constructor");
+    return Value();
+}
+
+// IsArray: unwraps Proxy chains (throwing if revoked), unlike Object::is_array().
+static bool is_array_spec(Context& ctx, Object* obj) {
+    while (obj && obj->get_type() == Object::ObjectType::Proxy) {
+        Proxy* p = static_cast<Proxy*>(obj);
+        if (p->is_revoked()) { ctx.throw_type_error("Cannot perform operation on a revoked proxy"); return false; }
+        obj = p->get_proxy_target();
+    }
+    return obj && obj->is_array();
+}
+
+// FlattenIntoArray (23.1.3.13.1): recursively copies source's elements into target
+// starting at start, flattening nested arrays up to depth levels, optionally mapping
+// each element first. Returns the next free target index, or -1 on exception.
+static double flatten_into_array(Context& ctx, Object* target, Object* source, double source_len,
+                                  double start, double depth, Function* mapper_fn = nullptr,
+                                  const Value& this_arg = Value()) {
+    double target_index = start;
+    for (double source_index = 0; source_index < source_len; source_index++) {
+        std::string key = Value(source_index).to_string();
+        bool exists = source->has_property(key);
+        if (ctx.has_exception()) return -1;
+        if (!exists) continue;
+
+        Value element = source->get_property(key);
+        if (ctx.has_exception()) return -1;
+        if (mapper_fn) {
+            std::vector<Value> call_args = {element, Value(source_index), Value(source)};
+            element = mapper_fn->call(ctx, call_args, this_arg);
+            if (ctx.has_exception()) return -1;
+        }
+
+        bool should_flatten = depth > 0 && is_array_spec(ctx, element.is_object() ? element.as_object() : nullptr);
+        if (ctx.has_exception()) return -1;
+        if (should_flatten) {
+            double element_len = array_like_length(ctx, element.as_object());
+            if (ctx.has_exception()) return -1;
+            target_index = flatten_into_array(ctx, target, element.as_object(), element_len,
+                                               target_index, depth - 1);
+            if (ctx.has_exception()) return -1;
+        } else {
+            if (target_index >= 9007199254740991.0) {
+                ctx.throw_type_error("flatten target index exceeded 2**53 - 1");
+                return -1;
+            }
+            if (!create_data_property_or_throw(ctx, target, Value(target_index).to_string(), element)) return -1;
+            target_index++;
+        }
+    }
+    return target_index;
 }
 
 void register_array_builtins(Context& ctx, Object* function_prototype) {
@@ -792,42 +857,29 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.with called on non-object")));
-                return Value();
-            }
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
-            if (args.empty()) {
-                throw std::runtime_error("TypeError: Array.prototype.with requires an index argument");
-            }
+            double index_arg = args.empty() ? 0.0 : to_integer_or_infinity_throwing(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
+            double actual_index = index_arg >= 0 ? index_arg : length + index_arg;
 
-            double index_arg = args[0].to_number();
-            int32_t actual_index;
-
-            if (index_arg < 0) {
-                actual_index = static_cast<int32_t>(length) + static_cast<int32_t>(index_arg);
-            } else {
-                actual_index = static_cast<int32_t>(index_arg);
+            if (actual_index >= length || actual_index < 0) {
+                ctx.throw_range_error("Array.prototype.with index out of bounds");
+                return Value();
             }
-
-            if (actual_index < 0 || actual_index >= static_cast<int32_t>(length)) {
-                throw std::runtime_error("RangeError: Array.prototype.with index out of bounds");
-            }
+            if (length > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
 
             Value new_value = args.size() > 1 ? args[1] : Value();
 
-            auto result = ObjectFactory::create_array();
-            for (uint32_t i = 0; i < length; i++) {
-                if (i == static_cast<uint32_t>(actual_index)) {
-                    result->set_element(i, new_value);
-                } else {
-                    result->set_element(i, this_obj->get_element(i));
-                }
+            auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
+            Object* result_obj = result.get();
+            for (double i = 0; i < length; i++) {
+                Value v = (i == actual_index) ? new_value : this_obj->get_property(Value(i).to_string());
+                if (ctx.has_exception()) return Value();
+                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), v)) return Value();
             }
-            result->set_length(length);
 
             return Value(result.release());
         }, 2);
@@ -878,32 +930,24 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.includes called on non-object")));
-                return Value();
-            }
-
             Value search_element = args.empty() ? Value() : args[0];
 
-            Value length_val = this_obj->get_property("length");
-            uint32_t length = static_cast<uint32_t>(length_val.to_number());
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
 
-            int64_t from_index = 0;
+            double from_index = 0;
             if (args.size() > 1) {
-                if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
-                    return Value();
-                }
-                from_index = static_cast<int64_t>(args[1].to_number());
+                from_index = to_integer_or_infinity_throwing(ctx, args[1]);
+                if (ctx.has_exception()) return Value();
             }
 
             if (from_index < 0) {
-                from_index = static_cast<int64_t>(length) + from_index;
-                if (from_index < 0) from_index = 0;
+                from_index = std::max(length + from_index, 0.0);
             }
 
-            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
-                Value element = this_obj->get_property(std::to_string(i));
+            for (double i = from_index; i < length; i++) {
+                Value element = this_obj->get_property(Value(i).to_string());
+                if (ctx.has_exception()) return Value();
 
                 if (search_element.is_number() && element.is_number()) {
                     double search_num = search_element.to_number();
@@ -935,44 +979,32 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
+
+            double source_len = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
 
             double depth = 1.0;
             if (!args.empty() && !args[0].is_undefined()) {
-                depth = args[0].to_number();
-                if (std::isnan(depth) || depth < 0) {
-                    depth = 0.0;
-                }
+                depth = to_integer_or_infinity_throwing(ctx, args[0]);
+                if (ctx.has_exception()) return Value();
+                if (depth < 0) depth = 0.0;
             }
 
-            std::function<void(Object*, std::unique_ptr<Object>&, double)> flatten_helper;
-            flatten_helper = [&](Object* source, std::unique_ptr<Object>& target, double current_depth) {
-                uint32_t source_length = source->get_length();
-                uint32_t target_length = target->get_length();
+            Value result_val = array_species_create(ctx, this_obj, 0);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-                for (uint32_t i = 0; i < source_length; i++) {
-                    Value element = source->get_element(i);
+            double final_index = flatten_into_array(ctx, result, this_obj, source_len, 0, depth);
+            if (ctx.has_exception()) return Value();
+            bool ok = result->set_property("length", Value(final_index));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
-                    if (element.is_object() && current_depth > 0) {
-                        Object* element_obj = element.as_object();
-                        if (element_obj->has_property("length")) {
-                            flatten_helper(element_obj, target, current_depth - 1);
-                            target_length = target->get_length();
-                            continue;
-                        }
-                    }
-
-                    target->set_element(target_length++, element);
-                }
-
-                target->set_length(target_length);
-            };
-
-            auto result = ObjectFactory::create_array();
-            flatten_helper(this_obj, result, depth);
-
-            return Value(result.release());
-        });
+            return result_val;
+        }, 0);
 
     PropertyDescriptor flat_length_desc(Value(0.0), PropertyAttributes::Configurable);
     flat_fn->set_property_descriptor("length", flat_length_desc);
@@ -987,42 +1019,31 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
+            double source_len = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.flatMap callback must be a function");
+                ctx.throw_type_error("Array.prototype.flatMap mapperFunction must be a function");
+                return Value();
             }
-
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
-            auto result = ObjectFactory::create_array();
-            uint32_t result_index = 0;
+            Value result_val = array_species_create(ctx, this_obj, 0);
+            if (ctx.has_exception()) return Value();
+            Object* result = result_val.is_object() ? result_val.as_object()
+                           : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
+                           : nullptr;
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
-                Value mapped = callback->call(ctx, callback_args, thisArg);
+            double final_index = flatten_into_array(ctx, result, this_obj, source_len, 0, 1, callback, thisArg);
+            if (ctx.has_exception()) return Value();
+            bool ok = result->set_property("length", Value(final_index));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
-                if (mapped.is_object()) {
-                    Object* mapped_obj = mapped.as_object();
-                    if (mapped_obj->has_property("length")) {
-                        uint32_t mapped_length = mapped_obj->get_length();
-                        for (uint32_t j = 0; j < mapped_length; j++) {
-                            result->set_element(result_index++, mapped_obj->get_element(j));
-                        }
-                        continue;
-                    }
-                }
-
-                result->set_element(result_index++, mapped);
-            }
-
-            result->set_length(result_index);
-            return Value(result.release());
+            return result_val;
         }, 1);
 
     flatMap_fn->set_property("name", Value(std::string("flatMap")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -1216,101 +1237,63 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value();
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-
-                double target_arg = args.empty() ? 0.0 : args[0].to_number();
-                int32_t target = target_arg < 0
-                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(target_arg))
-                    : std::min(static_cast<uint32_t>(target_arg), length);
-
-                double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
-                int32_t start = start_arg < 0
-                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
-                    : std::min(static_cast<uint32_t>(start_arg), length);
-
-                double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
-                int32_t end = end_arg < 0
-                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
-                    : std::min(static_cast<uint32_t>(end_arg), length);
-
-                int32_t count = std::min(end - start, static_cast<int32_t>(length) - target);
-
-                if (count <= 0) {
-                    return Value(this_obj);
-                }
-
-                // Spec: use HasProperty to handle holes - delete instead of set for missing source slots
-                if (start < target && target < start + count) {
-                    for (int32_t i = count - 1; i >= 0; i--) {
-                        std::string from_key = std::to_string(start + i);
-                        std::string to_key = std::to_string(target + i);
-                        if (this_obj->has_property(from_key)) {
-                            this_obj->set_property(to_key, this_obj->get_property(from_key));
-                        } else {
-                            this_obj->delete_property(to_key);
-                        }
-                        if (ctx.has_exception()) return Value();
-                    }
-                } else {
-                    for (int32_t i = 0; i < count; i++) {
-                        std::string from_key = std::to_string(start + i);
-                        std::string to_key = std::to_string(target + i);
-                        if (this_obj->has_property(from_key)) {
-                            this_obj->set_property(to_key, this_obj->get_property(from_key));
-                        } else {
-                            this_obj->delete_property(to_key);
-                        }
-                        if (ctx.has_exception()) return Value();
-                    }
-                }
-
-                return Value(this_obj);
-            }
-
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
-            double target_arg = args.empty() ? 0.0 : args[0].to_number();
-            int32_t target = target_arg < 0
-                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(target_arg))
-                : std::min(static_cast<uint32_t>(target_arg), length);
+            auto relative_to_actual = [&](double rel) {
+                return rel < 0 ? std::max(length + rel, 0.0) : std::min(rel, length);
+            };
 
-            double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
-            int32_t start = start_arg < 0
-                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
-                : std::min(static_cast<uint32_t>(start_arg), length);
+            double target_arg = args.empty() ? 0.0 : to_integer_or_infinity_throwing(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
+            double target = relative_to_actual(target_arg);
 
-            double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
-            int32_t end = end_arg < 0
-                ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
-                : std::min(static_cast<uint32_t>(end_arg), length);
+            double start_arg = args.size() > 1 ? to_integer_or_infinity_throwing(ctx, args[1]) : 0.0;
+            if (ctx.has_exception()) return Value();
+            double start = relative_to_actual(start_arg);
 
-            int32_t count = std::min(end - start, static_cast<int32_t>(length) - target);
+            double end_arg = (args.size() > 2 && !args[2].is_undefined())
+                ? to_integer_or_infinity_throwing(ctx, args[2]) : length;
+            if (ctx.has_exception()) return Value();
+            double end = relative_to_actual(end_arg);
 
-            if (count <= 0) {
-                return Value(this_obj);
-            }
+            double count = std::min(end - start, length - target);
 
-            if (start < target && target < start + count) {
-                for (int32_t i = count - 1; i >= 0; i--) {
-                    Value val = this_obj->get_element(start + i);
-                    this_obj->set_element(target + i, val);
+            auto copy_one = [&](double from, double to) -> bool {
+                std::string from_key = Value(from).to_string();
+                std::string to_key = Value(to).to_string();
+                bool present = this_obj->has_property(from_key);
+                if (ctx.has_exception()) return false;
+                if (present) {
+                    Value v = this_obj->get_property(from_key);
+                    if (ctx.has_exception()) return false;
+                    bool ok = this_obj->set_property(to_key, v);
+                    if (ctx.has_exception()) return false;
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + to_key + "'"); return false; }
+                } else {
+                    bool ok = this_obj->delete_property(to_key);
+                    if (ctx.has_exception()) return false;
+                    if (!ok) { ctx.throw_type_error("Cannot delete property '" + to_key + "'"); return false; }
                 }
-            } else {
-                for (int32_t i = 0; i < count; i++) {
-                    Value val = this_obj->get_element(start + i);
-                    this_obj->set_element(target + i, val);
+                return true;
+            };
+
+            if (count > 0) {
+                if (start < target && target < start + count) {
+                    for (double i = count - 1; i >= 0; i--) {
+                        if (!copy_one(start + i, target + i)) return Value();
+                    }
+                } else {
+                    for (double i = 0; i < count; i++) {
+                        if (!copy_one(start + i, target + i)) return Value();
+                    }
                 }
             }
 
             return Value(this_obj);
-        });
+        }, 2);
 
     PropertyDescriptor copyWithin_length_desc(Value(2.0), PropertyAttributes::None);
     copyWithin_length_desc.set_configurable(true);
@@ -1330,48 +1313,40 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value(-1.0);
             }
 
-            if (args.empty()) {
-                return Value(-1.0);
-            }
-
-            Value searchElement = args[0];
-            uint32_t length = this_obj->get_length();
+            Value searchElement = args.empty() ? Value() : args[0];
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
             if (length == 0) {
                 return Value(-1.0);
             }
 
-            int32_t fromIndex = static_cast<int32_t>(length - 1);
+            double fromIndex = length - 1;
             if (args.size() > 1) {
-                double from_num = args[1].to_number();
+                double int_from = to_integer_or_infinity_throwing(ctx, args[1]);
                 if (ctx.has_exception()) return Value();
-                if (std::isnan(from_num)) {
-                    return Value(-1.0);
-                }
-                // ToIntegerOrInfinity truncates toward zero before any arithmetic.
-                double int_from = std::trunc(from_num);
                 if (int_from < 0) {
-                    double relative = static_cast<double>(length) + int_from;
-                    if (relative < 0) return Value(-1.0);
-                    fromIndex = static_cast<int32_t>(relative);
-                } else if (int_from < static_cast<double>(length)) {
-                    fromIndex = static_cast<int32_t>(int_from);
+                    fromIndex = length + int_from;
                 } else {
-                    fromIndex = static_cast<int32_t>(length - 1);
+                    fromIndex = std::min(int_from, length - 1);
                 }
+                if (fromIndex == 0) fromIndex = 0; // normalize -0 to +0
             }
 
-            for (int32_t i = fromIndex; i >= 0; i--) {
-                if (!this_obj->is_typed_array() && !this_obj->has_property(std::to_string(i))) continue;
-                Value element = this_obj->get_element(static_cast<uint32_t>(i));
+            for (double i = fromIndex; i >= 0; i--) {
+                std::string key = Value(i).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!present) continue;
+                Value element = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
                 if (element.strict_equals(searchElement)) {
-                    return Value(static_cast<double>(i));
+                    return Value(i);
                 }
             }
 
             return Value(-1.0);
-        });
+        }, 1);
 
     PropertyDescriptor lastIndexOf_length_desc(Value(1.0), PropertyAttributes::None);
     lastIndexOf_length_desc.set_configurable(true);
@@ -1387,51 +1362,39 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) {
-                ctx.throw_type_error("Array.prototype.reduceRight called on null or undefined");
-                return Value();
-            }
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
-            if (args.empty()) {
+            if (args.empty() || !args[0].is_function()) {
+                ctx.throw_type_error("Array.prototype.reduceRight callback must be a function");
+                return Value();
+            }
+            Function* callback_func = args[0].as_function();
+
+            if (length == 0 && args.size() < 2) {
                 ctx.throw_type_error("Reduce of empty array with no initial value");
                 return Value();
             }
 
-            Value callback = args[0];
-            if (!callback.is_function()) {
-                ctx.throw_type_error("Callback must be a function");
-                return Value();
-            }
-            Function* callback_func = static_cast<Function*>(callback.as_object());
-
-            if (length == 0) {
-                if (args.size() < 2) {
-                    ctx.throw_type_error("Reduce of empty array with no initial value");
-                    return Value();
-                }
-                return args[1];
-            }
-
+            double k = length - 1;
             Value accumulator;
-            int32_t k;
 
             if (args.size() >= 2) {
                 accumulator = args[1];
-                k = static_cast<int32_t>(length - 1);
             } else {
-                k = static_cast<int32_t>(length - 1);
                 bool found = false;
-                while (k >= 0) {
-                    if (this_obj->has_property(std::to_string(k))) {
-                        accumulator = this_obj->get_element(static_cast<uint32_t>(k));
+                for (; k >= 0; k--) {
+                    std::string key = Value(k).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (present) {
+                        accumulator = this_obj->get_property(key);
+                        if (ctx.has_exception()) return Value();
                         k--;
                         found = true;
                         break;
                     }
-                    k--;
                 }
                 if (!found) {
                     ctx.throw_type_error("Reduce of empty array with no initial value");
@@ -1439,22 +1402,20 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 }
             }
 
-            while (k >= 0) {
-                if (this_obj->has_property(std::to_string(k))) {
-                    Value element = this_obj->get_element(static_cast<uint32_t>(k));
-                    std::vector<Value> callback_args = {
-                        accumulator,
-                        element,
-                        Value(static_cast<double>(k)),
-                        Value(this_obj)
-                    };
-                    accumulator = callback_func->call(ctx, callback_args, Value());
-                }
-                k--;
+            for (; k >= 0; k--) {
+                std::string key = Value(k).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!present) continue;
+                Value element = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
+                std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
+                accumulator = callback_func->call(ctx, callback_args, Value());
+                if (ctx.has_exception()) return Value();
             }
 
             return accumulator;
-        });
+        }, 1);
 
     PropertyDescriptor reduceRight_length_desc(Value(1.0), PropertyAttributes::None);
     reduceRight_length_desc.set_configurable(true);
@@ -1532,17 +1493,57 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto toSorted_fn = ObjectFactory::create_native_function("toSorted",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
-            auto result = ObjectFactory::create_array(length);
-
-            for (uint32_t i = 0; i < length; i++) {
-                result->set_element(i, this_obj->get_element(i));
+            Function* compareFn = nullptr;
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (!args[0].is_function()) {
+                    ctx.throw_type_error("Array.prototype.toSorted: comparefn must be a function or undefined");
+                    return Value();
+                }
+                compareFn = args[0].as_function();
             }
-            result->set_length(length);
+
+            Object* this_obj = array_to_object(ctx);
+
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
+            if (length > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
+
+            auto result = ObjectFactory::create_array(static_cast<uint32_t>(length));
+
+            // read-through-holes: Get for every index, no HasProperty check.
+            std::vector<Value> items;
+            items.reserve(static_cast<size_t>(length));
+            for (double i = 0; i < length; i++) {
+                items.push_back(this_obj->get_property(Value(i).to_string()));
+                if (ctx.has_exception()) return Value();
+            }
+
+            auto compare = [&](const Value& a, const Value& b) -> int {
+                if (a.is_undefined() && b.is_undefined()) return 0;
+                if (a.is_undefined()) return 1;
+                if (b.is_undefined()) return -1;
+                if (compareFn) {
+                    Value cmp_result = compareFn->call(ctx, {a, b});
+                    if (ctx.has_exception()) return 0;
+                    double cmp = cmp_result.to_number();
+                    if (std::isnan(cmp)) return 0;
+                    return cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
+                }
+                std::string str_a = sort_default_to_string(ctx, a);
+                if (ctx.has_exception()) return 0;
+                std::string str_b = sort_default_to_string(ctx, b);
+                if (ctx.has_exception()) return 0;
+                return str_a.compare(str_b);
+            };
+            std::stable_sort(items.begin(), items.end(), [&](const Value& a, const Value& b) {
+                return compare(a, b) < 0;
+            });
+            if (ctx.has_exception()) return Value();
+
+            for (size_t j = 0; j < items.size(); j++) {
+                if (!create_data_property_or_throw(ctx, result.get(), std::to_string(j), items[j])) return Value();
+            }
 
             return Value(result.release());
         }, 1);
@@ -1554,36 +1555,55 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            int32_t start = args.empty() ? 0 : static_cast<int32_t>(args[0].to_number());
-            uint32_t deleteCount = args.size() < 2 ? (length - start) : static_cast<uint32_t>(args[1].to_number());
 
-            if (start < 0) {
-                start = static_cast<int32_t>(length) + start;
-                if (start < 0) start = 0;
-            }
-            if (start > static_cast<int32_t>(length)) start = length;
+            double start_arg = args.empty() ? 0.0 : to_integer_or_infinity_throwing(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
+            double actual_start = start_arg < 0 ? std::max(length + start_arg, 0.0) : std::min(start_arg, length);
 
-            auto result = ObjectFactory::create_array();
-            uint32_t result_index = 0;
-
-            for (uint32_t i = 0; i < static_cast<uint32_t>(start); i++) {
-                result->set_element(result_index++, this_obj->get_element(i));
-            }
-
-            for (size_t i = 2; i < args.size(); i++) {
-                result->set_element(result_index++, args[i]);
+            double item_count = args.size() > 2 ? static_cast<double>(args.size() - 2) : 0;
+            double actual_delete_count;
+            if (args.empty()) {
+                actual_delete_count = 0;
+            } else if (args.size() == 1) {
+                actual_delete_count = length - actual_start;
+            } else {
+                double dc = to_integer_or_infinity_throwing(ctx, args[1]);
+                if (ctx.has_exception()) return Value();
+                actual_delete_count = std::min(std::max(dc, 0.0), length - actual_start);
             }
 
-            uint32_t after_start = static_cast<uint32_t>(start) + deleteCount;
-            for (uint32_t i = after_start; i < length; i++) {
-                result->set_element(result_index++, this_obj->get_element(i));
+            double new_len = length + item_count - actual_delete_count;
+            if (new_len > 9007199254740991.0) {
+                ctx.throw_type_error("Array.prototype.toSpliced: resulting length would exceed 2**53 - 1");
+                return Value();
+            }
+            if (new_len > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
+
+            auto result = ObjectFactory::create_array(static_cast<uint32_t>(new_len));
+            Object* result_obj = result.get();
+
+            double i = 0;
+            double r = actual_start;
+            for (; i < actual_start; i++) {
+                std::string key = Value(i).to_string();
+                Value v = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!create_data_property_or_throw(ctx, result_obj, key, v)) return Value();
+            }
+            for (size_t arg_i = 2; arg_i < args.size(); arg_i++) {
+                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), args[arg_i])) return Value();
+                i++;
+            }
+            r += actual_delete_count;
+            for (; i < new_len; i++, r++) {
+                Value v = this_obj->get_property(Value(r).to_string());
+                if (ctx.has_exception()) return Value();
+                if (!create_data_property_or_throw(ctx, result_obj, Value(i).to_string(), v)) return Value();
             }
 
-            result->set_length(result_index);
             return Value(result.release());
         }, 2);
     PropertyDescriptor toSpliced_desc(Value(toSpliced_fn.release()),
@@ -1607,11 +1627,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value sv = obj->get_property("Symbol.isConcatSpreadable");
                 if (ctx.has_exception()) return false;
                 if (!sv.is_undefined()) return sv.to_boolean();
-                if (obj->get_type() == Object::ObjectType::Proxy) {
-                    Object* target = static_cast<Proxy*>(obj)->get_proxy_target();
-                    return target && target->is_array();
+                Object* target = obj;
+                while (target && target->get_type() == Object::ObjectType::Proxy) {
+                    Proxy* p = static_cast<Proxy*>(target);
+                    if (p->is_revoked()) { ctx.throw_type_error("Cannot perform operation on a revoked proxy"); return false; }
+                    target = p->get_proxy_target();
                 }
-                return obj->is_array();
+                return target && target->is_array();
             };
 
             double n = 0;
@@ -1632,25 +1654,26 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return true;
             };
 
-            if (is_spreadable(this_array)) {
+            bool this_spreadable = is_spreadable(this_array);
+            if (ctx.has_exception()) return Value();
+            if (this_spreadable) {
                 if (!spread_into(this_array)) return Value();
             } else {
                 if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), Value(this_array))) return Value();
                 n++;
             }
-            if (ctx.has_exception()) return Value();
 
             for (const auto& arg : args) {
                 if (arg.is_object() || arg.is_function()) {
                     Object* arg_obj = arg.is_function()
                         ? static_cast<Object*>(arg.as_function())
                         : arg.as_object();
-                    if (is_spreadable(arg_obj)) {
-                        if (ctx.has_exception()) return Value();
+                    bool arg_spreadable = is_spreadable(arg_obj);
+                    if (ctx.has_exception()) return Value();
+                    if (arg_spreadable) {
                         if (!spread_into(arg_obj)) return Value();
                         continue;
                     }
-                    if (ctx.has_exception()) return Value();
                 }
                 if (!create_data_property_or_throw(ctx, result, Value(n).to_string(), arg)) return Value();
                 n++;
@@ -1660,7 +1683,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.has_exception()) return Value();
             if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
             return result_val;
-        });
+        }, 1);
     PropertyDescriptor concat_desc(Value(array_concat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     array_prototype->set_property_descriptor("concat", concat_desc);
@@ -1702,15 +1725,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.filter callback must be a function");
+                ctx.throw_type_error("Array.prototype.filter callback must be a function");
+                return Value();
             }
-
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
@@ -1720,20 +1742,27 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
-            if (!result) { auto a = ObjectFactory::create_array(); return Value(a.release()); }
-            uint32_t result_index = 0;
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            for (uint32_t i = 0; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) continue;
-                Value element = this_obj->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+            double to = 0;
+            for (double k = 0; k < length; k++) {
+                std::string key = Value(k).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!present) continue;
+                Value element = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
+                std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
                 Value test_result = callback->call(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 if (test_result.to_boolean()) {
-                    result->set_element(result_index++, element);
+                    if (!create_data_property_or_throw(ctx, result, Value(to).to_string(), element)) return Value();
+                    to++;
                 }
             }
-            result->set_length(result_index);
+            bool ok = result->set_property("length", Value(to));
+            if (ctx.has_exception()) return Value();
+            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
             return result_val;
         }, 1);
     PropertyDescriptor filter_desc(Value(filter_fn.release()),
@@ -1779,36 +1808,30 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(-1.0);
 
-            if (args.empty()) return Value(-1.0);
-            Value search_element = args[0];
+            Value search_element = args.empty() ? Value() : args[0];
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            if (length == 0) return Value(-1.0);
 
-            int32_t start_index = 0;
+            double start_index = 0;
             if (args.size() > 1) {
-                double from_index = args[1].to_number();
-
-                if (std::isnan(from_index)) {
-                    start_index = 0;
-                }
-                else if (from_index < 0) {
-                    int32_t relative_index = static_cast<int32_t>(length) + static_cast<int32_t>(from_index);
-                    start_index = relative_index < 0 ? 0 : relative_index;
-                }
-                else {
-                    start_index = static_cast<int32_t>(from_index);
-                    if (start_index >= static_cast<int32_t>(length)) {
-                        return Value(-1.0);
-                    }
-                }
+                double from_index = to_integer_or_infinity_throwing(ctx, args[1]);
+                if (ctx.has_exception()) return Value();
+                if (from_index >= length) return Value(-1.0);
+                start_index = from_index < 0 ? std::max(length + from_index, 0.0) : from_index;
+                if (start_index == 0) start_index = 0; // normalize -0 to +0
             }
 
-            for (uint32_t i = static_cast<uint32_t>(start_index); i < length; i++) {
-                if (!this_obj->is_typed_array() && !this_obj->has_property(std::to_string(i))) continue;
-                Value element = this_obj->get_element(i);
+            for (double i = start_index; i < length; i++) {
+                std::string key = Value(i).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!present) continue;
+                Value element = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
                 if (element.strict_equals(search_element)) {
-                    return Value(static_cast<double>(i));
+                    return Value(i);
                 }
             }
             return Value(-1.0);
@@ -1821,15 +1844,14 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.map callback must be a function");
+                ctx.throw_type_error("Array.prototype.map callback must be a function");
+                return Value();
             }
-
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
@@ -1839,18 +1861,21 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* result = result_val.is_object() ? result_val.as_object()
                            : result_val.is_function() ? static_cast<Object*>(result_val.as_function())
                            : nullptr;
-            if (!result) { auto a = ObjectFactory::create_array(length); return Value(a.release()); }
+            if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            for (uint32_t i = 0; i < length; i++) {
-                if (this_obj->has_property(std::to_string(i))) {
-                    Value element = this_obj->get_element(i);
-                    std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
+            for (double k = 0; k < length; k++) {
+                std::string key = Value(k).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (present) {
+                    Value element = this_obj->get_property(key);
+                    if (ctx.has_exception()) return Value();
+                    std::vector<Value> callback_args = { element, Value(k), Value(this_obj) };
                     Value mapped = callback->call(ctx, callback_args, thisArg);
                     if (ctx.has_exception()) return Value();
-                    result->set_element(i, mapped);
+                    if (!create_data_property_or_throw(ctx, result, key, mapped)) return Value();
                 }
             }
-            result->set_length(length);
             return result_val;
         }, 1);
     PropertyDescriptor map_desc(Value(map_fn.release()),
@@ -1860,55 +1885,57 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
-            if (!this_obj) return Value();
 
-            uint32_t length = this_obj->get_length();
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
 
             if (args.empty() || !args[0].is_function()) {
-                throw std::runtime_error("TypeError: Array.prototype.reduce callback must be a function");
+                ctx.throw_type_error("Array.prototype.reduce callback must be a function");
+                return Value();
             }
-
             Function* callback = args[0].as_function();
 
             if (length == 0 && args.size() < 2) {
-                throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+                ctx.throw_type_error("Reduce of empty array with no initial value");
+                return Value();
             }
 
-            uint32_t start_index = 0;
+            double k = 0;
             Value accumulator;
 
             if (args.size() > 1) {
                 accumulator = args[1];
             } else {
                 bool found = false;
-                for (uint32_t i = 0; i < length; i++) {
-                    if (this_obj->has_property(std::to_string(i))) {
-                        accumulator = this_obj->get_property(std::to_string(i));
-                        start_index = i + 1;
+                for (; k < length; k++) {
+                    std::string key = Value(k).to_string();
+                    bool present = this_obj->has_property(key);
+                    if (ctx.has_exception()) return Value();
+                    if (present) {
+                        accumulator = this_obj->get_property(key);
+                        if (ctx.has_exception()) return Value();
+                        k++;
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    throw std::runtime_error("TypeError: Reduce of empty array with no initial value");
+                    ctx.throw_type_error("Reduce of empty array with no initial value");
+                    return Value();
                 }
             }
 
-            for (uint32_t i = start_index; i < length; i++) {
-                if (!this_obj->has_property(std::to_string(i))) {
-                    continue;
-                }
-                Value element = this_obj->get_property(std::to_string(i));
-                std::vector<Value> callback_args = {
-                    accumulator,
-                    element,
-                    Value(static_cast<double>(i)),
-                    Value(this_obj)
-                };
+            for (; k < length; k++) {
+                std::string key = Value(k).to_string();
+                bool present = this_obj->has_property(key);
+                if (ctx.has_exception()) return Value();
+                if (!present) continue;
+                Value element = this_obj->get_property(key);
+                if (ctx.has_exception()) return Value();
+                std::vector<Value> callback_args = { accumulator, element, Value(k), Value(this_obj) };
                 accumulator = callback->call(ctx, callback_args);
+                if (ctx.has_exception()) return Value();
             }
 
             return accumulator;
@@ -1988,14 +2015,24 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(std::string(""));
 
-            std::string separator = args.empty() ? "," : args[0].to_string();
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
+
+            std::string separator = ",";
+            if (!args.empty() && !args[0].is_undefined()) {
+                separator = sort_default_to_string(ctx, args[0]);
+                if (ctx.has_exception()) return Value();
+            }
             std::string result = "";
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
-            for (uint32_t i = 0; i < length; i++) {
+            for (double i = 0; i < length; i++) {
                 if (i > 0) result += separator;
-                result += this_obj->get_element(i).to_string();
+                Value element = this_obj->get_property(Value(i).to_string());
+                if (ctx.has_exception()) return Value();
+                if (!element.is_undefined() && !element.is_null()) {
+                    result += sort_default_to_string(ctx, element);
+                    if (ctx.has_exception()) return Value();
+                }
             }
             return Value(result);
         }, 1);
