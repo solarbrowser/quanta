@@ -27,7 +27,8 @@ private:
     std::shared_ptr<ArrayBuffer> buffer_;
     size_t byte_offset_;
     size_t byte_length_;
-    
+    bool length_tracking_ = false;
+
     bool validate_offset(size_t offset, size_t size) const;
     uint8_t* get_data_ptr() const;
     
@@ -51,7 +52,12 @@ public:
     ArrayBuffer* buffer() const { return buffer_.get(); }
     size_t byte_offset() const { return byte_offset_; }
     size_t byte_length() const { return byte_length_; }
-    
+    bool is_length_tracking() const { return length_tracking_; }
+
+    // True if buffer is detached or the view no longer fits the (possibly resized) buffer.
+    bool is_out_of_bounds() const;
+    size_t current_byte_length() const; // only valid when !is_out_of_bounds()
+
     bool is_data_view() const override { return true; }
     std::string get_type_name() const { return "DataView"; }
     
@@ -79,8 +85,9 @@ public:
     bool set_float32(size_t offset, float value, bool little_endian = false);
     bool set_float64(size_t offset, double value, bool little_endian = false);
     
+    // Handles buffer/byteLength/byteOffset directly; native-getter accessor dispatch doesn't call them.
     Value get_property(const std::string& key) const override;
-    
+
     std::string to_string() const;
     
     static Value constructor(Context& ctx, const std::vector<Value>& args);
@@ -107,11 +114,6 @@ public:
     static Value js_set_bigint64(Context& ctx, const std::vector<Value>& args);
     static Value js_get_biguint64(Context& ctx, const std::vector<Value>& args);
     static Value js_set_biguint64(Context& ctx, const std::vector<Value>& args);
-
-private:
-    void setup_methods();
-    
-    static DataView* get_this_dataview(Context& ctx);
 };
 
 /**
