@@ -430,7 +430,9 @@ bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
     } else if (num_val > 255.0) {
         return set_typed_element(index, 255);
     } else {
-        return set_typed_element(index, static_cast<uint8_t>(std::round(num_val)));
+        // ClampRound: ties round to the nearest *even* integer, not away from zero --
+        // std::nearbyint uses the default (round-to-nearest-even) FP rounding mode.
+        return set_typed_element(index, static_cast<uint8_t>(std::nearbyint(num_val)));
     }
 }
 
@@ -510,7 +512,9 @@ Value BigUint64Array::get_element(size_t index) const {
     if (!data) return Value();
     uint64_t val;
     quanta_memcpy(&val, data + index * 8, 8);
-    return Value(new BigInt(static_cast<int64_t>(val)));
+    // BigInt has no unsigned-int64 constructor; round-trip through the decimal string to avoid
+    // static_cast<int64_t>(val) reinterpreting the top bit as a sign (BigUint64 must stay >= 0).
+    return Value(new BigInt(std::to_string(val)));
 }
 
 bool BigUint64Array::set_element(size_t index, const Value& value) {
