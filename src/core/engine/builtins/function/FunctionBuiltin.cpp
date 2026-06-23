@@ -268,6 +268,12 @@ void register_function_builtins(Context& ctx) {
 
     auto bind_fn = ObjectFactory::create_native_function("bind",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Check the raw this value (get_this_binding returns stale Object* for primitive this).
+            Value raw_this = ctx.get_binding("this");
+            if (!raw_this.is_object() && !raw_this.is_function()) {
+                ctx.throw_type_error("Function.prototype.bind called on non-function");
+                return Value();
+            }
             Object* function_obj = ctx.get_this_binding();
             // Accept plain functions or Proxy objects wrapping a function
             Function* target_func = nullptr;
