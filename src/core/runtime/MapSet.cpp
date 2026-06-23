@@ -910,16 +910,26 @@ void Set::setup_set_prototype(Context& ctx) {
         }
         return result;
     };
-    // Validate a "set-like" argument per GetSetRecord spec: must have callable has and keys
+    // Validate a "set-like" argument per GetSetRecord spec: must have callable has, keys, and numeric size.
     auto validate_set_like = [](Context& ctx, Object* other) -> bool {
         Value has_fn = other->get_property("has");
+        if (ctx.has_exception()) return false;
         if (!has_fn.is_function()) {
             ctx.throw_type_error("GetSetRecord: has is not callable");
             return false;
         }
         Value keys_fn = other->get_property("keys");
+        if (ctx.has_exception()) return false;
         if (!keys_fn.is_function()) {
             ctx.throw_type_error("GetSetRecord: keys is not callable");
+            return false;
+        }
+        Value size_val = other->get_property("size");
+        if (ctx.has_exception()) return false;
+        double num_size = size_val.to_number();
+        if (ctx.has_exception()) return false;
+        if (std::isnan(num_size)) {
+            ctx.throw_type_error("GetSetRecord: size is NaN");
             return false;
         }
         return true;

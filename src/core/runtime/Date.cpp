@@ -124,7 +124,11 @@ Value Date::getTime(Context& ctx, const std::vector<Value>& args) {
 Value Date::getFullYear(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -143,7 +147,11 @@ Value Date::getFullYear(Context& ctx, const std::vector<Value>& args) {
 Value Date::getMonth(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -162,7 +170,11 @@ Value Date::getMonth(Context& ctx, const std::vector<Value>& args) {
 Value Date::getDate(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -181,7 +193,11 @@ Value Date::getDate(Context& ctx, const std::vector<Value>& args) {
 Value Date::getDay(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -200,7 +216,11 @@ Value Date::getDay(Context& ctx, const std::vector<Value>& args) {
 Value Date::getHours(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -219,7 +239,11 @@ Value Date::getHours(Context& ctx, const std::vector<Value>& args) {
 Value Date::getMinutes(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -238,7 +262,11 @@ Value Date::getMinutes(Context& ctx, const std::vector<Value>& args) {
 Value Date::getSeconds(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -257,7 +285,11 @@ Value Date::getSeconds(Context& ctx, const std::vector<Value>& args) {
 Value Date::getMilliseconds(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -286,7 +318,11 @@ Value Date::setFullYear(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -323,7 +359,11 @@ Value Date::setMonth(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -360,7 +400,11 @@ Value Date::setDate(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -404,7 +448,11 @@ Value Date::setHours(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -441,7 +489,11 @@ Value Date::setMinutes(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -478,7 +530,11 @@ Value Date::setSeconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -515,7 +571,11 @@ Value Date::setMilliseconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -560,7 +620,11 @@ Value Date::toString(Context& ctx, const std::vector<Value>& args) {
 Value Date::toISOString(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         ctx.throw_range_error("Invalid Date");
         return Value();
     }
@@ -742,7 +806,11 @@ Value Date::setYear(Context& ctx, const std::vector<Value>& args) {
     }
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -781,7 +849,12 @@ Value Date::setYear(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Date::getTimezoneOffset(Context& ctx, const std::vector<Value>& args) {
-    (void)ctx; (void)args;
+    (void)args;
+    Object* date_obj = ctx.get_this_binding();
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
 
     auto now = std::chrono::system_clock::now();
     std::time_t tt = std::chrono::system_clock::to_time_t(now);
@@ -803,7 +876,11 @@ Value Date::getTimezoneOffset(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCDate(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -819,7 +896,11 @@ Value Date::getUTCDate(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCDay(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -835,7 +916,11 @@ Value Date::getUTCDay(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCFullYear(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -851,7 +936,11 @@ Value Date::getUTCFullYear(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCHours(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -867,7 +956,11 @@ Value Date::getUTCHours(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -882,7 +975,11 @@ Value Date::getUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCMinutes(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -898,7 +995,11 @@ Value Date::getUTCMinutes(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCMonth(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -914,7 +1015,11 @@ Value Date::getUTCMonth(Context& ctx, const std::vector<Value>& args) {
 Value Date::getUTCSeconds(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
     Value timestamp_val = date_obj->get_property("_timestamp");
@@ -931,7 +1036,11 @@ Value Date::setUTCFullYear(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -974,7 +1083,11 @@ Value Date::setUTCMonth(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -1017,7 +1130,11 @@ Value Date::setUTCDate(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -1060,7 +1177,11 @@ Value Date::setUTCHours(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -1103,7 +1224,11 @@ Value Date::setUTCMinutes(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -1146,7 +1271,11 @@ Value Date::setUTCSeconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 
@@ -1189,7 +1318,11 @@ Value Date::setUTCMilliseconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj || !date_obj->has_property("_timestamp")) {
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
+    }
+    if (!date_obj->has_property("_timestamp")) {
         return Value(std::numeric_limits<double>::quiet_NaN());
     }
 

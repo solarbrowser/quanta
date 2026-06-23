@@ -47,6 +47,39 @@ static std::string apply_substitution(const std::string& replacement, const std:
     return result;
 }
 
+// Returns UTF-8 byte length of a Unicode WhiteSpace/LineTerminator at str[i], 0 if not whitespace.
+static size_t is_unicode_whitespace(const std::string& str, size_t i) {
+    unsigned char c = static_cast<unsigned char>(str[i]);
+    if (c == 0x09||c == 0x0A||c == 0x0B||c == 0x0C||c == 0x0D||c == 0x20) return 1;
+    if (i + 1 < str.size()) {
+        unsigned char c1 = static_cast<unsigned char>(str[i+1]);
+        if (c == 0xC2 && c1 == 0xA0) return 2;
+        if (i + 2 < str.size()) {
+            unsigned char c2 = static_cast<unsigned char>(str[i+2]);
+            if (c == 0xEF && c1 == 0xBB && c2 == 0xBF) return 3;
+            if (c == 0xE2 && c1 == 0x80 && c2 >= 0x80 && c2 <= 0xAB) return 3;
+            if (c == 0xE2 && c1 == 0x80 && c2 == 0xAF) return 3;
+            if (c == 0xE2 && c1 == 0x81 && c2 == 0x9F) return 3;
+            if (c == 0xE1 && c1 == 0x9A && c2 == 0x80) return 3;
+            if (c == 0xE3 && c1 == 0x80 && c2 == 0x80) return 3;
+        }
+    }
+    return 0;
+}
+
+static std::string unicode_trim(const std::string& str) {
+    size_t start = 0, end = str.size();
+    while (start < end) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
+    while (end > start) {
+        size_t p = end - 1;
+        while (p > start && (static_cast<unsigned char>(str[p]) & 0xC0) == 0x80) p--;
+        size_t n = is_unicode_whitespace(str, p);
+        if (!n || p + n != end) break;
+        end = p;
+    }
+    return str.substr(start, end - start);
+}
+
 // RequireObjectCoercible + ToString: throws for null/undefined, calls JS toString() on objects.
 static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
     ok = false;
@@ -56,6 +89,19 @@ static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
     }
     if (v.is_object() || v.is_function()) {
         Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+        // Fast path: primitive-wrapper objects expose their value via [[PrimitiveValue]] or valueOf().
+        auto otype = obj->get_type();
+        if (otype == Object::ObjectType::String || otype == Object::ObjectType::Boolean ||
+                otype == Object::ObjectType::Number) {
+            Value pv = obj->get_property("[[PrimitiveValue]]");
+            if (!pv.is_undefined() && !pv.is_object() && !pv.is_function()) { ok = true; return pv.to_string(); }
+            Value vof = obj->get_property("valueOf");
+            if (!ctx.has_exception() && vof.is_function()) {
+                Value r = vof.as_function()->call(ctx, {}, v);
+                if (!ctx.has_exception() && !r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+                if (ctx.has_exception()) return {};
+            }
+        }
         Value ts = obj->get_property("toString");
         if (ctx.has_exception()) return {};
         if (ts.is_function()) {
@@ -940,9 +986,7 @@ void register_string_builtins(Context& ctx) {
 
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
 
             if (args.size() < 2) return Value(str);
 
@@ -966,7 +1010,7 @@ void register_string_builtins(Context& ctx) {
                     std::vector<Value> fn_args = {
                         Value(search),
                         Value(static_cast<double>(*it)),
-                        Value(this_value.to_string())
+                        Value(str)
                     };
                     Value result = replacer->call(ctx, fn_args);
                     if (ctx.has_exception()) return Value();
@@ -987,10 +1031,7 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
-            size_t start = str.find_first_not_of(" \t\n\r\f\v");
-            if (start == std::string::npos) return Value(std::string(""));
-            size_t end = str.find_last_not_of(" \t\n\r\f\v");
-            return Value(str.substr(start, end - start + 1));
+            return Value(unicode_trim(str));
         }, 0);
     PropertyDescriptor trim_desc(Value(trim_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1000,8 +1041,8 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
-            size_t start = str.find_first_not_of(" \t\n\r\f\v");
-            if (start == std::string::npos) return Value(std::string(""));
+            size_t start = 0;
+            while (start < str.size()) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
             return Value(str.substr(start));
         }, 0);
     PropertyDescriptor trimStart_desc(Value(trimStart_fn.release()),
@@ -1013,11 +1054,15 @@ void register_string_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
-
-            size_t end = str.find_last_not_of(" \t\n\r\f\v");
-            if (end == std::string::npos) return Value(std::string(""));
-
-            return Value(str.substr(0, end + 1));
+            size_t end = str.size();
+            while (end > 0) {
+                size_t p = end - 1;
+                while (p > 0 && (static_cast<unsigned char>(str[p]) & 0xC0) == 0x80) p--;
+                size_t n = is_unicode_whitespace(str, p);
+                if (!n || p + n != end) break;
+                end = p;
+            }
+            return Value(str.substr(0, end));
         }, 0);
     PropertyDescriptor trimEnd_desc(Value(trimEnd_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1137,7 +1182,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
 
     auto str_indexOf_fn = ObjectFactory::create_native_function("indexOf",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
@@ -1145,16 +1190,13 @@ void register_string_builtins(Context& ctx) {
                 return Value(-1.0);
             }
 
-            std::string search = args[0].to_string();
+            std::string search = obj_to_string(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
             size_t start = 0;
-            if (args.size() > 1) {
+            if (args.size() > 1 && !args[1].is_undefined()) {
                 double pos = args[1].to_number();
-                // ES1: If position is NaN, treat as 0; if negative, treat as 0
-                if (std::isnan(pos) || pos < 0) {
-                    start = 0;
-                } else {
-                    start = static_cast<size_t>(pos);
-                }
+                if (ctx.has_exception()) return Value();
+                if (!std::isnan(pos) && pos >= 0) start = static_cast<size_t>(pos);
             }
 
             size_t found_pos = str.find(search, start);

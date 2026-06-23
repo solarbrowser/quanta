@@ -365,6 +365,10 @@ void register_date_builtins(Context& ctx) {
                     return Value();
                 }
                 std::string hint = args.empty() ? "default" : args[0].to_string();
+                if (hint != "number" && hint != "string" && hint != "default") {
+                    ctx.throw_type_error("Date[Symbol.toPrimitive]: invalid hint");
+                    return Value();
+                }
                 if (hint == "number") {
                     Value valueOf_fn = obj->get_property("valueOf");
                     if (valueOf_fn.is_function()) {
