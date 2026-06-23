@@ -364,9 +364,9 @@ void Map::setup_map_prototype(Context& ctx) {
     auto map_prototype = ObjectFactory::create_object();
     
     auto set_fn = ObjectFactory::create_native_function("set", map_set);
-    auto get_fn = ObjectFactory::create_native_function("get", map_get);
-    auto has_fn = ObjectFactory::create_native_function("has", map_has);
-    auto delete_fn = ObjectFactory::create_native_function("delete", map_delete);
+    auto get_fn = ObjectFactory::create_native_function("get", map_get, 1);
+    auto has_fn = ObjectFactory::create_native_function("has", map_has, 1);
+    auto delete_fn = ObjectFactory::create_native_function("delete", map_delete, 1);
     auto clear_fn = ObjectFactory::create_native_function("clear", map_clear);
     auto size_fn = ObjectFactory::create_native_function("size", map_size_getter);
 
@@ -797,9 +797,9 @@ void Set::setup_set_prototype(Context& ctx) {
     
     auto set_prototype = ObjectFactory::create_object();
     
-    auto add_fn = ObjectFactory::create_native_function("add", set_add);
-    auto has_fn = ObjectFactory::create_native_function("has", set_has);
-    auto delete_fn = ObjectFactory::create_native_function("delete", set_delete);
+    auto add_fn = ObjectFactory::create_native_function("add", set_add, 1);
+    auto has_fn = ObjectFactory::create_native_function("has", set_has, 1);
+    auto delete_fn = ObjectFactory::create_native_function("delete", set_delete, 1);
     auto clear_fn = ObjectFactory::create_native_function("clear", set_clear);
     auto size_fn = ObjectFactory::create_native_function("size", set_size_getter);
     
@@ -1175,9 +1175,9 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
     auto weakmap_prototype = ObjectFactory::create_object();
     
     auto set_fn = ObjectFactory::create_native_function("set", weakmap_set);
-    auto get_fn = ObjectFactory::create_native_function("get", weakmap_get);
-    auto has_fn = ObjectFactory::create_native_function("has", weakmap_has);
-    auto delete_fn = ObjectFactory::create_native_function("delete", weakmap_delete);
+    auto get_fn = ObjectFactory::create_native_function("get", weakmap_get, 1);
+    auto has_fn = ObjectFactory::create_native_function("has", weakmap_has, 1);
+    auto delete_fn = ObjectFactory::create_native_function("delete", weakmap_delete, 1);
     
     weakmap_prototype->set_property("set", Value(set_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -1252,9 +1252,9 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     
     auto weakset_prototype = ObjectFactory::create_object();
     
-    auto add_fn = ObjectFactory::create_native_function("add", weakset_add);
-    auto has_fn = ObjectFactory::create_native_function("has", weakset_has);
-    auto delete_fn = ObjectFactory::create_native_function("delete", weakset_delete);
+    auto add_fn = ObjectFactory::create_native_function("add", weakset_add, 1);
+    auto has_fn = ObjectFactory::create_native_function("has", weakset_has, 1);
+    auto delete_fn = ObjectFactory::create_native_function("delete", weakset_delete, 1);
     
     weakset_prototype->set_property("add", Value(add_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));

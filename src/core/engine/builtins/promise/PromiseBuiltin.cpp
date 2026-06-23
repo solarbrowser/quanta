@@ -58,12 +58,12 @@ void register_promise_builtins(Context& ctx) {
                                 [promise_ptr](Context&, const std::vector<Value>& a) -> Value {
                                     promise_ptr->fulfill(a.empty() ? Value() : a[0]);
                                     return Value();
-                                });
+                                }, 1);
                             auto rej_fn = ObjectFactory::create_native_function("reject",
                                 [promise_ptr](Context&, const std::vector<Value>& a) -> Value {
                                     promise_ptr->reject(a.empty() ? Value() : a[0]);
                                     return Value();
-                                });
+                                }, 1);
                             std::vector<Value> then_args = { Value(res_fn.release()), Value(rej_fn.release()) };
                             then_fn->call(ctx, then_args, value);
                             return Value();
@@ -71,7 +71,7 @@ void register_promise_builtins(Context& ctx) {
                     }
                     promise_ptr->fulfill(value);
                     return Value();
-                });
+                }, 1);
             
             auto reject_fn = ObjectFactory::create_native_function("reject",
                 [promise_ptr = promise.get()](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -79,7 +79,7 @@ void register_promise_builtins(Context& ctx) {
                     Value reason = args.empty() ? Value() : args[0];
                     promise_ptr->reject(reason);
                     return Value();
-                });
+                }, 1);
             
             std::vector<Value> executor_args = {
                 Value(resolve_fn.release()),
@@ -114,7 +114,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             return Value(promise_obj.release());
-        });
+        }, 1);
     promise_constructor->set_property("try", Value(promise_try.release()));
     
     auto promise_withResolvers = ObjectFactory::create_native_function("withResolvers",
@@ -129,7 +129,7 @@ void register_promise_builtins(Context& ctx) {
                     Value value = args.empty() ? Value() : args[0];
                     promise_ptr->fulfill(value);
                     return Value();
-                });
+                }, 1);
 
             auto reject_fn = ObjectFactory::create_native_function("reject",
                 [promise_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -137,7 +137,7 @@ void register_promise_builtins(Context& ctx) {
                     Value reason = args.empty() ? Value() : args[0];
                     promise_ptr->reject(reason);
                     return Value();
-                });
+                }, 1);
 
             auto result_obj = ObjectFactory::create_object();
             result_obj->set_property("promise", Value(promise_obj.release()));
@@ -238,7 +238,7 @@ void register_promise_builtins(Context& ctx) {
             
             Promise* new_promise = promise->catch_method(on_rejected);
             return Value(new_promise);
-        });
+        }, 1);
     promise_prototype->set_property("catch", Value(promise_catch.release()));
     
     auto promise_finally = ObjectFactory::create_native_function("finally",
@@ -294,7 +294,7 @@ void register_promise_builtins(Context& ctx) {
             Function* then_fn = static_cast<Function*>(then_wrapper.release());
             Function* catch_fn = static_cast<Function*>(catch_wrapper.release());
             return Value(promise->then(then_fn, catch_fn));
-        });
+        }, 1);
     promise_prototype->set_property("finally", Value(promise_finally.release()));
 
     PropertyDescriptor promise_tag_desc(Value(std::string("Promise")), PropertyAttributes::Configurable);
@@ -312,7 +312,7 @@ void register_promise_builtins(Context& ctx) {
             auto promise = ObjectFactory::create_promise(&ctx);
             static_cast<Promise*>(promise.get())->fulfill(value);
             return Value(promise.release());
-        });
+        }, 1);
     promise_constructor->set_property("resolve", Value(promise_resolve_static.release()));
     
     auto promise_reject_static = ObjectFactory::create_native_function("reject",
@@ -321,7 +321,7 @@ void register_promise_builtins(Context& ctx) {
             auto promise = ObjectFactory::create_promise(&ctx);
             static_cast<Promise*>(promise.get())->reject(reason);
             return Value(promise.release());
-        });
+        }, 1);
     promise_constructor->set_property("reject", Value(promise_reject_static.release()));
 
     auto promise_all_static = ObjectFactory::create_native_function("all",
@@ -449,7 +449,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             return Value(result_promise_obj.release());
-        });
+        }, 1);
     promise_constructor->set_property("all", Value(promise_all_static.release()));
 
     auto promise_race_static = ObjectFactory::create_native_function("race",
@@ -556,7 +556,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             return Value(result_promise_obj.release());
-        });
+        }, 1);
     promise_constructor->set_property("race", Value(promise_race_static.release()));
 
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
@@ -722,7 +722,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             return Value(result_promise_obj.release());
-        });
+        }, 1);
     promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()));
 
     auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
@@ -812,7 +812,7 @@ void register_promise_builtins(Context& ctx) {
             }
 
             return Value(result_promise_obj.release());
-        });
+        }, 1);
     promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()));
 
     auto promise_any_static = ObjectFactory::create_native_function("any",

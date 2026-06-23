@@ -915,6 +915,16 @@ void register_typed_array_builtins(Context& ctx) {
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("join", PropertyDescriptor(Value(ta_join_fn.release()), PropertyAttributes::BuiltinFunction));
 
+    auto ta_toString_fn = ObjectFactory::create_native_function("toString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            Value join_fn = ctx.get_this_binding()->get_property("join");
+            if (join_fn.is_function()) return join_fn.as_function()->call(ctx, {}, Value(ctx.get_this_binding()));
+            return Value(std::string("[object TypedArray]"));
+        }, 0);
+    typedarray_proto_ptr->set_property_descriptor("toString", PropertyDescriptor(Value(ta_toString_fn.release()), PropertyAttributes::BuiltinFunction));
+
     auto ta_tolocalestring_fn = ObjectFactory::create_native_function("toLocaleString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
@@ -926,7 +936,30 @@ void register_typed_array_builtins(Context& ctx) {
             for (size_t i = 0; i < len; i++) {
                 if (i > 0) result += ",";
                 Value elem = ta->get_element(i);
-                Value locale_fn = elem.is_object() ? elem.as_object()->get_property("toLocaleString") : Value();
+                // Look up toLocaleString via the element's prototype chain (numbers need
+                // Number.prototype.toLocaleString, not the raw numeric string).
+                Value locale_fn;
+                if (elem.is_object() || elem.is_function()) {
+                    Object* obj = elem.is_function() ? static_cast<Object*>(elem.as_function()) : elem.as_object();
+                    locale_fn = obj->get_property("toLocaleString");
+                } else if (elem.is_number()) {
+                    Value num_ctor = ctx.get_binding("Number");
+                    Object* np_obj = nullptr;
+                    if (num_ctor.is_function()) {
+                        Value np = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
+                        if (!ctx.has_exception()) {
+                            if (np.is_object()) np_obj = np.as_object();
+                            else if (np.is_function()) np_obj = static_cast<Object*>(np.as_function());
+                        }
+                        if (ctx.has_exception()) ctx.clear_exception();
+                    }
+                    if (np_obj) {
+                        Value tls = np_obj->get_property("toLocaleString");
+                        if (!ctx.has_exception() && tls.is_function()) locale_fn = tls;
+                        if (ctx.has_exception()) ctx.clear_exception();
+                    }
+                }
+                if (ctx.has_exception()) return Value();
                 Value str_val;
                 if (locale_fn.is_function()) {
                     str_val = locale_fn.as_function()->call(ctx, {}, elem);
@@ -946,6 +979,10 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
             if (!ta) return Value();
             Object* this_obj = ctx.get_this_binding();
+            if (!args.empty() && !args[0].is_undefined() && !args[0].is_function()) {
+                ctx.throw_type_error("TypedArray.prototype.sort: comparefn must be callable or undefined");
+                return Value();
+            }
             size_t len = ta->length();
             if (len <= 1) return Value(this_obj);
             Function* cmp = (!args.empty() && args[0].is_function()) ? args[0].as_function() : nullptr;
@@ -963,9 +1000,9 @@ void register_typed_array_builtins(Context& ctx) {
     auto ta_reverse_fn = ObjectFactory::create_native_function("reverse",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             size_t len = ta->length();
             for (size_t i = 0; i < len / 2; i++) { Value t = ta->get_element(i); ta->set_element(i, ta->get_element(len - 1 - i)); ta->set_element(len - 1 - i, t); }
             return Value(this_obj);
@@ -1154,6 +1191,7 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
@@ -1183,6 +1221,7 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
@@ -1211,6 +1250,7 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* _ta = static_cast<TypedArrayBase*>(this_obj); if (_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {

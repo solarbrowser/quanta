@@ -1397,11 +1397,11 @@ void Reflect::setup_reflect(Context& ctx) {
     auto set_fn = ObjectFactory::create_native_function("set", reflect_set);
     auto has_fn = ObjectFactory::create_native_function("has", reflect_has);
     auto delete_property_fn = ObjectFactory::create_native_function("deleteProperty", reflect_delete_property);
-    auto own_keys_fn = ObjectFactory::create_native_function("ownKeys", reflect_own_keys);
-    auto get_prototype_of_fn = ObjectFactory::create_native_function("getPrototypeOf", reflect_get_prototype_of);
+    auto own_keys_fn = ObjectFactory::create_native_function("ownKeys", reflect_own_keys, 1);
+    auto get_prototype_of_fn = ObjectFactory::create_native_function("getPrototypeOf", reflect_get_prototype_of, 1);
     auto set_prototype_of_fn = ObjectFactory::create_native_function("setPrototypeOf", reflect_set_prototype_of);
-    auto is_extensible_fn = ObjectFactory::create_native_function("isExtensible", reflect_is_extensible);
-    auto prevent_extensions_fn = ObjectFactory::create_native_function("preventExtensions", reflect_prevent_extensions);
+    auto is_extensible_fn = ObjectFactory::create_native_function("isExtensible", reflect_is_extensible, 1);
+    auto prevent_extensions_fn = ObjectFactory::create_native_function("preventExtensions", reflect_prevent_extensions, 1);
     auto apply_fn = ObjectFactory::create_native_function("apply", reflect_apply);
     auto construct_fn = ObjectFactory::create_native_function("construct", reflect_construct);
     auto get_own_property_descriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor", reflect_get_own_property_descriptor, 2);

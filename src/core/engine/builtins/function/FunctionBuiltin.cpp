@@ -11,6 +11,7 @@
 #include "quanta/parser/Parser.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 
 namespace Quanta {
@@ -378,6 +379,37 @@ void register_function_builtins(Context& ctx) {
     function_prototype->set_property("toString", Value(function_toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
     function_prototype->set_property("name", Value(std::string("")), PropertyAttributes::Configurable);
+
+    // ES6: Function.prototype[Symbol.hasInstance](V) — OrdinaryHasInstance.
+    {
+        Symbol* has_inst_sym = Symbol::get_well_known(Symbol::HAS_INSTANCE);
+        if (has_inst_sym) {
+            auto has_inst_fn = ObjectFactory::create_native_function("[Symbol.hasInstance]",
+                [](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value raw_this = ctx.get_binding("this");
+                    if (!raw_this.is_function() && !raw_this.is_object()) {
+                        ctx.throw_type_error("Function.prototype[Symbol.hasInstance] requires a function this");
+                        return Value();
+                    }
+                    if (args.empty()) return Value(false);
+                    Value v = args[0];
+                    if (!v.is_object() && !v.is_function()) return Value(false);
+                    // Per spec OrdinaryHasInstance: if F.prototype is not an object, throw TypeError.
+                    Object* f_obj = raw_this.is_function() ? static_cast<Object*>(raw_this.as_function()) : raw_this.as_object();
+                    Value prot = f_obj->get_property("prototype");
+                    if (ctx.has_exception()) return Value();
+                    if (!prot.is_object() && !prot.is_function()) {
+                        ctx.throw_type_error("Function has non-object prototype in Symbol.hasInstance check");
+                        return Value();
+                    }
+                    return Value(v.instanceof_check(raw_this));
+                }, 1);
+            has_inst_fn->set_property("name", Value(std::string("[Symbol.hasInstance]")), PropertyAttributes::Configurable);
+            PropertyDescriptor has_inst_desc(Value(has_inst_fn.release()),
+                static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            function_prototype->set_property_descriptor(has_inst_sym->to_property_key(), has_inst_desc);
+        }
+    }
 
     // ES6: Function.prototype.caller/.arguments throw TypeError for strict/class functions.
     {

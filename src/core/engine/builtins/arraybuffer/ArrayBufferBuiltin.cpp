@@ -396,8 +396,9 @@ void register_arraybuffer_builtins(Context& ctx) {
         };
         for (int i = 0; atomics_ops[i]; ++i) {
             std::string op_name = atomics_ops[i];
+            int op_len = (op_name == "isLockFree") ? 1 : 3;
             auto op_fn = ObjectFactory::create_native_function(op_name,
-                [](Context&, const std::vector<Value>&) -> Value { return Value(0.0); }, 3);
+                [](Context&, const std::vector<Value>&) -> Value { return Value(0.0); }, op_len);
             atomics_obj->set_property(op_name, Value(op_fn.release()), PropertyAttributes::BuiltinFunction);
         }
         ctx.register_built_in_object("Atomics", atomics_obj.release());

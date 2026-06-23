@@ -131,7 +131,7 @@ void register_date_builtins(Context& ctx) {
         });
 
     auto date_now = ObjectFactory::create_native_function("now", Date::now);
-    auto date_parse = ObjectFactory::create_native_function("parse", Date::parse);
+    auto date_parse = ObjectFactory::create_native_function("parse", Date::parse, 1);
     auto date_UTC = ObjectFactory::create_native_function("UTC", Date::UTC);
 
     date_constructor_fn->set_property("now", Value(date_now.release()), PropertyAttributes::BuiltinFunction);
@@ -149,7 +149,7 @@ void register_date_builtins(Context& ctx) {
     auto getMilliseconds_fn = ObjectFactory::create_native_function("getMilliseconds", Date::getMilliseconds);
     auto toString_fn = ObjectFactory::create_native_function("toString", Date::toString);
     auto toISOString_fn = ObjectFactory::create_native_function("toISOString", Date::toISOString);
-    auto toJSON_fn = ObjectFactory::create_native_function("toJSON", Date::toJSON);
+    auto toJSON_fn = ObjectFactory::create_native_function("toJSON", Date::toJSON, 1);
     auto valueOf_fn = ObjectFactory::create_native_function("valueOf", Date::valueOf);
     auto toUTCString_fn = ObjectFactory::create_native_function("toUTCString", Date::toUTCString);
 
@@ -364,7 +364,7 @@ void register_date_builtins(Context& ctx) {
                     ctx.throw_type_error("Date.prototype[Symbol.toPrimitive] called on non-object");
                     return Value();
                 }
-                std::string hint = args.empty() ? "default" : args[0].to_string();
+                std::string hint = (args.empty() || args[0].is_undefined()) ? "" : args[0].to_string();
                 if (hint != "number" && hint != "string" && hint != "default") {
                     ctx.throw_type_error("Date[Symbol.toPrimitive]: invalid hint");
                     return Value();
@@ -373,25 +373,31 @@ void register_date_builtins(Context& ctx) {
                     Value valueOf_fn = obj->get_property("valueOf");
                     if (valueOf_fn.is_function()) {
                         Value result = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
-                        if (!result.is_object()) return result;
+                        if (!ctx.has_exception() && !result.is_object()) return result;
+                        if (ctx.has_exception()) return Value();
                     }
                     Value toString_fn = obj->get_property("toString");
                     if (toString_fn.is_function()) {
                         Value result = toString_fn.as_function()->call(ctx, {}, Value(obj));
-                        if (!result.is_object()) return result;
+                        if (!ctx.has_exception() && !result.is_object()) return result;
+                        if (ctx.has_exception()) return Value();
                     }
+                    ctx.throw_type_error("Cannot convert object to primitive");
                     return Value();
                 } else {
                     Value toString_fn = obj->get_property("toString");
                     if (toString_fn.is_function()) {
                         Value result = toString_fn.as_function()->call(ctx, {}, Value(obj));
-                        if (!result.is_object()) return result;
+                        if (!ctx.has_exception() && !result.is_object()) return result;
+                        if (ctx.has_exception()) return Value();
                     }
                     Value valueOf_fn = obj->get_property("valueOf");
                     if (valueOf_fn.is_function()) {
                         Value result = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
-                        if (!result.is_object()) return result;
+                        if (!ctx.has_exception() && !result.is_object()) return result;
+                        if (ctx.has_exception()) return Value();
                     }
+                    ctx.throw_type_error("Cannot convert object to primitive");
                     return Value();
                 }
             }, 1);

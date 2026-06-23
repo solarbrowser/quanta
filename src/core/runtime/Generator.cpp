@@ -456,13 +456,13 @@ void Generator::setup_generator_prototype(Context& ctx) {
         gen_prototype->set_prototype(Iterator::s_iterator_prototype_);
     }
 
-    auto next_fn = ObjectFactory::create_native_function("next", generator_next);
+    auto next_fn = ObjectFactory::create_native_function("next", generator_next, 1);
     gen_prototype->set_property("next", Value(next_fn.release()));
 
-    auto return_fn = ObjectFactory::create_native_function("return", generator_return);
+    auto return_fn = ObjectFactory::create_native_function("return", generator_return, 1);
     gen_prototype->set_property("return", Value(return_fn.release()));
 
-    auto throw_fn = ObjectFactory::create_native_function("throw", generator_throw);
+    auto throw_fn = ObjectFactory::create_native_function("throw", generator_throw, 1);
     gen_prototype->set_property("throw", Value(throw_fn.release()));
 
     // Generators are both iterators and iterables: [Symbol.iterator]() returns this
