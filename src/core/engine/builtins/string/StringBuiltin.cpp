@@ -21,6 +21,32 @@
 
 namespace Quanta {
 
+// GetSubstitution: process $$ / $& / $` / $' / $n in a replacement string.
+static std::string apply_substitution(const std::string& replacement, const std::string& str,
+        size_t match_pos, const std::string& matched,
+        const std::vector<std::string>& captures = {}) {
+    std::string result;
+    result.reserve(replacement.size());
+    for (size_t i = 0; i < replacement.size(); i++) {
+        if (replacement[i] != '$' || i + 1 >= replacement.size()) { result += replacement[i]; continue; }
+        char next = replacement[i + 1];
+        if (next == '$') { result += '$'; i++; }
+        else if (next == '&') { result += matched; i++; }
+        else if (next == '`') { result += str.substr(0, match_pos); i++; }
+        else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
+        else if (next >= '1' && next <= '9') {
+            size_t n = next - '0';
+            if (i + 2 < replacement.size() && replacement[i+2] >= '0' && replacement[i+2] <= '9') {
+                size_t n2 = n * 10 + (replacement[i+2] - '0');
+                if (n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
+            }
+            if (n <= captures.size()) { result += captures[n-1]; i++; }
+            else result += replacement[i];
+        } else { result += replacement[i]; }
+    }
+    return result;
+}
+
 // RequireObjectCoercible + ToString: throws for null/undefined, calls JS toString() on objects.
 static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
     ok = false;
@@ -154,7 +180,16 @@ void register_string_builtins(Context& ctx) {
             double tl = args[0].to_number();
             if (std::isnan(tl) || tl <= 0 || tl == std::numeric_limits<double>::infinity()) return Value(str);
             tl = std::floor(tl);
-            std::string pad_string = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_string() : " ";
+            std::string pad_string = ([&]() -> std::string {
+                if (args.size() > 1 && !args[1].is_undefined()) {
+                    if (args[1].is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return {}; }
+                    if (args[1].is_object() || args[1].is_function()) {
+                        bool _f; auto s = string_this_coerce(ctx, args[1], _f); return s;
+                    }
+                    return args[1].to_string();
+                }
+                return " ";
+            })();
             if (ctx.has_exception()) return Value();
             size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
@@ -177,7 +212,16 @@ void register_string_builtins(Context& ctx) {
             double tl = args[0].to_number();
             if (std::isnan(tl) || tl <= 0 || tl == std::numeric_limits<double>::infinity()) return Value(str);
             tl = std::floor(tl);
-            std::string pad_string = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_string() : " ";
+            std::string pad_string = ([&]() -> std::string {
+                if (args.size() > 1 && !args[1].is_undefined()) {
+                    if (args[1].is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return {}; }
+                    if (args[1].is_object() || args[1].is_function()) {
+                        bool _f; auto s = string_this_coerce(ctx, args[1], _f); return s;
+                    }
+                    return args[1].to_string();
+                }
+                return " ";
+            })();
             if (ctx.has_exception()) return Value();
             size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
             if (target <= str_len) return Value(str);
@@ -883,7 +927,7 @@ void register_string_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     repl = ret.to_string();
                 } else {
-                    repl = replacement;
+                    repl = apply_substitution(replacement, str, pos, search);
                 }
                 str.replace(pos, search.length(), repl);
             }
@@ -914,6 +958,7 @@ void register_string_builtins(Context& ctx) {
                 pos += search.length();
             }
 
+            const std::string orig_str = str;
             for (auto it = positions.rbegin(); it != positions.rend(); ++it) {
                 std::string replacement;
                 if (is_function) {
@@ -927,7 +972,7 @@ void register_string_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     replacement = result.to_string();
                 } else {
-                    replacement = args[1].to_string();
+                    replacement = apply_substitution(args[1].to_string(), orig_str, *it, search);
                 }
                 str.replace(*it, search.length(), replacement);
             }
@@ -941,13 +986,9 @@ void register_string_builtins(Context& ctx) {
     auto trim_fn = ObjectFactory::create_native_function("trim",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
             if (start == std::string::npos) return Value(std::string(""));
-
             size_t end = str.find_last_not_of(" \t\n\r\f\v");
             return Value(str.substr(start, end - start + 1));
         }, 0);
@@ -958,13 +999,9 @@ void register_string_builtins(Context& ctx) {
     auto trimStart_fn = ObjectFactory::create_native_function("trimStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             size_t start = str.find_first_not_of(" \t\n\r\f\v");
             if (start == std::string::npos) return Value(std::string(""));
-
             return Value(str.substr(start));
         }, 0);
     PropertyDescriptor trimStart_desc(Value(trimStart_fn.release()),
@@ -975,9 +1012,7 @@ void register_string_builtins(Context& ctx) {
     auto trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
 
             size_t end = str.find_last_not_of(" \t\n\r\f\v");
             if (end == std::string::npos) return Value(std::string(""));

@@ -438,10 +438,16 @@ void register_iterator_constructor(Context& ctx) {
     // Returns {done:true,value:undefined} if any error
     auto call_next = [](Context& ctx, Object* iter) -> std::pair<Value,bool> {
         Value next_fn = iter->get_property("next");
-        if (!next_fn.is_function()) return {Value(), true};
+        if (!next_fn.is_function()) {
+            ctx.throw_type_error("Iterator's next method is not callable");
+            return {Value(), true};
+        }
         Value result = next_fn.as_function()->call(ctx, {}, Value(iter));
         if (ctx.has_exception()) return {Value(), true};
-        if (!result.is_object()) return {Value(), true};
+        if (!result.is_object()) {
+            ctx.throw_type_error("Iterator result is not an object");
+            return {Value(), true};
+        }
         Object* res_obj = result.as_object();
         Value done_v = res_obj->get_property("done");
         bool done = done_v.to_boolean();

@@ -823,10 +823,8 @@ void register_typed_array_builtins(Context& ctx) {
             double rel = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : 0.0;
             if (ctx.has_exception()) return Value();
             if (rel == std::numeric_limits<double>::infinity()) return Value(-1.0);
-            // Re-fetch len after coercion (fromIndex valueOf can detach/resize the buffer).
-            len = static_cast<double>(ta->length());
-            if (len == 0) return Value(-1.0);
-            // Normalize -0 to +0 so found-at-index-0 returns 0 not -0.
+            // fromIndex coercion can detach or make a fixed-length view OOB; nothing to find.
+            if (ta->is_out_of_bounds()) return Value(-1.0);
             if (rel == 0.0) rel = 0.0;
             double from = rel < 0 ? std::max(len + rel, 0.0) : std::min(rel, len);
             if (from == 0.0) from = 0.0; // normalize -0
@@ -847,10 +845,9 @@ void register_typed_array_builtins(Context& ctx) {
             double rel = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : len - 1;
             if (ctx.has_exception()) return Value();
             if (rel == -std::numeric_limits<double>::infinity()) return Value(-1.0);
-            // Re-fetch len after coercion (fromIndex valueOf can detach/resize the buffer).
-            len = static_cast<double>(ta->length());
-            if (len == 0) return Value(-1.0);
-            if (rel == 0.0) rel = 0.0; // normalize -0
+            // fromIndex coercion can detach or make a fixed-length view OOB; nothing to find.
+            if (ta->is_out_of_bounds()) return Value(-1.0);
+            if (rel == 0.0) rel = 0.0;
             double from = rel < 0 ? len + rel : std::min(rel, len - 1);
             if (from == 0.0) from = 0.0; // normalize -0
             for (double i = from; i >= 0; i--) {
