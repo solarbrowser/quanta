@@ -12,6 +12,7 @@
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/String.h"
 #include <cmath>
+#include <limits>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -19,6 +20,48 @@
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
+
+// RequireObjectCoercible + ToString: throws for null/undefined, calls JS toString() on objects.
+static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
+    ok = false;
+    if (v.is_null() || v.is_undefined()) {
+        ctx.throw_type_error("String method called on null or undefined");
+        return {};
+    }
+    if (v.is_object() || v.is_function()) {
+        Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+        Value ts = obj->get_property("toString");
+        if (ctx.has_exception()) return {};
+        if (ts.is_function()) {
+            Value r = ts.as_function()->call(ctx, {}, v);
+            if (ctx.has_exception()) return {};
+            if (!r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+        }
+        Value vof = obj->get_property("valueOf");
+        if (ctx.has_exception()) return {};
+        if (vof.is_function()) {
+            Value r = vof.as_function()->call(ctx, {}, v);
+            if (ctx.has_exception()) return {};
+            if (!r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+        }
+        ctx.throw_type_error("Cannot convert object to string");
+        return {};
+    }
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return {};
+    }
+    ok = true;
+    return v.to_string();
+}
+
+static std::string get_string_this(Context& ctx, bool& ok) {
+    if (ctx.original_this_was_nullish()) {
+        ctx.throw_type_error("String method called on null or undefined");
+        ok = false; return {};
+    }
+    return string_this_coerce(ctx, ctx.get_binding("this"), ok);
+}
 
 void register_string_builtins(Context& ctx) {
     auto string_constructor = ObjectFactory::create_native_constructor("String",
@@ -104,60 +147,46 @@ void register_string_builtins(Context& ctx) {
 
     auto padStart_fn = ObjectFactory::create_native_function("padStart",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             
             if (args.empty()) return Value(str);
             
-            uint32_t target_length = static_cast<uint32_t>(args[0].to_number());
-            std::string pad_string = args.size() > 1 ? args[1].to_string() : " ";
-            
-            if (target_length <= str.length()) {
-                return Value(str);
-            }
-            
-            uint32_t pad_length = target_length - str.length();
-            std::string padding = "";
-            
+            double tl = args[0].to_number();
+            if (std::isnan(tl) || tl <= 0 || tl == std::numeric_limits<double>::infinity()) return Value(str);
+            tl = std::floor(tl);
+            std::string pad_string = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_string() : " ";
+            if (ctx.has_exception()) return Value();
+            size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
+            if (target <= str_len) return Value(str);
+            size_t pad_need = target - str_len;
+            std::string padding;
             if (!pad_string.empty()) {
-                while (padding.length() < pad_length) {
-                    padding += pad_string;
-                }
-                padding = padding.substr(0, pad_length);
+                while (utf16_length(padding) < pad_need) padding += pad_string;
+                while (utf16_length(padding) > pad_need) padding.resize(padding.size() - 1);
             }
-            
             return Value(padding + str);
         });
     PropertyDescriptor padStart_desc(Value(padStart_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("padStart", padStart_desc);
-    
+
     auto padEnd_fn = ObjectFactory::create_native_function("padEnd",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-            
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             if (args.empty()) return Value(str);
-            
-            uint32_t target_length = static_cast<uint32_t>(args[0].to_number());
-            std::string pad_string = args.size() > 1 ? args[1].to_string() : " ";
-            
-            if (target_length <= str.length()) {
-                return Value(str);
-            }
-            
-            uint32_t pad_length = target_length - str.length();
-            std::string padding = "";
-            
+            double tl = args[0].to_number();
+            if (std::isnan(tl) || tl <= 0 || tl == std::numeric_limits<double>::infinity()) return Value(str);
+            tl = std::floor(tl);
+            std::string pad_string = (args.size() > 1 && !args[1].is_undefined()) ? args[1].to_string() : " ";
+            if (ctx.has_exception()) return Value();
+            size_t str_len = utf16_length(str), target = static_cast<size_t>(tl);
+            if (target <= str_len) return Value(str);
+            size_t pad_need = target - str_len;
+            std::string padding;
             if (!pad_string.empty()) {
-                while (padding.length() < pad_length) {
-                    padding += pad_string;
-                }
-                padding = padding.substr(0, pad_length);
+                while (utf16_length(padding) < pad_need) padding += pad_string;
+                while (utf16_length(padding) > pad_need) padding.resize(padding.size() - 1);
             }
-            
             return Value(str + padding);
         });
     PropertyDescriptor padEnd_desc(Value(padEnd_fn.release()),
@@ -183,9 +212,7 @@ void register_string_builtins(Context& ctx) {
 
     auto str_includes_fn = ObjectFactory::create_native_function("includes",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
 
             if (args.empty()) return Value(false);
 
@@ -1789,28 +1816,18 @@ void register_string_builtins(Context& ctx) {
 
     auto repeat_fn = ObjectFactory::create_native_function("repeat",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str = "";
-            try {
-                Value this_value = ctx.get_binding("this");
-                str = this_value.to_string();
-            } catch (...) {
-                return Value(std::string(""));
-            }
-
+            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
             if (args.empty()) return Value(std::string(""));
-
-            int count = static_cast<int>(args[0].to_number());
-            if (count < 0 || std::isinf(args[0].to_number())) {
-                throw std::runtime_error("RangeError: Invalid count value");
-            }
-
+            double count_d = args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(count_d)) count_d = 0;
+            count_d = std::floor(count_d);
+            if (count_d < 0 || std::isinf(count_d)) { ctx.throw_range_error("Invalid count value"); return Value(); }
+            int count = static_cast<int>(count_d);
             if (count == 0) return Value(std::string(""));
-
             std::string result;
             result.reserve(str.length() * count);
-            for (int i = 0; i < count; i++) {
-                result += str;
-            }
+            for (int i = 0; i < count; i++) result += str;
             return Value(result);
         }, 1);
     PropertyDescriptor repeat_desc(Value(repeat_fn.release()),
