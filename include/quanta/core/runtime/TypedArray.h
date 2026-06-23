@@ -72,7 +72,13 @@ public:
     bool is_length_tracking() const { return is_length_tracking_; }
     size_t bytes_per_element() const { return bytes_per_element_; }
     ArrayType get_array_type() const { return array_type_; }
-    
+
+    // CanonicalNumericIndexString: true (with `out` set) only for a number's exact canonical string form.
+    static bool canonical_numeric_index(const std::string& key, double& out);
+    // IsValidIntegerIndex: non-negative integer, not -0, within current_length().
+    bool is_valid_integer_index(double idx) const;
+
+
     bool is_typed_array() const override { return true; }
     virtual std::string get_type_name() const = 0;
     
@@ -90,6 +96,9 @@ public:
     // need their own view of them here -- re-derived live so a resizable buffer's current size is reflected.
     std::vector<std::string> get_own_property_keys() const override;
     bool has_own_property(const std::string& key) const override;
+    bool has_property(const std::string& key) const override;
+    bool delete_property(const std::string& key) override;
+    bool set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) override;
     PropertyDescriptor get_property_descriptor(const std::string& key) const override;
     
     Value get_element(uint32_t index) const;
