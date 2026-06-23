@@ -305,8 +305,9 @@ Value Date::setTime(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
 
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj) {
-        return Value(std::numeric_limits<double>::quiet_NaN());
+    if (!date_obj || date_obj->get_type() != Object::ObjectType::Date) {
+        ctx.throw_type_error("Date method called on non-Date object");
+        return Value();
     }
 
     double time_val = args[0].to_number();
@@ -668,7 +669,7 @@ Value Date::toISOString(Context& ctx, const std::vector<Value>& args) {
 Value Date::toJSON(Context& ctx, const std::vector<Value>& args) {
     (void)args;
     Object* date_obj = ctx.get_this_binding();
-    if (!date_obj) return Value::null();
+    if (!date_obj) { ctx.throw_type_error("Date.prototype.toJSON called on null or undefined"); return Value(); }
 
     // ES6 spec: Date.prototype.toJSON
     // Step 1: ToPrimitive(this, "number") — fires get traps on Proxy

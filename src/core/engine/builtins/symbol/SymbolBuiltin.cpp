@@ -23,13 +23,13 @@ void register_symbol_builtins(Context& ctx) {
     auto symbol_for_fn = ObjectFactory::create_native_function("for",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return Symbol::symbol_for(ctx, args);
-        });
+        }, 1);
     symbol_constructor->set_property("for", Value(symbol_for_fn.release()), PropertyAttributes::BuiltinFunction);
     
     auto symbol_key_for_fn = ObjectFactory::create_native_function("keyFor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             return Symbol::symbol_key_for(ctx, args);
-        });
+        }, 1);
     symbol_constructor->set_property("keyFor", Value(symbol_key_for_fn.release()), PropertyAttributes::BuiltinFunction);
 
     Symbol* iterator_sym = Symbol::get_well_known(Symbol::ITERATOR);

@@ -650,13 +650,13 @@ Value AsyncGenerator::get_async_iterator() {
 void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     auto async_gen_prototype = ObjectFactory::create_object();
     
-    auto next_fn = ObjectFactory::create_native_function("next", async_generator_next);
+    auto next_fn = ObjectFactory::create_native_function("next", async_generator_next, 1);
     async_gen_prototype->set_property("next", Value(next_fn.release()));
     
-    auto return_fn = ObjectFactory::create_native_function("return", async_generator_return);
+    auto return_fn = ObjectFactory::create_native_function("return", async_generator_return, 1);
     async_gen_prototype->set_property("return", Value(return_fn.release()));
     
-    auto throw_fn = ObjectFactory::create_native_function("throw", async_generator_throw);
+    auto throw_fn = ObjectFactory::create_native_function("throw", async_generator_throw, 1);
     async_gen_prototype->set_property("throw", Value(throw_fn.release()));
     
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
@@ -774,13 +774,13 @@ std::unique_ptr<Promise> AsyncIterator::throw_exception(const Value& exception) 
 void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
     auto async_iterator_prototype = ObjectFactory::create_object();
     
-    auto next_fn = ObjectFactory::create_native_function("next", async_iterator_next);
+    auto next_fn = ObjectFactory::create_native_function("next", async_iterator_next, 1);
     async_iterator_prototype->set_property("next", Value(next_fn.release()));
     
-    auto return_fn = ObjectFactory::create_native_function("return", async_iterator_return);
+    auto return_fn = ObjectFactory::create_native_function("return", async_iterator_return, 1);
     async_iterator_prototype->set_property("return", Value(return_fn.release()));
     
-    auto throw_fn = ObjectFactory::create_native_function("throw", async_iterator_throw);
+    auto throw_fn = ObjectFactory::create_native_function("throw", async_iterator_throw, 1);
     async_iterator_prototype->set_property("throw", Value(throw_fn.release()));
     
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);

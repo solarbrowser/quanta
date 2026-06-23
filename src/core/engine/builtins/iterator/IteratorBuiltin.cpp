@@ -471,7 +471,7 @@ void register_iterator_constructor(Context& ctx) {
             arr->set_length(idx);
             return Value(arr.release());
         }, 0);
-    iterator_prototype->set_property("toArray", Value(iter_toArray_fn.release()));
+    { PropertyDescriptor _d(Value(iter_toArray_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("toArray", _d); }
 
     // forEach
     auto iter_forEach_fn = ObjectFactory::create_native_function("forEach",
@@ -488,7 +488,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             return Value();
         }, 1);
-    iterator_prototype->set_property("forEach", Value(iter_forEach_fn.release()));
+    { PropertyDescriptor _d(Value(iter_forEach_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("forEach", _d); }
 
     // reduce
     auto iter_reduce_fn = ObjectFactory::create_native_function("reduce",
@@ -507,7 +507,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             return acc;
         }, 1);
-    iterator_prototype->set_property("reduce", Value(iter_reduce_fn.release()));
+    { PropertyDescriptor _d(Value(iter_reduce_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("reduce", _d); }
 
     // some
     auto iter_some_fn = ObjectFactory::create_native_function("some",
@@ -524,7 +524,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             return Value(false);
         }, 1);
-    iterator_prototype->set_property("some", Value(iter_some_fn.release()));
+    { PropertyDescriptor _d(Value(iter_some_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("some", _d); }
 
     // every
     auto iter_every_fn = ObjectFactory::create_native_function("every",
@@ -541,7 +541,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             return Value(true);
         }, 1);
-    iterator_prototype->set_property("every", Value(iter_every_fn.release()));
+    { PropertyDescriptor _d(Value(iter_every_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("every", _d); }
 
     // find
     auto iter_find_fn = ObjectFactory::create_native_function("find",
@@ -558,7 +558,7 @@ void register_iterator_constructor(Context& ctx) {
             }
             return Value();
         }, 1);
-    iterator_prototype->set_property("find", Value(iter_find_fn.release()));
+    { PropertyDescriptor _d(Value(iter_find_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("find", _d); }
 
     // Lazy Iterator Helpers: pull from the source only as values are demanded.
     Object* iterator_proto_ptr = iterator_prototype.get();
@@ -598,7 +598,7 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
             return Value(helper);
         }, 1);
-    iterator_prototype->set_property("map", Value(iter_map_fn.release()));
+    { PropertyDescriptor _d(Value(iter_map_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("map", _d); }
 
     auto iter_filter_fn = ObjectFactory::create_native_function("filter",
         [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -637,7 +637,7 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
             return Value(helper);
         }, 1);
-    iterator_prototype->set_property("filter", Value(iter_filter_fn.release()));
+    { PropertyDescriptor _d(Value(iter_filter_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("filter", _d); }
 
     auto iter_take_fn = ObjectFactory::create_native_function("take",
         [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -670,7 +670,7 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
             return Value(helper);
         }, 1);
-    iterator_prototype->set_property("take", Value(iter_take_fn.release()));
+    { PropertyDescriptor _d(Value(iter_take_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("take", _d); }
 
     auto iter_drop_fn = ObjectFactory::create_native_function("drop",
         [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -709,7 +709,7 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
             return Value(helper);
         }, 1);
-    iterator_prototype->set_property("drop", Value(iter_drop_fn.release()));
+    { PropertyDescriptor _d(Value(iter_drop_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("drop", _d); }
 
     auto iter_flatMap_fn = ObjectFactory::create_native_function("flatMap",
         [iterator_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -774,7 +774,7 @@ void register_iterator_constructor(Context& ctx) {
             helper->set_property("next", Value(next_fn.release()));
             return Value(helper);
         }, 1);
-    iterator_prototype->set_property("flatMap", Value(iter_flatMap_fn.release()));
+    { PropertyDescriptor _d(Value(iter_flatMap_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable|PropertyAttributes::Configurable)); iterator_prototype->set_property_descriptor("flatMap", _d); }
 
     // Add @@iterator to prototype
     {

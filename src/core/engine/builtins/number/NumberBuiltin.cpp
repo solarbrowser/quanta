@@ -307,7 +307,7 @@ void register_number_builtins(Context& ctx) {
             result += (exp >= 0) ? "+" : "-";
             result += std::to_string(std::abs(exp));
             return Value(result);
-        });
+        }, 1);
     PropertyDescriptor toExponential_desc(Value(toExponential_fn.release()),
         PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toExponential", toExponential_desc);
@@ -342,7 +342,7 @@ void register_number_builtins(Context& ctx) {
             if (negative && abs_num != 0) result += "-";
             result += buffer;
             return Value(result);
-        });
+        }, 1);
     PropertyDescriptor toFixed_desc(Value(toFixed_fn.release()),
         PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toFixed", toFixed_desc);
@@ -419,7 +419,7 @@ void register_number_builtins(Context& ctx) {
                 result += std::to_string(std::abs(exp));
                 return Value(result);
             }
-        });
+        }, 1);
     PropertyDescriptor toPrecision_desc(Value(toPrecision_fn.release()),
         PropertyAttributes::BuiltinFunction);
     number_prototype->set_property_descriptor("toPrecision", toPrecision_desc);
@@ -428,8 +428,7 @@ void register_number_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_val = ctx.get_binding("this");
-            double num = this_val.to_number();
-            return Value(std::to_string(num));
+            return Value(this_val.to_string());
         });
     PropertyDescriptor number_toLocaleString_desc(Value(number_toLocaleString_fn.release()),
         PropertyAttributes::BuiltinFunction);

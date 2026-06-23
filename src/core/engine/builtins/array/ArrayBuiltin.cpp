@@ -1662,21 +1662,23 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 if (ctx.has_exception()) return Value();
             }
 
+            bool sort_error = false;
             auto compare = [&](const Value& a, const Value& b) -> int {
+                if (sort_error) return 0;
                 if (a.is_undefined() && b.is_undefined()) return 0;
                 if (a.is_undefined()) return 1;
                 if (b.is_undefined()) return -1;
                 if (compareFn) {
                     Value cmp_result = compareFn->call(ctx, {a, b});
-                    if (ctx.has_exception()) return 0;
+                    if (ctx.has_exception()) { sort_error = true; return 0; }
                     double cmp = cmp_result.to_number();
                     if (std::isnan(cmp)) return 0;
                     return cmp > 0 ? 1 : (cmp < 0 ? -1 : 0);
                 }
                 std::string str_a = sort_default_to_string(ctx, a);
-                if (ctx.has_exception()) return 0;
+                if (ctx.has_exception()) { sort_error = true; return 0; }
                 std::string str_b = sort_default_to_string(ctx, b);
-                if (ctx.has_exception()) return 0;
+                if (ctx.has_exception()) { sort_error = true; return 0; }
                 return str_a.compare(str_b);
             };
             std::stable_sort(items.begin(), items.end(), [&](const Value& a, const Value& b) {

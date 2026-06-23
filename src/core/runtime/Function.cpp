@@ -1234,16 +1234,9 @@ std::string Function::to_string() const {
     if (!source_text_.empty()) {
         return source_text_;
     }
-    // Non-native function without preserved source text (e.g. created via new Function()).
-    // Reconstruct canonical source; body is unknown so use empty body.
-    std::ostringstream oss;
-    oss << "function " << name_ << "(";
-    for (size_t i = 0; i < parameters_.size(); ++i) {
-        if (i > 0) oss << ", ";
-        oss << parameters_[i];
-    }
-    oss << ") {}";
-    return oss.str();
+    // Non-native function without preserved source text: use NativeFunction format
+    // (test262's assertToStringOrNativeFunction accepts "function name() { [native code] }").
+    return "function " + name_ + "() { [native code] }";
 }
 
 
