@@ -7,4 +7,6 @@
 #include "quanta/core/engine/Context.h"
 namespace Quanta {
 void register_object_builtins(Context& ctx);
+// ToObject: throws for null/undefined, boxes other primitives, passes objects/functions through.
+Object* to_object_or_throw(Context& ctx, const Value& value);
 }

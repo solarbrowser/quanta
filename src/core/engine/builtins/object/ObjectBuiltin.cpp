@@ -94,9 +94,7 @@ static Value box_primitive(Context& ctx, const Value& value) {
     return Value(ObjectFactory::create_object().release());
 }
 
-// ToObject: throws for null/undefined, boxes other primitives via box_primitive(),
-// passes objects/functions through unchanged.
-static Object* to_object_or_throw(Context& ctx, const Value& this_val) {
+Object* to_object_or_throw(Context& ctx, const Value& this_val) {
     if (this_val.is_null() || this_val.is_undefined()) {
         ctx.throw_type_error("Cannot convert undefined or null to object");
         return nullptr;

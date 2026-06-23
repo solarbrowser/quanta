@@ -3142,7 +3142,8 @@ std::unique_ptr<ASTNode> Parser::parse_variable_declaration(bool consume_semicol
         bool is_async_id   = (current_token().get_type() == TokenType::ASYNC);
         bool is_undef_id   = (current_token().get_type() == TokenType::UNDEFINED);
         bool is_static_id  = (current_token().get_type() == TokenType::STATIC && !options_.strict_mode);
-        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id && !is_async_id && !is_undef_id && !is_static_id) {
+        bool is_from_id    = (current_token().get_type() == TokenType::FROM);
+        if (current_token().get_type() != TokenType::IDENTIFIER && !is_yield_id && !is_await_id && !is_let_id && !is_of_id && !is_async_id && !is_undef_id && !is_static_id && !is_from_id) {
             add_error("Expected identifier in variable declaration");
             return nullptr;
         }

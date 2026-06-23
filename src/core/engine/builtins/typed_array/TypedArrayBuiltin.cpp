@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include <cmath>
 #include "quanta/parser/AST.h"
 #include <algorithm>
@@ -45,7 +46,7 @@ static double to_index_checked(Context& ctx, const Value& v) {
 static TypedArrayBase* validate_typed_array(Context& ctx, Object* this_obj) {
     if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return nullptr; }
     TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-    if (ta->buffer() && ta->buffer()->is_detached()) { ctx.throw_type_error("TypedArray buffer is detached"); return nullptr; }
+    if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return nullptr; }
     return ta;
 }
 
@@ -66,8 +67,8 @@ static const char* default_typed_array_ctor_name(TypedArrayBase::ArrayType t) {
     }
 }
 
-// TypedArraySpeciesCreate: SpeciesConstructor(exemplar, defaultCtor) then Construct(C, length).
-static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* exemplar, size_t length) {
+// SpeciesConstructor(exemplar, default ctor associated with exemplar's array type).
+static Function* get_typed_array_species_constructor(Context& ctx, TypedArrayBase* exemplar) {
     const char* default_name = default_typed_array_ctor_name(exemplar->get_array_type());
     if (!default_name) { ctx.throw_type_error("Unsupported type"); return nullptr; }
     Value default_ctor = ctx.get_binding(default_name);
@@ -91,14 +92,56 @@ static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* 
         }
     }
     if (!ctor_fn) { ctx.throw_type_error("No constructor available"); return nullptr; }
+    return ctor_fn;
+}
 
-    Value result = ctor_fn->construct(ctx, {Value(static_cast<double>(length))});
+// TypedArraySpeciesCreate: SpeciesConstructor lookup then Construct + ValidateTypedArray + content-type check.
+static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* exemplar, const std::vector<Value>& ctor_args) {
+    Function* ctor_fn = get_typed_array_species_constructor(ctx, exemplar);
+    if (!ctor_fn) return nullptr;
+
+    Value result = ctor_fn->construct(ctx, ctor_args);
     if (ctx.has_exception()) return nullptr;
     if (!result.is_object() || !result.as_object()->is_typed_array()) {
         ctx.throw_type_error("Species constructor did not return a TypedArray");
         return nullptr;
     }
-    return static_cast<TypedArrayBase*>(result.as_object());
+    TypedArrayBase* result_ta = static_cast<TypedArrayBase*>(result.as_object());
+    if (result_ta->is_out_of_bounds()) {
+        ctx.throw_type_error("TypedArray is out of bounds");
+        return nullptr;
+    }
+    auto is_big = [](TypedArrayBase::ArrayType t) {
+        return t == TypedArrayBase::ArrayType::BIGINT64 || t == TypedArrayBase::ArrayType::BIGUINT64;
+    };
+    if (is_big(exemplar->get_array_type()) != is_big(result_ta->get_array_type())) {
+        ctx.throw_type_error("Cannot mix BigInt and other types, use explicit conversions");
+        return nullptr;
+    }
+    return result_ta;
+}
+
+// TypedArrayCreate: for the single-length form, species ctor must not return a shorter-than-requested array.
+static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* exemplar, size_t length) {
+    TypedArrayBase* result_ta = typed_array_species_create(ctx, exemplar, std::vector<Value>{ Value(static_cast<double>(length)) });
+    if (!result_ta) return nullptr;
+    if (result_ta->length() < length) {
+        ctx.throw_type_error("Derived TypedArray constructor created an array which was too small");
+        return nullptr;
+    }
+    return result_ta;
+}
+
+// ToIntegerOrInfinity: NaN -> 0, ±Infinity passes through, finite numbers truncate toward zero.
+static double to_integer_or_infinity(double num) {
+    if (std::isnan(num)) return 0.0;
+    if (std::isinf(num)) return num;
+    return num < 0 ? -std::floor(-num) : std::floor(num);
+}
+
+// Clamp a relative index to [0, len]: negative wraps from end, Infinity clamps to len.
+static double clamp_relative_index(double relative, double len) {
+    return relative < 0 ? std::max(len + relative, 0.0) : std::min(relative, len);
 }
 
 // TypedArrayCreateSameType: ignores any user-overridden .constructor/@@species.
@@ -119,7 +162,7 @@ static TypedArrayBase* create_same_type_typed_array(Context& ctx, TypedArrayBase
     }
 }
 
-// ToBigInt(argument), per spec: only BigInt/Boolean/String coerce; Number/Symbol/null/undefined  throw.
+// ToBigInt(argument): BigInt/Boolean/String coerce directly; Object goes through ToPrimitive; others throw.
 static Value to_bigint_for_typed_array(Context& ctx, const Value& value) {
     if (value.is_bigint()) return value;
     if (value.is_boolean()) return Value(new BigInt(value.as_boolean() ? 1 : 0));
@@ -130,6 +173,23 @@ static Value to_bigint_for_typed_array(Context& ctx, const Value& value) {
             ctx.throw_syntax_error("Cannot convert string to BigInt");
             return Value();
         }
+    }
+    if (value.is_object()) {
+        Object* obj = value.as_object();
+        Value valueOf_fn = obj->get_property("valueOf");
+        if (valueOf_fn.is_function()) {
+            Value prim = valueOf_fn.as_function()->call(ctx, {}, value);
+            if (ctx.has_exception()) return Value();
+            if (!prim.is_object() && !prim.is_function()) return to_bigint_for_typed_array(ctx, prim);
+        }
+        Value toString_fn = obj->get_property("toString");
+        if (toString_fn.is_function()) {
+            Value prim = toString_fn.as_function()->call(ctx, {}, value);
+            if (ctx.has_exception()) return Value();
+            if (!prim.is_object() && !prim.is_function()) return to_bigint_for_typed_array(ctx, prim);
+        }
+        ctx.throw_type_error("Cannot convert object to BigInt");
+        return Value();
     }
     ctx.throw_type_error("Cannot convert " + std::string(value.is_number() ? "Number" :
         (value.is_symbol() ? "Symbol" : (value.is_null() ? "null" : "undefined"))) + " to BigInt");
@@ -588,45 +648,9 @@ void register_typed_array_builtins(Context& ctx) {
             Value thisArg = args.size() > 1 ? args[1] : Value();
 
             size_t length = ta->length();
-            TypedArrayBase* result = nullptr;
-            switch (ta->get_array_type()) {
-                case TypedArrayBase::ArrayType::INT8:
-                    result = TypedArrayFactory::create_int8_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT8:
-                    result = TypedArrayFactory::create_uint8_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT8_CLAMPED:
-                    result = TypedArrayFactory::create_uint8_clamped_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::INT16:
-                    result = TypedArrayFactory::create_int16_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT16:
-                    result = TypedArrayFactory::create_uint16_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::INT32:
-                    result = TypedArrayFactory::create_int32_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT32:
-                    result = TypedArrayFactory::create_uint32_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::FLOAT32:
-                    result = TypedArrayFactory::create_float32_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::FLOAT64:
-                    result = TypedArrayFactory::create_float64_array(length).release();
-                    break;
-                case TypedArrayBase::ArrayType::BIGINT64:
-                    result = new BigInt64Array(length);
-                    break;
-                case TypedArrayBase::ArrayType::BIGUINT64:
-                    result = new BigUint64Array(length);
-                    break;
-                default:
-                    ctx.throw_type_error("Unsupported TypedArray type");
-                    return Value();
-            }
+            // Unlike filter, map's TypedArraySpeciesCreate happens *before* the loop.
+            TypedArrayBase* result = typed_array_species_create(ctx, ta, length);
+            if (!result) return Value();
 
             for (size_t i = 0; i < length; i++) {
                 std::vector<Value> callback_args = {
@@ -637,6 +661,7 @@ void register_typed_array_builtins(Context& ctx) {
                 Value mapped = callback->call(ctx, callback_args, thisArg);
                 if (ctx.has_exception()) return Value();
                 result->set_element(i, mapped);
+                if (ctx.has_exception()) return Value();
             }
             return Value(result);
         }, 1);
@@ -672,52 +697,19 @@ void register_typed_array_builtins(Context& ctx) {
                     Value(this_obj)
                 };
                 Value result = callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     filtered.push_back(element);
                 }
             }
 
-            TypedArrayBase* result = nullptr;
-            switch (ta->get_array_type()) {
-                case TypedArrayBase::ArrayType::INT8:
-                    result = TypedArrayFactory::create_int8_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT8:
-                    result = TypedArrayFactory::create_uint8_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT8_CLAMPED:
-                    result = TypedArrayFactory::create_uint8_clamped_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::INT16:
-                    result = TypedArrayFactory::create_int16_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT16:
-                    result = TypedArrayFactory::create_uint16_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::INT32:
-                    result = TypedArrayFactory::create_int32_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::UINT32:
-                    result = TypedArrayFactory::create_uint32_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::FLOAT32:
-                    result = TypedArrayFactory::create_float32_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::FLOAT64:
-                    result = TypedArrayFactory::create_float64_array(filtered.size()).release();
-                    break;
-                case TypedArrayBase::ArrayType::BIGINT64:
-                    result = new BigInt64Array(filtered.size());
-                    break;
-                case TypedArrayBase::ArrayType::BIGUINT64:
-                    result = new BigUint64Array(filtered.size());
-                    break;
-                default:
-                    ctx.throw_type_error("Unsupported TypedArray type");
-                    return Value();
-            }
+            // TypedArraySpeciesCreate happens *after* the full filter loop (all callbackfn calls
+            // happen before any species-constructor lookup/construction), per spec ordering.
+            TypedArrayBase* result = typed_array_species_create(ctx, ta, filtered.size());
+            if (!result) return Value();
             for (size_t i = 0; i < filtered.size(); i++) {
                 result->set_element(i, filtered[i]);
+                if (ctx.has_exception()) return Value();
             }
             return Value(result);
         }, 1);
@@ -893,15 +885,51 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto ta_join_fn = ObjectFactory::create_native_function("join",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            std::string sep = (args.empty() || args[0].is_undefined()) ? "," : args[0].to_string();
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            Value sep_arg = args.empty() ? Value() : args[0];
+            if (sep_arg.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+            std::string sep = sep_arg.is_undefined() ? std::string(",") : sep_arg.to_string();
+            if (ctx.has_exception()) return Value();
+            size_t len = ta->length();
             std::string result;
-            for (size_t i = 0; i < ta->length(); i++) { if (i > 0) result += sep; result += ta->get_element(i).to_string(); }
+            for (size_t i = 0; i < len; i++) {
+                if (i > 0) result += sep;
+                Value elem = ta->get_element(i);
+                if (!elem.is_undefined() && !elem.is_null()) {
+                    result += elem.to_string();
+                    if (ctx.has_exception()) return Value();
+                }
+            }
             return Value(result);
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("join", PropertyDescriptor(Value(ta_join_fn.release()), PropertyAttributes::BuiltinFunction));
+
+    auto ta_tolocalestring_fn = ObjectFactory::create_native_function("toLocaleString",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            size_t len = ta->length();
+            if (len == 0) return Value(std::string(""));
+            std::string result;
+            for (size_t i = 0; i < len; i++) {
+                if (i > 0) result += ",";
+                Value elem = ta->get_element(i);
+                Value locale_fn = elem.is_object() ? elem.as_object()->get_property("toLocaleString") : Value();
+                Value str_val;
+                if (locale_fn.is_function()) {
+                    str_val = locale_fn.as_function()->call(ctx, {}, elem);
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    str_val = elem;
+                }
+                result += str_val.to_string();
+                if (ctx.has_exception()) return Value();
+            }
+            return Value(result);
+        }, 0);
+    typedarray_proto_ptr->set_property_descriptor("toLocaleString", PropertyDescriptor(Value(ta_tolocalestring_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_sort_fn = ObjectFactory::create_native_function("sort",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -967,38 +995,84 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto ta_fill_fn = ObjectFactory::create_native_function("fill",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            int64_t len = ta->length();
-            Value fillVal = args.empty() ? Value() : args[0];
-            int64_t start = 0, end = len;
-            if (args.size() > 1 && !args[1].is_undefined()) { int64_t s = static_cast<int64_t>(args[1].to_number()); start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s); }
-            if (args.size() > 2 && !args[2].is_undefined()) { int64_t e = static_cast<int64_t>(args[2].to_number()); end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e); }
-            for (int64_t i = start; i < end; i++) ta->set_element(static_cast<size_t>(i), fillVal);
-            return Value(this_obj);
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            double len = static_cast<double>(ta->length());
+
+            Value raw_val = args.empty() ? Value() : args[0];
+            bool is_big = ta->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
+                          ta->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
+            // Value is converted ONCE before index computation, not per-element.
+            Value fill_val;
+            if (is_big) {
+                fill_val = to_bigint_for_typed_array(ctx, raw_val);
+            } else {
+                fill_val = Value(to_number_throwing(ctx, raw_val));
+            }
+            if (ctx.has_exception()) return Value();
+
+            double rel_start = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : 0.0;
+            if (ctx.has_exception()) return Value();
+            double rel_end   = (args.size() > 2 && !args[2].is_undefined())
+                               ? to_integer_or_infinity(to_number_throwing(ctx, args[2])) : len;
+            if (ctx.has_exception()) return Value();
+
+            // Re-validate after coercions (they can detach/resize via valueOf).
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+            len = static_cast<double>(ta->length());
+            double actual_start = clamp_relative_index(rel_start, len);
+            double actual_end   = clamp_relative_index(rel_end,   len);
+
+            for (double k = actual_start; k < actual_end; k++) {
+                ta->set_element(static_cast<size_t>(k), fill_val);
+                if (ctx.has_exception()) return Value();
+            }
+            return Value(ctx.get_this_binding());
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("fill", PropertyDescriptor(Value(ta_fill_fn.release()), PropertyAttributes::BuiltinFunction));
 
     auto ta_copyWithin_fn = ObjectFactory::create_native_function("copyWithin",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            int64_t len = ta->length();
-            if (args.empty()) return Value(this_obj);
-            int64_t tgt = static_cast<int64_t>(args[0].to_number());
-            tgt = tgt < 0 ? (tgt + len < 0 ? 0 : tgt + len) : (tgt > len ? len : tgt);
-            int64_t start = 0;
-            if (args.size() > 1) { int64_t s = static_cast<int64_t>(args[1].to_number()); start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s); }
-            int64_t end = len;
-            if (args.size() > 2 && !args[2].is_undefined()) { int64_t e = static_cast<int64_t>(args[2].to_number()); end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e); }
-            int64_t count = end - start;
-            if (count <= 0) return Value(this_obj);
-            std::vector<Value> tmp; tmp.reserve(count);
-            for (int64_t i = 0; i < count; i++) tmp.push_back(ta->get_element(static_cast<size_t>(start + i)));
-            for (int64_t i = 0; i < count && tgt + i < len; i++) ta->set_element(static_cast<size_t>(tgt + i), tmp[static_cast<size_t>(i)]);
-            return Value(this_obj);
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            double orig_len = static_cast<double>(ta->length());
+
+            double rel_tgt   = args.empty() ? 0.0 : to_integer_or_infinity(to_number_throwing(ctx, args[0]));
+            if (ctx.has_exception()) return Value();
+            double rel_start = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : 0.0;
+            if (ctx.has_exception()) return Value();
+            double rel_end   = (args.size() > 2 && !args[2].is_undefined())
+                               ? to_integer_or_infinity(to_number_throwing(ctx, args[2])) : orig_len;
+            if (ctx.has_exception()) return Value();
+
+            // Per spec, to/from/final/count are computed with orig_len (before coercion side
+            // effects); then re-validated against the current (possibly grown/shrunk) length.
+            double to    = clamp_relative_index(rel_tgt,   orig_len);
+            double from  = clamp_relative_index(rel_start, orig_len);
+            double final = clamp_relative_index(rel_end,   orig_len);
+            double count = std::min(final - from, orig_len - to);
+
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+            double cur_len = static_cast<double>(ta->length());
+            to    = std::min(to,    cur_len);
+            from  = std::min(from,  cur_len);
+            count = std::min(count, cur_len - to);
+            if (count <= 0) return Value(ctx.get_this_binding());
+
+            // Snapshot source range first (handles overlap); skip write if source index was OOB
+            // (buffer may have shrunk during coercions, leaving the tail of count OOB).
+            size_t cnt = static_cast<size_t>(count);
+            size_t cur = static_cast<size_t>(cur_len);
+            std::vector<Value> tmp(cnt);
+            std::vector<bool> valid(cnt, false);
+            for (size_t i = 0; i < cnt; i++) {
+                size_t f = static_cast<size_t>(from) + i;
+                if (f < cur) { tmp[i] = ta->get_element(f); valid[i] = true; }
+            }
+            for (size_t i = 0; i < cnt; i++) {
+                if (valid[i]) ta->set_element(static_cast<size_t>(to) + i, tmp[i]);
+            }
+            return Value(ctx.get_this_binding());
         }, 1);
     typedarray_proto_ptr->set_property_descriptor("copyWithin", PropertyDescriptor(Value(ta_copyWithin_fn.release()), PropertyAttributes::BuiltinFunction));
 
@@ -1169,29 +1243,27 @@ void register_typed_array_builtins(Context& ctx) {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            int64_t len = ta->length(), start = 0, end = len;
+            double len = static_cast<double>(ta->length());
+
+            double rel_begin = args.empty() ? 0.0 : to_integer_or_infinity(to_number_throwing(ctx, args[0]));
+            if (ctx.has_exception()) return Value();
+            double begin_index = clamp_relative_index(rel_begin, len);
+            double byte_offset = static_cast<double>(ta->byte_offset()) + begin_index * ta->bytes_per_element();
+
             bool end_given = args.size() > 1 && !args[1].is_undefined();
-            if (!args.empty()) { int64_t s = static_cast<int64_t>(args[0].to_number()); start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s); }
-            if (end_given) { int64_t e = static_cast<int64_t>(args[1].to_number()); end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e); }
-            size_t nbo = ta->byte_offset() + start * ta->bytes_per_element();
-            // If end was omitted and the source tracks its buffer's length, the subarray keeps tracking too (SIZE_MAX means "length-tracking" to the TypedArrayBase constructor); otherwise it's a fixed-length window.
-            size_t nl = (!end_given && ta->is_length_tracking()) ? SIZE_MAX : (end > start ? end - start : 0);
-            std::shared_ptr<ArrayBuffer> sb(ta->buffer(), [](ArrayBuffer*) {});
-            TypedArrayBase* r = nullptr;
-            switch (ta->get_array_type()) {
-                case TypedArrayBase::ArrayType::INT8: r = new Int8Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::UINT8: r = new Uint8Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::UINT8_CLAMPED: r = new Uint8ClampedArray(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::INT16: r = new Int16Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::UINT16: r = new Uint16Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::INT32: r = new Int32Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::UINT32: r = new Uint32Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::FLOAT32: r = new Float32Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::FLOAT64: r = new Float64Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::BIGINT64: r = new BigInt64Array(sb, nbo, nl); break;
-                case TypedArrayBase::ArrayType::BIGUINT64: r = new BigUint64Array(sb, nbo, nl); break;
-                default: ctx.throw_type_error("Unsupported type"); return Value();
+            std::vector<Value> ctor_args;
+            if (!end_given && ta->is_length_tracking()) {
+                ctor_args = { Value(ta->buffer()), Value(byte_offset) };
+            } else {
+                double rel_end = end_given ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : len;
+                if (ctx.has_exception()) return Value();
+                double end_index = clamp_relative_index(rel_end, len);
+                double new_length = std::max(end_index - begin_index, 0.0);
+                ctor_args = { Value(ta->buffer()), Value(byte_offset), Value(new_length) };
             }
+
+            TypedArrayBase* r = typed_array_species_create(ctx, ta, ctor_args);
+            if (!r) return Value();
             return Value(r);
         }, 2);
     typedarray_proto_ptr->set_property_descriptor("subarray", PropertyDescriptor(Value(ta_subarray_fn.release()), PropertyAttributes::BuiltinFunction));
@@ -1201,47 +1273,55 @@ void register_typed_array_builtins(Context& ctx) {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
             TypedArrayBase* target = static_cast<TypedArrayBase*>(this_obj);
-            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("source is not an object"); return Value(); }
-            Object* source = args[0].as_object();
 
+            Value source_arg = args.empty() ? Value() : args[0];
+            bool source_is_typed_array = source_arg.is_object() && source_arg.as_object()->is_typed_array();
+
+            // ToIntegerOrInfinity(offset) happens before ToObject(source) for the array-like path.
             Value offset_arg = args.size() > 1 ? args[1] : Value();
-            if (offset_arg.is_symbol() || offset_arg.is_bigint()) {
-                ctx.throw_type_error("Cannot convert offset to a number");
-                return Value();
-            }
-            double offset_double = offset_arg.is_undefined() ? 0.0 : offset_arg.to_number();
+            double offset_double = to_integer_or_infinity(to_number_throwing(ctx, offset_arg));
             if (ctx.has_exception()) return Value();
-            if (std::isnan(offset_double) || offset_double < 0 || offset_double != std::floor(offset_double)) {
+            if (offset_double < 0) {
                 ctx.throw_range_error("Invalid offset");
                 return Value();
             }
-            size_t offset = static_cast<size_t>(offset_double);
 
             bool target_is_big = target->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
                                   target->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
 
-            if (source->is_typed_array()) {
-                TypedArrayBase* src_ta = static_cast<TypedArrayBase*>(source);
+            if (source_is_typed_array) {
+                TypedArrayBase* src_ta = static_cast<TypedArrayBase*>(source_arg.as_object());
+                if (target->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                size_t target_length = target->length();
+                if (src_ta->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+                size_t src_len = src_ta->length();
+                if (offset_double + static_cast<double>(src_len) > static_cast<double>(target_length)) {
+                    ctx.throw_range_error("Source is too large");
+                    return Value();
+                }
                 bool source_is_big = src_ta->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
                                       src_ta->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
                 if (target_is_big != source_is_big) {
                     ctx.throw_type_error("Cannot mix BigInt and non-BigInt typed array content");
                     return Value();
                 }
-                if (target->is_out_of_bounds() || src_ta->is_out_of_bounds()) {
-                    ctx.throw_type_error("TypedArray is out of bounds");
-                    return Value();
+                size_t offset = static_cast<size_t>(offset_double);
+                // Same buffer: snapshot source first to avoid reads/writes corrupting overlapping bytes.
+                if (src_ta->buffer() == target->buffer()) {
+                    std::vector<Value> snapshot(src_len);
+                    for (size_t i = 0; i < src_len; i++) snapshot[i] = src_ta->get_element(i);
+                    for (size_t i = 0; i < src_len; i++) target->set_element(offset + i, snapshot[i]);
+                } else {
+                    for (size_t i = 0; i < src_len; i++) target->set_element(offset + i, src_ta->get_element(i));
                 }
-                size_t src_len = src_ta->length();
-                if (offset + src_len > target->length()) {
-                    ctx.throw_range_error("Source is too large");
-                    return Value();
-                }
-                for (size_t i = 0; i < src_len; i++) target->set_element(offset + i, src_ta->get_element(i));
                 return Value();
             }
 
             if (target->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
+            size_t target_length = target->length();
+
+            Object* source = to_object_or_throw(ctx, source_arg);
+            if (ctx.has_exception()) return Value();
 
             Value len_val = source->get_property("length");
             if (ctx.has_exception()) return Value();
@@ -1251,20 +1331,27 @@ void register_typed_array_builtins(Context& ctx) {
             }
             double len_double = len_val.to_number();
             if (ctx.has_exception()) return Value();
-            size_t src_len = (std::isnan(len_double) || len_double < 0) ? 0 : static_cast<size_t>(len_double);
+            size_t src_len = (std::isnan(len_double) || len_double < 0) ? 0 :
+                static_cast<size_t>(std::min(len_double, 9007199254740991.0));
 
-            if (offset + src_len > target->length()) {
+            if (offset_double + static_cast<double>(src_len) > static_cast<double>(target_length)) {
                 ctx.throw_range_error("Source is too large");
                 return Value();
             }
+            size_t offset = static_cast<size_t>(offset_double);
+            // Bounds re-checked live per set_element (source getter can resize/detach mid-loop); OOB silently skipped.
             for (size_t i = 0; i < src_len; i++) {
                 Value v = source->get_property(std::to_string(i));
+                if (ctx.has_exception()) return Value();
                 if (target_is_big) {
                     v = to_bigint_for_typed_array(ctx, v);
                     if (ctx.has_exception()) return Value();
+                } else if (v.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert a Symbol value to a number");
+                    return Value();
                 }
-                if (target->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 target->set_element(offset + i, v);
+                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);
@@ -1382,12 +1469,17 @@ void register_typed_array_builtins(Context& ctx) {
                 if (target_is_big) {
                     v = to_bigint_for_typed_array(ctx, v);
                     if (ctx.has_exception()) return Value();
+                } else if (v.is_symbol()) {
+                    // value.to_number() silently returns NaN for a Symbol; ToNumber must throw.
+                    ctx.throw_type_error("Cannot convert a Symbol value to a number");
+                    return Value();
                 }
                 if (ta->is_out_of_bounds() || i >= ta->length()) {
                     ctx.throw_type_error("TypedArray is out of bounds");
                     return Value();
                 }
                 ta->set_element(i, v);
+                if (ctx.has_exception()) return Value();
             }
             return result;
         }, 1);
@@ -1397,8 +1489,40 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto typedarray_of = ObjectFactory::create_native_function("of",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            ctx.throw_type_error("TypedArray.of must be called on a concrete TypedArray constructor");
-            return Value();
+            Object* this_obj = ctx.get_this_binding();
+            Function* ctor = this_obj ? dynamic_cast<Function*>(this_obj) : nullptr;
+            if (!ctor) {
+                ctx.throw_type_error("TypedArray.of must be called on a concrete TypedArray constructor");
+                return Value();
+            }
+            std::vector<Value> ctor_args = { Value(static_cast<double>(args.size())) };
+            Value result = ctor->construct(ctx, ctor_args);
+            if (ctx.has_exception()) return Value();
+            if (!result.is_object() || !result.as_object()->is_typed_array()) {
+                ctx.throw_type_error("TypedArray constructor did not return a TypedArray");
+                return Value();
+            }
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(result.as_object());
+            // TypedArrayCreate: a custom ctor may return a longer-or-equal instance, never shorter.
+            if (ta->is_out_of_bounds() || ta->length() < args.size()) {
+                ctx.throw_type_error("Derived TypedArray constructor created an array which was too small");
+                return Value();
+            }
+            bool target_is_big = ta->get_array_type() == TypedArrayBase::ArrayType::BIGINT64 ||
+                                  ta->get_array_type() == TypedArrayBase::ArrayType::BIGUINT64;
+            for (size_t i = 0; i < args.size(); i++) {
+                Value v = args[i];
+                if (target_is_big) {
+                    v = to_bigint_for_typed_array(ctx, v);
+                    if (ctx.has_exception()) return Value();
+                } else if (v.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert a Symbol value to a number");
+                    return Value();
+                }
+                ta->set_element(i, v);
+                if (ctx.has_exception()) return Value();
+            }
+            return result;
         }, 0);
     PropertyDescriptor of_desc(Value(typedarray_of.release()),
         PropertyAttributes::BuiltinFunction);
