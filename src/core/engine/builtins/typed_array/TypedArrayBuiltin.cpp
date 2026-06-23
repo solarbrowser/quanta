@@ -601,28 +601,16 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) {
-                ctx.throw_type_error("TypedArray.prototype.forEach called on non-TypedArray");
-                return Value();
-            }
-            if (args.empty() || !args[0].is_function()) {
-                ctx.throw_type_error("forEach requires a callback function");
-                return Value();
-            }
-
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("forEach requires a callback function"); return Value(); }
             Function* callback = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-
-            size_t length = ta->length();
-            for (size_t i = 0; i < length; i++) {
-                std::vector<Value> callback_args = {
-                    ta->get_element(i),
-                    Value(static_cast<double>(i)),
-                    Value(this_obj)
-                };
-                callback->call(ctx, callback_args, thisArg);
+            size_t len = ta->length();
+            for (size_t i = 0; i < len; i++) {
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                callback->call(ctx, cb_args, thisArg);
+                if (ctx.has_exception()) return Value();
             }
             return Value();
         }, 1);
@@ -719,15 +707,17 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto every_fn = ObjectFactory::create_native_function("every",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            for (size_t i = 0; i < ta->length(); i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(this_obj) };
-                if (!cb->call(ctx, cb_args, thisArg).to_boolean()) return Value(false);
+            size_t len = ta->length();
+            for (size_t i = 0; i < len; i++) {
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                Value r = cb->call(ctx, cb_args, thisArg);
+                if (ctx.has_exception()) return Value();
+                if (!r.to_boolean()) return Value(false);
             }
             return Value(true);
         }, 1);
@@ -735,15 +725,17 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto some_fn = ObjectFactory::create_native_function("some",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            for (size_t i = 0; i < ta->length(); i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(this_obj) };
-                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return Value(true);
+            size_t len = ta->length();
+            for (size_t i = 0; i < len; i++) {
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                Value r = cb->call(ctx, cb_args, thisArg);
+                if (ctx.has_exception()) return Value();
+                if (r.to_boolean()) return Value(true);
             }
             return Value(false);
         }, 1);
@@ -751,16 +743,18 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto find_fn = ObjectFactory::create_native_function("find",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            for (size_t i = 0; i < ta->length(); i++) {
+            size_t len = ta->length();
+            for (size_t i = 0; i < len; i++) {
                 Value el = ta->get_element(i);
-                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(this_obj) };
-                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return el;
+                std::vector<Value> cb_args = { el, Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                Value r = cb->call(ctx, cb_args, thisArg);
+                if (ctx.has_exception()) return Value();
+                if (r.to_boolean()) return el;
             }
             return Value();
         }, 1);
@@ -768,15 +762,17 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto findIndex_fn = ObjectFactory::create_native_function("findIndex",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            for (size_t i = 0; i < ta->length(); i++) {
-                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(this_obj) };
-                if (cb->call(ctx, cb_args, thisArg).to_boolean()) return Value(static_cast<double>(i));
+            size_t len = ta->length();
+            for (size_t i = 0; i < len; i++) {
+                std::vector<Value> cb_args = { ta->get_element(i), Value(static_cast<double>(i)), Value(ctx.get_this_binding()) };
+                Value r = cb->call(ctx, cb_args, thisArg);
+                if (ctx.has_exception()) return Value();
+                if (r.to_boolean()) return Value(static_cast<double>(i));
             }
             return Value(-1.0);
         }, 1);
@@ -819,15 +815,23 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto indexOf_fn = ObjectFactory::create_native_function("indexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            if (args.empty() || ta->length() == 0) return Value(-1.0);
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            double len = static_cast<double>(ta->length());
+            if (args.empty() || len == 0) return Value(-1.0);
             Value search = args[0];
-            size_t from = 0;
-            if (args.size() > 1) { int64_t idx = static_cast<int64_t>(args[1].to_number()); from = idx < 0 ? (size_t)(idx + (int64_t)ta->length() < 0 ? 0 : idx + (int64_t)ta->length()) : (size_t)idx; }
-            for (size_t i = from; i < ta->length(); i++) {
-                if (ta->get_element(i).strict_equals(search)) return Value(static_cast<double>(i));
+            double rel = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : 0.0;
+            if (ctx.has_exception()) return Value();
+            if (rel == std::numeric_limits<double>::infinity()) return Value(-1.0);
+            // Re-fetch len after coercion (fromIndex valueOf can detach/resize the buffer).
+            len = static_cast<double>(ta->length());
+            if (len == 0) return Value(-1.0);
+            // Normalize -0 to +0 so found-at-index-0 returns 0 not -0.
+            if (rel == 0.0) rel = 0.0;
+            double from = rel < 0 ? std::max(len + rel, 0.0) : std::min(rel, len);
+            if (from == 0.0) from = 0.0; // normalize -0
+            for (double i = from; i < len; i++) {
+                if (ta->get_element(static_cast<size_t>(i)).strict_equals(search)) return Value(i);
             }
             return Value(-1.0);
         }, 1);
@@ -835,15 +839,22 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            if (args.empty() || ta->length() == 0) return Value(-1.0);
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            double len = static_cast<double>(ta->length());
+            if (args.empty() || len == 0) return Value(-1.0);
             Value search = args[0];
-            int64_t from = ta->length() - 1;
-            if (args.size() > 1) { int64_t idx = static_cast<int64_t>(args[1].to_number()); from = idx < 0 ? idx + (int64_t)ta->length() : (idx < (int64_t)ta->length() ? idx : (int64_t)ta->length() - 1); }
-            for (int64_t i = from; i >= 0; i--) {
-                if (ta->get_element(static_cast<size_t>(i)).strict_equals(search)) return Value(static_cast<double>(i));
+            double rel = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : len - 1;
+            if (ctx.has_exception()) return Value();
+            if (rel == -std::numeric_limits<double>::infinity()) return Value(-1.0);
+            // Re-fetch len after coercion (fromIndex valueOf can detach/resize the buffer).
+            len = static_cast<double>(ta->length());
+            if (len == 0) return Value(-1.0);
+            if (rel == 0.0) rel = 0.0; // normalize -0
+            double from = rel < 0 ? len + rel : std::min(rel, len - 1);
+            if (from == 0.0) from = 0.0; // normalize -0
+            for (double i = from; i >= 0; i--) {
+                if (ta->get_element(static_cast<size_t>(i)).strict_equals(search)) return Value(i);
             }
             return Value(-1.0);
         }, 1);
@@ -851,16 +862,19 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto reduce_fn = ObjectFactory::create_native_function("reduce",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
-            size_t k = 0; Value acc;
-            if (args.size() >= 2) { acc = args[1]; } else { if (ta->length() == 0) { ctx.throw_type_error("Reduce of empty array"); return Value(); } acc = ta->get_element(static_cast<size_t>(0)); k = 1; }
-            for (; k < ta->length(); k++) {
-                std::vector<Value> cb_args = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(this_obj) };
+            size_t len = ta->length(), k = 0; Value acc;
+            if (args.size() >= 2) { acc = args[1]; } else {
+                if (len == 0) { ctx.throw_type_error("Reduce of empty array with no initial value"); return Value(); }
+                acc = ta->get_element(static_cast<size_t>(0)); k = 1;
+            }
+            for (; k < len; k++) {
+                std::vector<Value> cb_args = { acc, ta->get_element(k), Value(static_cast<double>(k)), Value(ctx.get_this_binding()) };
                 acc = cb->call(ctx, cb_args, Value());
+                if (ctx.has_exception()) return Value();
             }
             return acc;
         }, 1);
@@ -868,16 +882,19 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto reduceRight_fn = ObjectFactory::create_native_function("reduceRight",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
             if (args.empty() || !args[0].is_function()) { ctx.throw_type_error("callback required"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             Function* cb = args[0].as_function();
-            int64_t k = (int64_t)ta->length() - 1; Value acc;
-            if (args.size() >= 2) { acc = args[1]; } else { if (ta->length() == 0) { ctx.throw_type_error("Reduce of empty array"); return Value(); } acc = ta->get_element(ta->length() - 1); k--; }
+            int64_t len = static_cast<int64_t>(ta->length()), k = len - 1; Value acc;
+            if (args.size() >= 2) { acc = args[1]; } else {
+                if (len == 0) { ctx.throw_type_error("Reduce of empty array with no initial value"); return Value(); }
+                acc = ta->get_element(static_cast<size_t>(k)); k--;
+            }
             for (; k >= 0; k--) {
-                std::vector<Value> cb_args = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(this_obj) };
+                std::vector<Value> cb_args = { acc, ta->get_element(static_cast<size_t>(k)), Value(static_cast<double>(k)), Value(ctx.get_this_binding()) };
                 acc = cb->call(ctx, cb_args, Value());
+                if (ctx.has_exception()) return Value();
             }
             return acc;
         }, 1);
@@ -1144,7 +1161,6 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
@@ -1158,7 +1174,15 @@ void register_typed_array_builtins(Context& ctx) {
                 else { auto pair = ObjectFactory::create_object(); pair->set_property("0", Value((double)idx)); pair->set_property("1", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); pair->set_property("length", Value(2.0));
                     res->set_property("done", Value(false)); res->set_property("value", Value(pair.release())); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
-            iter->set_property("next", Value(next.release())); return Value(iter.release());
+            iter->set_property("next", Value(next.release()));
+            Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+            if (tag_sym) iter->set_property(tag_sym->to_property_key(), Value(std::string("Array Iterator")));
+            Symbol* iter_sym2 = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym2) {
+                auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]", [](Context& ctx, const std::vector<Value>&) -> Value { return Value(ctx.get_this_binding()); }, 0);
+                iter->set_property(iter_sym2->to_property_key(), Value(self_iter.release()));
+            }
+            return Value(iter.release());
         }, 0);
     typedarray_proto_ptr->set_property_descriptor("entries", PropertyDescriptor(Value(ta_entries_fn.release()), PropertyAttributes::BuiltinFunction));
 
@@ -1166,7 +1190,6 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
@@ -1179,7 +1202,15 @@ void register_typed_array_builtins(Context& ctx) {
                 if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { res->set_property("done", Value(false)); res->set_property("value", Value((double)idx)); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
-            iter->set_property("next", Value(next.release())); return Value(iter.release());
+            iter->set_property("next", Value(next.release()));
+            Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+            if (tag_sym) iter->set_property(tag_sym->to_property_key(), Value(std::string("Array Iterator")));
+            Symbol* iter_sym2 = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym2) {
+                auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]", [](Context& ctx, const std::vector<Value>&) -> Value { return Value(ctx.get_this_binding()); }, 0);
+                iter->set_property(iter_sym2->to_property_key(), Value(self_iter.release()));
+            }
+            return Value(iter.release());
         }, 0);
     typedarray_proto_ptr->set_property_descriptor("keys", PropertyDescriptor(Value(ta_keys_fn.release()), PropertyAttributes::BuiltinFunction));
 
@@ -1187,7 +1218,6 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args; Object* this_obj = ctx.get_this_binding();
             if (!this_obj || !this_obj->is_typed_array()) { ctx.throw_type_error("not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
             auto iter = ObjectFactory::create_object();
             iter->set_property("__idx", Value(0.0)); iter->set_property("__arr", Value(this_obj));
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
@@ -1200,7 +1230,15 @@ void register_typed_array_builtins(Context& ctx) {
                 if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { res->set_property("done", Value(false)); res->set_property("value", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
-            iter->set_property("next", Value(next.release())); return Value(iter.release());
+            iter->set_property("next", Value(next.release()));
+            Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+            if (tag_sym) iter->set_property(tag_sym->to_property_key(), Value(std::string("Array Iterator")));
+            Symbol* iter_sym2 = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym2) {
+                auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]", [](Context& ctx, const std::vector<Value>&) -> Value { return Value(ctx.get_this_binding()); }, 0);
+                iter->set_property(iter_sym2->to_property_key(), Value(self_iter.release()));
+            }
+            return Value(iter.release());
         }, 0);
     typedarray_proto_ptr->set_property_descriptor("values", PropertyDescriptor(Value(ta_values_fn.release()), PropertyAttributes::BuiltinFunction));
 
@@ -1359,29 +1397,21 @@ void register_typed_array_builtins(Context& ctx) {
 
     auto ta_includes_fn = ObjectFactory::create_native_function("includes",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || !this_obj->is_typed_array()) {
-                ctx.throw_type_error("TypedArray.prototype.includes called on non-TypedArray");
-                return Value();
-            }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(this_obj);
-            uint32_t length = static_cast<uint32_t>(ta->length());
-            Value search_element = args.empty() ? Value() : args[0];
-            int64_t from_index = 0;
-            if (args.size() > 1) {
-                from_index = static_cast<int64_t>(args[1].to_number());
-            }
-            if (from_index < 0) {
-                from_index = static_cast<int64_t>(length) + from_index;
-                if (from_index < 0) from_index = 0;
-            }
-            for (uint32_t i = static_cast<uint32_t>(from_index); i < length; i++) {
-                Value element = ta->get_element(i);
-                if (search_element.is_number() && element.is_number()) {
-                    double sn = search_element.to_number(), en = element.to_number();
+            TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
+            if (!ta) return Value();
+            double len = static_cast<double>(ta->length());
+            Value search = args.empty() ? Value() : args[0];
+            double rel = args.size() > 1 ? to_integer_or_infinity(to_number_throwing(ctx, args[1])) : 0.0;
+            if (ctx.has_exception()) return Value();
+            if (rel == std::numeric_limits<double>::infinity()) return Value(false);
+            double from = rel < 0 ? std::max(len + rel, 0.0) : std::min(rel, len);
+            for (double i = from; i < len; i++) {
+                Value element = ta->get_element(static_cast<size_t>(i));
+                if (search.is_number() && element.is_number()) {
+                    double sn = search.to_number(), en = element.to_number();
                     if (std::isnan(sn) && std::isnan(en)) return Value(true);
                     if (sn == en) return Value(true);
-                } else if (element.strict_equals(search_element)) {
+                } else if (element.strict_equals(search)) {
                     return Value(true);
                 }
             }
