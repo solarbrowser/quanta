@@ -990,10 +990,43 @@ void register_string_builtins(Context& ctx) {
 
             if (args.size() < 2) return Value(str);
 
+            // If searchValue is a RegExp, check for global flag and use @@replace.
+            if (!args.empty() && args[0].is_object()) {
+                Object* sv = args[0].as_object();
+                if (sv->get_type() == Object::ObjectType::RegExp) {
+                    Value flags_val = sv->get_property("flags");
+                    if (ctx.has_exception()) return Value();
+                    std::string flags = flags_val.to_string();
+                    if (flags.find('g') == std::string::npos) {
+                        ctx.throw_type_error("String.prototype.replaceAll called with a non-global RegExp");
+                        return Value();
+                    }
+                    Symbol* replace_sym = Symbol::get_well_known(Symbol::REPLACE);
+                    Value replace_method = replace_sym ? sv->get_property(replace_sym->to_property_key()) : Value();
+                    if (ctx.has_exception()) return Value();
+                    if (replace_method.is_function()) {
+                        std::vector<Value> rep_args = { Value(str), args.size() > 1 ? args[1] : Value() };
+                        return replace_method.as_function()->call(ctx, rep_args, args[0]);
+                    }
+                }
+            }
+
             std::string search = args[0].to_string();
             bool is_function = args[1].is_function();
 
-            if (search.empty()) return Value(str);
+            if (search.empty()) {
+                // Empty search: insert replacement before/after every character.
+                std::string result;
+                std::string repl = is_function ? "" : apply_substitution(args[1].to_string(), str, 0, "");
+                if (!is_function) {
+                    for (size_t i = 0; i <= str.size(); i++) {
+                        result += apply_substitution(args[1].to_string(), str, i, "");
+                        if (i < str.size()) result += str[i];
+                    }
+                    return Value(result);
+                }
+                return Value(str);
+            }
 
             std::vector<size_t> positions;
             size_t pos = 0;
@@ -2229,34 +2262,17 @@ void register_string_builtins(Context& ctx) {
             auto string_trim_fn = ObjectFactory::create_native_function("trim",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
-                    Value this_value = ctx.get_binding("this");
-                    std::string str = this_value.to_string();
-
-                    size_t start = 0;
-                    size_t end = str.length();
-
-                    while (start < end && std::isspace(static_cast<unsigned char>(str[start]))) {
-                        start++;
-                    }
-                    while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
-                        end--;
-                    }
-
-                    return Value(str.substr(start, end - start));
+                    bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
+                    return Value(unicode_trim(str));
                 });
             global_prototype->set_property("trim", Value(string_trim_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_trimStart_fn = ObjectFactory::create_native_function("trimStart",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
-                    Value this_value = ctx.get_binding("this");
-                    std::string str = this_value.to_string();
-
+                    bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
                     size_t start = 0;
-                    while (start < str.length() && std::isspace(static_cast<unsigned char>(str[start]))) {
-                        start++;
-                    }
-
+                    while (start < str.size()) { size_t n = is_unicode_whitespace(str, start); if (!n) break; start += n; }
                     return Value(str.substr(start));
                 });
             Function* trimStart_raw = string_trimStart_fn.get();
@@ -2266,14 +2282,15 @@ void register_string_builtins(Context& ctx) {
             auto string_trimEnd_fn = ObjectFactory::create_native_function("trimEnd",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
-                    Value this_value = ctx.get_binding("this");
-                    std::string str = this_value.to_string();
-
-                    size_t end = str.length();
-                    while (end > 0 && std::isspace(static_cast<unsigned char>(str[end - 1]))) {
-                        end--;
+                    bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
+                    size_t end = str.size();
+                    while (end > 0) {
+                        size_t p = end - 1;
+                        while (p > 0 && (static_cast<unsigned char>(str[p]) & 0xC0) == 0x80) p--;
+                        size_t n = is_unicode_whitespace(str, p);
+                        if (!n || p + n != end) break;
+                        end = p;
                     }
-
                     return Value(str.substr(0, end));
                 });
             Function* trimEnd_raw = string_trimEnd_fn.get();

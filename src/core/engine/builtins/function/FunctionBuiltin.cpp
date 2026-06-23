@@ -351,6 +351,14 @@ void register_function_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* function_obj = ctx.get_this_binding();
+            // Proxy wrapping a function: delegate to the underlying target.
+            if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy = static_cast<Proxy*>(function_obj);
+                Object* target = proxy->get_proxy_target();
+                if (target && target->is_function()) {
+                    return Value(static_cast<Function*>(target)->to_string());
+                }
+            }
             if (!function_obj || !function_obj->is_function()) {
                 ctx.throw_type_error("Function.prototype.toString called on non-function");
                 return Value();
