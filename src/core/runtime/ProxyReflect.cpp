@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/parser/AST.h"
 #include <iostream>
@@ -918,6 +919,47 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
 // [[GetOwnProperty]]/[[DefineOwnProperty]] (which fire Proxy traps if Receiver is a
 // Proxy), not a plain write on the original target.
 static bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx) {
+    // TypedArray's own [[Set]] bypasses OrdinarySet entirely for a canonical numeric key.
+    if (O->get_type() == Object::ObjectType::TypedArray) {
+        TypedArrayBase* ta = static_cast<TypedArrayBase*>(O);
+        double num_idx;
+        if (ta->canonical_numeric_index(key, num_idx)) {
+            if (O == receiver) {
+                ta->set_property(key, value, PropertyAttributes::Default);
+                return !ctx.has_exception();
+            }
+            if (!ta->is_valid_integer_index(num_idx)) {
+                return true;
+            }
+            if (!receiver) return false;
+            PropertyDescriptor existing;
+            bool receiver_has_own = false;
+            if (receiver->get_type() == Object::ObjectType::Proxy) {
+                existing = static_cast<Proxy*>(receiver)->get_own_property_descriptor_trap(Value(key));
+                if (ctx.has_exception()) return false;
+                receiver_has_own = existing.has_value() || existing.is_accessor_descriptor();
+            } else {
+                receiver_has_own = receiver->has_own_property(key);
+                if (receiver_has_own) existing = receiver->get_property_descriptor(key);
+            }
+            if (receiver_has_own) {
+                if (existing.is_accessor_descriptor()) return false;
+                if (existing.has_writable() && !existing.is_writable()) return false;
+                PropertyDescriptor value_desc;
+                value_desc.set_value(value);
+                if (receiver->get_type() == Object::ObjectType::Proxy) {
+                    return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), value_desc);
+                }
+                return receiver->set_property_descriptor(key, value_desc);
+            }
+            PropertyDescriptor new_desc(value, PropertyAttributes::Default);
+            if (receiver->get_type() == Object::ObjectType::Proxy) {
+                return static_cast<Proxy*>(receiver)->define_property_trap(Value(key), new_desc);
+            }
+            return receiver->set_property_descriptor(key, new_desc);
+        }
+    }
+
     PropertyDescriptor own_desc;
     bool has_own = false;
     if (O->get_type() == Object::ObjectType::Proxy) {

@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <sstream>
 #include <cmath>
+#include <cstdlib>
+#include <cerrno>
 
 static void quanta_memcpy(void* dest, const void* src, size_t count) {
     const char* s = static_cast<const char*>(src);
@@ -129,11 +131,42 @@ void TypedArrayBase::validate_offset_and_length(size_t buffer_byte_length, size_
     }
 }
 
+bool TypedArrayBase::canonical_numeric_index(const std::string& key, double& out) {
+    if (key.empty()) return false;
+    if (key == "-0") { out = -0.0; return true; }
+    char c0 = key[0];
+    if (!(c0 == '-' || (c0 >= '0' && c0 <= '9'))) return false;
+
+    if (c0 != '-' && !(c0 == '0' && key.length() > 1)) {
+        char* end = nullptr;
+        errno = 0;
+        unsigned long long v = std::strtoull(key.c_str(), &end, 10);
+        if (*end == '\0' && errno == 0) { out = static_cast<double>(v); return true; }
+    }
+
+    Value parsed(key);
+    double num = parsed.to_number();
+    if (std::isnan(num)) {
+        if (key != "NaN") return false;
+        out = num;
+        return true;
+    }
+    if (Value(num).to_string() != key) return false;
+    out = num;
+    return true;
+}
+
+bool TypedArrayBase::is_valid_integer_index(double idx) const {
+    if (std::isnan(idx) || std::isinf(idx) || idx != std::floor(idx)) return false;
+    if (idx == 0.0 && std::signbit(idx)) return false;
+    return idx >= 0 && idx < static_cast<double>(current_length());
+}
+
 Value TypedArrayBase::get_property(const std::string& key) const {
-    char* end;
-    unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && index < current_length()) {
-        return get_element(static_cast<size_t>(index));
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) {
+        if (!is_valid_integer_index(num_idx)) return Value();
+        return get_element(static_cast<size_t>(num_idx));
     }
 
     if (key == "length") {
@@ -151,15 +184,21 @@ Value TypedArrayBase::get_property(const std::string& key) const {
     if (key == "BYTES_PER_ELEMENT") {
         return Value(static_cast<double>(bytes_per_element_));
     }
-    
+
     return Object::get_property(key);
 }
 
 bool TypedArrayBase::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
-    char* end;
-    unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && index < current_length()) {
-        return set_element(static_cast<size_t>(index), value);
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) {
+        // Bounds (current_length()) are checked by set_element/check_bounds *after* conversion,
+        // since converting `value` can itself resize the buffer (spec: convert, then validate).
+        // Only reject shapes no resize could ever make valid: NaN/Infinity/non-integer/negative/-0.
+        bool representable = !std::isnan(num_idx) && !std::isinf(num_idx) && num_idx == std::floor(num_idx)
+            && !(num_idx == 0.0 && std::signbit(num_idx)) && num_idx >= 0;
+        size_t write_index = representable ? static_cast<size_t>(num_idx) : SIZE_MAX;
+        set_element(write_index, value);
+        return true;
     }
 
     return Object::set_property(key, value, attrs);
@@ -175,17 +214,44 @@ std::vector<std::string> TypedArrayBase::get_own_property_keys() const {
 }
 
 bool TypedArrayBase::has_own_property(const std::string& key) const {
-    char* end;
-    unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && !key.empty() && index < current_length()) return true;
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) return is_valid_integer_index(num_idx);
     return Object::has_own_property(key);
 }
 
+bool TypedArrayBase::has_property(const std::string& key) const {
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) return is_valid_integer_index(num_idx);
+    return Object::has_property(key);
+}
+
+bool TypedArrayBase::delete_property(const std::string& key) {
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) return !is_valid_integer_index(num_idx);
+    return Object::delete_property(key);
+}
+
+bool TypedArrayBase::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) {
+        if (!is_valid_integer_index(num_idx)) return false;
+        if (desc.has_configurable() && !desc.is_configurable()) return false;
+        if (desc.has_enumerable() && !desc.is_enumerable()) return false;
+        if (desc.is_accessor_descriptor()) return false;
+        if (desc.has_writable() && !desc.is_writable()) return false;
+        if (desc.has_value()) {
+            set_element(static_cast<size_t>(num_idx), desc.get_value());
+        }
+        return true;
+    }
+    return Object::set_property_descriptor(key, desc);
+}
+
 PropertyDescriptor TypedArrayBase::get_property_descriptor(const std::string& key) const {
-    char* end;
-    unsigned long index = std::strtoul(key.c_str(), &end, 10);
-    if (*end == '\0' && !key.empty() && index < current_length()) {
-        return PropertyDescriptor(get_element(static_cast<size_t>(index)), PropertyAttributes::Default);
+    double num_idx;
+    if (canonical_numeric_index(key, num_idx)) {
+        if (!is_valid_integer_index(num_idx)) return PropertyDescriptor();
+        return PropertyDescriptor(get_element(static_cast<size_t>(num_idx)), PropertyAttributes::Default);
     }
     return Object::get_property_descriptor(key);
 }
@@ -322,9 +388,6 @@ template<typename T>
 bool TypedArray<T>::set_element(size_t index, const Value& value) {
     if constexpr (std::is_floating_point_v<T>) {
         double num_val = value.to_number();
-        if (std::isnan(num_val)) {
-            return set_typed_element(index, T{});
-        }
         return set_typed_element(index, static_cast<T>(num_val));
     } else {
         // ES6: Integer typed arrays use modular arithmetic (wrapping), not clamping
@@ -357,10 +420,6 @@ template class TypedArray<double>;
 
 
 bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
-    if (!check_bounds(index)) {
-        return false;
-    }
-    
     double num_val = value.to_number();
     if (std::isnan(num_val)) {
         return set_typed_element(index, 0);
@@ -375,6 +434,45 @@ bool Uint8ClampedArray::set_element(size_t index, const Value& value) {
     }
 }
 
+
+namespace {
+
+// ToBigInt(value), using Object::current_context_ since set_element has no Context parameter.
+bool to_bigint_checked(const Value& value, BigInt*& out) {
+    Context* ctx = Object::current_context_;
+    if (value.is_bigint()) { out = value.as_bigint(); return true; }
+    if (value.is_boolean()) { out = new BigInt(value.as_boolean() ? 1 : 0); return true; }
+    if (value.is_string()) {
+        try {
+            out = new BigInt(value.to_string());
+            return true;
+        } catch (const std::exception&) {
+            if (ctx) ctx->throw_syntax_error("Cannot convert string to BigInt");
+            return false;
+        }
+    }
+    if (value.is_object()) {
+        Object* obj = value.as_object();
+        Value valueOf_fn = obj->get_property("valueOf");
+        if (ctx && valueOf_fn.is_function()) {
+            Value prim = valueOf_fn.as_function()->call(*ctx, {}, value);
+            if (ctx->has_exception()) return false;
+            if (!prim.is_object() && !prim.is_function()) return to_bigint_checked(prim, out);
+        }
+        Value toString_fn = obj->get_property("toString");
+        if (ctx && toString_fn.is_function()) {
+            Value prim = toString_fn.as_function()->call(*ctx, {}, value);
+            if (ctx->has_exception()) return false;
+            if (!prim.is_object() && !prim.is_function()) return to_bigint_checked(prim, out);
+        }
+        if (ctx) ctx->throw_type_error("Cannot convert object to BigInt");
+        return false;
+    }
+    if (ctx) ctx->throw_type_error("Cannot convert value to BigInt");
+    return false;
+}
+
+}
 
 BigInt64Array::BigInt64Array(size_t length) : TypedArrayBase(ArrayType::BIGINT64, 8, length) {}
 BigInt64Array::BigInt64Array(std::shared_ptr<ArrayBuffer> buffer) : TypedArrayBase(ArrayType::BIGINT64, 8, buffer) {}
@@ -391,11 +489,12 @@ Value BigInt64Array::get_element(size_t index) const {
 }
 
 bool BigInt64Array::set_element(size_t index, const Value& value) {
+    BigInt* big = nullptr;
+    if (!to_bigint_checked(value, big)) return false;
+    int64_t val = big->to_int64();
     if (!check_bounds(index)) return false;
     uint8_t* data = get_data_ptr();
     if (!data) return false;
-    int64_t val = 0;
-    if (value.is_bigint()) val = value.as_bigint()->to_int64();
     quanta_memcpy(data + index * 8, &val, 8);
     return true;
 }
@@ -415,11 +514,12 @@ Value BigUint64Array::get_element(size_t index) const {
 }
 
 bool BigUint64Array::set_element(size_t index, const Value& value) {
+    BigInt* big = nullptr;
+    if (!to_bigint_checked(value, big)) return false;
+    uint64_t val = static_cast<uint64_t>(big->to_int64());
     if (!check_bounds(index)) return false;
     uint8_t* data = get_data_ptr();
     if (!data) return false;
-    uint64_t val = 0;
-    if (value.is_bigint()) val = static_cast<uint64_t>(value.as_bigint()->to_int64());
     quanta_memcpy(data + index * 8, &val, 8);
     return true;
 }
