@@ -12,8 +12,111 @@
 #include "quanta/core/runtime/DataView.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/parser/AST.h"
+#include <cmath>
 
 namespace Quanta {
+
+// Value::to_number() silently returns NaN instead of throwing when ToPrimitive fails.
+static double to_number_checked(Context& ctx, const Value& v) {
+    double n = v.to_number();
+    if (!std::isnan(n) || !v.is_object()) return n;
+    Object* obj = v.as_object();
+    bool got_primitive = false;
+    Value valueOf_fn = obj->get_property("valueOf");
+    if (ctx.has_exception()) return 0.0;
+    if (valueOf_fn.is_function()) {
+        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return 0.0;
+        got_primitive = !prim.is_object() && !prim.is_function();
+    }
+    if (!got_primitive) {
+        Value toString_fn = obj->get_property("toString");
+        if (ctx.has_exception()) return 0.0;
+        if (toString_fn.is_function()) {
+            Value prim = toString_fn.as_function()->call(ctx, {}, v);
+            if (ctx.has_exception()) return 0.0;
+            got_primitive = !prim.is_object() && !prim.is_function();
+        }
+    }
+    if (!got_primitive) {
+        ctx.throw_type_error("Cannot convert object to primitive value");
+        return 0.0;
+    }
+    return n;
+}
+
+// SpeciesConstructor(O, %ArrayBuffer%) then Construct(C, « newLen »), with result invariants checked.
+static ArrayBuffer* array_buffer_species_create(Context& ctx, Object* o, size_t new_len) {
+    Value default_ctor = ctx.get_binding("ArrayBuffer");
+    Function* ctor_fn = default_ctor.is_function() ? default_ctor.as_function() : nullptr;
+
+    Value c = o->get_property("constructor");
+    if (ctx.has_exception()) return nullptr;
+    if (!c.is_undefined()) {
+        if (!c.is_object() && !c.is_function()) { ctx.throw_type_error("constructor property is not a constructor"); return nullptr; }
+        Object* c_obj = c.is_function() ? static_cast<Object*>(c.as_function()) : c.as_object();
+        Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+        Value s = species_sym ? c_obj->get_property(species_sym->to_property_key()) : Value();
+        if (ctx.has_exception()) return nullptr;
+        if (!s.is_null() && !s.is_undefined()) {
+            if (s.is_function() && static_cast<Function*>(s.as_function())->is_constructor()) {
+                ctor_fn = s.as_function();
+            } else {
+                ctx.throw_type_error("Species constructor is not a constructor");
+                return nullptr;
+            }
+        }
+    }
+    if (!ctor_fn) { ctx.throw_type_error("No constructor available"); return nullptr; }
+
+    Value result = ctor_fn->construct(ctx, {Value(static_cast<double>(new_len))});
+    if (ctx.has_exception()) return nullptr;
+    if (!result.is_object() || !result.as_object()->is_array_buffer()) {
+        ctx.throw_type_error("Species constructor did not return an ArrayBuffer");
+        return nullptr;
+    }
+    ArrayBuffer* new_ab = static_cast<ArrayBuffer*>(result.as_object());
+    if (new_ab->is_shared_array_buffer()) { ctx.throw_type_error("Species constructor returned a SharedArrayBuffer"); return nullptr; }
+    if (new_ab->is_detached()) { ctx.throw_type_error("Species constructor returned a detached ArrayBuffer"); return nullptr; }
+    if (static_cast<Object*>(new_ab) == o) { ctx.throw_type_error("Species constructor returned the same ArrayBuffer"); return nullptr; }
+    if (new_ab->byte_length() < new_len) { ctx.throw_type_error("Species constructor returned a too-small ArrayBuffer"); return nullptr; }
+    return new_ab;
+}
+
+// ArrayBufferCopyAndDetach: allocate-new + copy + detach-source (observably same as a real zero-copy transfer).
+static Value array_buffer_copy_and_detach(Context& ctx, Object* this_obj, const std::vector<Value>& args, bool preserve_resizability) {
+    if (!this_obj || !this_obj->is_array_buffer()) { ctx.throw_type_error("not an ArrayBuffer"); return Value(); }
+    if (this_obj->is_shared_array_buffer()) { ctx.throw_type_error("Cannot transfer a SharedArrayBuffer"); return Value(); }
+    ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+    if (ab->is_detached()) { ctx.throw_type_error("Cannot transfer a detached ArrayBuffer"); return Value(); }
+
+    double new_len_double = (args.empty() || args[0].is_undefined())
+        ? static_cast<double>(ab->byte_length()) : to_number_checked(ctx, args[0]);
+    if (ctx.has_exception()) return Value();
+    if (std::isnan(new_len_double) || new_len_double < 0 || new_len_double != std::floor(new_len_double) ||
+        new_len_double > 9007199254740991.0) {
+        ctx.throw_range_error("Invalid transfer length");
+        return Value();
+    }
+    size_t new_len = static_cast<size_t>(new_len_double);
+
+    std::unique_ptr<ArrayBuffer> new_buffer;
+    if (preserve_resizability && ab->is_resizable()) {
+        if (new_len > ab->max_byte_length()) { ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength"); return Value(); }
+        new_buffer = std::make_unique<ArrayBuffer>(new_len, ab->max_byte_length());
+    } else {
+        new_buffer = std::make_unique<ArrayBuffer>(new_len);
+    }
+
+    size_t copy_len = std::min(new_len, ab->byte_length());
+    if (copy_len > 0) {
+        std::vector<uint8_t> tmp(copy_len);
+        ab->read_bytes(0, tmp.data(), copy_len);
+        new_buffer->write_bytes(0, tmp.data(), copy_len);
+    }
+    ab->detach();
+    return Value(new_buffer.release());
+}
 
 void register_arraybuffer_builtins(Context& ctx) {
     auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
@@ -137,7 +240,33 @@ void register_arraybuffer_builtins(Context& ctx) {
 
     auto ab_slice_fn = ObjectFactory::create_native_function("slice",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value();
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || !this_obj->is_array_buffer()) { ctx.throw_type_error("ArrayBuffer.prototype.slice called on non-ArrayBuffer"); return Value(); }
+            if (this_obj->is_shared_array_buffer()) { ctx.throw_type_error("ArrayBuffer.prototype.slice called on a SharedArrayBuffer"); return Value(); }
+            ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+            if (ab->is_detached()) { ctx.throw_type_error("Cannot slice a detached ArrayBuffer"); return Value(); }
+            int64_t len = static_cast<int64_t>(ab->byte_length());
+            int64_t start = 0, end = len;
+            if (!args.empty()) {
+                int64_t s = static_cast<int64_t>(args[0].to_number());
+                if (ctx.has_exception()) return Value();
+                start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s);
+            }
+            if (args.size() > 1 && !args[1].is_undefined()) {
+                int64_t e = static_cast<int64_t>(args[1].to_number());
+                if (ctx.has_exception()) return Value();
+                end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e);
+            }
+            size_t new_len = end > start ? static_cast<size_t>(end - start) : 0;
+            ArrayBuffer* new_ab = array_buffer_species_create(ctx, this_obj, new_len);
+            if (!new_ab) return Value();
+            if (ab->is_detached()) { ctx.throw_type_error("ArrayBuffer was detached during species construction"); return Value(); }
+            std::vector<uint8_t> tmp(new_len);
+            if (new_len > 0) {
+                ab->read_bytes(static_cast<size_t>(start), tmp.data(), new_len);
+                new_ab->write_bytes(0, tmp.data(), new_len);
+            }
+            return Value(new_ab);
         }, 2);
 
     ab_slice_fn->set_property("name", Value(std::string("slice")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -159,7 +288,8 @@ void register_arraybuffer_builtins(Context& ctx) {
                 ctx.throw_type_error("Cannot resize a non-resizable ArrayBuffer");
                 return Value();
             }
-            double new_len_double = args.empty() ? 0.0 : args[0].to_number();
+            double new_len_double = args.empty() ? 0.0 : to_number_checked(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
             if (std::isnan(new_len_double) || new_len_double < 0 || new_len_double != std::floor(new_len_double)) {
                 ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
                 return Value();
@@ -177,7 +307,7 @@ void register_arraybuffer_builtins(Context& ctx) {
 
     auto ab_transfer_fn = ObjectFactory::create_native_function("transfer",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            return Value();
+            return array_buffer_copy_and_detach(ctx, ctx.get_this_binding(), args, true);
         }, 0);
 
     ab_transfer_fn->set_property("name", Value(std::string("transfer")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -196,8 +326,10 @@ void register_arraybuffer_builtins(Context& ctx) {
             return Value(static_cast<double>(ab->is_resizable() ? ab->max_byte_length() : ab->byte_length()));
         }, 0);
 
-    PropertyDescriptor maxByteLength_desc(Value(ab_maxByteLength_fn.release()), PropertyAttributes::Configurable);
+    PropertyDescriptor maxByteLength_desc;
+    maxByteLength_desc.set_getter(ab_maxByteLength_fn.release());
     maxByteLength_desc.set_enumerable(false);
+    maxByteLength_desc.set_configurable(true);
     arraybuffer_prototype->set_property_descriptor("maxByteLength", maxByteLength_desc);
 
     auto ab_resizable_fn = ObjectFactory::create_native_function("get resizable",
@@ -211,14 +343,15 @@ void register_arraybuffer_builtins(Context& ctx) {
             return Value(static_cast<ArrayBuffer*>(this_obj)->is_resizable());
         }, 0);
 
-    PropertyDescriptor resizable_desc(Value(ab_resizable_fn.release()), PropertyAttributes::Configurable);
+    PropertyDescriptor resizable_desc;
+    resizable_desc.set_getter(ab_resizable_fn.release());
     resizable_desc.set_enumerable(false);
+    resizable_desc.set_configurable(true);
     arraybuffer_prototype->set_property_descriptor("resizable", resizable_desc);
 
     auto ab_transferToFixedLength_fn = ObjectFactory::create_native_function("transferToFixedLength",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx; (void)args;
-            return Value();
+            return array_buffer_copy_and_detach(ctx, ctx.get_this_binding(), args, false);
         }, 0);
 
     ab_transferToFixedLength_fn->set_property("name", Value(std::string("transferToFixedLength")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
@@ -232,6 +365,7 @@ void register_arraybuffer_builtins(Context& ctx) {
         }
     }
 
+    arraybuffer_prototype->set_property("constructor", Value(arraybuffer_constructor.get()), PropertyAttributes::BuiltinFunction);
     arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
 
     {
