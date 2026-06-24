@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Promise.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 
 namespace Quanta {
 
@@ -84,16 +85,57 @@ static Object* as_object_or_function(const Value& v) {
     return nullptr;
 }
 
-// Collects elements from an iterable (array fast path, else full Symbol.iterator protocol).
-// On any abrupt completion (including poisoned `done`/`value`/`next`), leaves ctx in an
-// exception state and returns false, for the caller to convert into IfAbruptRejectPromise.
-static bool collect_iterable_elements(Context& ctx, const Value& iterable_val, std::vector<Value>& out_elements) {
+// [[OwnPropertyKeys]] / [[GetOwnProperty]] that respect a Proxy's traps (the plain Object
+// virtuals don't dispatch to Proxy traps at all -- see ownKeys/getOwnPropertyDescriptor tests).
+static std::vector<std::string> own_keys_for(Object* obj) {
+    Proxy* px = dynamic_cast<Proxy*>(obj);
+    return px ? px->own_keys_trap() : obj->get_own_property_keys();
+}
+static PropertyDescriptor own_property_descriptor_for(Object* obj, const std::string& key) {
+    Proxy* px = dynamic_cast<Proxy*>(obj);
+    return px ? px->get_own_property_descriptor_trap(Value(key)) : obj->get_property_descriptor(key);
+}
+
+// 7.3.22 SpeciesConstructor ( O, defaultConstructor )
+static Function* species_constructor(Context& ctx, Object* O, Function* default_ctor) {
+    Value c = O->get_property("constructor");
+    if (ctx.has_exception()) return nullptr;
+    if (c.is_undefined()) return default_ctor;
+    Object* c_obj = as_object_or_function(c);
+    if (!c_obj) { ctx.throw_type_error("constructor is not an object"); return nullptr; }
+    Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
+    Value s = species_sym ? c_obj->get_property(species_sym->to_property_key()) : Value();
+    if (ctx.has_exception()) return nullptr;
+    if (s.is_null() || s.is_undefined()) return default_ctor;
+    if (s.is_function() && s.as_function()->is_constructor()) return s.as_function();
+    ctx.throw_type_error("Species constructor is not a constructor");
+    return nullptr;
+}
+
+// An iterator must be consumed lazily (one IteratorStep at a time, interleaved with per-element
+// processing) rather than drained upfront: a `then`/`resolve` failure partway through must close
+// the iterator instead of continuing to pull from it, and a never-`done` iterator must not hang
+// the whole engine collecting an unbounded array before the caller gets a chance to bail out.
+struct IteratorRecord {
+    Object* iterator = nullptr;
+    Function* next_fn = nullptr;
+    bool done = false;
+};
+
+static bool get_iterator_record(Context& ctx, const Value& iterable_val, IteratorRecord& rec) {
+    // GetIterator has no "is iterable an object" precheck: a string, number, etc. is boxed
+    // for the @@iterator property lookup (e.g. '' has Symbol.iterator via String.prototype).
+    // Only null/undefined fail (ToObject would throw). No array fast path either: an array's
+    // own/inherited @@iterator can be overridden or poisoned, and skipping the lookup would
+    // mask that (e.g. iter-arg-is-poisoned.js defines a throwing @@iterator on a plain array).
     Object* iterable = as_object_or_function(iterable_val);
-    if (!iterable) { ctx.throw_type_error("not an object"); return false; }
-    if (iterable->is_array()) {
-        uint32_t length = iterable->get_length();
-        for (uint32_t i = 0; i < length; i++) out_elements.push_back(iterable->get_element(i));
-        return true;
+    if (!iterable) {
+        if (iterable_val.is_null() || iterable_val.is_undefined()) {
+            ctx.throw_type_error("Cannot convert undefined or null to object");
+            return false;
+        }
+        iterable = to_object_or_throw(ctx, iterable_val);
+        if (!iterable) return false;
     }
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (!iter_sym) { ctx.throw_type_error("Symbol.iterator unavailable"); return false; }
@@ -106,18 +148,44 @@ static bool collect_iterable_elements(Context& ctx, const Value& iterable_val, s
     Value next_fn = iter_obj.as_object()->get_property("next");
     if (ctx.has_exception()) return false;
     if (!next_fn.is_function()) { ctx.throw_type_error("iterator.next is not a function"); return false; }
-    for (uint32_t ii = 0; ii < 100000; ii++) {
-        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
-        if (ctx.has_exception()) return false;
-        if (!res.is_object()) { ctx.throw_type_error("iterator result is not an object"); return false; }
-        Value done_val = res.as_object()->get_property("done");
-        if (ctx.has_exception()) return false;
-        if (done_val.to_boolean()) break;
-        Value val = res.as_object()->get_property("value");
-        if (ctx.has_exception()) return false;
-        out_elements.push_back(val);
-    }
+    rec.iterator = iter_obj.as_object();
+    rec.next_fn = next_fn.as_function();
     return true;
+}
+
+enum class IterStepStatus { DONE, VALUE, ABRUPT };
+
+// On ABRUPT, ctx is left with the pending exception and rec.done is set (so the caller must
+// NOT call iterator_close -- IteratorClose only applies while [[Done]] is still false).
+static IterStepStatus iterator_step(Context& ctx, IteratorRecord& rec, Value& out_value) {
+    Value res = rec.next_fn->call(ctx, {}, Value(rec.iterator));
+    if (ctx.has_exception()) { rec.done = true; return IterStepStatus::ABRUPT; }
+    if (!res.is_object()) { ctx.throw_type_error("iterator result is not an object"); rec.done = true; return IterStepStatus::ABRUPT; }
+    Value done_val = res.as_object()->get_property("done");
+    if (ctx.has_exception()) { rec.done = true; return IterStepStatus::ABRUPT; }
+    if (done_val.to_boolean()) { rec.done = true; return IterStepStatus::DONE; }
+    out_value = res.as_object()->get_property("value");
+    if (ctx.has_exception()) { rec.done = true; return IterStepStatus::ABRUPT; }
+    return IterStepStatus::VALUE;
+}
+
+// Calls iterator.return() (swallowing any error from it -- the abrupt completion already in
+// flight takes precedence) unless the iterator already reported [[Done]].
+static void iterator_close(Context& ctx, IteratorRecord& rec) {
+    if (rec.done || !rec.iterator) return;
+    rec.done = true;
+    // Callers always invoke this with an abrupt completion already pending (the reason for
+    // closing in the first place) -- stash it so probing/calling .return() can't clobber it,
+    // and restore it once the close attempt (whose own errors are spec-discarded) is done.
+    bool had_exception = ctx.has_exception();
+    Value saved_exc;
+    if (had_exception) { saved_exc = ctx.get_exception(); ctx.clear_exception(); }
+    Value return_fn = rec.iterator->get_property("return");
+    if (!ctx.has_exception() && return_fn.is_function()) {
+        return_fn.as_function()->call(ctx, {}, Value(rec.iterator));
+    }
+    ctx.clear_exception();
+    if (had_exception) ctx.throw_exception(saved_exc, true);
 }
 
 void register_promise_builtins(Context& ctx) {
@@ -263,57 +331,82 @@ void register_promise_builtins(Context& ctx) {
                 ctx.throw_type_error("Promise.prototype.then called on non-Promise");
                 return Value();
             }
-            
+
             Function* on_fulfilled = nullptr;
             Function* on_rejected = nullptr;
-            
+
             if (args.size() > 0 && args[0].is_function()) {
                 on_fulfilled = args[0].as_function();
             }
             if (args.size() > 1 && args[1].is_function()) {
                 on_rejected = args[1].as_function();
             }
-            
-            Promise* new_promise = promise->then(on_fulfilled, on_rejected);
-            // ES6: apply Symbol.species for subclassing (PerformPromiseThen prototype propagation)
-            if (new_promise) {
-                Value ctor_val = this_obj->get_property("constructor");
-                Object* ctor = nullptr;
-                if (ctor_val.is_function()) ctor = static_cast<Object*>(ctor_val.as_function());
-                else if (ctor_val.is_object()) ctor = ctor_val.as_object();
 
-                if (ctor) {
-                    Object* species_ctor = nullptr;
-                    // Walk ctor's prototype chain to find Symbol.species
-                    Object* cur = ctor;
-                    while (cur && !species_ctor) {
-                        PropertyDescriptor sdesc = cur->get_property_descriptor("Symbol.species");
-                        if (sdesc.is_data_descriptor()) {
-                            Value sv = sdesc.get_value();
-                            if (sv.is_function()) species_ctor = static_cast<Object*>(sv.as_function());
-                            else if (sv.is_object()) species_ctor = sv.as_object();
-                            break;
-                        } else if (sdesc.is_accessor_descriptor() && sdesc.has_getter()) {
-                            Function* gfn = dynamic_cast<Function*>(sdesc.get_getter());
-                            if (gfn) {
-                                std::vector<Value> no_args;
-                                Value sv = gfn->call(ctx, no_args, ctor_val);
-                                if (!ctx.has_exception() && (sv.is_function() || sv.is_object())) {
-                                    species_ctor = sv.is_function() ?
-                                        static_cast<Object*>(sv.as_function()) : sv.as_object();
-                                }
-                                ctx.clear_exception();
-                            }
-                            break;
-                        }
-                        cur = cur->get_prototype();
+            // Spec: C = SpeciesConstructor(promise, %Promise%); resultCapability =
+            // NewPromiseCapability(C); PerformPromiseThen(...). The capability's promise --
+            // genuinely constructed via `new C(executor)` -- is what gets returned, not a
+            // bare native Promise with its prototype patched after the fact; that's required
+            // for subclasses to see their own constructor actually invoked (ctor-custom.js)
+            // and for a constructor that returns a substitute object to work at all
+            // (deferred-is-resolved-value.js).
+            Value default_ctor_val = ctx.get_binding("Promise");
+            if (!default_ctor_val.is_function()) { ctx.throw_type_error("Promise unavailable"); return Value(); }
+            Function* species_ctor = species_constructor(ctx, this_obj, default_ctor_val.as_function());
+            if (ctx.has_exception()) return Value();
+
+            PromiseCapabilityResult cap;
+            if (!new_promise_capability(ctx, Value(species_ctor), cap)) return Value();
+            Function* cap_resolve = cap.resolve;
+            Function* cap_reject = cap.reject;
+
+            // PerformPromiseThen's "Identity"/"Thrower" defaults: with no real handler,
+            // forward the value/reason to the capability unchanged rather than skipping it.
+            auto ful_wrapper = ObjectFactory::create_native_function("",
+                [on_fulfilled, cap_resolve, cap_reject](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value val = args.empty() ? Value() : args[0];
+                    if (!on_fulfilled) {
+                        std::vector<Value> ra = { val };
+                        cap_resolve->call(ctx, ra);
+                        return Value();
                     }
-                    if (!species_ctor) species_ctor = ctor;
-                    Value proto = species_ctor->get_property("prototype");
-                    if (proto.is_object()) new_promise->set_prototype(proto.as_object());
-                }
-            }
-            return Value(new_promise);
+                    Value result = on_fulfilled->call(ctx, { val });
+                    if (ctx.has_exception()) {
+                        Value exc = ctx.get_exception(); ctx.clear_exception();
+                        std::vector<Value> rja = { exc };
+                        cap_reject->call(ctx, rja);
+                    } else {
+                        std::vector<Value> ra = { result };
+                        cap_resolve->call(ctx, ra);
+                    }
+                    return Value();
+                }, 1);
+            auto rej_wrapper = ObjectFactory::create_native_function("",
+                [on_rejected, cap_resolve, cap_reject](Context& ctx, const std::vector<Value>& args) -> Value {
+                    Value reason = args.empty() ? Value() : args[0];
+                    if (!on_rejected) {
+                        std::vector<Value> rja = { reason };
+                        cap_reject->call(ctx, rja);
+                        return Value();
+                    }
+                    Value result = on_rejected->call(ctx, { reason });
+                    if (ctx.has_exception()) {
+                        Value exc = ctx.get_exception(); ctx.clear_exception();
+                        std::vector<Value> rja = { exc };
+                        cap_reject->call(ctx, rja);
+                    } else {
+                        std::vector<Value> ra = { result };
+                        cap_resolve->call(ctx, ra);
+                    }
+                    return Value();
+                }, 1);
+
+            // The native child this creates is intentionally discarded -- cap.promise (built
+            // via the species constructor above) is the promise actually returned to JS;
+            // Promise::then's own pinning of these wrapper functions onto `promise` keeps
+            // them alive until they fire, same as any other .then() call.
+            promise->then(ful_wrapper.release(), rej_wrapper.release());
+
+            return cap.promise;
         }, 2);
     promise_prototype->set_property("then", Value(promise_then.release()), PropertyAttributes::BuiltinFunction);
 
@@ -360,39 +453,55 @@ void register_promise_builtins(Context& ctx) {
             }
 
             if (!on_finally) {
-                std::vector<Value> then_args = { Value(), Value() };
+                // Spec: when onFinally isn't callable, thenFinally/catchFinally are onFinally itself.
+                Value non_callable = args.empty() ? Value() : args[0];
+                std::vector<Value> then_args = { non_callable, non_callable };
                 return then_val.as_function()->call(ctx, then_args, this_val);
             }
+            // Spec: C = SpeciesConstructor(promise, %Promise%); result = onFinally();
+            // promise = PromiseResolve(C, result); return Invoke(promise, "then", «continuation»).
+            // Must observably call .then on the wrapped promise (not just inspect its internal
+            // state) so an overridden .then on `result` itself still runs, and must use the
+            // species constructor (not bare global Promise) so PromiseResolve's "already the
+            // right type" fast path matches subclass instances -- e.g. *-observable-then-calls.js.
+            Value default_ctor_val = ctx.get_binding("Promise");
+            if (!default_ctor_val.is_function()) { ctx.throw_type_error("Promise unavailable"); return Value(); }
+            Function* species_ctor = species_constructor(ctx, this_obj, default_ctor_val.as_function());
+            if (ctx.has_exception()) return Value();
+            auto resolve_then_continue = [species_ctor](Context& ctx, Value result, Function* continuation) -> Value {
+                Value resolve_method = species_ctor->get_property("resolve");
+                if (ctx.has_exception()) return Value();
+                if (!resolve_method.is_function()) { ctx.throw_type_error("Promise.resolve is not callable"); return Value(); }
+                Value wrapped = resolve_method.as_function()->call(ctx, {result}, Value(species_ctor));
+                if (ctx.has_exception()) return Value();
+                Object* wrapped_obj = as_object_or_function(wrapped);
+                if (!wrapped_obj) { ctx.throw_type_error("PromiseResolve did not return an object"); return Value(); }
+                Value then_m = wrapped_obj->get_property("then");
+                if (ctx.has_exception()) return Value();
+                if (!then_m.is_function()) { ctx.throw_type_error("then is not a function"); return Value(); }
+                std::vector<Value> ta = { Value(continuation) };
+                return then_m.as_function()->call(ctx, ta, wrapped);
+            };
             auto then_wrapper = ObjectFactory::create_native_function("",
-                [on_finally](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_finally, resolve_then_continue](Context& ctx, const std::vector<Value>& args) -> Value {
                     Value original_val = args.empty() ? Value() : args[0];
-                    std::vector<Value> no_args;
-                    Value result = on_finally->call(ctx, no_args);
+                    Value result = on_finally->call(ctx, {});
                     if (ctx.has_exception()) return Value();
-                    if (result.is_object()) {
-                        Promise* rp = dynamic_cast<Promise*>(result.as_object());
-                        if (rp && rp->is_rejected()) {
-                            ctx.throw_exception(rp->get_value(), true);
-                            return Value();
-                        }
-                    }
-                    return original_val;
+                    auto value_thunk = ObjectFactory::create_native_function("",
+                        [original_val](Context&, const std::vector<Value>&) -> Value { return original_val; }, 0);
+                    return resolve_then_continue(ctx, result, value_thunk.release());
                 }, 1);
             auto catch_wrapper = ObjectFactory::create_native_function("",
-                [on_finally](Context& ctx, const std::vector<Value>& args) -> Value {
+                [on_finally, resolve_then_continue](Context& ctx, const std::vector<Value>& args) -> Value {
                     Value original_reason = args.empty() ? Value() : args[0];
-                    std::vector<Value> no_args;
-                    Value result = on_finally->call(ctx, no_args);
+                    Value result = on_finally->call(ctx, {});
                     if (ctx.has_exception()) return Value();
-                    if (result.is_object()) {
-                        Promise* rp = dynamic_cast<Promise*>(result.as_object());
-                        if (rp && rp->is_rejected()) {
-                            ctx.throw_exception(rp->get_value(), true);
+                    auto thrower = ObjectFactory::create_native_function("",
+                        [original_reason](Context& ctx, const std::vector<Value>&) -> Value {
+                            ctx.throw_exception(original_reason, true);
                             return Value();
-                        }
-                    }
-                    ctx.throw_exception(original_reason, true);
-                    return Value();
+                        }, 0);
+                    return resolve_then_continue(ctx, result, thrower.release());
                 }, 1);
             std::vector<Value> then_args = { Value(then_wrapper.release()), Value(catch_wrapper.release()) };
             return then_val.as_function()->call(ctx, then_args, this_val);
@@ -469,23 +578,9 @@ void register_promise_builtins(Context& ctx) {
             }
             Function* resolve_fn = resolve_method.as_function();
 
-            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
-                reject_capability_type_error(ctx, cap, "Promise.all expects an iterable");
-                return cap.promise;
-            }
-
-            std::vector<Value> elements;
-            if (!collect_iterable_elements(ctx, args[0], elements)) {
+            IteratorRecord rec;
+            if (!get_iterator_record(ctx, args.empty() ? Value() : args[0], rec)) {
                 reject_capability_with_exception(ctx, cap);
-                return cap.promise;
-            }
-            uint32_t length = static_cast<uint32_t>(elements.size());
-
-            if (length == 0) {
-                auto empty_array = ObjectFactory::create_array(0);
-                std::vector<Value> resolve_args = { Value(empty_array.release()) };
-                cap.resolve->call(ctx, resolve_args);
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                 return cap.promise;
             }
 
@@ -494,34 +589,49 @@ void register_promise_builtins(Context& ctx) {
                 uint32_t remaining;
             };
             auto state = std::make_shared<AllState>();
-            state->results.resize(length);
-            state->remaining = length;
+            state->remaining = 1; // spec trick: avoids resolving before the loop finishes if elements settle synchronously
             Function* cap_resolve = cap.resolve;
             Function* cap_reject = cap.reject;
 
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = elements[i];
+            uint32_t idx = 0;
+            while (true) {
+                Value element;
+                IterStepStatus step = iterator_step(ctx, rec, element);
+                if (step == IterStepStatus::ABRUPT) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (step == IterStepStatus::DONE) {
+                    if (--state->remaining == 0) {
+                        auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                        for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
+                        std::vector<Value> ra = { Value(arr.release()) };
+                        cap_resolve->call(ctx, ra);
+                        if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
+                    }
+                    return cap.promise;
+                }
 
                 std::vector<Value> resolve_args = { element };
                 Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
                     return cap.promise;
                 }
                 Object* next_promise_obj = as_object_or_function(next_promise);
 
-                uint32_t idx = i;
+                state->results.push_back(Value());
+                state->remaining++;
+                uint32_t this_idx = idx;
                 auto already_called = std::make_shared<bool>(false);
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
-                        state->results[idx] = val;
+                        state->results[this_idx] = val;
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -538,20 +648,21 @@ void register_promise_builtins(Context& ctx) {
 
                 Function* ful_fn = on_ful.release();
                 // Keep handler alive (next_promise may be a non-Promise thenable with no GC pin of its own).
-                pin_target->set_property("__all_ful_" + std::to_string(i) + "__", Value(ful_fn));
+                pin_target->set_property("__all_ful_" + std::to_string(idx) + "__", Value(ful_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!then_method.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
                 std::vector<Value> then_args = { Value(ful_fn), Value(cap.reject) };
                 then_method.as_function()->call(ctx, then_args, next_promise);
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
-            }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
 
-            return cap.promise;
+                idx++;
+            }
         }, 1);
     promise_constructor->set_property("all", Value(promise_all_static.release()), PropertyAttributes::BuiltinFunction);
 
@@ -572,48 +683,41 @@ void register_promise_builtins(Context& ctx) {
             }
             Function* resolve_fn = resolve_method.as_function();
 
-            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
-                reject_capability_type_error(ctx, cap, "Promise.race requires an iterable argument");
-                return cap.promise;
-            }
-
-            std::vector<Value> elements;
-            if (!collect_iterable_elements(ctx, args[0], elements)) {
+            IteratorRecord rec;
+            if (!get_iterator_record(ctx, args.empty() ? Value() : args[0], rec)) {
                 reject_capability_with_exception(ctx, cap);
                 return cap.promise;
             }
-            uint32_t length = static_cast<uint32_t>(elements.size());
 
-            if (length == 0) {
-                return cap.promise;
-            }
-
-            // Async Promise.race: first settled promise wins (cap.resolve/cap.reject already
-            // enforce "AlreadyResolved" semantics, so the same pair is safely reused for every element).
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = elements[i];
+            // First settled promise wins (cap.resolve/cap.reject already enforce "AlreadyResolved"
+            // semantics, so the same pair is safely reused for every element).
+            while (true) {
+                Value element;
+                IterStepStatus step = iterator_step(ctx, rec, element);
+                if (step == IterStepStatus::ABRUPT) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (step == IterStepStatus::DONE) return cap.promise;
 
                 std::vector<Value> resolve_args = { element };
                 Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
                     return cap.promise;
                 }
                 Object* next_promise_obj = as_object_or_function(next_promise);
 
                 Value then_method = next_promise_obj->get_property("then");
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!then_method.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
                 std::vector<Value> then_args = { Value(cap.resolve), Value(cap.reject) };
                 then_method.as_function()->call(ctx, then_args, next_promise);
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
             }
-
-            return cap.promise;
         }, 1);
     promise_constructor->set_property("race", Value(promise_race_static.release()), PropertyAttributes::BuiltinFunction);
 
@@ -634,23 +738,9 @@ void register_promise_builtins(Context& ctx) {
             }
             Function* resolve_fn = resolve_method.as_function();
 
-            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
-                reject_capability_type_error(ctx, cap, "Promise.allSettled expects an iterable");
-                return cap.promise;
-            }
-
-            std::vector<Value> elements;
-            if (!collect_iterable_elements(ctx, args[0], elements)) {
+            IteratorRecord rec;
+            if (!get_iterator_record(ctx, args.empty() ? Value() : args[0], rec)) {
                 reject_capability_with_exception(ctx, cap);
-                return cap.promise;
-            }
-            uint32_t length = static_cast<uint32_t>(elements.size());
-
-            if (length == 0) {
-                auto empty_array = ObjectFactory::create_array(0);
-                std::vector<Value> resolve_args = { Value(empty_array.release()) };
-                cap.resolve->call(ctx, resolve_args);
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
                 return cap.promise;
             }
 
@@ -659,39 +749,54 @@ void register_promise_builtins(Context& ctx) {
                 uint32_t remaining;
             };
             auto state = std::make_shared<SettledState>();
-            state->results.resize(length);
-            state->remaining = length;
+            state->remaining = 1; // spec trick: avoids resolving before the loop finishes if elements settle synchronously
             Function* cap_resolve = cap.resolve;
             Function* cap_reject = cap.reject;
 
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = elements[i];
+            uint32_t idx = 0;
+            while (true) {
+                Value element;
+                IterStepStatus step = iterator_step(ctx, rec, element);
+                if (step == IterStepStatus::ABRUPT) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (step == IterStepStatus::DONE) {
+                    if (--state->remaining == 0) {
+                        auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
+                        for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
+                        std::vector<Value> ra = { Value(arr.release()) };
+                        cap_resolve->call(ctx, ra);
+                        if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
+                    }
+                    return cap.promise;
+                }
 
                 std::vector<Value> resolve_args = { element };
                 Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
                     return cap.promise;
                 }
                 Object* next_promise_obj = as_object_or_function(next_promise);
 
-                uint32_t idx = i;
+                state->results.push_back(Value());
+                state->remaining++;
+                uint32_t this_idx = idx;
                 // Spec: resolveElement and rejectElement for the same index share one AlreadyCalled flag.
                 auto already_called = std::make_shared<bool>(false);
 
                 auto on_ful = ObjectFactory::create_native_function("",
-                    [idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value val = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
                         settled->set_property("status", Value(std::string("fulfilled")));
                         settled->set_property("value", val);
-                        state->results[idx] = Value(settled.release());
+                        state->results[this_idx] = Value(settled.release());
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -707,14 +812,14 @@ void register_promise_builtins(Context& ctx) {
                     }, 1);
 
                 auto on_rej = ObjectFactory::create_native_function("",
-                    [idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                    [this_idx, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
                         Value reason = args.empty() ? Value() : args[0];
                         auto settled = ObjectFactory::create_object();
                         settled->set_property("status", Value(std::string("rejected")));
                         settled->set_property("reason", reason);
-                        state->results[idx] = Value(settled.release());
+                        state->results[this_idx] = Value(settled.release());
                         if (--state->remaining == 0) {
                             auto arr = ObjectFactory::create_array(static_cast<uint32_t>(state->results.size()));
                             for (size_t j = 0; j < state->results.size(); j++) arr->set_element(static_cast<uint32_t>(j), state->results[j]);
@@ -731,8 +836,257 @@ void register_promise_builtins(Context& ctx) {
 
                 Function* ful_fn = on_ful.release();
                 Function* rej_fn = on_rej.release();
-                pin_target->set_property("__settled_ful_" + std::to_string(i) + "__", Value(ful_fn));
-                pin_target->set_property("__settled_rej_" + std::to_string(i) + "__", Value(rej_fn));
+                pin_target->set_property("__settled_ful_" + std::to_string(idx) + "__", Value(ful_fn));
+                pin_target->set_property("__settled_rej_" + std::to_string(idx) + "__", Value(rej_fn));
+
+                Value then_method = next_promise_obj->get_property("then");
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (!then_method.is_function()) {
+                    iterator_close(ctx, rec);
+                    reject_capability_type_error(ctx, cap, "then is not a function");
+                    return cap.promise;
+                }
+                std::vector<Value> then_args = { Value(ful_fn), Value(rej_fn) };
+                then_method.as_function()->call(ctx, then_args, next_promise);
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
+
+                idx++;
+            }
+        }, 1);
+    promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()), PropertyAttributes::BuiltinFunction);
+
+    auto promise_allKeyed_static = ObjectFactory::create_native_function("allKeyed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value raw_this = ctx.get_binding("this");
+            if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allKeyed called on non-object"); return Value(); }
+
+            PromiseCapabilityResult cap;
+            if (!new_promise_capability(ctx, raw_this, cap)) return Value();
+            Function* this_ctor = raw_this.as_function();
+
+            Value resolve_method = this_ctor->get_property("resolve");
+            if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+            if (!resolve_method.is_function()) {
+                reject_capability_type_error(ctx, cap, "Promise.resolve is not callable");
+                return cap.promise;
+            }
+            Function* resolve_fn = resolve_method.as_function();
+
+            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
+                reject_capability_type_error(ctx, cap, "Promise.allKeyed argument must be an object");
+                return cap.promise;
+            }
+            Object* dict = as_object_or_function(args[0]);
+
+            std::vector<std::string> all_keys = own_keys_for(dict);
+            if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+
+            std::vector<std::string> keys;
+            for (auto& key : all_keys) {
+                PropertyDescriptor desc = own_property_descriptor_for(dict, key);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if ((desc.is_data_descriptor() || desc.is_accessor_descriptor()) && desc.is_enumerable()) {
+                    keys.push_back(key);
+                }
+            }
+
+            auto results_obj = ObjectFactory::create_object();
+            results_obj->set_prototype(nullptr);
+            // Pre-populate every key (in dict's own enumeration order) before any element
+            // settles asynchronously, so the result's key order matches the source object's
+            // -- not arbitrary, settlement-dependent order.
+            for (const auto& k : keys) results_obj->set_property(k, Value());
+            Object* results_raw = results_obj.release();
+
+            Object* pin_target = as_object_or_function(cap.promise);
+            if (!pin_target) pin_target = ctx.get_global_object();
+            pin_target->set_property("__allkeyed_results__", Value(results_raw));
+
+            if (keys.empty()) {
+                std::vector<Value> ra = { Value(results_raw) };
+                cap.resolve->call(ctx, ra);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
+                return cap.promise;
+            }
+
+            struct KeyedAllState { Object* results; uint32_t remaining; };
+            auto state = std::make_shared<KeyedAllState>();
+            state->results = results_raw;
+            state->remaining = static_cast<uint32_t>(keys.size());
+            Function* cap_resolve = cap.resolve;
+            Function* cap_reject = cap.reject;
+
+            for (size_t i = 0; i < keys.size(); i++) {
+                std::string key = keys[i];
+                Value value = dict->get_property(key);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+
+                std::vector<Value> resolve_args = { value };
+                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (!next_promise.is_object() && !next_promise.is_function()) {
+                    reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
+                    return cap.promise;
+                }
+                Object* next_promise_obj = as_object_or_function(next_promise);
+
+                auto already_called = std::make_shared<bool>(false);
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (*already_called) return Value();
+                        *already_called = true;
+                        Value val = args.empty() ? Value() : args[0];
+                        state->results->set_property(key, val);
+                        if (--state->remaining == 0) {
+                            std::vector<Value> ra = { Value(state->results) };
+                            cap_resolve->call(ctx, ra);
+                            if (ctx.has_exception()) {
+                                Value exc = ctx.get_exception(); ctx.clear_exception();
+                                std::vector<Value> rja = { exc };
+                                cap_reject->call(ctx, rja);
+                            }
+                        }
+                        return Value();
+                    }, 1);
+
+                Function* ful_fn = on_ful.release();
+                pin_target->set_property("__allkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
+
+                Value then_method = next_promise_obj->get_property("then");
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (!then_method.is_function()) {
+                    reject_capability_type_error(ctx, cap, "then is not a function");
+                    return cap.promise;
+                }
+                std::vector<Value> then_args = { Value(ful_fn), Value(cap.reject) };
+                then_method.as_function()->call(ctx, then_args, next_promise);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+            }
+
+            return cap.promise;
+        }, 1);
+    promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()), PropertyAttributes::BuiltinFunction);
+
+    auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value raw_this = ctx.get_binding("this");
+            if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise.allSettledKeyed called on non-object"); return Value(); }
+
+            PromiseCapabilityResult cap;
+            if (!new_promise_capability(ctx, raw_this, cap)) return Value();
+            Function* this_ctor = raw_this.as_function();
+
+            Value resolve_method = this_ctor->get_property("resolve");
+            if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+            if (!resolve_method.is_function()) {
+                reject_capability_type_error(ctx, cap, "Promise.resolve is not callable");
+                return cap.promise;
+            }
+            Function* resolve_fn = resolve_method.as_function();
+
+            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
+                reject_capability_type_error(ctx, cap, "Promise.allSettledKeyed argument must be an object");
+                return cap.promise;
+            }
+            Object* dict = as_object_or_function(args[0]);
+
+            std::vector<std::string> all_keys = own_keys_for(dict);
+            if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+
+            std::vector<std::string> keys;
+            for (auto& key : all_keys) {
+                PropertyDescriptor desc = own_property_descriptor_for(dict, key);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if ((desc.is_data_descriptor() || desc.is_accessor_descriptor()) && desc.is_enumerable()) {
+                    keys.push_back(key);
+                }
+            }
+
+            auto results_obj = ObjectFactory::create_object();
+            results_obj->set_prototype(nullptr);
+            for (const auto& k : keys) results_obj->set_property(k, Value());
+            Object* results_raw = results_obj.release();
+
+            Object* pin_target = as_object_or_function(cap.promise);
+            if (!pin_target) pin_target = ctx.get_global_object();
+            pin_target->set_property("__settledkeyed_results__", Value(results_raw));
+
+            if (keys.empty()) {
+                std::vector<Value> ra = { Value(results_raw) };
+                cap.resolve->call(ctx, ra);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); }
+                return cap.promise;
+            }
+
+            struct KeyedSettledState { Object* results; uint32_t remaining; };
+            auto state = std::make_shared<KeyedSettledState>();
+            state->results = results_raw;
+            state->remaining = static_cast<uint32_t>(keys.size());
+            Function* cap_resolve = cap.resolve;
+            Function* cap_reject = cap.reject;
+
+            for (size_t i = 0; i < keys.size(); i++) {
+                std::string key = keys[i];
+                Value value = dict->get_property(key);
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+
+                std::vector<Value> resolve_args = { value };
+                Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
+                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (!next_promise.is_object() && !next_promise.is_function()) {
+                    reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
+                    return cap.promise;
+                }
+                Object* next_promise_obj = as_object_or_function(next_promise);
+
+                // Spec: resolveElement and rejectElement for the same index share one AlreadyCalled flag.
+                auto already_called = std::make_shared<bool>(false);
+                auto on_ful = ObjectFactory::create_native_function("",
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (*already_called) return Value();
+                        *already_called = true;
+                        Value val = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("fulfilled")));
+                        settled->set_property("value", val);
+                        state->results->set_property(key, Value(settled.release()));
+                        if (--state->remaining == 0) {
+                            std::vector<Value> ra = { Value(state->results) };
+                            cap_resolve->call(ctx, ra);
+                            if (ctx.has_exception()) {
+                                Value exc = ctx.get_exception(); ctx.clear_exception();
+                                std::vector<Value> rja = { exc };
+                                cap_reject->call(ctx, rja);
+                            }
+                        }
+                        return Value();
+                    }, 1);
+
+                auto on_rej = ObjectFactory::create_native_function("",
+                    [key, state, cap_resolve, cap_reject, already_called](Context& ctx, const std::vector<Value>& args) -> Value {
+                        if (*already_called) return Value();
+                        *already_called = true;
+                        Value reason = args.empty() ? Value() : args[0];
+                        auto settled = ObjectFactory::create_object();
+                        settled->set_property("status", Value(std::string("rejected")));
+                        settled->set_property("reason", reason);
+                        state->results->set_property(key, Value(settled.release()));
+                        if (--state->remaining == 0) {
+                            std::vector<Value> ra = { Value(state->results) };
+                            cap_resolve->call(ctx, ra);
+                            if (ctx.has_exception()) {
+                                Value exc = ctx.get_exception(); ctx.clear_exception();
+                                std::vector<Value> rja = { exc };
+                                cap_reject->call(ctx, rja);
+                            }
+                        }
+                        return Value();
+                    }, 1);
+
+                Function* ful_fn = on_ful.release();
+                Function* rej_fn = on_rej.release();
+                pin_target->set_property("__settledkeyed_ful_" + std::to_string(i) + "__", Value(ful_fn));
+                pin_target->set_property("__settledkeyed_rej_" + std::to_string(i) + "__", Value(rej_fn));
 
                 Value then_method = next_promise_obj->get_property("then");
                 if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
@@ -747,176 +1101,7 @@ void register_promise_builtins(Context& ctx) {
 
             return cap.promise;
         }, 1);
-    promise_constructor->set_property("allSettled", Value(promise_allSettled_static.release()), PropertyAttributes::BuiltinFunction);
-
-    auto promise_allKeyed_static = ObjectFactory::create_native_function("allKeyed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) {
-                ctx.throw_type_error("Promise.allKeyed argument must be an object");
-                return Value();
-            }
-            Object* dict = args[0].as_object();
-            std::vector<std::string> keys;
-            for (const auto& k : dict->get_enumerable_keys()) {
-                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) keys.push_back(k);
-            }
-
-            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
-            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
-
-            auto results_obj = ObjectFactory::create_object();
-            results_obj->set_prototype(nullptr);
-            for (const auto& k : keys) results_obj->set_property(k, Value());
-            Object* results_raw = results_obj.release();
-            result_promise->set_property("__allkeyed_results__", Value(results_raw));
-            result_promise->set_property("__allkeyed_remaining__", Value((double)keys.size()));
-
-            if (keys.empty()) {
-                result_promise->fulfill(Value(results_raw));
-                return Value(result_promise_obj.release());
-            }
-
-            for (size_t i = 0; i < keys.size(); i++) {
-                std::string key = keys[i];
-                Value element = dict->get_property(key);
-
-                Promise* p = nullptr;
-                std::unique_ptr<Object> wrapped_obj;
-                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
-                if (p_cast) {
-                    p = p_cast;
-                } else {
-                    wrapped_obj = ObjectFactory::create_promise(&ctx);
-                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
-                    p = static_cast<Promise*>(wrapped_obj.release());
-                }
-
-                Promise* rp = result_promise;
-
-                auto on_ful = ObjectFactory::create_native_function("",
-                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
-                        if (!rp->is_pending()) return Value();
-                        Value val = args.empty() ? Value() : args[0];
-                        Value res_v = rp->get_property("__allkeyed_results__");
-                        if (res_v.is_object()) res_v.as_object()->set_property(key, val);
-                        Value rem_v = rp->get_property("__allkeyed_remaining__");
-                        double remaining = rem_v.to_number() - 1.0;
-                        rp->set_property("__allkeyed_remaining__", Value(remaining));
-                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__allkeyed_results__"));
-                        return Value();
-                    });
-
-                auto on_rej = ObjectFactory::create_native_function("",
-                    [rp](Context& ctx, const std::vector<Value>& args) -> Value {
-                        if (!rp->is_pending()) return Value();
-                        Value reason = args.empty() ? Value() : args[0];
-                        rp->reject(reason);
-                        return Value();
-                    });
-
-                std::string k_ful = "__allkeyed_ful_" + std::to_string(i) + "__";
-                std::string k_rej = "__allkeyed_rej_" + std::to_string(i) + "__";
-                Function* ful_fn = on_ful.get();
-                Function* rej_fn = on_rej.get();
-                result_promise->set_property(k_ful, Value(on_ful.release()));
-                result_promise->set_property(k_rej, Value(on_rej.release()));
-
-                p->then(ful_fn, rej_fn);
-            }
-
-            return Value(result_promise_obj.release());
-        }, 1);
-    promise_constructor->set_property("allKeyed", Value(promise_allKeyed_static.release()));
-
-    auto promise_allSettledKeyed_static = ObjectFactory::create_native_function("allSettledKeyed",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) {
-                ctx.throw_type_error("Promise.allSettledKeyed argument must be an object");
-                return Value();
-            }
-            Object* dict = args[0].as_object();
-            std::vector<std::string> keys;
-            for (const auto& k : dict->get_enumerable_keys()) {
-                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) keys.push_back(k);
-            }
-
-            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
-            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
-
-            auto results_obj = ObjectFactory::create_object();
-            results_obj->set_prototype(nullptr);
-            for (const auto& k : keys) results_obj->set_property(k, Value());
-            Object* results_raw = results_obj.release();
-            result_promise->set_property("__settledkeyed_results__", Value(results_raw));
-            result_promise->set_property("__settledkeyed_remaining__", Value((double)keys.size()));
-
-            if (keys.empty()) {
-                result_promise->fulfill(Value(results_raw));
-                return Value(result_promise_obj.release());
-            }
-
-            for (size_t i = 0; i < keys.size(); i++) {
-                std::string key = keys[i];
-                Value element = dict->get_property(key);
-
-                Promise* p = nullptr;
-                std::unique_ptr<Object> wrapped_obj;
-                Promise* p_cast = element.is_object() ? dynamic_cast<Promise*>(element.as_object()) : nullptr;
-                if (p_cast) {
-                    p = p_cast;
-                } else {
-                    wrapped_obj = ObjectFactory::create_promise(&ctx);
-                    static_cast<Promise*>(wrapped_obj.get())->fulfill(element);
-                    p = static_cast<Promise*>(wrapped_obj.release());
-                }
-
-                Promise* rp = result_promise;
-
-                auto on_ful = ObjectFactory::create_native_function("",
-                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
-                        if (!rp->is_pending()) return Value();
-                        Value val = args.empty() ? Value() : args[0];
-                        auto settled = ObjectFactory::create_object();
-                        settled->set_property("status", Value(std::string("fulfilled")));
-                        settled->set_property("value", val);
-                        Value res_v = rp->get_property("__settledkeyed_results__");
-                        if (res_v.is_object()) res_v.as_object()->set_property(key, Value(settled.release()));
-                        Value rem_v = rp->get_property("__settledkeyed_remaining__");
-                        double remaining = rem_v.to_number() - 1.0;
-                        rp->set_property("__settledkeyed_remaining__", Value(remaining));
-                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settledkeyed_results__"));
-                        return Value();
-                    });
-
-                auto on_rej = ObjectFactory::create_native_function("",
-                    [key, rp](Context& ctx, const std::vector<Value>& args) -> Value {
-                        if (!rp->is_pending()) return Value();
-                        Value reason = args.empty() ? Value() : args[0];
-                        auto settled = ObjectFactory::create_object();
-                        settled->set_property("status", Value(std::string("rejected")));
-                        settled->set_property("reason", reason);
-                        Value res_v = rp->get_property("__settledkeyed_results__");
-                        if (res_v.is_object()) res_v.as_object()->set_property(key, Value(settled.release()));
-                        Value rem_v = rp->get_property("__settledkeyed_remaining__");
-                        double remaining = rem_v.to_number() - 1.0;
-                        rp->set_property("__settledkeyed_remaining__", Value(remaining));
-                        if (remaining <= 0.0) rp->fulfill(rp->get_property("__settledkeyed_results__"));
-                        return Value();
-                    });
-
-                std::string k_ful = "__settledkeyed_ful_" + std::to_string(i) + "__";
-                std::string k_rej = "__settledkeyed_rej_" + std::to_string(i) + "__";
-                Function* ful_fn = on_ful.get();
-                Function* rej_fn = on_rej.get();
-                result_promise->set_property(k_ful, Value(on_ful.release()));
-                result_promise->set_property(k_rej, Value(on_rej.release()));
-
-                p->then(ful_fn, rej_fn);
-            }
-
-            return Value(result_promise_obj.release());
-        }, 1);
-    promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()));
+    promise_constructor->set_property("allSettledKeyed", Value(promise_allSettledKeyed_static.release()), PropertyAttributes::BuiltinFunction);
 
     auto promise_any_static = ObjectFactory::create_native_function("any",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -935,102 +1120,91 @@ void register_promise_builtins(Context& ctx) {
             }
             Function* resolve_fn = resolve_method.as_function();
 
-            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
-                reject_capability_type_error(ctx, cap, "Promise.any expects an iterable");
-                return cap.promise;
-            }
-
-            std::vector<Value> elements;
-            if (!collect_iterable_elements(ctx, args[0], elements)) {
+            IteratorRecord rec;
+            if (!get_iterator_record(ctx, args.empty() ? Value() : args[0], rec)) {
                 reject_capability_with_exception(ctx, cap);
-                return cap.promise;
-            }
-            uint32_t length = static_cast<uint32_t>(elements.size());
-
-            if (length == 0) {
-                auto errors_arr = ObjectFactory::create_array();
-                Value errors_val(errors_arr.release());
-                Object* agg_ctor = ctx.get_built_in_object("AggregateError");
-                Value reason;
-                if (agg_ctor && agg_ctor->is_function()) {
-                    reason = static_cast<Function*>(agg_ctor)->call(ctx, {errors_val, Value(std::string("All promises were rejected"))});
-                } else {
-                    reason = Value(std::string("AggregateError: All promises were rejected"));
-                }
-                std::vector<Value> rej_args = { reason };
-                cap.reject->call(ctx, rej_args);
                 return cap.promise;
             }
 
             struct AnyState {
                 Function* cap_reject;
                 std::vector<Value> errors;
-                uint32_t total;
-                uint32_t rejected_count;
+                uint32_t remaining;
             };
             auto state = std::make_shared<AnyState>();
             state->cap_reject = cap.reject;
-            state->errors.resize(length);
-            state->total = length;
-            state->rejected_count = 0;
+            state->remaining = 1; // spec trick: avoids rejecting before the loop finishes if elements settle synchronously
             Function* cap_resolve = cap.resolve;
 
             Object* pin_target = as_object_or_function(cap.promise);
             if (!pin_target) pin_target = ctx.get_global_object();
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value elem = elements[i];
+            auto finalize_aggregate_reject = [](Context& c, AnyState* st) {
+                auto errors_arr = ObjectFactory::create_array();
+                for (size_t j = 0; j < st->errors.size(); j++) errors_arr->set_element(static_cast<uint32_t>(j), st->errors[j]);
+                Value errors_val(errors_arr.release());
+                Object* agg_ctor = c.get_built_in_object("AggregateError");
+                Value reason;
+                if (agg_ctor && agg_ctor->is_function()) {
+                    reason = static_cast<Function*>(agg_ctor)->call(c, {errors_val, Value(std::string("All promises were rejected"))});
+                } else {
+                    reason = Value(std::string("AggregateError: All promises were rejected"));
+                }
+                std::vector<Value> ra = { reason };
+                st->cap_reject->call(c, ra);
+            };
+
+            uint32_t idx = 0;
+            while (true) {
+                Value elem;
+                IterStepStatus step = iterator_step(ctx, rec, elem);
+                if (step == IterStepStatus::ABRUPT) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (step == IterStepStatus::DONE) {
+                    if (--state->remaining == 0) finalize_aggregate_reject(ctx, state.get());
+                    return cap.promise;
+                }
 
                 std::vector<Value> resolve_args = { elem };
                 Value next_promise = resolve_fn->call(ctx, resolve_args, Value(this_ctor));
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!next_promise.is_object() && !next_promise.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "Promise.resolve did not return an object");
                     return cap.promise;
                 }
                 Object* next_promise_obj = as_object_or_function(next_promise);
 
+                state->errors.push_back(Value());
+                state->remaining++;
+                uint32_t this_idx = idx;
+
                 // Spec: onFulfilled is the shared resultCapability.[[Resolve]]; onRejected is per-index.
                 auto already_called = std::make_shared<bool>(false);
                 auto on_reject = ObjectFactory::create_native_function("",
-                    [state, i, already_called](Context& c, const std::vector<Value>& a) -> Value {
+                    [state, this_idx, already_called, finalize_aggregate_reject](Context& c, const std::vector<Value>& a) -> Value {
                         if (*already_called) return Value();
                         *already_called = true;
-                        state->errors[i] = a.empty() ? Value() : a[0];
-                        state->rejected_count++;
-                        if (state->rejected_count == state->total) {
-                            auto errors_arr = ObjectFactory::create_array();
-                            for (uint32_t j = 0; j < state->total; j++)
-                                errors_arr->set_element(j, state->errors[j]);
-                            Value errors_val(errors_arr.release());
-                            Object* agg_ctor = c.get_built_in_object("AggregateError");
-                            Value reason;
-                            if (agg_ctor && agg_ctor->is_function()) {
-                                reason = static_cast<Function*>(agg_ctor)->call(c, {errors_val, Value(std::string("All promises were rejected"))});
-                            } else {
-                                reason = Value(std::string("AggregateError: All promises were rejected"));
-                            }
-                            std::vector<Value> ra = { reason };
-                            state->cap_reject->call(c, ra);
-                        }
+                        state->errors[this_idx] = a.empty() ? Value() : a[0];
+                        if (--state->remaining == 0) finalize_aggregate_reject(c, state.get());
                         return Value();
                     }, 1);
 
                 Function* reject_raw = on_reject.release();
-                pin_target->set_property("__any_r__" + std::to_string(i), Value(reject_raw));
+                pin_target->set_property("__any_r__" + std::to_string(idx), Value(reject_raw));
 
                 Value then_method = next_promise_obj->get_property("then");
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
                 if (!then_method.is_function()) {
+                    iterator_close(ctx, rec);
                     reject_capability_type_error(ctx, cap, "then is not a function");
                     return cap.promise;
                 }
                 std::vector<Value> then_args = { Value(cap_resolve), Value(reject_raw) };
                 then_method.as_function()->call(ctx, then_args, next_promise);
-                if (ctx.has_exception()) { reject_capability_with_exception(ctx, cap); return cap.promise; }
-            }
+                if (ctx.has_exception()) { iterator_close(ctx, rec); reject_capability_with_exception(ctx, cap); return cap.promise; }
 
-            return cap.promise;
+                idx++;
+            }
         }, 1);
     promise_constructor->set_property("any", Value(promise_any_static.release()), PropertyAttributes::BuiltinFunction);
 
