@@ -2088,30 +2088,47 @@ void register_string_builtins(Context& ctx) {
                 return Value();
             }
 
-            if (args.size() > 0 && (args[0].is_object() || args[0].is_function())) {
-                Object* template_obj = args[0].is_object() ? args[0].as_object()
-                    : static_cast<Object*>(args[0].as_function());
-                // Get raw array via get_property (fires get("raw") trap on Proxy)
-                Value raw_val = template_obj->get_property("raw");
-                if (raw_val.is_object()) {
-                    Object* raw_obj = raw_val.as_object();
-                    // Get length via get_property (fires get("length") trap on Proxy)
-                    Value len_val = raw_obj->get_property("length");
-                    uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.to_number()) : 0;
-                    std::string result;
-                    for (uint32_t i = 0; i < length; i++) {
-                        if (i > 0 && i < static_cast<uint32_t>(args.size())) {
-                            result += args[i].to_string();
-                        }
-                        // Get element via get_property (fires get("0"), get("1"), ... on Proxy)
-                        Value chunk = raw_obj->get_property(std::to_string(i));
-                        result += chunk.is_undefined() ? "" : chunk.to_string();
-                    }
-                    return Value(result);
-                }
+            // Per spec: template must be coercible to object (null/undefined throw TypeError)
+            if (args[0].is_null() || args[0].is_undefined()) {
+                ctx.throw_type_error("String.raw: template is null or undefined");
+                return Value();
             }
-
-            return Value(std::string(""));
+            if (!args[0].is_object() && !args[0].is_function()) {
+                // Non-object primitive: wrap (per spec ToObject coercion, but skip for now)
+                return Value(std::string(""));
+            }
+            Object* template_obj = args[0].is_object() ? args[0].as_object()
+                : static_cast<Object*>(args[0].as_function());
+            // Get raw array via get_property (fires get("raw") trap on Proxy)
+            Value raw_val = template_obj->get_property("raw");
+            if (ctx.has_exception()) return Value();
+            if (!raw_val.is_object() && !raw_val.is_function()) {
+                ctx.throw_type_error("String.raw: template.raw is not an object");
+                return Value();
+            }
+            Object* raw_obj = raw_val.is_object() ? raw_val.as_object() : static_cast<Object*>(raw_val.as_function());
+            // Get length via get_property
+            Value len_val = raw_obj->get_property("length");
+            if (ctx.has_exception()) return Value();
+            if (len_val.is_symbol() || len_val.is_bigint()) {
+                ctx.throw_type_error("String.raw: template.raw.length is a Symbol");
+                return Value();
+            }
+            uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.to_number()) : 0;
+            if (ctx.has_exception()) return Value();
+            std::string result;
+            for (uint32_t i = 0; i < length; i++) {
+                if (i > 0 && i < static_cast<uint32_t>(args.size())) {
+                    if (args[i].is_symbol()) { ctx.throw_type_error("String.raw: substitution is a Symbol"); return Value(); }
+                    result += args[i].to_string();
+                    if (ctx.has_exception()) return Value();
+                }
+                Value chunk = raw_obj->get_property(std::to_string(i));
+                if (ctx.has_exception()) return Value();
+                result += chunk.is_undefined() ? "" : chunk.to_string();
+                if (ctx.has_exception()) return Value();
+            }
+            return Value(result);
         }, 1);
 
     string_constructor->set_property("raw", Value(string_raw_fn.release()), PropertyAttributes::BuiltinFunction);

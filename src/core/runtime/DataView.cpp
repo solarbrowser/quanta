@@ -694,7 +694,7 @@ Value DataView::js_get_biguint64(Context& ctx, const std::vector<Value>& args) {
     bool le = (args.size() > 1) ? args[1].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 8)) return Value();
     uint64_t val = dv->read_value<uint64_t>(static_cast<size_t>(offset), le);
-    return Value(new BigInt(static_cast<int64_t>(val)));
+    return Value(new BigInt(std::to_string(val)));
 }
 
 Value DataView::js_set_biguint64(Context& ctx, const std::vector<Value>& args) {

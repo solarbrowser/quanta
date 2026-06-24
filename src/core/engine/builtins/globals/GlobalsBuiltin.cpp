@@ -832,32 +832,77 @@ void register_global_builtins(Context& ctx) {
     auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
-            int64_t n = static_cast<int64_t>(args[0].to_number());
-            if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
-            if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
-            int64_t val = args[1].as_bigint()->to_int64();
+            // ToIndex(bits): Symbol/BigInt → TypeError, negative → RangeError
+            if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
+            double n_d = args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(n_d) || n_d < 0 || n_d > 9007199254740991.0) { ctx.throw_range_error("Invalid width"); return Value(); }
+            int64_t n = static_cast<int64_t>(n_d);
+            // ToBigInt(bigint): convert if needed
+            Value bv = args[1];
+            if (!bv.is_bigint()) {
+                if (bv.is_number() || bv.is_null() || bv.is_undefined() || bv.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert to BigInt");
+                    return Value();
+                }
+                // Try valueOf for objects
+                if (bv.is_object() || bv.is_function()) {
+                    Object* obj = bv.is_function() ? static_cast<Object*>(bv.as_function()) : bv.as_object();
+                    Value vof = obj->get_property("valueOf");
+                    if (!ctx.has_exception() && vof.is_function()) {
+                        bv = vof.as_function()->call(ctx, {}, bv);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (!bv.is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+            }
             if (n == 0) return Value(new Quanta::BigInt(0));
-            if (n == 64) return Value(new Quanta::BigInt(val));
+            if (n >= 64) {
+                int64_t val = bv.as_bigint()->to_int64();
+                return Value(new Quanta::BigInt(val));
+            }
+            int64_t val = bv.as_bigint()->to_int64();
             int64_t mod = 1LL << n;
             int64_t result = val & (mod - 1);
             if (result >= (mod >> 1)) result -= mod;
             return Value(new Quanta::BigInt(result));
-        });
+        }, 2);
     bigint_fn->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
-            int64_t n = static_cast<int64_t>(args[0].to_number());
-            if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
-            if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
-            int64_t val = args[1].as_bigint()->to_int64();
+            if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
+            double n_d = args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(n_d) || n_d < 0 || n_d > 9007199254740991.0) { ctx.throw_range_error("Invalid width"); return Value(); }
+            int64_t n = static_cast<int64_t>(n_d);
+            Value bv = args[1];
+            if (!bv.is_bigint()) {
+                if (bv.is_number() || bv.is_null() || bv.is_undefined() || bv.is_symbol()) {
+                    ctx.throw_type_error("Cannot convert to BigInt");
+                    return Value();
+                }
+                if (bv.is_object() || bv.is_function()) {
+                    Object* obj = bv.is_function() ? static_cast<Object*>(bv.as_function()) : bv.as_object();
+                    Value vof = obj->get_property("valueOf");
+                    if (!ctx.has_exception() && vof.is_function()) {
+                        bv = vof.as_function()->call(ctx, {}, bv);
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
+                if (!bv.is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
+            }
             if (n == 0) return Value(new Quanta::BigInt(0));
-            if (n == 64) return Value(new Quanta::BigInt(val));
+            if (n >= 64) {
+                int64_t val = bv.as_bigint()->to_int64();
+                return Value(new Quanta::BigInt(static_cast<int64_t>(static_cast<uint64_t>(val))));
+            }
+            int64_t val = bv.as_bigint()->to_int64();
             uint64_t mask = (1ULL << n) - 1;
             uint64_t result = static_cast<uint64_t>(val) & mask;
-            return Value(new Quanta::BigInt(static_cast<int64_t>(result)));
-        });
+            return Value(new Quanta::BigInt(std::to_string(result)));
+        }, 2);
     bigint_fn->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.get_lexical_environment()->create_binding("BigInt", Value(bigint_fn.release()), false);

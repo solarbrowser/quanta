@@ -129,8 +129,8 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    if (args[0].is_undefined() || args[0].is_symbol()) {
-        return Value();  // undefined
+    if (args[0].is_undefined() || args[0].is_symbol() || args[0].is_function()) {
+        return Value();  // undefined - functions/symbols/undefined are not serializable at top level
     }
 
     if (args[0].is_object() && !args[0].as_object()) {

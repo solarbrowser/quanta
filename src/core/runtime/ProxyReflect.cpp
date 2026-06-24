@@ -45,7 +45,14 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.get) {
+    if (!parsed_handler_.get && handler_) {
+        Value _trap = handler_->get_property("get");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"get\" is not callable");
+            return Value();
+        }
+    }
+        if (parsed_handler_.get) {
         Value result = parsed_handler_.get(key, receiver);
         // Invariant: non-writable, non-configurable data property => result must equal target value
         std::string key_str = to_prop_key(key);
@@ -87,7 +94,14 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.set) {
+    if (!parsed_handler_.set && handler_) {
+        Value _trap = handler_->get_property("set");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"set\" is not callable");
+            return false;
+        }
+    }
+        if (parsed_handler_.set) {
         bool result = parsed_handler_.set(key, value, receiver);
         if (result) {
             // Invariant: non-writable, non-configurable data property => new value must equal existing
@@ -125,7 +139,14 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
                                 (!own_desc.is_data_descriptor() || own_desc.is_writable());
         if (is_writable_data) {
             // Receiver.[[GetOwnProperty]](P) fires getOwnPropertyDescriptor trap
-            if (parsed_handler_.getOwnPropertyDescriptor) {
+            if (!parsed_handler_.getOwnPropertyDescriptor && handler_) {
+            Value _trap = handler_->get_property("getOwnPropertyDescriptor");
+            if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"getOwnPropertyDescriptor\" is not callable");
+                return false;
+            }
+        }
+        if (parsed_handler_.getOwnPropertyDescriptor) {
                 get_own_property_descriptor_trap(Value(key_str));
                 if (Object::current_context_ && Object::current_context_->has_exception()) return false;
             }
@@ -146,7 +167,14 @@ bool Proxy::has_trap(const Value& key) {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.has) {
+    if (!parsed_handler_.has && handler_) {
+        Value _trap = handler_->get_property("has");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"has\" is not callable");
+            return false;
+        }
+    }
+        if (parsed_handler_.has) {
         bool result = parsed_handler_.has(key);
         if (!result) {
             std::string key_str = key.to_string();
@@ -185,7 +213,14 @@ bool Proxy::delete_trap(const Value& key) {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.deleteProperty) {
+    if (!parsed_handler_.deleteProperty && handler_) {
+        Value _trap = handler_->get_property("deleteProperty");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"deleteProperty\" is not callable");
+            return false;
+        }
+    }
+        if (parsed_handler_.deleteProperty) {
         bool result = parsed_handler_.deleteProperty(key);
         if (result) {
             std::string key_str = key.to_string();
@@ -210,7 +245,14 @@ std::vector<std::string> Proxy::own_keys_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.ownKeys) {
+    if (!parsed_handler_.ownKeys && handler_) {
+        Value _trap = handler_->get_property("ownKeys");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"ownKeys\" is not callable");
+            return {};
+        }
+    }
+        if (parsed_handler_.ownKeys) {
         std::vector<std::string> result = parsed_handler_.ownKeys();
         // Invariant: no duplicate keys (spec step 22)
         {
@@ -267,6 +309,14 @@ Value Proxy::get_prototype_of_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
+    if (!parsed_handler_.getPrototypeOf && handler_) {
+        Value trap = handler_->get_property("getPrototypeOf");
+        if (!trap.is_undefined() && !trap.is_null() && !trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap 'getPrototypeOf' is not callable");
+            return Value();
+        }
+    }
+
     if (parsed_handler_.getPrototypeOf) {
         Value result = parsed_handler_.getPrototypeOf();
         // Invariant: if target is non-extensible, returned prototype must match target's prototype
@@ -293,7 +343,14 @@ bool Proxy::set_prototype_of_trap(Object* proto) {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.setPrototypeOf) {
+    if (!parsed_handler_.setPrototypeOf && handler_) {
+        Value _trap = handler_->get_property("setPrototypeOf");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"setPrototypeOf\" is not callable");
+            return false;
+        }
+    }
+        if (parsed_handler_.setPrototypeOf) {
         bool result = parsed_handler_.setPrototypeOf(proto);
         // Invariant: if target is non-extensible, new proto must match target's current proto
         if (!target_->is_extensible()) {
@@ -316,7 +373,14 @@ bool Proxy::is_extensible_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.isExtensible) {
+    if (!parsed_handler_.isExtensible && handler_) {
+        Value _trap = handler_->get_property("isExtensible");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"isExtensible\" is not callable");
+            return target_->is_extensible();
+        }
+    }
+        if (parsed_handler_.isExtensible) {
         bool result = parsed_handler_.isExtensible();
         // Invariant: must return same value as Object.isExtensible(target)
         bool target_result = target_->is_extensible();
@@ -336,7 +400,14 @@ bool Proxy::prevent_extensions_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    if (parsed_handler_.preventExtensions) {
+    if (!parsed_handler_.preventExtensions && handler_) {
+        Value _trap = handler_->get_property("preventExtensions");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"preventExtensions\" is not callable");
+            return false;
+        }
+    }
+        if (parsed_handler_.preventExtensions) {
         bool result = parsed_handler_.preventExtensions();
         // Invariant: if result is true, target must be non-extensible
         if (result && target_->is_extensible()) {
@@ -411,6 +482,15 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
+    // GetMethod: check trap is callable at invocation time (not construction time)
+    if (!parsed_handler_.defineProperty && handler_) {
+        Value trap = handler_->get_property("defineProperty");
+        if (!trap.is_undefined() && !trap.is_null() && !trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap 'defineProperty' is not callable");
+            return false;
+        }
+    }
+
     if (parsed_handler_.defineProperty) {
         bool result = parsed_handler_.defineProperty(key, desc);
         if (!result) return false;
@@ -460,7 +540,14 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
         throw std::runtime_error("TypeError: proxy target is not callable");
     }
 
-    if (parsed_handler_.apply) {
+    if (!parsed_handler_.apply && handler_) {
+        Value _trap = handler_->get_property("apply");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"apply\" is not callable");
+            return Value();
+        }
+    }
+        if (parsed_handler_.apply) {
         return parsed_handler_.apply(args, this_value);
     }
 
@@ -488,7 +575,14 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
         throw std::runtime_error("TypeError: proxy target is not a constructor");
     }
 
-    if (parsed_handler_.construct) {
+    if (!parsed_handler_.construct && handler_) {
+        Value _trap = handler_->get_property("construct");
+        if (!_trap.is_undefined() && !_trap.is_null() && !_trap.is_function()) {
+            if (Object::current_context_) Object::current_context_->throw_type_error("Proxy trap \"construct\" is not callable");
+            return Value();
+        }
+    }
+        if (parsed_handler_.construct) {
         Value result = parsed_handler_.construct(args);
         // Invariant: construct trap must return an object
         if (!result.is_object() && !result.is_function()) {
