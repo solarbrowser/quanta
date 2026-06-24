@@ -596,12 +596,37 @@ void setup_string_iterator_methods(Context& ctx) {
     
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
+        auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
+                if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
                 Value this_value = ctx.get_binding("this");
-                std::string str = this_value.to_string();
-                
+                if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                std::string str;
+                if (this_value.is_object() || this_value.is_function()) {
+                    Object* obj = this_value.is_function() ? static_cast<Object*>(this_value.as_function()) : this_value.as_object();
+                    Value ts = obj->get_property("toString");
+                    if (ctx.has_exception()) return Value();
+                    bool converted = false;
+                    if (ts.is_function()) {
+                        Value r = ts.as_function()->call(ctx, {}, this_value);
+                        if (ctx.has_exception()) return Value();
+                        if (!r.is_object() && !r.is_function()) { str = r.to_string(); converted = true; }
+                    }
+                    if (!converted) {
+                        Value vof = obj->get_property("valueOf");
+                        if (ctx.has_exception()) return Value();
+                        if (vof.is_function()) {
+                            Value r = vof.as_function()->call(ctx, {}, this_value);
+                            if (ctx.has_exception()) return Value();
+                            if (!r.is_object() && !r.is_function()) { str = r.to_string(); converted = true; }
+                        }
+                    }
+                    if (!converted) { ctx.throw_type_error("Cannot convert object to string"); return Value(); }
+                } else {
+                    str = this_value.to_string();
+                }
+
                 auto iterator = std::make_unique<StringIterator>(str);
                 return Value(iterator.release());
             });

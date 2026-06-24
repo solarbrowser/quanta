@@ -14,6 +14,29 @@
 
 namespace Quanta {
 
+static std::string regexp_get_substitution(const std::string& replacement, const std::string& str,
+        size_t match_pos, const std::string& matched, const std::vector<std::string>& captures) {
+    std::string result;
+    for (size_t i = 0; i < replacement.size(); i++) {
+        if (replacement[i] != '$' || i + 1 >= replacement.size()) { result += replacement[i]; continue; }
+        char next = replacement[i + 1];
+        if (next == '$') { result += '$'; i++; }
+        else if (next == '&') { result += matched; i++; }
+        else if (next == '`') { result += str.substr(0, match_pos); i++; }
+        else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
+        else if (next >= '1' && next <= '9') {
+            size_t n = next - '0';
+            if (i + 2 < replacement.size() && replacement[i+2] >= '0' && replacement[i+2] <= '9') {
+                size_t n2 = n * 10 + (replacement[i+2] - '0');
+                if (n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
+            }
+            if (n <= captures.size()) { result += captures[n-1]; i++; }
+            else result += replacement[i];
+        } else { result += replacement[i]; }
+    }
+    return result;
+}
+
 void register_regexp_builtins(Context& ctx) {
     auto regexp_prototype = ObjectFactory::create_object();
 
@@ -31,7 +54,7 @@ void register_regexp_builtins(Context& ctx) {
             if (args.size() > 0) {
                 pattern = args[0].to_string();
             }
-            if (args.size() > 1) {
+            if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
                 flags = args[1].to_string();
             }
 
@@ -52,7 +75,7 @@ void register_regexp_builtins(Context& ctx) {
             // ES6: Check IsRegExp(pattern) via Symbol.match
             bool pattern_is_regexp = false;
             std::string pattern = "";
-            std::string flags = args.size() > 1 ? args[1].to_string() : "";
+            std::string flags = (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) ? args[1].to_string() : "";
 
             if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
                 Object* pat_obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
@@ -90,7 +113,7 @@ void register_regexp_builtins(Context& ctx) {
                     // For ordinary objects without IsRegExp, convert to string
                     pattern = args[0].to_string();
                 }
-            } else if (!args.empty()) {
+            } else if (!args.empty() && !args[0].is_undefined()) {
                 pattern = args[0].to_string();
             }
 
@@ -378,31 +401,85 @@ void register_regexp_builtins(Context& ctx) {
                         Value index_val = match.as_object()->get_property("index");
                         int index = static_cast<int>(index_val.to_number());
                         std::string matched_str = matched.to_string();
-                        std::string replacement = replace_val.is_function() ? "" : replace_val.to_string();
+                        std::string replacement;
                         if (replace_val.is_function()) {
-                            Value r = replace_val.as_function()->call(ctx, {matched, Value(static_cast<double>(index)), Value(str)}, Value());
+                            std::vector<Value> fn_a = {matched, Value(static_cast<double>(index)), Value(str)};
+                            Value mlen_v = match.as_object()->get_property("length");
+                            int ml = mlen_v.is_number() ? static_cast<int>(mlen_v.to_number()) : 1;
+                            for (int ci = 1; ci < ml; ci++) fn_a.insert(fn_a.begin()+1+ci-1, match.as_object()->get_element(ci));
+                            Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                             replacement = r.to_string();
+                        } else {
+                            std::vector<std::string> caps;
+                            Value mlen_v = match.as_object()->get_property("length");
+                            int ml = mlen_v.is_number() ? static_cast<int>(mlen_v.to_number()) : 1;
+                            for (int ci = 1; ci < ml; ci++) {
+                                Value cv = match.as_object()->get_element(ci);
+                                caps.push_back(cv.is_undefined() ? "" : cv.to_string());
+                            }
+                            replacement = regexp_get_substitution(replace_val.to_string(), str, index, matched_str, caps);
                         }
                         return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
                     }
                 }
                 return Value(str);
             }
-            // Global: also check unicode, then loop exec
-            Value unicode_val = this_obj->get_property("unicode");
-            (void)unicode_val;
+            // Global: collect all matches, then build result.
             this_obj->set_property("lastIndex", Value(0.0));
             Value exec_fn = this_obj->get_property("exec");
             if (!exec_fn.is_function()) return Value(str);
             Function* exec_func = exec_fn.as_function();
-            std::string result = str;
+            struct MatchRecord { int index; std::string matched; std::vector<std::string> captures; };
+            std::vector<MatchRecord> matches;
             size_t safety = 0;
             const size_t max_iter = str.length() + 2;
+            bool is_fn_replace = replace_val.is_function();
+            std::string replace_str = is_fn_replace ? "" : replace_val.to_string();
             while (safety++ < max_iter) {
                 Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
                 if (ctx.has_exception()) return Value();
                 if (match.is_null()) break;
+                if (!match.is_object()) break;
+                Object* m = match.as_object();
+                Value idx_v = m->get_property("index");
+                if (ctx.has_exception()) return Value();
+                int idx = idx_v.is_number() ? static_cast<int>(idx_v.to_number()) : 0;
+                std::string matched_s = m->get_element(0).to_string();
+                std::vector<std::string> caps;
+                Value len_v = m->get_property("length");
+                int mlen = len_v.is_number() ? static_cast<int>(len_v.to_number()) : 1;
+                for (int ci = 1; ci < mlen; ci++) {
+                    Value cv = m->get_element(ci);
+                    caps.push_back(cv.is_undefined() ? "" : cv.to_string());
+                }
+                matches.push_back({idx, matched_s, caps});
+                if (matched_s.empty()) {
+                    Value li = this_obj->get_property("lastIndex");
+                    int next = li.is_number() ? static_cast<int>(li.to_number()) : 0;
+                    this_obj->set_property("lastIndex", Value(static_cast<double>(next + 1)));
+                }
             }
+            if (matches.empty()) return Value(str);
+            std::string result;
+            int last_end = 0;
+            for (auto& mr : matches) {
+                result += str.substr(last_end, mr.index - last_end);
+                std::string repl;
+                if (is_fn_replace) {
+                    std::vector<Value> fn_a = {Value(mr.matched)};
+                    for (auto& c : mr.captures) fn_a.push_back(Value(c));
+                    fn_a.push_back(Value(static_cast<double>(mr.index)));
+                    fn_a.push_back(Value(str));
+                    Value r = replace_val.as_function()->call(ctx, fn_a, Value());
+                    if (ctx.has_exception()) return Value();
+                    repl = r.to_string();
+                } else {
+                    repl = regexp_get_substitution(replace_str, str, mr.index, mr.matched, mr.captures);
+                }
+                result += repl;
+                last_end = mr.index + static_cast<int>(mr.matched.length());
+            }
+            result += str.substr(last_end);
             return Value(result);
         }, 2);
     regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
@@ -460,32 +537,78 @@ void register_regexp_builtins(Context& ctx) {
                     }
                 }
             }
-            // Get exec and use it
-            auto result = ObjectFactory::create_array();
+            // Get lim (ToUint32) and exec, then loop.
+            Value limit_v = args.size() > 1 ? args[1] : Value();
+            uint32_t lim = limit_v.is_undefined() ? 0xFFFFFFFFu : static_cast<uint32_t>(limit_v.to_number());
+            if (lim == 0) return Value(ObjectFactory::create_array(0).release());
             Value exec_fn = this_obj->get_property("exec");
-            if (!exec_fn.is_function()) return Value(result.release());
+            auto result = ObjectFactory::create_array();
+            if (!exec_fn.is_function()) {
+                result->set_element(0, Value(str));
+                result->set_length(1);
+                return Value(result.release());
+            }
+            Function* exec_func = exec_fn.as_function();
+            // Spec: if S is empty, try exec once; if match found return empty array, else [""].
+            if (str.empty()) {
+                Value z = exec_func->call(ctx, {Value(str)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+                if (!z.is_null() && !z.is_undefined()) return Value(ObjectFactory::create_array(0).release());
+                auto r = ObjectFactory::create_array(); r->set_element(0, Value(std::string(""))); r->set_length(1);
+                return Value(r.release());
+            }
             uint32_t idx = 0;
-            std::string remaining = str;
-            while (!remaining.empty()) {
-                Value match = exec_fn.as_function()->call(ctx, {Value(remaining)}, Value(this_obj));
-                if (match.is_null() || match.is_undefined()) break;
+            size_t last_end = 0;
+            bool any_match = false;
+            bool last_was_zero_length_advance = false;
+            // Reset lastIndex so exec searches from the start.
+            this_obj->set_property("lastIndex", Value(0.0));
+            size_t safety = 0;
+            while (safety++ <= str.length() + 1 && idx < lim) {
+                // Search from last_end by passing the substring; returned index is relative.
+                std::string sub = str.substr(last_end);
+                if (sub.empty()) break;
+                Value match = exec_func->call(ctx, {Value(sub)}, Value(this_obj));
+                if (ctx.has_exception()) return Value();
+                if (match.is_null()) break;
                 if (!match.is_object()) break;
-                Value index_val = match.as_object()->get_property("index");
-                Value matched_val = match.as_object()->get_property("0");
-                int index = static_cast<int>(index_val.to_number());
-                std::string matched_str = matched_val.to_string();
-                if (matched_str.empty() && index == 0) {
-                    result->set_element(idx++, Value(std::string(1, remaining[0])));
-                    remaining = remaining.substr(1);
-                } else {
-                    result->set_element(idx++, Value(remaining.substr(0, index)));
-                    remaining = remaining.substr(index + matched_str.length());
+                any_match = true;
+                Object* m = match.as_object();
+                Value idx_v = m->get_property("index");
+                int rel_mi = idx_v.is_number() ? static_cast<int>(idx_v.to_number()) : 0;
+                size_t mi = last_end + static_cast<size_t>(rel_mi);
+                std::string matched_str = m->get_element(0).is_undefined() ? "" : m->get_element(0).to_string();
+                if (matched_str.empty() && mi == last_end) {
+                    // Zero-length match at current position: emit the next code unit, like "" string split.
+                    if (last_end >= str.length()) break;
+                    size_t char_len = 1;
+                    unsigned char c = static_cast<unsigned char>(str[last_end]);
+                    if ((c & 0xF8) == 0xF0) char_len = 4;
+                    else if ((c & 0xF0) == 0xE0) char_len = 3;
+                    else if ((c & 0xE0) == 0xC0) char_len = 2;
+                    result->set_element(idx++, Value(str.substr(last_end, char_len)));
+                    last_end += char_len;
+                    last_was_zero_length_advance = true;
+                    continue;
                 }
+                result->set_element(idx++, Value(str.substr(last_end, mi - last_end)));
+                if (idx >= lim) { last_end = mi + matched_str.length(); break; }
+                Value len_v = m->get_property("length");
+                int mlen = len_v.is_number() ? static_cast<int>(len_v.to_number()) : 1;
+                for (int ci = 1; ci < mlen && idx < lim; ci++) {
+                    Value cv = m->get_element(ci);
+                    result->set_element(idx++, cv);
+                }
+                last_end = mi + (matched_str.empty() ? 1 : matched_str.length());
+                last_was_zero_length_advance = false;
             }
-            if (!remaining.empty() || idx > 0) {
-                result->set_element(idx++, Value(remaining));
+            // Add trailing segment when: (a) remaining text, (b) no match found (whole string),
+            // or (c) last real (non-zero-length) match ended at the end of the string.
+            // Don't add for zero-length-advance paths (character-by-character iteration).
+            if (idx < lim && (last_end < str.length() || !any_match || !last_was_zero_length_advance)) {
+                result->set_element(idx++, Value(str.substr(last_end)));
             }
-            result->set_property("length", Value(static_cast<double>(idx)));
+            result->set_length(idx);
             return Value(result.release());
         }, 2);
     regexp_prototype->set_property("Symbol.split", Value(regexp_sym_split.release()), PropertyAttributes::BuiltinFunction);

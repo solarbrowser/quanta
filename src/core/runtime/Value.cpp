@@ -275,9 +275,11 @@ double Value::to_number() const {
         }
     }
     if (is_bigint()) {
-        return as_bigint()->to_double();
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot convert a BigInt value to a number");
+        return std::numeric_limits<double>::quiet_NaN();
     }
     if (is_symbol()) {
+        if (Object::current_context_) Object::current_context_->throw_type_error("Cannot convert a Symbol value to a number");
         return std::numeric_limits<double>::quiet_NaN();
     }
     if (is_function()) {
@@ -303,29 +305,36 @@ double Value::to_number() const {
                 return pv.to_number();
             }
         }
-        // ToPrimitive with "number" hint: try valueOf() first, then toString()
+        // ToPrimitive with "number" hint: @@toPrimitive("number") first, then valueOf, then toString.
         if (obj && Object::current_context_) {
             Context& ctx = *Object::current_context_;
+            Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+            if (toPrim_sym) {
+                Value toPrim = obj->get_property(toPrim_sym->to_property_key());
+                if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
+                if (!toPrim.is_null() && !toPrim.is_undefined()) {
+                    if (!toPrim.is_function()) { ctx.throw_type_error("@@toPrimitive is not callable"); return std::numeric_limits<double>::quiet_NaN(); }
+                    Value r = toPrim.as_function()->call(ctx, {Value(std::string("number"))}, Value(obj));
+                    if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
+                    if (r.is_object() || r.is_function()) { ctx.throw_type_error("@@toPrimitive returned an object"); return std::numeric_limits<double>::quiet_NaN(); }
+                    return r.to_number();
+                }
+            }
             Value valueOf_fn = obj->get_property("valueOf");
+            if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
             if (valueOf_fn.is_function()) {
                 Value prim = valueOf_fn.as_function()->call(ctx, {}, Value(obj));
-                if (!prim.is_object() && !prim.is_function() && !ctx.has_exception()) {
-                    return prim.to_number();
-                }
+                if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
+                if (!prim.is_object() && !prim.is_function()) return prim.to_number();
             }
-            if (!ctx.has_exception()) {
-                Value toString_fn = obj->get_property("toString");
-                if (toString_fn.is_function()) {
-                    Value prim = toString_fn.as_function()->call(ctx, {}, Value(obj));
-                    if (!prim.is_object() && !prim.is_function() && !ctx.has_exception()) {
-                        return prim.to_number();
-                    }
-                }
+            Value toString_fn = obj->get_property("toString");
+            if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
+            if (toString_fn.is_function()) {
+                Value prim = toString_fn.as_function()->call(ctx, {}, Value(obj));
+                if (ctx.has_exception()) return std::numeric_limits<double>::quiet_NaN();
+                if (!prim.is_object() && !prim.is_function()) return prim.to_number();
             }
-            // Note: when both valueOf and toString return objects, spec says throw TypeError.
-            // We return NaN here for safety to avoid breaking harness code that catches
-            // exceptions during iteration. The specific case of object-as-array-length
-            // that should throw is handled at the call site (get_length checks ctx.has_exception).
+            ctx.throw_type_error("Cannot convert object to number");
             return std::numeric_limits<double>::quiet_NaN();
         }
         return std::numeric_limits<double>::quiet_NaN();

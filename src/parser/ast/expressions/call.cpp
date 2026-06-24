@@ -304,54 +304,39 @@ Value CallExpression::evaluate(Context& ctx) {
             TemplateLiteral* tmpl = static_cast<TemplateLiteral*>(arguments_[0].get());
             const auto& elements = tmpl->get_elements();
 
-            // Per-call-site caching: use the TemplateLiteral AST node pointer as key
-            static std::unordered_map<const TemplateLiteral*, Object*> template_cache;
-            Object* strings_array = nullptr;
-
-            auto cache_it = template_cache.find(tmpl);
-            if (cache_it != template_cache.end()) {
-                strings_array = cache_it->second;
-            } else {
-                // Build the strings array from TEXT elements
-                std::vector<std::string> cooked_parts;
-                std::vector<std::string> raw_parts;
-                for (const auto& el : elements) {
-                    if (el.type == TemplateLiteral::Element::Type::TEXT) {
-                        cooked_parts.push_back(el.text);
-                        raw_parts.push_back(el.raw_text);
-                    }
+            // Build the strings array from TEXT elements (no raw-pointer caching to avoid GC issues).
+            std::vector<std::string> cooked_parts;
+            std::vector<std::string> raw_parts;
+            for (const auto& el : elements) {
+                if (el.type == TemplateLiteral::Element::Type::TEXT) {
+                    cooked_parts.push_back(el.text);
+                    raw_parts.push_back(el.raw_text);
                 }
-
-                auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
-                strings_array = strings_obj.release();
-                for (size_t i = 0; i < cooked_parts.size(); i++) {
-                    if (cooked_parts[i] == "\x01") {
-                        // ES2018: invalid escape in tagged template -> cooked = undefined
-                        strings_array->set_property(std::to_string(i), Value());
-                    } else {
-                        strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
-                    }
-                }
-                strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
-
-                // Add .raw property (frozen array of raw strings)
-                auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
-                Object* raw_array = raw_obj.release();
-                for (size_t i = 0; i < raw_parts.size(); i++) {
-                    raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
-                }
-                raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
-                raw_array->freeze();
-
-                strings_array->set_property("raw", Value(raw_array));
-                strings_array->freeze();
-
-                template_cache[tmpl] = strings_array;
             }
+
+            auto strings_obj = ObjectFactory::create_array(static_cast<int>(cooked_parts.size()));
+            Object* strings_array = strings_obj.get();
+            for (size_t i = 0; i < cooked_parts.size(); i++) {
+                if (cooked_parts[i] == "\x01") {
+                    strings_array->set_property(std::to_string(i), Value());
+                } else {
+                    strings_array->set_property(std::to_string(i), Value(cooked_parts[i]));
+                }
+            }
+            strings_array->set_property("length", Value(static_cast<double>(cooked_parts.size())));
+
+            auto raw_obj = ObjectFactory::create_array(static_cast<int>(raw_parts.size()));
+            Object* raw_array = raw_obj.get();
+            for (size_t i = 0; i < raw_parts.size(); i++) {
+                raw_array->set_property(std::to_string(i), Value(raw_parts[i]));
+            }
+            raw_array->set_property("length", Value(static_cast<double>(raw_parts.size())));
+
+            strings_array->set_property("raw", Value(raw_obj.release()));
 
             // Build argument list: [strings_array, expr1, expr2, ...]
             std::vector<Value> arg_values;
-            arg_values.push_back(Value(strings_array));
+            arg_values.push_back(Value(strings_obj.release()));
 
             // Evaluate expression elements
             for (const auto& el : elements) {

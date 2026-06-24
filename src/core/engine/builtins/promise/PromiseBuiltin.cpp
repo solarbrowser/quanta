@@ -127,7 +127,7 @@ static bool get_iterator_record(Context& ctx, const Value& iterable_val, Iterato
     // for the @@iterator property lookup (e.g. '' has Symbol.iterator via String.prototype).
     // Only null/undefined fail (ToObject would throw). No array fast path either: an array's
     // own/inherited @@iterator can be overridden or poisoned, and skipping the lookup would
-    // mask that (e.g. iter-arg-is-poisoned.js defines a throwing @@iterator on a plain array).
+    // mask that.
     Object* iterable = as_object_or_function(iterable_val);
     if (!iterable) {
         if (iterable_val.is_null() || iterable_val.is_undefined()) {
@@ -346,9 +346,8 @@ void register_promise_builtins(Context& ctx) {
             // NewPromiseCapability(C); PerformPromiseThen(...). The capability's promise --
             // genuinely constructed via `new C(executor)` -- is what gets returned, not a
             // bare native Promise with its prototype patched after the fact; that's required
-            // for subclasses to see their own constructor actually invoked (ctor-custom.js)
-            // and for a constructor that returns a substitute object to work at all
-            // (deferred-is-resolved-value.js).
+            // for subclasses to see their own constructor actually invoked, and for a
+            // constructor that returns a substitute object to work at all.
             Value default_ctor_val = ctx.get_binding("Promise");
             if (!default_ctor_val.is_function()) { ctx.throw_type_error("Promise unavailable"); return Value(); }
             Function* species_ctor = species_constructor(ctx, this_obj, default_ctor_val.as_function());
@@ -463,7 +462,7 @@ void register_promise_builtins(Context& ctx) {
             // Must observably call .then on the wrapped promise (not just inspect its internal
             // state) so an overridden .then on `result` itself still runs, and must use the
             // species constructor (not bare global Promise) so PromiseResolve's "already the
-            // right type" fast path matches subclass instances -- e.g. *-observable-then-calls.js.
+            // right type" fast path matches subclass instances.
             Value default_ctor_val = ctx.get_binding("Promise");
             if (!default_ctor_val.is_function()) { ctx.throw_type_error("Promise unavailable"); return Value(); }
             Function* species_ctor = species_constructor(ctx, this_obj, default_ctor_val.as_function());

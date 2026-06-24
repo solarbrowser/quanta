@@ -69,6 +69,7 @@ public:
     static const std::string ITERATOR;
     static const std::string ASYNC_ITERATOR;
     static const std::string MATCH;
+    static const std::string MATCH_ALL;
     static const std::string REPLACE;
     static const std::string SEARCH;
     static const std::string SPLIT;

@@ -19,6 +19,7 @@ std::unordered_map<std::string, Symbol*> Symbol::user_symbol_registry_;
 const std::string Symbol::ITERATOR = "Symbol.iterator";
 const std::string Symbol::ASYNC_ITERATOR = "Symbol.asyncIterator";
 const std::string Symbol::MATCH = "Symbol.match";
+const std::string Symbol::MATCH_ALL = "Symbol.matchAll";
 const std::string Symbol::REPLACE = "Symbol.replace";
 const std::string Symbol::SEARCH = "Symbol.search";
 const std::string Symbol::SPLIT = "Symbol.split";
@@ -74,9 +75,11 @@ Symbol* Symbol::get_well_known(const std::string& name) {
 }
 
 void Symbol::initialize_well_known_symbols() {
+    if (!well_known_symbols_.empty()) return;
     well_known_symbols_[ITERATOR] = create(ITERATOR);
     well_known_symbols_[ASYNC_ITERATOR] = create(ASYNC_ITERATOR);
     well_known_symbols_[MATCH] = create(MATCH);
+    well_known_symbols_[MATCH_ALL] = create(MATCH_ALL);
     well_known_symbols_[REPLACE] = create(REPLACE);
     well_known_symbols_[SEARCH] = create(SEARCH);
     well_known_symbols_[SPLIT] = create(SPLIT);
