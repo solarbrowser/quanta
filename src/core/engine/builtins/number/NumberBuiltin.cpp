@@ -6,6 +6,7 @@
 
 #include "quanta/core/engine/builtins/NumberBuiltin.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/BigInt.h"
 #include "quanta/parser/AST.h"
 #include <cmath>
 #include <cstdio>
@@ -18,7 +19,12 @@ namespace Quanta {
 void register_number_builtins(Context& ctx) {
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            double num_value = args.empty() ? 0.0 : args[0].to_number();
+            // Number() uses ToNumeric (not ToNumber): BigInt is explicitly convertible.
+            double num_value = 0.0;
+            if (!args.empty()) {
+                if (args[0].is_bigint()) num_value = args[0].as_bigint()->to_double();
+                else num_value = args[0].to_number();
+            }
 
             // Return an ObjectType::Number-tagged wrapper so Object.prototype.toString
             // sees the correct internal-slot tag (generic Function::construct gives Ordinary).

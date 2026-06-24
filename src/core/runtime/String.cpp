@@ -164,6 +164,66 @@ int32_t utf16_code_point_at(const std::string& s, size_t index) {
     return -1;
 }
 
+bool utf16_is_well_formed(const std::string& s) {
+    size_t pos = 0;
+    bool pending_high = false;
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        bool is_high = cp >= 0xD800 && cp <= 0xDBFF;
+        bool is_low = cp >= 0xDC00 && cp <= 0xDFFF;
+        if (pending_high) {
+            if (!is_low) return false;
+            pending_high = false;
+        } else if (is_low) {
+            return false;
+        } else if (is_high) {
+            pending_high = true;
+        }
+        pos += len;
+    }
+    return !pending_high;
+}
+
+std::string utf16_to_well_formed(const std::string& s) {
+    std::string result;
+    size_t pos = 0;
+    bool pending_high = false;
+    size_t pending_start = 0, pending_len = 0;
+    auto emit_replacement = [&]() { result += "\xEF\xBF\xBD"; };
+    while (pos < s.size()) {
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        bool is_high = cp >= 0xD800 && cp <= 0xDBFF;
+        bool is_low = cp >= 0xDC00 && cp <= 0xDFFF;
+
+        if (pending_high) {
+            if (is_low) {
+                result.append(s, pending_start, pending_len);
+                result.append(s, pos, len);
+                pending_high = false;
+                pos += len;
+                continue;
+            }
+            emit_replacement();
+            pending_high = false;
+        }
+
+        if (is_high) {
+            pending_high = true;
+            pending_start = pos;
+            pending_len = len;
+        } else if (is_low) {
+            emit_replacement();
+        } else {
+            result.append(s, pos, len);
+        }
+        pos += len;
+    }
+    if (pending_high) emit_replacement();
+    return result;
+}
+
 std::string encode_utf16_unit(uint32_t unit) {
     std::string r;
     if (unit <= 0x7F) {

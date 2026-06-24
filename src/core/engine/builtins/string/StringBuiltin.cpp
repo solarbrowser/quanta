@@ -198,11 +198,13 @@ void register_string_builtins(Context& ctx) {
                     static_cast<PropertyAttributes>(PropertyAttributes::None));
                 this_obj->set_property_descriptor("length", length_desc);
 
-                // Set indexed character properties: c[0] === "g"
+                // Indexed character properties: non-writable, enumerable, non-configurable per spec.
                 for (size_t i = 0; i < str_utf16_len; i++) {
                     int32_t unit = utf16_code_unit_at(str_value, i);
                     if (unit < 0) break;
-                    this_obj->set_property(std::to_string(i), Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
+                    PropertyDescriptor char_desc(Value(encode_utf16_unit(static_cast<uint32_t>(unit))),
+                        PropertyAttributes::Enumerable);
+                    this_obj->set_property_descriptor(std::to_string(i), char_desc);
                 }
 
                 auto toString_fn = ObjectFactory::create_native_function("toString",
@@ -255,8 +257,15 @@ void register_string_builtins(Context& ctx) {
             size_t pad_need = target - str_len;
             std::string padding;
             if (!pad_string.empty()) {
-                while (utf16_length(padding) < pad_need) padding += pad_string;
-                while (utf16_length(padding) > pad_need) padding.resize(padding.size() - 1);
+                // Truncate by UTF-16 code unit, not byte -- a naive byte-level resize() would
+                // chop a multi-byte UTF-8 sequence (surrogate pair / astral char) mid-encoding.
+                std::string repeated;
+                while (utf16_length(repeated) < pad_need) repeated += pad_string;
+                for (size_t i = 0; i < pad_need; i++) {
+                    int32_t unit = utf16_code_unit_at(repeated, i);
+                    if (unit < 0) break;
+                    padding += encode_utf16_unit(static_cast<uint32_t>(unit));
+                }
             }
             return Value(padding + str);
         }, 1);
@@ -287,8 +296,15 @@ void register_string_builtins(Context& ctx) {
             size_t pad_need = target - str_len;
             std::string padding;
             if (!pad_string.empty()) {
-                while (utf16_length(padding) < pad_need) padding += pad_string;
-                while (utf16_length(padding) > pad_need) padding.resize(padding.size() - 1);
+                // Truncate by UTF-16 code unit, not byte -- a naive byte-level resize() would
+                // chop a multi-byte UTF-8 sequence (surrogate pair / astral char) mid-encoding.
+                std::string repeated;
+                while (utf16_length(repeated) < pad_need) repeated += pad_string;
+                for (size_t i = 0; i < pad_need; i++) {
+                    int32_t unit = utf16_code_unit_at(repeated, i);
+                    if (unit < 0) break;
+                    padding += encode_utf16_unit(static_cast<uint32_t>(unit));
+                }
             }
             return Value(str + padding);
         }, 1);
@@ -296,20 +312,47 @@ void register_string_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("padEnd", padEnd_desc);
 
-    // Helper: convert value to string, calling toString() on objects
+    // Helper: full spec ToString coercion for argument values (not `this`).
+    // Checks @@toPrimitive("string"), then toString, then valueOf, propagates all exceptions.
     auto obj_to_string = [](Context& ctx, const Value& val) -> std::string {
         if (val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
         if (val.is_object() || val.is_function()) {
-            Object* obj = val.is_function()
-                ? static_cast<Object*>(val.as_function())
-                : val.as_object();
-            Value toString_method = obj->get_property("toString");
-            if (ctx.has_exception()) return {};
-            if (toString_method.is_function()) {
-                Value result = toString_method.as_function()->call(ctx, {}, val);
+            Object* obj = val.is_function() ? static_cast<Object*>(val.as_function()) : val.as_object();
+            Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+            if (toPrim_sym) {
+                Value toPrim = obj->get_property(toPrim_sym->to_property_key());
                 if (ctx.has_exception()) return {};
-                if (result.is_string()) return result.to_string();
+                if (!toPrim.is_null() && !toPrim.is_undefined()) {
+                    if (!toPrim.is_function()) { ctx.throw_type_error("@@toPrimitive is not callable"); return {}; }
+                    Value r = toPrim.as_function()->call(ctx, {Value(std::string("string"))}, val);
+                    if (ctx.has_exception()) return {};
+                    if (r.is_object() || r.is_function()) { ctx.throw_type_error("@@toPrimitive returned an object"); return {}; }
+                    if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
+                    return r.to_string();
+                }
             }
+            Value ts = obj->get_property("toString");
+            if (ctx.has_exception()) return {};
+            if (ts.is_function()) {
+                Value r = ts.as_function()->call(ctx, {}, val);
+                if (ctx.has_exception()) return {};
+                if (!r.is_object() && !r.is_function()) {
+                    if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
+                    return r.to_string();
+                }
+            }
+            Value vof = obj->get_property("valueOf");
+            if (ctx.has_exception()) return {};
+            if (vof.is_function()) {
+                Value r = vof.as_function()->call(ctx, {}, val);
+                if (ctx.has_exception()) return {};
+                if (!r.is_object() && !r.is_function()) {
+                    if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
+                    return r.to_string();
+                }
+            }
+            ctx.throw_type_error("Cannot convert object to string");
+            return {};
         }
         return val.to_string();
     };
@@ -371,15 +414,9 @@ void register_string_builtins(Context& ctx) {
 
     auto startsWith_fn = ObjectFactory::create_native_function("startsWith",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            std::string str = this_value.to_string();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
             if (args.empty()) return Value(false);
 
@@ -432,10 +469,9 @@ void register_string_builtins(Context& ctx) {
 
     auto endsWith_fn = ObjectFactory::create_native_function("endsWith",
         [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            std::string str = this_value.to_string();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
             if (args.empty()) return Value(false);
 
@@ -498,181 +534,117 @@ void register_string_builtins(Context& ctx) {
     };
 
     auto match_fn = ObjectFactory::create_native_function("match",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str = "";
-            try {
-                Value this_value = ctx.get_binding("this");
-                str = toString_helper(ctx, this_value);
-            } catch (...) {
-                return Value();
-            }
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Spec: GetMethod(regexp, @@match) is checked, and called with the RAW (not yet
+            // ToString'd) `this` value, before this value is ever coerced -- so a poisoned
+            // this.toString must not run if regexp[Symbol.match] short-circuits first.
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
+            Value this_value = ctx.get_binding("this");
 
-            if (args.empty()) return Value();
+            Value regexp = args.empty() ? Value() : args[0];
 
-            Value pattern = args[0];
-
-            // ES6: Check Symbol.match on the argument (skip for native RegExp - use built-in logic)
-            if (pattern.is_object() || pattern.is_function()) {
-                Object* pat_obj = pattern.is_function()
-                    ? static_cast<Object*>(pattern.as_function())
-                    : pattern.as_object();
-                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
-                if (!is_native_regexp) {
-                    Value sym_match = pat_obj->get_property("Symbol.match");
+            if (!regexp.is_null() && !regexp.is_undefined()) {
+                Object* regexp_obj = regexp.is_function() ? static_cast<Object*>(regexp.as_function())
+                    : (regexp.is_object() ? regexp.as_object() : nullptr);
+                if (regexp_obj) {
+                    Value matcher = regexp_obj->get_property("Symbol.match");
                     if (ctx.has_exception()) return Value();
-                    if (sym_match.is_function()) {
-                        return sym_match.as_function()->call(ctx, {Value(str)}, pattern);
-                    }
-                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
-                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
-                    if (sym_to_prim.is_function()) {
-                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, pattern);
-                        if (ctx.has_exception()) return Value();
-                        pattern = prim;
-                    } else {
-                        pattern = Value(pattern.to_string());
+                    if (!matcher.is_null() && !matcher.is_undefined()) {
+                        if (!matcher.is_function()) { ctx.throw_type_error("Symbol.match is not a function"); return Value(); }
+                        return matcher.as_function()->call(ctx, {this_value}, regexp);
                     }
                 }
             }
 
-            if (pattern.is_object()) {
-                Object* regex_obj = pattern.as_object();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
-                Value global_val = regex_obj->get_property("global");
-                bool is_global = global_val.is_boolean() && global_val.to_boolean();
-
-                Value exec_method = regex_obj->get_property("exec");
-                if (exec_method.is_function()) {
-                    Function* exec_func = exec_method.as_function();
-
-                    if (is_global) {
-                        regex_obj->set_property("lastIndex", Value(0.0));
-
-                        auto result_array = ObjectFactory::create_array();
-                        size_t match_count = 0;
-                        size_t safety_counter = 0;
-                        const size_t max_iterations = str.length() + 1;
-
-                        while (safety_counter++ < max_iterations) {
-                            Value last_index_before = regex_obj->get_property("lastIndex");
-                            int index_before = last_index_before.is_number() ? static_cast<int>(last_index_before.to_number()) : 0;
-
-                            std::vector<Value> exec_args = { Value(str) };
-                            Value match_result = exec_func->call(ctx, exec_args, pattern);
-
-                            if (match_result.is_null() || !match_result.is_object()) {
-                                break;
-                            }
-
-                            Object* match_obj = match_result.as_object();
-                            Value matched_str = match_obj->get_element(0);
-                            result_array->set_element(match_count++, matched_str);
-
-                            Value last_index_after = regex_obj->get_property("lastIndex");
-                            int index_after = last_index_after.is_number() ? static_cast<int>(last_index_after.to_number()) : 0;
-
-                            if (index_after == index_before) {
-                                regex_obj->set_property("lastIndex", Value(static_cast<double>(index_after + 1)));
-                            }
-                        }
-
-                        if (match_count == 0) {
-                            return Value::null();
-                        }
-
-                        return Value(result_array.release());
-                    } else {
-                        std::vector<Value> exec_args = { Value(str) };
-                        return exec_func->call(ctx, exec_args, pattern);
-                    }
-                }
-            }
-
-            std::string search = pattern.to_string();
-            size_t pos = str.find(search);
-
-            if (pos != std::string::npos) {
-                auto result = ObjectFactory::create_array();
-                result->set_element(0, Value(search));
-                result->set_property("index", Value(static_cast<double>(pos)));
-                result->set_property("input", Value(str));
-                return Value(result.release());
-            }
-
-            return Value::null();
-        });
+            // RegExpCreate(regexp, undefined): build a fresh RegExp, then delegate to its own
+            // [Symbol.match] rather than re-implementing the exec/global-loop logic here.
+            Value regexp_ctor = ctx.get_binding("RegExp");
+            if (!regexp_ctor.is_function()) { ctx.throw_type_error("RegExp constructor not found"); return Value(); }
+            Value rx = regexp_ctor.as_function()->construct(ctx, {regexp, Value()});
+            if (ctx.has_exception()) return Value();
+            Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
+            if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
+            Value match_method = rx_obj->get_property("Symbol.match");
+            if (ctx.has_exception()) return Value();
+            if (!match_method.is_function()) { ctx.throw_type_error("RegExp.prototype[Symbol.match] is not a function"); return Value(); }
+            return match_method.as_function()->call(ctx, {Value(str)}, rx);
+        }, 1);
     PropertyDescriptor match_desc(Value(match_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("match", match_desc);
 
     auto matchAll_fn = ObjectFactory::create_native_function("matchAll",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str = "";
-            try {
-                Value this_value = ctx.get_binding("this");
-                str = this_value.to_string();
-            } catch (...) {
-                return Value();
-            }
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
+            Value this_value = ctx.get_binding("this");
 
-            if (args.empty()) {
-                ctx.throw_type_error("matchAll requires a regexp argument");
-                return Value();
-            }
+            Value regexp = args.empty() ? Value() : args[0];
 
-            Value regex_val = args[0];
-            // Non-object (string/number) searchValue: coerce to new RegExp(searchValue, "g").
-            if (!regex_val.is_object() && !regex_val.is_function()) {
-                Value regexp_ctor = ctx.get_binding("RegExp");
-                if (!regexp_ctor.is_function()) { ctx.throw_type_error("RegExp constructor not found"); return Value(); }
-                regex_val = regexp_ctor.as_function()->construct(ctx, {regex_val, Value(std::string("g"))});
-                if (ctx.has_exception()) return Value();
-            }
-            if (!regex_val.is_object() && !regex_val.is_function()) {
-                ctx.throw_type_error("matchAll argument must be a RegExp");
-                return Value();
-            }
-            Object* regex_obj = regex_val.is_function() ? static_cast<Object*>(regex_val.as_function()) : regex_val.as_object();
-
-                        Symbol* matchAll_sym = Symbol::get_well_known("Symbol.matchAll");
-            if (matchAll_sym) {
-                Value mm = regex_obj->get_property(matchAll_sym->to_property_key());
-                if (ctx.has_exception()) return Value();
-                if (mm.is_function()) {
-                    return mm.as_function()->call(ctx, {Value(str)}, regex_val);
-                }
-                Object* proto = regex_obj->get_prototype();
-                while (proto) {
-                    if (proto->has_own_property(matchAll_sym->to_property_key())) {
-                        Value proto_mm = proto->get_property(matchAll_sym->to_property_key());
-                        if (!ctx.has_exception() && proto_mm.is_function()) {
-                            return proto_mm.as_function()->call(ctx, {Value(str)}, regex_val);
-                        }
+            if (!regexp.is_null() && !regexp.is_undefined()) {
+                Object* regexp_obj = regexp.is_function() ? static_cast<Object*>(regexp.as_function())
+                    : (regexp.is_object() ? regexp.as_object() : nullptr);
+                if (regexp_obj) {
+                    // IsRegExp: duck-typed via @@match, or a native RegExp.
+                    Symbol* match_sym = Symbol::get_well_known(Symbol::MATCH);
+                    Value matcher_check = match_sym ? regexp_obj->get_property(match_sym->to_property_key()) : Value();
+                    if (ctx.has_exception()) return Value();
+                    bool is_regexp = !matcher_check.is_undefined() ? matcher_check.to_boolean() : (regexp_obj->get_type() == Object::ObjectType::RegExp);
+                    if (is_regexp) {
+                        Value flags_val = regexp_obj->get_property("flags");
                         if (ctx.has_exception()) return Value();
-                        break;
+                        if (flags_val.is_null() || flags_val.is_undefined()) {
+                            ctx.throw_type_error("Cannot convert undefined or null flags to object");
+                            return Value();
+                        }
+                        std::string flags;
+                        if (flags_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                        if (flags_val.is_object() || flags_val.is_function()) {
+                            bool _f; flags = string_this_coerce(ctx, flags_val, _f);
+                            if (ctx.has_exception()) return Value();
+                        } else {
+                            flags = flags_val.to_string();
+                        }
+                        if (flags.find('g') == std::string::npos) {
+                            ctx.throw_type_error("String.prototype.matchAll must be called with a global RegExp");
+                            return Value();
+                        }
                     }
-                    proto = proto->get_prototype();
+
+                    // GetMethod(regexp, @@matchAll): a user-overridden matcher, called with the
+                    // raw (not yet ToString'd) `this` value.
+                    Symbol* matchAll_sym = Symbol::get_well_known(Symbol::MATCH_ALL);
+                    Value matcher = matchAll_sym ? regexp_obj->get_property(matchAll_sym->to_property_key()) : Value();
+                    if (ctx.has_exception()) return Value();
+                    if (!matcher.is_null() && !matcher.is_undefined()) {
+                        if (!matcher.is_function()) { ctx.throw_type_error("Symbol.matchAll is not a function"); return Value(); }
+                        return matcher.as_function()->call(ctx, {this_value}, regexp);
+                    }
                 }
             }
 
-            // For RegExp objects: require global flag.
-            if (regex_obj->get_type() == Object::ObjectType::RegExp ||
-                regex_obj->has_property("global")) {
-                Value flags_val = regex_obj->get_property("flags");
-                if (ctx.has_exception()) return Value();
-                std::string flags = flags_val.is_undefined() ? "" : flags_val.to_string();
-                if (flags.find('g') == std::string::npos) {
-                    ctx.throw_type_error("String.prototype.matchAll called with a non-global RegExp argument");
-                    return Value();
-                }
-            }
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+
+            // RegExpCreate(regexp, "g"): no built-in RegExp.prototype[Symbol.matchAll] exists
+            // in this engine, so hand-roll the RegExpStringIterator algorithm directly here.
+            Value regexp_ctor = ctx.get_binding("RegExp");
+            if (!regexp_ctor.is_function()) { ctx.throw_type_error("RegExp constructor not found"); return Value(); }
+            Value rx = regexp_ctor.as_function()->construct(ctx, {regexp, Value(std::string("g"))});
+            if (ctx.has_exception()) return Value();
+            Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
+            if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
 
             struct MatchAllState {
                 std::string str;
                 Value regex;
                 bool done = false;
             };
-            auto state = std::make_shared<MatchAllState>(MatchAllState{str, regex_val, false});
+            auto state = std::make_shared<MatchAllState>(MatchAllState{str, rx, false});
 
             auto iterator = ObjectFactory::create_object();
             Object* iter_ptr = iterator.get();
@@ -708,12 +680,15 @@ void register_string_builtins(Context& ctx) {
                 }, 0);
             iterator->set_property("next", Value(next_fn.release()));
 
-            auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-                [iter_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    return Value(iter_ptr);
-                }, 0);
-            iterator->set_property("Symbol.iterator", Value(sym_iter_fn.release()));
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            if (iter_sym) {
+                auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+                    [iter_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                        (void)ctx; (void)args;
+                        return Value(iter_ptr);
+                    }, 0);
+                iterator->set_property(iter_sym->to_property_key(), Value(sym_iter_fn.release()));
+            }
 
             return Value(iterator.release());
         }, 1);
@@ -722,393 +697,211 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("matchAll", matchAll_desc);
 
     auto search_fn = ObjectFactory::create_native_function("search",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str = "";
-            try {
-                Value this_value = ctx.get_binding("this");
-                str = toString_helper(ctx, this_value);
-            } catch (...) {
-                return Value(-1.0);
-            }
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Spec: GetMethod(regexp, @@search) is checked, and called with the RAW `this`
+            // value, before this value is ever coerced.
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
+            Value this_value = ctx.get_binding("this");
 
-            if (args.empty()) return Value(-1.0);
+            Value regexp = args.empty() ? Value() : args[0];
 
-            Value pattern = args[0];
-
-            // ES6: Check Symbol.search on the argument (skip for native RegExp)
-            if (pattern.is_object() || pattern.is_function()) {
-                Object* pat_obj = pattern.is_function()
-                    ? static_cast<Object*>(pattern.as_function())
-                    : pattern.as_object();
-                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
-                if (!is_native_regexp) {
-                    Value sym_search = pat_obj->get_property("Symbol.search");
-                    if (sym_search.is_function()) {
-                        return sym_search.as_function()->call(ctx, {Value(str)}, pattern);
-                    }
-                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
-                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
-                    if (sym_to_prim.is_function()) {
-                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, pattern);
-                        if (ctx.has_exception()) return Value(-1.0);
-                        pattern = prim;
-                    } else {
-                        pattern = Value(pattern.to_string());
+            if (!regexp.is_null() && !regexp.is_undefined()) {
+                Object* regexp_obj = regexp.is_function() ? static_cast<Object*>(regexp.as_function())
+                    : (regexp.is_object() ? regexp.as_object() : nullptr);
+                if (regexp_obj) {
+                    Value searcher = regexp_obj->get_property("Symbol.search");
+                    if (ctx.has_exception()) return Value();
+                    if (searcher.is_function()) {
+                        return searcher.as_function()->call(ctx, {this_value}, regexp);
                     }
                 }
             }
 
-            Object* regex_obj = nullptr;
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
-            if (pattern.is_object()) {
-                regex_obj = pattern.as_object();
-            } else {
-                std::string pattern_str = pattern.to_string();
-                try {
-                    auto regexp_impl = std::make_shared<RegExp>(pattern_str, "");
-                    auto temp_regex = ObjectFactory::create_object();
-                    Object* temp_ptr = temp_regex.get();
-
-                    auto temp_exec = ObjectFactory::create_native_function("exec",
-                        [regexp_impl, temp_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                            (void)ctx;
-                            if (args.empty()) return Value::null();
-                            Value lastIndex_val = temp_ptr->get_property("lastIndex");
-                            if (lastIndex_val.is_number()) {
-                                regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
-                            }
-                            std::string str = args[0].to_string();
-                            Value result = regexp_impl->exec(str);
-                            temp_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
-                            return result;
-                        });
-
-                    temp_regex->set_property("exec", Value(temp_exec.release()));
-                    temp_regex->set_property("lastIndex", Value(0.0));
-                    regex_obj = temp_regex.release();
-                    pattern = Value(regex_obj);
-                } catch (...) {
-                    return Value(-1.0);
-                }
-            }
-
-            if (regex_obj) {
-                Value exec_method = regex_obj->get_property("exec");
-                if (exec_method.is_function()) {
-                    Function* exec_func = exec_method.as_function();
-
-                    Value saved_lastIndex = regex_obj->get_property("lastIndex");
-                    regex_obj->set_property("lastIndex", Value(0.0));
-
-                    std::vector<Value> exec_args = { Value(str) };
-                    Value match_result = exec_func->call(ctx, exec_args, pattern);
-
-                    regex_obj->set_property("lastIndex", saved_lastIndex);
-
-                    if (match_result.is_null() || !match_result.is_object()) {
-                        return Value(-1.0);
-                    }
-
-                    Object* match_obj = match_result.as_object();
-                    Value index_val = match_obj->get_property("index");
-                    if (index_val.is_number()) {
-                        return index_val;
-                    }
-                }
-            }
-
-            return Value(-1.0);
-        });
+            Value regexp_ctor = ctx.get_binding("RegExp");
+            if (!regexp_ctor.is_function()) { ctx.throw_type_error("RegExp constructor not found"); return Value(); }
+            Value rx = regexp_ctor.as_function()->construct(ctx, {regexp, Value()});
+            if (ctx.has_exception()) return Value();
+            Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
+            if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
+            Value search_method = rx_obj->get_property("Symbol.search");
+            if (ctx.has_exception()) return Value();
+            if (!search_method.is_function()) { ctx.throw_type_error("RegExp.prototype[Symbol.search] is not a function"); return Value(); }
+            return search_method.as_function()->call(ctx, {Value(str)}, rx);
+        }, 1);
     PropertyDescriptor search_desc(Value(search_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("search", search_desc);
 
     auto replace_fn = ObjectFactory::create_native_function("replace",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
-            std::string str = "";
-            try {
-                Value this_value = ctx.get_binding("this");
-                str = toString_helper(ctx, this_value);
-            } catch (...) {
-                return Value(std::string(""));
-            }
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Spec: GetMethod(searchValue, @@replace) must happen BEFORE ToString(this).
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
+            Value this_value = ctx.get_binding("this");
 
-            // ES6: Check Symbol.replace on the first argument (skip for native RegExp)
-            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
-                Object* pat_obj = args[0].is_function()
-                    ? static_cast<Object*>(args[0].as_function())
-                    : args[0].as_object();
-                bool is_native_regexp = pat_obj->get_type() == Object::ObjectType::RegExp;
-                if (!is_native_regexp) {
-                    Value sym_replace = pat_obj->get_property("Symbol.replace");
-                    if (sym_replace.is_function()) {
-                        std::vector<Value> call_args = {Value(str)};
-                        if (args.size() >= 2) call_args.push_back(args[1]);
-                        return sym_replace.as_function()->call(ctx, call_args, args[0]);
-                    }
-                    // Not a function: ToPrimitive(pattern, "string") fires get(Symbol.toPrimitive)
-                    Value sym_to_prim = pat_obj->get_property("Symbol.toPrimitive");
-                    std::string pat_str;
-                    if (sym_to_prim.is_function()) {
-                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, args[0]);
-                        if (ctx.has_exception()) return Value(str);
-                        pat_str = prim.is_undefined() ? "" : prim.to_string();
-                    } else {
-                        pat_str = pat_obj->to_string();
-                    }
-                    std::string replacement = args.size() >= 2 ? args[1].to_string() : "";
-                    size_t pos = str.find(pat_str);
-                    if (pos != std::string::npos) {
-                        return Value(str.substr(0, pos) + replacement + str.substr(pos + pat_str.length()));
-                    }
-                    return Value(str);
-                }
-            }
+            Value search_value = args.empty() ? Value() : args[0];
+            Value replace_value = args.size() > 1 ? args[1] : Value();
 
-            if (args.size() < 2) return Value(str);
-
-            Value search_val = args[0];
-            bool replace_is_fn = args.size() >= 2 && args[1].is_function();
-
-            std::string replacement = replace_is_fn ? "" : args[1].to_string();
-
-            auto process_replacement = [](const std::string& repl, Object* match_obj, const std::string& orig_str, int match_pos) -> std::string {
-                std::string result;
-                for (size_t i = 0; i < repl.length(); ++i) {
-                    if (repl[i] == '$' && i + 1 < repl.length()) {
-                        if (repl[i + 1] == '$') {
-                            result += '$';
-                            ++i;
-                        } else if (repl[i + 1] == '&') {
-                            Value matched = match_obj->get_element(0);
-                            if (!matched.is_undefined()) {
-                                result += matched.to_string();
-                            }
-                            ++i;
-                        } else if (repl[i + 1] == '`') {
-                            result += orig_str.substr(0, match_pos);
-                            ++i;
-                        } else if (repl[i + 1] == '\'') {
-                            Value matched = match_obj->get_element(0);
-                            if (!matched.is_undefined()) {
-                                std::string matched_str = matched.to_string();
-                                int after_pos = match_pos + matched_str.length();
-                                if (after_pos < static_cast<int>(orig_str.length())) {
-                                    result += orig_str.substr(after_pos);
-                                }
-                            }
-                            ++i;
-                        } else if (isdigit(repl[i + 1])) {
-                            size_t j = i + 1;
-                            while (j < repl.length() && isdigit(repl[j])) {
-                                ++j;
-                            }
-                            std::string num_str = repl.substr(i + 1, j - i - 1);
-                            int capture_num = std::stoi(num_str);
-
-                            Value capture_val = match_obj->get_element(capture_num);
-                            if (!capture_val.is_undefined()) {
-                                result += capture_val.to_string();
-                            }
-
-                            i = j - 1;
-                        } else {
-                            result += repl[i];
-                        }
-                    } else {
-                        result += repl[i];
-                    }
-                }
-                return result;
-            };
-
-            if (search_val.is_object()) {
-                Object* regex_obj = search_val.as_object();
-
-                Value global_val = regex_obj->get_property("global");
-                bool is_global = global_val.is_boolean() && global_val.to_boolean();
-
-                Value exec_method = regex_obj->get_property("exec");
-                if (exec_method.is_function()) {
-                    Function* exec_func = exec_method.as_function();
-
-                    if (is_global) {
-                        regex_obj->set_property("lastIndex", Value(0.0));
-
-                        std::string result = str;
-                        int offset = 0;
-
-                        while (true) {
-                            std::vector<Value> exec_args = { Value(str) };
-                            Value match_result = exec_func->call(ctx, exec_args, search_val);
-
-                            if (match_result.is_null() || !match_result.is_object()) {
-                                break;
-                            }
-
-                            Object* match_obj = match_result.as_object();
-                            Value index_val = match_obj->get_property("index");
-                            Value matched_str = match_obj->get_element(0);
-
-                            if (index_val.is_number()) {
-                                int match_index = static_cast<int>(index_val.to_number());
-                                std::string matched = matched_str.to_string();
-
-                                std::string processed_repl;
-                                if (replace_is_fn) {
-                                    std::vector<Value> fn_args;
-                                    fn_args.push_back(Value(matched));
-                                    uint32_t cnt = static_cast<uint32_t>(match_obj->get_property("length").to_number());
-                                    for (uint32_t ci = 1; ci < cnt; ci++) fn_args.push_back(match_obj->get_element(ci));
-                                    fn_args.push_back(Value(static_cast<double>(match_index)));
-                                    fn_args.push_back(Value(str));
-                                    Value ret = args[1].as_function()->call(ctx, fn_args, Value());
-                                    if (ctx.has_exception()) return Value();
-                                    processed_repl = ret.to_string();
-                                } else {
-                                    processed_repl = process_replacement(replacement, match_obj, str, match_index);
-                                }
-
-                                result.replace(match_index + offset, matched.length(), processed_repl);
-                                offset += static_cast<int>(processed_repl.length()) - static_cast<int>(matched.length());
-                            }
-                        }
-
-                        return Value(result);
-                    } else {
-                        std::vector<Value> exec_args = { Value(str) };
-                        Value match_result = exec_func->call(ctx, exec_args, search_val);
-
-                        if (match_result.is_object()) {
-                            Object* match_arr = match_result.as_object();
-                            Value index_val = match_arr->get_property("index");
-                            Value match_str = match_arr->get_element(0);
-
-                            if (index_val.is_number() && !match_str.is_undefined()) {
-                                size_t pos = static_cast<size_t>(index_val.to_number());
-                                std::string matched = match_str.to_string();
-
-                                std::string processed_repl;
-                                if (replace_is_fn) {
-                                    std::vector<Value> fn_args;
-                                    fn_args.push_back(Value(matched));
-                                    uint32_t cnt = static_cast<uint32_t>(match_arr->get_property("length").to_number());
-                                    for (uint32_t ci = 1; ci < cnt; ci++) fn_args.push_back(match_arr->get_element(ci));
-                                    fn_args.push_back(Value(static_cast<double>(pos)));
-                                    fn_args.push_back(Value(str));
-                                    Value ret = args[1].as_function()->call(ctx, fn_args, Value());
-                                    if (ctx.has_exception()) return Value();
-                                    processed_repl = ret.to_string();
-                                } else {
-                                    processed_repl = process_replacement(replacement, match_arr, str, static_cast<int>(pos));
-                                }
-
-                                str.replace(pos, matched.length(), processed_repl);
-                                return Value(str);
-                            }
-                        }
-                    }
-                }
-            }
-
-            std::string search = search_val.to_string();
-            size_t pos = str.find(search);
-
-            if (pos != std::string::npos) {
-                std::string repl;
-                if (replace_is_fn) {
-                    Function* fn = args[1].as_function();
-                    std::vector<Value> fn_args = {
-                        Value(search),
-                        Value(static_cast<double>(pos)),
-                        Value(str)
-                    };
-                    Value ret = fn->call(ctx, fn_args, Value());
+            if (!search_value.is_null() && !search_value.is_undefined()) {
+                Object* sv_obj = search_value.is_function() ? static_cast<Object*>(search_value.as_function())
+                    : (search_value.is_object() ? search_value.as_object() : nullptr);
+                if (sv_obj) {
+                    Value replacer = sv_obj->get_property("Symbol.replace");
                     if (ctx.has_exception()) return Value();
-                    repl = ret.to_string();
-                } else {
-                    repl = apply_substitution(replacement, str, pos, search);
+                    if (!replacer.is_null() && !replacer.is_undefined()) {
+                        if (!replacer.is_function()) { ctx.throw_type_error("Symbol.replace is not a function"); return Value(); }
+                        return replacer.as_function()->call(ctx, {this_value, replace_value}, search_value);
+                    }
                 }
-                str.replace(pos, search.length(), repl);
             }
 
-            return Value(str);
-        });
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+
+            std::string search;
+            if (search_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+            if (search_value.is_object() || search_value.is_function()) {
+                bool _f; search = string_this_coerce(ctx, search_value, _f);
+                if (ctx.has_exception()) return Value();
+            } else {
+                search = search_value.to_string();
+            }
+
+            bool is_function_replace = replace_value.is_function();
+            std::string replace_str;
+            if (!is_function_replace) {
+                if (replace_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                if (replace_value.is_object() || replace_value.is_function()) {
+                    bool _f; replace_str = string_this_coerce(ctx, replace_value, _f);
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    replace_str = replace_value.to_string();
+                }
+            }
+
+            size_t pos = str.find(search);
+            if (pos == std::string::npos) return Value(str);
+
+            std::string replacement;
+            if (is_function_replace) {
+                std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(pos)), Value(str) };
+                Value r = replace_value.as_function()->call(ctx, fn_args, Value());
+                if (ctx.has_exception()) return Value();
+                if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                replacement = r.to_string();
+            } else {
+                replacement = apply_substitution(replace_str, str, pos, search);
+            }
+
+            return Value(str.substr(0, pos) + replacement + str.substr(pos + search.length()));
+        }, 2);
     PropertyDescriptor replace_desc(Value(replace_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("replace", replace_desc);
 
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            bool _ok; std::string str = get_string_this(ctx, _ok); if (!_ok) return Value();
+            // Spec order matters: RequireObjectCoercible(this) only checks nullish here --
+            // ToString(this) must NOT run yet, since the IsRegExp/flags validation below has
+            // to happen first and can throw before `this` or replaceValue are ever coerced.
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
 
-            if (args.size() < 2) return Value(str);
+            Value search_value = args.empty() ? Value() : args[0];
+            Value replace_value = args.size() > 1 ? args[1] : Value();
 
-            // If searchValue is a RegExp, check for global flag and use @@replace.
-            if (!args.empty() && args[0].is_object()) {
-                Object* sv = args[0].as_object();
-                if (sv->get_type() == Object::ObjectType::RegExp) {
-                    Value flags_val = sv->get_property("flags");
+            // IsRegExp: duck-typed via @@match (any object), not just a native RegExp.
+            if (!search_value.is_null() && !search_value.is_undefined()) {
+                Object* sv_obj = search_value.is_function() ? static_cast<Object*>(search_value.as_function())
+                    : (search_value.is_object() ? search_value.as_object() : nullptr);
+                if (sv_obj) {
+                    Symbol* match_sym = Symbol::get_well_known(Symbol::MATCH);
+                    Value matcher = match_sym ? sv_obj->get_property(match_sym->to_property_key()) : Value();
                     if (ctx.has_exception()) return Value();
-                    std::string flags = flags_val.to_string();
-                    if (flags.find('g') == std::string::npos) {
-                        ctx.throw_type_error("String.prototype.replaceAll called with a non-global RegExp");
-                        return Value();
-                    }
-                    Symbol* replace_sym = Symbol::get_well_known(Symbol::REPLACE);
-                    Value replace_method = replace_sym ? sv->get_property(replace_sym->to_property_key()) : Value();
-                    if (ctx.has_exception()) return Value();
-                    if (replace_method.is_function()) {
-                        std::vector<Value> rep_args = { Value(str), args.size() > 1 ? args[1] : Value() };
-                        return replace_method.as_function()->call(ctx, rep_args, args[0]);
+                    bool is_regexp = !matcher.is_undefined() ? matcher.to_boolean() : (sv_obj->get_type() == Object::ObjectType::RegExp);
+                    if (is_regexp) {
+                        Value flags_val = sv_obj->get_property("flags");
+                        if (ctx.has_exception()) return Value();
+                        if (flags_val.is_null() || flags_val.is_undefined()) {
+                            ctx.throw_type_error("Cannot convert undefined or null flags to object");
+                            return Value();
+                        }
+                        std::string flags;
+                        if (flags_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                        if (flags_val.is_object() || flags_val.is_function()) {
+                            bool _f; flags = string_this_coerce(ctx, flags_val, _f);
+                            if (ctx.has_exception()) return Value();
+                        } else {
+                            flags = flags_val.to_string();
+                        }
+                        if (flags.find('g') == std::string::npos) {
+                            ctx.throw_type_error("String.prototype.replaceAll must be called with a global RegExp");
+                            return Value();
+                        }
                     }
                 }
             }
 
-            std::string search = args[0].to_string();
-            bool is_function = args[1].is_function();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
-            if (search.empty()) {
-                // Empty search: insert replacement before/after every character.
-                std::string result;
-                std::string repl = is_function ? "" : apply_substitution(args[1].to_string(), str, 0, "");
-                if (!is_function) {
-                    for (size_t i = 0; i <= str.size(); i++) {
-                        result += apply_substitution(args[1].to_string(), str, i, "");
-                        if (i < str.size()) result += str[i];
-                    }
-                    return Value(result);
-                }
-                return Value(str);
+            std::string search;
+            if (search_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+            if (search_value.is_object() || search_value.is_function()) {
+                bool _f; search = string_this_coerce(ctx, search_value, _f);
+                if (ctx.has_exception()) return Value();
+            } else {
+                search = search_value.to_string();
             }
 
+            bool is_function = replace_value.is_function();
+            std::string replace_str;
+            if (!is_function) {
+                if (replace_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                if (replace_value.is_object()) {
+                    bool _f; replace_str = string_this_coerce(ctx, replace_value, _f);
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    replace_str = replace_value.to_string();
+                }
+            }
+
+            size_t search_len = search.length();
+            size_t advance = std::max<size_t>(1, search_len);
             std::vector<size_t> positions;
-            size_t pos = 0;
-            while ((pos = str.find(search, pos)) != std::string::npos) {
-                positions.push_back(pos);
-                pos += search.length();
+            {
+                size_t pos = 0;
+                while (true) {
+                    size_t found = str.find(search, pos);
+                    if (found == std::string::npos) break;
+                    positions.push_back(found);
+                    pos = found + advance;
+                }
             }
 
-            const std::string orig_str = str;
-            for (auto it = positions.rbegin(); it != positions.rend(); ++it) {
+            std::string result;
+            size_t end_of_last_match = 0;
+            for (size_t p : positions) {
+                result += str.substr(end_of_last_match, p - end_of_last_match);
                 std::string replacement;
                 if (is_function) {
-                    Function* replacer = args[1].as_function();
-                    std::vector<Value> fn_args = {
-                        Value(search),
-                        Value(static_cast<double>(*it)),
-                        Value(str)
-                    };
-                    Value result = replacer->call(ctx, fn_args);
+                    std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(p)), Value(str) };
+                    Value r = replace_value.as_function()->call(ctx, fn_args);
                     if (ctx.has_exception()) return Value();
-                    replacement = result.to_string();
+                    if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                    replacement = r.to_string();
                 } else {
-                    replacement = apply_substitution(args[1].to_string(), orig_str, *it, search);
+                    replacement = apply_substitution(replace_str, str, p, search);
                 }
-                str.replace(*it, search.length(), replacement);
+                result += replacement;
+                end_of_last_match = p + search_len;
             }
-
-            return Value(str);
+            if (end_of_last_match < str.length()) result += str.substr(end_of_last_match);
+            return Value(result);
         }, 2);
     PropertyDescriptor replaceAll_desc(Value(replaceAll_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1158,10 +951,9 @@ void register_string_builtins(Context& ctx) {
 
     auto codePointAt_fn = ObjectFactory::create_native_function("codePointAt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            std::string str = this_value.to_string();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
             if (args.size() == 0 || str.empty()) return Value();
 
@@ -1181,14 +973,11 @@ void register_string_builtins(Context& ctx) {
 
     auto localeCompare_fn = ObjectFactory::create_native_function("localeCompare",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
 
-            if (args.size() == 0) return Value(0.0);
-
-            std::string that = args[0].to_string();
+            std::string that = args.empty() ? "undefined" : args[0].to_string();
 
             if (str < that) return Value(-1.0);
             if (str > that) return Value(1.0);
@@ -1216,7 +1005,7 @@ void register_string_builtins(Context& ctx) {
             }
 
             return Value(encode_utf16_unit(static_cast<uint32_t>(unit)));
-        });
+        }, 1);
     PropertyDescriptor charAt_desc(Value(charAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charAt", charAt_desc);
@@ -1269,7 +1058,7 @@ void register_string_builtins(Context& ctx) {
             }
 
             return Value(static_cast<double>(unit));
-        });
+        }, 1);
     PropertyDescriptor charCodeAt_desc(Value(charCodeAt_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("charCodeAt", charCodeAt_desc);
@@ -1304,188 +1093,90 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("indexOf", string_indexOf_desc);
 
     auto str_split_fn = ObjectFactory::create_native_function("split",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Spec: GetMethod(separator, @@split) before ToString(this); call with (O, limit).
+            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = ctx.get_binding("this");
-            std::string str = toString_helper(ctx, this_value);
 
-            // ES6: Check Symbol.split on the separator argument (skip for native RegExp)
-            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
-                Object* sep_obj = args[0].is_function()
-                    ? static_cast<Object*>(args[0].as_function())
-                    : args[0].as_object();
-                bool is_native_regexp = sep_obj->get_type() == Object::ObjectType::RegExp;
-                if (!is_native_regexp) {
-                    Value sym_split = sep_obj->get_property("Symbol.split");
-                    if (sym_split.is_function()) {
-                        std::vector<Value> call_args = {Value(str)};
-                        if (args.size() >= 2) call_args.push_back(args[1]);
-                        return sym_split.as_function()->call(ctx, call_args, args[0]);
+            // GetMethod(separator, @@split): pass raw `this` and limit, before any coercion.
+            Value separator = args.empty() ? Value() : args[0];
+            Value limit_val = args.size() > 1 ? args[1] : Value();
+
+            if (!separator.is_null() && !separator.is_undefined()) {
+                Object* sep_obj = separator.is_function() ? static_cast<Object*>(separator.as_function())
+                    : (separator.is_object() ? separator.as_object() : nullptr);
+                if (sep_obj) {
+                    Value splitter = sep_obj->get_property("Symbol.split");
+                    if (ctx.has_exception()) return Value();
+                    if (!splitter.is_null() && !splitter.is_undefined()) {
+                        if (!splitter.is_function()) { ctx.throw_type_error("Symbol.split is not a function"); return Value(); }
+                        return splitter.as_function()->call(ctx, {this_value, limit_val}, separator);
                     }
-                    // Not a function: ToPrimitive(sep, "string") fires get(Symbol.toPrimitive)
-                    Value sym_to_prim = sep_obj->get_property("Symbol.toPrimitive");
-                    std::string sep_str;
-                    if (sym_to_prim.is_function()) {
-                        Value prim = sym_to_prim.as_function()->call(ctx, {Value(std::string("string"))}, args[0]);
-                        if (ctx.has_exception()) return Value(ObjectFactory::create_array(0).release());
-                        sep_str = (prim.is_undefined() || prim.is_null()) ? "" : prim.to_string();
-                    } else {
-                        sep_str = sep_obj->to_string();
-                    }
-                    // Do string split with sep_str and return
-                    auto split_result = ObjectFactory::create_array(0);
-                    uint32_t split_idx = 0;
-                    if (sep_str.empty()) {
-                        for (size_t ci = 0; ci < str.size(); ci++) {
-                            split_result->set_element(split_idx++, Value(std::string(1, str[ci])));
-                        }
-                    } else {
-                        size_t spos = 0, sfound;
-                        while ((sfound = str.find(sep_str, spos)) != std::string::npos) {
-                            split_result->set_element(split_idx++, Value(str.substr(spos, sfound - spos)));
-                            spos = sfound + sep_str.length();
-                        }
-                        split_result->set_element(split_idx++, Value(str.substr(spos)));
-                    }
-                    split_result->set_length(split_idx);
-                    return Value(split_result.release());
                 }
+            }
+
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+
+            // ToUint32(limit) before ToString(separator) per spec.
+            uint32_t lim;
+            if (limit_val.is_undefined()) {
+                lim = 0xFFFFFFFFu;
+            } else {
+                double d = limit_val.to_number();
+                if (ctx.has_exception()) return Value();
+                lim = std::isnan(d) ? 0u : static_cast<uint32_t>(d);
             }
 
             auto result_array = ObjectFactory::create_array(0);
+            if (lim == 0) return Value(result_array.release());
 
-            int limit = -1;
-            if (args.size() >= 2 && !args[1].is_undefined()) {
-                double lim = args[1].to_number();
-                if (ctx.has_exception()) return Value();
-                if (std::isnan(lim)) lim = 0;
-                limit = (lim == 0 || lim < 0) ? 0 : (lim > 0xFFFFFFFF ? 0x7FFFFFFF : static_cast<int>(lim));
-                if (limit == 0) {
-                    return Value(result_array.release());
-                }
-            }
-
-            if (args.empty() || args[0].is_undefined()) {
+            if (separator.is_undefined()) {
                 result_array->set_element(0, Value(str));
                 return Value(result_array.release());
             }
 
-            Value sep_val = args[0];
-
-            if (sep_val.is_object()) {
-                Object* regex_obj = sep_val.as_object();
-                Value exec_method = regex_obj->get_property("exec");
-
-                if (exec_method.is_function()) {
-                    Function* exec_func = exec_method.as_function();
-
-                    if (str.empty()) {
-                        std::vector<Value> exec_args = { Value(str) };
-                        Value match_result = exec_func->call(ctx, exec_args, sep_val);
-
-                        if (!match_result.is_null() && match_result.is_object()) {
-                            Object* match_obj = match_result.as_object();
-                            Value matched_val = match_obj->get_element(0);
-                            if (matched_val.to_string().empty()) {
-                                return Value(result_array.release());
-                            }
-                        }
-                        result_array->set_element(0, Value(str));
-                        return Value(result_array.release());
-                    }
-
-                    uint32_t arr_index = 0;
-                    size_t search_pos = 0;
-                    bool last_was_empty_at_start = false;
-
-                    while (search_pos <= str.length()) {
-                        if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
-
-                        std::string remaining = str.substr(search_pos);
-                        if (remaining.empty()) break;
-
-                        std::vector<Value> exec_args = { Value(remaining) };
-                        Value match_result = exec_func->call(ctx, exec_args, sep_val);
-
-                        if (match_result.is_null() || !match_result.is_object()) {
-                            break;
-                        }
-
-                        Object* match_obj = match_result.as_object();
-                        Value index_val = match_obj->get_property("index");
-                        Value matched_val = match_obj->get_element(0);
-
-                        if (!index_val.is_number()) break;
-
-                        size_t match_pos_in_remaining = static_cast<size_t>(index_val.to_number());
-                        size_t actual_match_pos = search_pos + match_pos_in_remaining;
-                        std::string matched = matched_val.to_string();
-
-                        if (matched.empty() && match_pos_in_remaining == 0) {
-                            if (search_pos < str.length()) {
-                                result_array->set_element(arr_index++, Value(std::string(1, str[search_pos])));
-                                search_pos++;
-                                last_was_empty_at_start = true;
-                            } else {
-                                break;
-                            }
-                        } else {
-                            result_array->set_element(arr_index++, Value(str.substr(search_pos, actual_match_pos - search_pos)));
-
-                            if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
-
-                            Value length_val = match_obj->get_property("length");
-                            if (length_val.is_number()) {
-                                int num_captures = static_cast<int>(length_val.to_number());
-                                for (int i = 1; i < num_captures; ++i) {
-                                    if (limit >= 0 && static_cast<int>(arr_index) >= limit) break;
-                                    Value capture = match_obj->get_element(i);
-                                    result_array->set_element(arr_index++, capture);
-                                }
-                            }
-
-                            if (matched.empty()) {
-                                search_pos = actual_match_pos + 1;
-                            } else {
-                                search_pos = actual_match_pos + matched.length();
-                            }
-                            last_was_empty_at_start = false;
-                        }
-                    }
-
-                    if (limit < 0 || static_cast<int>(arr_index) < limit) {
-                        if (search_pos < str.length() || (search_pos == str.length() && !last_was_empty_at_start)) {
-                            result_array->set_element(arr_index, Value(str.substr(search_pos)));
-                        }
-                    }
-
-                    return Value(result_array.release());
+            // For RegExp separators that reached here (Symbol.split was null/undefined),
+            // delegate to RegExp.prototype[Symbol.split] to get correct Unicode/flag handling.
+            if (separator.is_object() || separator.is_function()) {
+                Object* sep_obj = separator.is_function() ? static_cast<Object*>(separator.as_function()) : separator.as_object();
+                Value split_method = sep_obj->get_property("Symbol.split");
+                if (ctx.has_exception()) return Value();
+                if (split_method.is_function()) {
+                    return split_method.as_function()->call(ctx, {this_value, limit_val}, separator);
                 }
+                // Object with no usable Symbol.split -- fall through to string coercion below.
             }
 
-            std::string separator = sep_val.to_string();
+            // Fallback: ToString(separator) and do a pure string split.
+            std::string sep_str;
+            if (separator.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+            if (separator.is_object() || separator.is_function()) {
+                bool _f; sep_str = string_this_coerce(ctx, separator, _f);
+                if (ctx.has_exception()) return Value();
+            } else {
+                sep_str = separator.to_string();
+            }
 
-            if (separator.empty()) {
-                for (size_t i = 0; i < str.length(); ++i) {
-                    if (limit >= 0 && static_cast<int>(i) >= limit) break;
-                    result_array->set_element(i, Value(std::string(1, str[i])));
+            uint32_t idx = 0;
+            if (sep_str.empty()) {
+                for (size_t i = 0; i < utf16_length(str) && idx < lim; i++) {
+                    int32_t unit = utf16_code_unit_at(str, i);
+                    if (unit < 0) break;
+                    result_array->set_element(idx++, Value(encode_utf16_unit(static_cast<uint32_t>(unit))));
                 }
             } else {
-                size_t start = 0;
-                size_t end = 0;
-                uint32_t index = 0;
-
-                while ((end = str.find(separator, start)) != std::string::npos) {
-                    if (limit >= 0 && static_cast<int>(index) >= limit) break;
-                    result_array->set_element(index++, Value(str.substr(start, end - start)));
-                    start = end + separator.length();
+                size_t start = 0, found;
+                while (idx < lim && (found = str.find(sep_str, start)) != std::string::npos) {
+                    result_array->set_element(idx++, Value(str.substr(start, found - start)));
+                    start = found + sep_str.length();
                 }
-                if (limit < 0 || static_cast<int>(index) < limit) {
-                    result_array->set_element(index, Value(str.substr(start)));
-                }
+                if (idx < lim) result_array->set_element(idx++, Value(str.substr(start)));
             }
-
+            result_array->set_length(idx);
             return Value(result_array.release());
-        }, 1);
+        }, 2);
     PropertyDescriptor string_split_desc(Value(str_split_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("split", string_split_desc);
@@ -1515,7 +1206,7 @@ void register_string_builtins(Context& ctx) {
             }
 
             return Value(result);
-        });
+        }, 1);
     PropertyDescriptor str_concat_desc(Value(str_concat_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("concat", str_concat_desc);
@@ -1962,11 +1653,10 @@ void register_string_builtins(Context& ctx) {
     auto isWellFormed_fn = ObjectFactory::create_native_function("isWellFormed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-            return Value(true);
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+            return Value(utf16_is_well_formed(str));
         }, 0);
     PropertyDescriptor isWellFormed_desc(Value(isWellFormed_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1975,11 +1665,10 @@ void register_string_builtins(Context& ctx) {
     auto toWellFormed_fn = ObjectFactory::create_native_function("toWellFormed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_value = ctx.get_binding("this");
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            std::string str = this_value.to_string();
-            return Value(str);
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+            return Value(utf16_to_well_formed(str));
         }, 0);
     PropertyDescriptor toWellFormed_desc(Value(toWellFormed_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -2007,11 +1696,20 @@ void register_string_builtins(Context& ctx) {
 
     auto normalize_fn = ObjectFactory::create_native_function("normalize",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value this_value = ctx.get_binding("this");
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
-            if (this_value.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-            std::string str = this_value.to_string();
-            std::string form = (args.size() > 0 && !args[0].is_undefined()) ? args[0].to_string() : "NFC";
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
+
+            std::string form = "NFC";
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
+                if (args[0].is_object() || args[0].is_function()) {
+                    bool _f; form = string_this_coerce(ctx, args[0], _f);
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    form = args[0].to_string();
+                }
+            }
 
             const utf8proc_uint8_t* input = reinterpret_cast<const utf8proc_uint8_t*>(str.c_str());
             utf8proc_uint8_t* output = nullptr;
@@ -2025,7 +1723,8 @@ void register_string_builtins(Context& ctx) {
             } else if (form == "NFKD") {
                 output = utf8proc_NFKD(input);
             } else {
-                throw std::runtime_error("RangeError: The normalization form should be one of NFC, NFD, NFKC, NFKD");
+                ctx.throw_range_error("The normalization form should be one of NFC, NFD, NFKC, NFKD");
+                return Value();
             }
 
             if (!output) {
@@ -2043,8 +1742,9 @@ void register_string_builtins(Context& ctx) {
     auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Value this_val = ctx.get_binding("this");
-            std::string str = this_val.to_string();
+            bool this_ok;
+            std::string str = get_string_this(ctx, this_ok);
+            if (!this_ok) return Value();
             auto iterator = ObjectFactory::create_object();
             if (Iterator::s_string_iterator_prototype_) {
                 iterator->set_prototype(Iterator::s_string_iterator_prototype_);
@@ -2082,7 +1782,7 @@ void register_string_builtins(Context& ctx) {
     proto_ptr->set_property("constructor", Value(string_constructor.get()), PropertyAttributes::BuiltinFunction);
 
     auto string_raw_fn = ObjectFactory::create_native_function("raw",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
                 ctx.throw_type_error("String.raw requires at least 1 argument");
                 return Value();
@@ -2118,15 +1818,17 @@ void register_string_builtins(Context& ctx) {
             if (ctx.has_exception()) return Value();
             std::string result;
             for (uint32_t i = 0; i < length; i++) {
-                if (i > 0 && i < static_cast<uint32_t>(args.size())) {
-                    if (args[i].is_symbol()) { ctx.throw_type_error("String.raw: substitution is a Symbol"); return Value(); }
-                    result += args[i].to_string();
-                    if (ctx.has_exception()) return Value();
-                }
                 Value chunk = raw_obj->get_property(std::to_string(i));
                 if (ctx.has_exception()) return Value();
-                result += chunk.is_undefined() ? "" : chunk.to_string();
+                std::string seg = obj_to_string(ctx, chunk);
                 if (ctx.has_exception()) return Value();
+                result += seg;
+                if (i + 1 == length) break;
+                if (i + 1 < static_cast<uint32_t>(args.size())) {
+                    std::string sub = obj_to_string(ctx, args[i + 1]);
+                    if (ctx.has_exception()) return Value();
+                    result += sub;
+                }
             }
             return Value(result);
         }, 1);
@@ -2253,33 +1955,16 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("includes", Value(global_includes_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_valueOf_fn = ObjectFactory::create_native_function("valueOf",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    Value this_val;
-                    if (this_obj) {
-                        this_val = Value(this_obj);
-                    } else {
-                        try {
-                            this_val = ctx.get_binding("this");
-                        } catch (...) {
-                            ctx.throw_type_error("String.prototype.valueOf called on non-object");
-                            return Value();
-                        }
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Value this_val = ctx.get_binding("this");
+                    if (this_val.is_string()) return this_val;
+                    if (this_val.is_object() || this_val.is_function()) {
+                        Object* obj = this_val.is_function() ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+                        Value pv = obj->get_property("[[PrimitiveValue]]");
+                        if (!pv.is_undefined() && pv.is_string()) return pv;
                     }
-
-                    if (this_val.is_object()) {
-                        Object* obj = this_val.as_object();
-                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
-                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
-                            return primitive_value;
-                        }
-                    }
-
-                    if (this_val.is_string()) {
-                        return this_val;
-                    }
-
-                    return Value(this_val.to_string());
+                    ctx.throw_type_error("String.prototype.valueOf requires a string or String object");
+                    return Value();
                 });
 
             PropertyDescriptor string_valueOf_length_desc(Value(0.0), PropertyAttributes::Configurable);
@@ -2296,34 +1981,16 @@ void register_string_builtins(Context& ctx) {
             global_prototype->set_property("valueOf", Value(string_valueOf_fn.release()), PropertyAttributes::BuiltinFunction);
 
             auto string_toString_fn = ObjectFactory::create_native_function("toString",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    Object* this_obj = ctx.get_this_binding();
-                    Value this_val;
-                    if (this_obj) {
-                        this_val = Value(this_obj);
-                    } else {
-                        try {
-                            this_val = ctx.get_binding("this");
-                        } catch (...) {
-                            ctx.throw_type_error("String.prototype.toString called on non-object");
-                            return Value();
-                        }
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Value this_val = ctx.get_binding("this");
+                    if (this_val.is_string()) return this_val;
+                    if (this_val.is_object() || this_val.is_function()) {
+                        Object* obj = this_val.is_function() ? static_cast<Object*>(this_val.as_function()) : this_val.as_object();
+                        Value pv = obj->get_property("[[PrimitiveValue]]");
+                        if (!pv.is_undefined() && pv.is_string()) return pv;
                     }
-
-                    if (this_val.is_object()) {
-                        Object* obj = this_val.as_object();
-                        Value primitive_value = obj->get_property("[[PrimitiveValue]]");
-                        if (!primitive_value.is_undefined() && primitive_value.is_string()) {
-                            return primitive_value;
-                        }
-                    }
-
-                    if (this_val.is_string()) {
-                        return this_val;
-                    }
-
-                    // Per spec, thisStringValue throws TypeError for non-String objects.
-                    return Value(this_val.to_string());
+                    ctx.throw_type_error("String.prototype.toString requires a string or String object");
+                    return Value();
                 });
 
             PropertyDescriptor string_toString_length_desc(Value(0.0), PropertyAttributes::Configurable);

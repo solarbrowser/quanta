@@ -46,7 +46,12 @@ void register_symbol_builtins(Context& ctx) {
     if (match_sym) {
         symbol_constructor->set_property("match", Value(match_sym));
     }
-    
+
+    Symbol* match_all_sym = Symbol::get_well_known(Symbol::MATCH_ALL);
+    if (match_all_sym) {
+        symbol_constructor->set_property("matchAll", Value(match_all_sym));
+    }
+
     Symbol* replace_sym = Symbol::get_well_known(Symbol::REPLACE);
     if (replace_sym) {
         symbol_constructor->set_property("replace", Value(replace_sym));

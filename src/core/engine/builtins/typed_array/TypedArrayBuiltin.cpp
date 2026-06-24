@@ -988,6 +988,7 @@ void register_typed_array_builtins(Context& ctx) {
             for (size_t i = 0; i < len; i++) els.push_back(ta->get_element(i));
             std::sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
                 if (cmp) { std::vector<Value> ca = {a, b}; return cmp->call(ctx, ca, Value()).to_number() < 0; }
+                if (a.is_bigint() && b.is_bigint()) return *a.as_bigint() < *b.as_bigint();
                 return a.to_number() < b.to_number();
             });
             for (size_t i = 0; i < len; i++) ta->set_element(i, els[i]);
@@ -1162,6 +1163,7 @@ void register_typed_array_builtins(Context& ctx) {
             std::sort(els.begin(), els.end(), [&](const Value& a, const Value& b) {
                 if (ctx.has_exception()) return false;
                 if (cmp) { std::vector<Value> ca = {a, b}; return cmp->call(ctx, ca, Value()).to_number() < 0; }
+                if (a.is_bigint() && b.is_bigint()) return *a.as_bigint() < *b.as_bigint();
                 return a.to_number() < b.to_number();
             });
             if (ctx.has_exception()) return Value();
