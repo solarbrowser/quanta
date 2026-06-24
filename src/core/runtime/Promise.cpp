@@ -42,15 +42,48 @@ static Context* get_exec_ctx(Engine* engine, Context* fallback) {
 void Promise::fulfill(const Value& value) {
     if (state_ != PromiseState::PENDING) return;
 
-    // Promise Resolution Procedure: if value is a Promise, adopt its state
-    if (value.is_object() && value.as_object()->get_type() == ObjectType::Promise) {
-        Promise* inner = static_cast<Promise*>(value.as_object());
-        if (inner == this) {
-            state_ = PromiseState::REJECTED;
+    // Self-resolution (SameValue(resolution, promise)) applies regardless of type.
+    Object* value_obj_for_self_check = value.is_function() ? static_cast<Object*>(value.as_function())
+                                       : (value.is_object() ? value.as_object() : nullptr);
+    if (value_obj_for_self_check == this) {
+        state_ = PromiseState::REJECTED;
+        Context* err_ctx = get_exec_ctx(engine_, context_);
+        if (err_ctx) {
+            err_ctx->throw_type_error("Chaining cycle detected for promise");
+            value_ = err_ctx->get_exception();
+            err_ctx->clear_exception();
+        } else {
             value_ = Value(std::string("TypeError: Promise resolved with itself"));
-            execute_handlers();
-            return;
         }
+        execute_handlers();
+        return;
+    }
+
+    // Fast path only applies when `then` is still the standard built-in: if it has been
+    // overridden, fall through to the generic thenable-job handling below so the override
+    // is actually consulted (matches GetMethod/PromiseResolveThenableJob semantics).
+    bool use_promise_fast_path = false;
+    if (value.is_object() && value.as_object()->get_type() == ObjectType::Promise) {
+        use_promise_fast_path = true;
+        Context* check_ctx = get_exec_ctx(engine_, context_);
+        if (check_ctx) {
+            Value promise_ctor = check_ctx->get_binding("Promise");
+            if (promise_ctor.is_function()) {
+                Value proto = static_cast<Object*>(promise_ctor.as_function())->get_property("prototype");
+                if (proto.is_object()) {
+                    Value std_then = proto.as_object()->get_property("then");
+                    Value inner_then = value.as_object()->get_property("then");
+                    if (!(std_then.is_function() && inner_then.is_function() &&
+                          std_then.as_function() == inner_then.as_function())) {
+                        use_promise_fast_path = false;
+                    }
+                }
+            }
+        }
+    }
+
+    if (use_promise_fast_path) {
+        Promise* inner = static_cast<Promise*>(value.as_object());
         if (inner->get_state() == PromiseState::FULFILLED) {
             state_ = PromiseState::FULFILLED;
             value_ = inner->get_value();
@@ -88,7 +121,12 @@ void Promise::fulfill(const Value& value) {
         Object* obj = value.is_function() ? static_cast<Object*>(value.as_function()) : value.as_object();
         Value then_val = obj->get_property("then");
         if (Object::current_context_->has_exception()) {
+            Value exc = Object::current_context_->get_exception();
             Object::current_context_->clear_exception();
+            state_ = PromiseState::REJECTED;
+            value_ = exc;
+            execute_handlers();
+            return;
         } else if (then_val.is_function()) {
             // Enqueue as a microtask so it doesn't run synchronously inside fulfill().
             Promise* self = this;
@@ -101,13 +139,19 @@ void Promise::fulfill(const Value& value) {
                 queue_ctx->queue_microtask([self, then_fn, thenable]() mutable {
                     self->delete_property("__trp_then__");
                     self->delete_property("__trp_val__");
+                    // Same AlreadyResolved rationale as the constructor's resolve/reject pair.
+                    auto already_called = std::make_shared<bool>(false);
                     auto res_fn = ObjectFactory::create_native_function("",
-                        [self](Context&, const std::vector<Value>& args) -> Value {
+                        [self, already_called](Context&, const std::vector<Value>& args) -> Value {
+                            if (*already_called) return Value();
+                            *already_called = true;
                             self->fulfill(args.empty() ? Value() : args[0]);
                             return Value();
                         });
                     auto rej_fn = ObjectFactory::create_native_function("",
-                        [self](Context&, const std::vector<Value>& args) -> Value {
+                        [self, already_called](Context&, const std::vector<Value>& args) -> Value {
+                            if (*already_called) return Value();
+                            *already_called = true;
                             self->reject(args.empty() ? Value() : args[0]);
                             return Value();
                         });
@@ -122,7 +166,10 @@ void Promise::fulfill(const Value& value) {
                             Object::current_context_->clear_exception();
                             self->delete_property("__trp_res__");
                             self->delete_property("__trp_rej__");
-                            self->reject(exc);
+                            if (!*already_called) {
+                                *already_called = true;
+                                self->reject(exc);
+                            }
                         }
                     }
                 });
