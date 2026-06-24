@@ -676,13 +676,13 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.next called on non-object")));
+        ctx.throw_type_error("AsyncGenerator.next called on non-object");
         return Value();
     }
     
     AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
     if (!async_gen) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.next called on wrong type")));
+        ctx.throw_type_error("AsyncGenerator.next called on wrong type");
         return Value();
     }
     
@@ -695,13 +695,13 @@ Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value
 Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.return called on non-object")));
+        ctx.throw_type_error("AsyncGenerator.return called on non-object");
         return Value();
     }
     
     AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
     if (!async_gen) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.return called on wrong type")));
+        ctx.throw_type_error("AsyncGenerator.return called on wrong type");
         return Value();
     }
     
@@ -714,13 +714,13 @@ Value AsyncGenerator::async_generator_return(Context& ctx, const std::vector<Val
 Value AsyncGenerator::async_generator_throw(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.throw called on non-object")));
+        ctx.throw_type_error("AsyncGenerator.throw called on non-object");
         return Value();
     }
     
     AsyncGenerator* async_gen = dynamic_cast<AsyncGenerator*>(this_value.as_object());
     if (!async_gen) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncGenerator.throw called on wrong type")));
+        ctx.throw_type_error("AsyncGenerator.throw called on wrong type");
         return Value();
     }
     
@@ -799,13 +799,13 @@ void AsyncIterator::setup_async_iterator_prototype(Context& ctx) {
 Value AsyncIterator::async_iterator_next(Context& ctx, const std::vector<Value>& /* args */) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.next called on non-object")));
+        ctx.throw_type_error("AsyncIterator.next called on non-object");
         return Value();
     }
     
     AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
     if (!async_iter) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.next called on wrong type")));
+        ctx.throw_type_error("AsyncIterator.next called on wrong type");
         return Value();
     }
     
@@ -817,13 +817,13 @@ Value AsyncIterator::async_iterator_next(Context& ctx, const std::vector<Value>&
 Value AsyncIterator::async_iterator_return(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.return called on non-object")));
+        ctx.throw_type_error("AsyncIterator.return called on non-object");
         return Value();
     }
     
     AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
     if (!async_iter) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.return called on wrong type")));
+        ctx.throw_type_error("AsyncIterator.return called on wrong type");
         return Value();
     }
     
@@ -836,13 +836,13 @@ Value AsyncIterator::async_iterator_return(Context& ctx, const std::vector<Value
 Value AsyncIterator::async_iterator_throw(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.throw called on non-object")));
+        ctx.throw_type_error("AsyncIterator.throw called on non-object");
         return Value();
     }
     
     AsyncIterator* async_iter = dynamic_cast<AsyncIterator*>(this_value.as_object());
     if (!async_iter) {
-        ctx.throw_exception(Value(std::string("TypeError: AsyncIterator.throw called on wrong type")));
+        ctx.throw_type_error("AsyncIterator.throw called on wrong type");
         return Value();
     }
     

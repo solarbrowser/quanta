@@ -548,7 +548,9 @@ Value DataView::js_set_int8(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     if (!dataview_check_in_bounds(ctx, dv, offset, 1)) return Value();
     dv->set_int8(static_cast<size_t>(offset), dataview_to_int_modular<int8_t>(num));
@@ -560,7 +562,9 @@ Value DataView::js_set_uint8(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     if (!dataview_check_in_bounds(ctx, dv, offset, 1)) return Value();
     dv->set_uint8(static_cast<size_t>(offset), dataview_to_int_modular<uint8_t>(num));
@@ -572,7 +576,9 @@ Value DataView::js_set_int16(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 2)) return Value();
@@ -585,7 +591,9 @@ Value DataView::js_set_uint16(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 2)) return Value();
@@ -598,7 +606,9 @@ Value DataView::js_set_int32(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 4)) return Value();
@@ -611,7 +621,9 @@ Value DataView::js_set_uint32(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 4)) return Value();
@@ -624,7 +636,9 @@ Value DataView::js_set_float32(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 4)) return Value();
@@ -637,7 +651,9 @@ Value DataView::js_set_float64(Context& ctx, const std::vector<Value>& args) {
     if (!dv) return Value();
     double offset = dataview_to_index(ctx, args.empty() ? Value() : args[0]);
     if (ctx.has_exception()) return Value();
-    double num = (args.size() > 1 ? args[1] : Value()).to_number();
+    Value _val = args.size() > 1 ? args[1] : Value();
+    if (_val.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
+    double num = _val.to_number();
     if (ctx.has_exception()) return Value();
     bool little_endian = (args.size() > 2) ? args[2].to_boolean() : false;
     if (!dataview_check_in_bounds(ctx, dv, offset, 8)) return Value();

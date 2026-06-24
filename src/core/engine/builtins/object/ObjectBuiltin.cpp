@@ -128,16 +128,16 @@ void register_object_builtins(Context& ctx) {
     auto keys_fn = ObjectFactory::create_native_function("keys", 
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() == 0) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.keys requires at least 1 argument")));
+                ctx.throw_type_error("Object.keys requires at least 1 argument");
                 return Value();
             }
             
             if (args[0].is_null()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
+                ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
             if (args[0].is_undefined()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
+                ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
             
@@ -565,14 +565,14 @@ void register_object_builtins(Context& ctx) {
     auto getPrototypeOf_fn = ObjectFactory::create_native_function("getPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.getPrototypeOf requires an argument")));
+                ctx.throw_type_error("Object.getPrototypeOf requires an argument");
                 return Value();
             }
 
             Value obj_val = args[0];
             
             if (obj_val.is_null() || obj_val.is_undefined()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
+                ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
 
@@ -628,7 +628,7 @@ void register_object_builtins(Context& ctx) {
     auto setPrototypeOf_fn = ObjectFactory::create_native_function("setPrototypeOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.setPrototypeOf requires 2 arguments")));
+                ctx.throw_type_error("Object.setPrototypeOf requires 2 arguments");
                 return Value();
             }
 
@@ -636,7 +636,7 @@ void register_object_builtins(Context& ctx) {
             Value proto_val = args[1];
 
             if (obj_val.is_null() || obj_val.is_undefined()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert undefined or null to object")));
+                ctx.throw_type_error("Cannot convert undefined or null to object");
                 return Value();
             }
 
@@ -677,7 +677,7 @@ void register_object_builtins(Context& ctx) {
             } else if (proto_val.is_function()) {
                 obj->set_prototype(proto_val.as_function());
             } else {
-                ctx.throw_exception(Value(std::string("TypeError: Object prototype may only be an Object or null")));
+                ctx.throw_type_error("Object prototype may only be an Object or null");
                 return Value();
             }
 
@@ -688,7 +688,7 @@ void register_object_builtins(Context& ctx) {
     auto getOwnPropertyDescriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) {
-                ctx.throw_exception(Value(std::string("TypeError: Object.getOwnPropertyDescriptor requires 2 arguments")));
+                ctx.throw_type_error("Object.getOwnPropertyDescriptor requires 2 arguments");
                 return Value();
             }
 
@@ -1585,7 +1585,7 @@ void register_object_builtins(Context& ctx) {
 
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: propertyIsEnumerable called on null or undefined")));
+                ctx.throw_type_error("propertyIsEnumerable called on null or undefined");
                 return Value(false);
             }
 

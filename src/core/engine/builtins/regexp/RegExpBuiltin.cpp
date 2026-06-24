@@ -21,7 +21,7 @@ void register_regexp_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: RegExp.prototype.compile called on null or undefined")));
+                ctx.throw_type_error("RegExp.prototype.compile called on null or undefined");
                 return Value();
             }
 

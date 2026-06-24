@@ -84,7 +84,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
             if (spread_value.is_null() || spread_value.is_undefined()) continue;
             if (!spread_value.is_object() && !spread_value.is_function() &&
                     !spread_value.is_string() && !spread_value.is_number() && !spread_value.is_boolean()) {
-                ctx.throw_exception(Value(std::string("TypeError: Spread syntax can only be applied to objects")));
+                ctx.throw_type_error("Spread syntax can only be applied to objects");
                 return Value();
             }
 

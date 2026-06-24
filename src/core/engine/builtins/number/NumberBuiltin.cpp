@@ -116,10 +116,10 @@ void register_number_builtins(Context& ctx) {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
-                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.valueOf called on non-number")));
+                ctx.throw_type_error("Number.prototype.valueOf requires a Number or Number wrapper");
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.valueOf called on non-number")));
+                ctx.throw_type_error("Number.prototype.valueOf requires a Number or Number wrapper");
                 return Value();
             }
         }, 0);
@@ -149,11 +149,11 @@ void register_number_builtins(Context& ctx) {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
                         num = primitive.to_number();
                     } else {
-                        ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
+                        ctx.throw_type_error("Number.prototype.toString requires a Number or Number wrapper");
                         return Value();
                     }
                 } else {
-                    ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
+                    ctx.throw_type_error("Number.prototype.toString requires a Number or Number wrapper");
                     return Value();
                 }
 
@@ -161,10 +161,15 @@ void register_number_builtins(Context& ctx) {
                 if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
 
                 int radix = 10;
-                if (!args.empty()) {
+                if (!args.empty() && !args[0].is_undefined()) {
+                    if (args[0].is_symbol() || args[0].is_bigint()) {
+                        ctx.throw_type_error("Cannot convert Symbol/BigInt to number");
+                        return Value();
+                    }
                     radix = static_cast<int>(args[0].to_number());
+                    if (ctx.has_exception()) return Value();
                     if (radix < 2 || radix > 36) {
-                        ctx.throw_exception(Value(std::string("RangeError: radix must be between 2 and 36")));
+                        ctx.throw_range_error("radix must be between 2 and 36");
                         return Value();
                     }
                 }
@@ -214,7 +219,7 @@ void register_number_builtins(Context& ctx) {
                 if (negative) result = "-" + result;
                 return Value(result);
             } catch (...) {
-                ctx.throw_exception(Value(std::string("TypeError: Number.prototype.toString called on non-number")));
+                ctx.throw_type_error("Number.prototype.toString requires a Number or Number wrapper");
                 return Value();
             }
         }, 1);
@@ -240,7 +245,14 @@ void register_number_builtins(Context& ctx) {
     auto toExponential_fn = ObjectFactory::create_native_function("toExponential",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_val = ctx.get_binding("this");
-            double num = this_val.to_number();
+            double num;
+            if (this_val.is_number()) {
+                num = this_val.as_number();
+            } else if (this_val.is_object()) {
+                Value pv = this_val.as_object()->get_property("[[PrimitiveValue]]");
+                if (!pv.is_number()) { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
+                num = pv.as_number();
+            } else { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
 
             if (std::isnan(num)) return Value(std::string("NaN"));
             if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
@@ -248,11 +260,14 @@ void register_number_builtins(Context& ctx) {
             bool has_frac = !args.empty() && !args[0].is_undefined();
             int frac = 0;
             if (has_frac) {
-                frac = static_cast<int>(args[0].to_number());
-                if (frac < 0 || frac > 100) {
-                    ctx.throw_exception(Value(std::string("RangeError: toExponential() precision out of range")));
+                if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
+                double frac_d = args[0].to_number();
+                if (ctx.has_exception()) return Value();
+                if (frac_d < 0 || frac_d > 100 || std::isnan(frac_d)) {
+                    ctx.throw_range_error("toExponential() precision out of range");
                     return Value();
                 }
+                frac = static_cast<int>(frac_d);
             }
 
             bool negative = num < 0;
@@ -318,12 +333,18 @@ void register_number_builtins(Context& ctx) {
             double num = this_val.to_number();
 
             int precision = 0;
-            if (!args.empty()) {
-                precision = static_cast<int>(args[0].to_number());
-                if (precision < 0 || precision > 100) {
-                    ctx.throw_exception(Value(std::string("RangeError: toFixed() precision out of range")));
+            if (!args.empty() && !args[0].is_undefined()) {
+                if (args[0].is_symbol() || args[0].is_bigint()) {
+                    ctx.throw_type_error("Cannot convert Symbol/BigInt to number");
                     return Value();
                 }
+                double frac = args[0].to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(frac) || frac < 0 || frac > 100) {
+                    ctx.throw_range_error("toFixed() precision out of range");
+                    return Value();
+                }
+                precision = static_cast<int>(frac);
             }
 
             if (std::isnan(num)) return Value(std::string("NaN"));
@@ -350,17 +371,26 @@ void register_number_builtins(Context& ctx) {
     auto toPrecision_fn = ObjectFactory::create_native_function("toPrecision",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_val = ctx.get_binding("this");
-            double num = this_val.to_number();
+            double num;
+            if (this_val.is_number()) { num = this_val.as_number(); }
+            else if (this_val.is_object()) {
+                Value pv = this_val.as_object()->get_property("[[PrimitiveValue]]");
+                if (!pv.is_number()) { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
+                num = pv.as_number();
+            } else { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
 
             if (args.empty() || args[0].is_undefined()) {
                 if (std::isnan(num)) return Value(std::string("NaN"));
                 if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
-                return Value(this_val.to_string());
+                return Value(Value(num).to_string());
             }
 
-            int precision = static_cast<int>(args[0].to_number());
-            if (precision < 1 || precision > 100) {
-                ctx.throw_exception(Value(std::string("RangeError: toPrecision() precision out of range")));
+            if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
+            double prec_d = args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            int precision = static_cast<int>(prec_d);
+            if (prec_d < 1 || prec_d > 100 || std::isnan(prec_d)) {
+                ctx.throw_range_error("toPrecision() precision out of range");
                 return Value();
             }
 

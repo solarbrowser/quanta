@@ -897,7 +897,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast called on non-object")));
+                ctx.throw_type_error("Array.prototype.findLast called on non-object");
                 return Value();
             }
 
@@ -906,13 +906,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast requires a callback function")));
+                ctx.throw_type_error("Array.prototype.findLast requires a callback function");
                 return Value();
             }
 
             Value callback = args[0];
             if (!callback.is_function()) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLast callback must be a function")));
+                ctx.throw_type_error("Array.prototype.findLast callback must be a function");
                 return Value();
             }
 
@@ -940,7 +940,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex called on non-object")));
+                ctx.throw_type_error("Array.prototype.findLastIndex called on non-object");
                 return Value();
             }
 
@@ -949,13 +949,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex requires a callback function")));
+                ctx.throw_type_error("Array.prototype.findLastIndex requires a callback function");
                 return Value();
             }
 
             Value callback = args[0];
             if (!callback.is_function()) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.findLastIndex callback must be a function")));
+                ctx.throw_type_error("Array.prototype.findLastIndex callback must be a function");
                 return Value();
             }
 
@@ -1020,7 +1020,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.at called on non-object")));
+                ctx.throw_type_error("Array.prototype.at called on non-object");
                 return Value();
             }
 
@@ -1288,7 +1288,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.toString called on non-object")));
+                ctx.throw_type_error("Array.prototype.toString called on non-object");
                 return Value();
             }
 
@@ -1324,7 +1324,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) {
-                ctx.throw_exception(Value(std::string("TypeError: Array.prototype.push called on non-object")));
+                ctx.throw_type_error("Array.prototype.push called on non-object");
                 return Value();
             }
 

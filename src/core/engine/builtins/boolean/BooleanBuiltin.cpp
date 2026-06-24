@@ -49,10 +49,10 @@ void register_boolean_builtins(Context& ctx) {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
-                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.valueOf called on non-boolean")));
+                ctx.throw_type_error("Boolean.prototype.valueOf called on non-boolean");
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.valueOf called on non-boolean")));
+                ctx.throw_type_error("Boolean.prototype.valueOf called on non-boolean");
                 return Value();
             }
         }, 0);
@@ -83,10 +83,10 @@ void register_boolean_builtins(Context& ctx) {
                         return Value(primitive.to_boolean() ? "true" : "false");
                     }
                 }
-                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.toString called on non-boolean")));
+                ctx.throw_type_error("Boolean.prototype.toString called on non-boolean");
                 return Value();
             } catch (...) {
-                ctx.throw_exception(Value(std::string("TypeError: Boolean.prototype.toString called on non-boolean")));
+                ctx.throw_type_error("Boolean.prototype.toString called on non-boolean");
                 return Value();
             }
         }, 0);

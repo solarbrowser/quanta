@@ -180,7 +180,7 @@ TemporalInstant::TemporalInstant(int64_t nanoseconds) : nanoseconds_(nanoseconds
 
 Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant requires epochNanoseconds argument")));
+        ctx.throw_type_error("Temporal.Instant requires epochNanoseconds argument");
         return Value();
     }
 
@@ -198,7 +198,7 @@ Value TemporalInstant::constructor(Context& ctx, const std::vector<Value>& args)
 
 Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.from requires an argument")));
+        ctx.throw_type_error("Temporal.Instant.from requires an argument");
         return Value();
     }
 
@@ -211,7 +211,7 @@ Value TemporalInstant::from(Context& ctx, const std::vector<Value>& args) {
 
 Value TemporalInstant::fromEpochMilliseconds(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.fromEpochMilliseconds requires milliseconds argument")));
+        ctx.throw_type_error("Temporal.Instant.fromEpochMilliseconds requires milliseconds argument");
         return Value();
     }
 
@@ -230,7 +230,7 @@ Value TemporalInstant::fromEpochNanoseconds(Context& ctx, const std::vector<Valu
 
 Value TemporalInstant::compare(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.compare requires two arguments")));
+        ctx.throw_type_error("Temporal.Instant.compare requires two arguments");
         return Value();
     }
 
@@ -310,7 +310,7 @@ Value TemporalInstant::toLocaleString(Context& ctx, const std::vector<Value>& ar
 }
 
 Value TemporalInstant::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.Instant does not have a valueOf method");
     return Value();
 }
 
@@ -319,7 +319,7 @@ Value TemporalInstant::add(Context& ctx, const std::vector<Value>& args) {
     if (!obj) return Value();
 
     if (args.size() < 2 || !args[1].is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.add requires a duration argument")));
+        ctx.throw_type_error("Temporal.Instant.add requires a duration argument");
         return Value();
     }
 
@@ -345,7 +345,7 @@ Value TemporalInstant::subtract(Context& ctx, const std::vector<Value>& args) {
     if (!obj) return Value();
 
     if (args.size() < 2 || !args[1].is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.Instant.subtract requires a duration argument")));
+        ctx.throw_type_error("Temporal.Instant.subtract requires a duration argument");
         return Value();
     }
 
@@ -438,7 +438,7 @@ TemporalPlainDate::TemporalPlainDate(int year, int month, int day, const std::st
 
 Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 3) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate requires year, month, and day arguments")));
+        ctx.throw_type_error("Temporal.PlainDate requires year, month, and day arguments");
         return Value();
     }
 
@@ -463,7 +463,7 @@ Value TemporalPlainDate::constructor(Context& ctx, const std::vector<Value>& arg
 
 Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate.from requires an argument")));
+        ctx.throw_type_error("Temporal.PlainDate.from requires an argument");
         return Value();
     }
 
@@ -482,7 +482,7 @@ Value TemporalPlainDate::from(Context& ctx, const std::vector<Value>& args) {
 
 Value TemporalPlainDate::compare(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate.compare requires two arguments")));
+        ctx.throw_type_error("Temporal.PlainDate.compare requires two arguments");
         return Value();
     }
 
@@ -623,7 +623,7 @@ Value TemporalPlainDate::toLocaleString(Context& ctx, const std::vector<Value>& 
 }
 
 Value TemporalPlainDate::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDate does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.PlainDate does not have a valueOf method");
     return Value();
 }
 
@@ -802,7 +802,7 @@ Value TemporalPlainTime::constructor(Context& ctx, const std::vector<Value>& arg
 
 Value TemporalPlainTime::from(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainTime.from requires an argument")));
+        ctx.throw_type_error("Temporal.PlainTime.from requires an argument");
         return Value();
     }
 
@@ -897,7 +897,7 @@ Value TemporalPlainTime::toLocaleString(Context& ctx, const std::vector<Value>& 
 }
 
 Value TemporalPlainTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainTime does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.PlainTime does not have a valueOf method");
     return Value();
 }
 
@@ -1072,7 +1072,7 @@ TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalPlainDateTime, toLocaleString)
 
 Value TemporalPlainDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.PlainDateTime does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.PlainDateTime does not have a valueOf method");
     return Value();
 }
 
@@ -1195,7 +1195,7 @@ TEMPORAL_STUB_METHOD(TemporalDuration, toJSON)
 TEMPORAL_STUB_METHOD(TemporalDuration, toLocaleString)
 
 Value TemporalDuration::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.Duration does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.Duration does not have a valueOf method");
     return Value();
 }
 
@@ -1236,7 +1236,7 @@ TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toJSON)
 TEMPORAL_STUB_METHOD(TemporalZonedDateTime, toLocaleString)
 
 Value TemporalZonedDateTime::valueOf(Context& ctx, const std::vector<Value>& args) {
-    ctx.throw_exception(Value(std::string("TypeError: Temporal.ZonedDateTime does not have a valueOf method")));
+    ctx.throw_type_error("Temporal.ZonedDateTime does not have a valueOf method");
     return Value();
 }
 

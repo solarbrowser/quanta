@@ -944,11 +944,12 @@ void Set::setup_set_prototype(Context& ctx) {
     };
 
     auto union_fn = ObjectFactory::create_native_function("union",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.union"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.union requires a Set"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             auto result = std::make_unique<Set>();
             for (const auto& v : self->values()) result->add(v);
             if (args[0].as_object()->get_type() == Object::ObjectType::Set) {
@@ -960,11 +961,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto intersection_fn = ObjectFactory::create_native_function("intersection",
-        [call_has](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.intersection"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.intersection requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
@@ -985,11 +987,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto difference_fn = ObjectFactory::create_native_function("difference",
-        [call_has](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.difference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.difference requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
@@ -1010,11 +1013,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto symmetricDifference_fn = ObjectFactory::create_native_function("symmetricDifference",
-        [call_has, iterate_keys](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.symmetricDifference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.symmetricDifference requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
@@ -1040,11 +1044,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSubsetOf_fn = ObjectFactory::create_native_function("isSubsetOf",
-        [call_has](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSubsetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isSubsetOf requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
@@ -1065,11 +1070,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("isSubsetOf", Value(isSubsetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSupersetOf_fn = ObjectFactory::create_native_function("isSupersetOf",
-        [call_has, iterate_keys](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSupersetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isSupersetOf requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
@@ -1089,11 +1095,12 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("isSupersetOf", Value(isSupersetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isDisjointFrom_fn = ObjectFactory::create_native_function("isDisjointFrom",
-        [call_has](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isDisjointFrom"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isDisjointFrom requires a set-like"); return Value(); }
+            if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
             if (other->get_type() != Object::ObjectType::Set) {
                 if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }

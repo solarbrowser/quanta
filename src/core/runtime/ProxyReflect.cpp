@@ -814,7 +814,7 @@ void Proxy::revoke() {
 
 void Proxy::throw_if_revoked(Context& ctx) const {
     if (is_revoked()) {
-        ctx.throw_exception(Value(std::string("TypeError: Proxy has been revoked")));
+        ctx.throw_type_error("Proxy has been revoked");
     }
 }
 
@@ -835,12 +835,12 @@ Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Proxy constructor requires target and handler arguments")));
+        ctx.throw_type_error("Proxy constructor requires target and handler arguments");
         return Value();
     }
     
     if ((!args[0].is_object() && !args[0].is_function()) || !args[1].is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: Proxy constructor requires object arguments")));
+        ctx.throw_type_error("Proxy constructor requires object arguments");
         return Value();
     }
 
@@ -853,12 +853,12 @@ Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
 
 Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Proxy.revocable requires target and handler arguments")));
+        ctx.throw_type_error("Proxy.revocable requires target and handler arguments");
         return Value();
     }
     
     if ((!args[0].is_object() && !args[0].is_function()) || !args[1].is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: Proxy.revocable requires object arguments")));
+        ctx.throw_type_error("Proxy.revocable requires object arguments");
         return Value();
     }
 
@@ -897,7 +897,7 @@ void Proxy::setup_proxy(Context& ctx) {
 
 Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.get requires at least one argument")));
+        ctx.throw_type_error("Reflect.get requires at least one argument");
         return Value();
     }
     
@@ -1022,7 +1022,7 @@ static bool ordinary_set_with_receiver(Object* O, const std::string& key, const 
 
 Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.set requires at least two arguments")));
+        ctx.throw_type_error("Reflect.set requires at least two arguments");
         return Value();
     }
 
@@ -1037,7 +1037,7 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     if (args.size() > 3) {
         receiver = args[3].is_function() ? static_cast<Object*>(args[3].as_function()) : args[3].as_object();
         if (!receiver) {
-            ctx.throw_exception(Value(std::string("TypeError: Reflect.set receiver must be an object")));
+            ctx.throw_type_error("Reflect.set receiver must be an object");
             return Value();
         }
     }
@@ -1055,7 +1055,7 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
 
 Value Reflect::reflect_has(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.has requires two arguments")));
+        ctx.throw_type_error("Reflect.has requires two arguments");
         return Value();
     }
     
@@ -1070,7 +1070,7 @@ Value Reflect::reflect_has(Context& ctx, const std::vector<Value>& args) {
 
 Value Reflect::reflect_delete_property(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.deleteProperty requires two arguments")));
+        ctx.throw_type_error("Reflect.deleteProperty requires two arguments");
         return Value();
     }
     
@@ -1085,7 +1085,7 @@ Value Reflect::reflect_delete_property(Context& ctx, const std::vector<Value>& a
 
 Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.ownKeys requires one argument")));
+        ctx.throw_type_error("Reflect.ownKeys requires one argument");
         return Value();
     }
     
@@ -1139,7 +1139,7 @@ Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
 
 Value Reflect::reflect_get_prototype_of(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.getPrototypeOf requires one argument")));
+        ctx.throw_type_error("Reflect.getPrototypeOf requires one argument");
         return Value();
     }
     
@@ -1154,7 +1154,7 @@ Value Reflect::reflect_get_prototype_of(Context& ctx, const std::vector<Value>& 
 
 Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.setPrototypeOf requires two arguments")));
+        ctx.throw_type_error("Reflect.setPrototypeOf requires two arguments");
         return Value();
     }
     
@@ -1176,7 +1176,7 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& 
 
 Value Reflect::reflect_is_extensible(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.isExtensible requires one argument")));
+        ctx.throw_type_error("Reflect.isExtensible requires one argument");
         return Value();
     }
     
@@ -1190,7 +1190,7 @@ Value Reflect::reflect_is_extensible(Context& ctx, const std::vector<Value>& arg
 
 Value Reflect::reflect_prevent_extensions(Context& ctx, const std::vector<Value>& args) {
     if (args.empty()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.preventExtensions requires one argument")));
+        ctx.throw_type_error("Reflect.preventExtensions requires one argument");
         return Value();
     }
     
@@ -1210,12 +1210,12 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, const std::vector<Value>
 
 Value Reflect::reflect_apply(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 3) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.apply requires three arguments")));
+        ctx.throw_type_error("Reflect.apply requires three arguments");
         return Value();
     }
     
     if (!args[0].is_function()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.apply first argument must be a function")));
+        ctx.throw_type_error("Reflect.apply first argument must be a function");
         return Value();
     }
     
@@ -1238,12 +1238,12 @@ Value Reflect::reflect_apply(Context& ctx, const std::vector<Value>& args) {
 
 Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.construct requires at least two arguments")));
+        ctx.throw_type_error("Reflect.construct requires at least two arguments");
         return Value();
     }
 
     if (!args[0].is_function()) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.construct first argument must be a function")));
+        ctx.throw_type_error("Reflect.construct first argument must be a function");
         return Value();
     }
 
@@ -1253,7 +1253,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     Function* newTarget = target;
     if (args.size() >= 3) {
         if (!args[2].is_function()) {
-            ctx.throw_exception(Value(std::string("TypeError: Reflect.construct newTarget must be a constructor")));
+            ctx.throw_type_error("Reflect.construct newTarget must be a constructor");
             return Value();
         }
         newTarget = args[2].as_function();
@@ -1261,7 +1261,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
 
     // Check if newTarget is a constructor
     if (!newTarget->is_constructor()) {
-        ctx.throw_exception(Value(std::string("TypeError: newTarget is not a constructor")));
+        ctx.throw_type_error("newTarget is not a constructor");
         return Value();
     }
 
@@ -1314,7 +1314,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
 
 Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 2) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.getOwnPropertyDescriptor requires two arguments")));
+        ctx.throw_type_error("Reflect.getOwnPropertyDescriptor requires two arguments");
         return Value();
     }
     
@@ -1336,7 +1336,7 @@ Value Reflect::reflect_get_own_property_descriptor(Context& ctx, const std::vect
 
 Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 3) {
-        ctx.throw_exception(Value(std::string("TypeError: Reflect.defineProperty requires three arguments")));
+        ctx.throw_type_error("Reflect.defineProperty requires three arguments");
         return Value();
     }
     
@@ -1348,7 +1348,7 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
     std::string key = to_property_key(args[1]);
     
     if (!args[2].is_object()) {
-        ctx.throw_exception(Value(std::string("TypeError: Property descriptor must be an object")));
+        ctx.throw_type_error("Property descriptor must be an object");
         return Value(false);
     }
     
@@ -1431,7 +1431,7 @@ Object* Reflect::to_object(const Value& value, Context& ctx) {
     if (value.is_function()) {
         return static_cast<Object*>(value.as_function());
     }
-    ctx.throw_exception(Value(std::string("TypeError: Reflect operation requires an object")));
+    ctx.throw_type_error("Reflect operation requires an object");
     return nullptr;
 }
 

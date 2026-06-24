@@ -1193,6 +1193,7 @@ private:
     std::vector<std::unique_ptr<Parameter>> params_;
     std::unique_ptr<BlockStatement> body_;
     bool is_arrow_ = false;
+    std::string source_text_;
 
 public:
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
@@ -1209,6 +1210,8 @@ public:
     BlockStatement* get_body() const { return body_.get(); }
     size_t param_count() const { return params_.size(); }
     bool is_arrow() const { return is_arrow_; }
+    void set_source_text(const std::string& s) { source_text_ = s; }
+    const std::string& get_source_text() const { return source_text_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

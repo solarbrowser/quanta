@@ -7094,18 +7094,23 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     }
 
     Position end = get_current_position();
+    std::string src_text = get_source_slice(start.offset, previous_token().get_start().offset + 1);
     if (is_generator) {
-        return std::make_unique<FunctionExpression>(
+        auto gen_expr = std::make_unique<FunctionExpression>(
             std::move(id), std::move(params),
             std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
             start, end, true, true
         );
+        gen_expr->set_source_text(src_text);
+        return gen_expr;
     }
-    return std::make_unique<AsyncFunctionExpression>(
+    auto async_expr = std::make_unique<AsyncFunctionExpression>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end
     );
+    async_expr->set_source_text(src_text);
+    return async_expr;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
@@ -7384,11 +7389,13 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
     }
 
     Position end = get_current_position();
-    return std::make_unique<FunctionDeclaration>(
+    auto async_fn_decl = std::make_unique<FunctionDeclaration>(
         std::move(id), std::move(params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, true, is_generator
     );
+    async_fn_decl->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    return async_fn_decl;
 }
 
 std::unique_ptr<ASTNode> Parser::parse_arrow_function() {

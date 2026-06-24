@@ -2394,7 +2394,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 auto result = array->map(args[0].as_function(), ctx, thisArg);
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
-                ctx.throw_exception(Value(std::string("TypeError: Array.map callback must be a function")));
+                ctx.throw_type_error("Array.map callback must be a function");
                 return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "filter") {
@@ -2403,7 +2403,7 @@ std::unique_ptr<Function> create_array_method(const std::string& method_name) {
                 auto result = array->filter(args[0].as_function(), ctx, thisArg);
                 return result ? Value(result.release()) : Value(ObjectFactory::create_array(0).release());
             } else {
-                ctx.throw_exception(Value(std::string("TypeError: Array.filter callback must be a function")));
+                ctx.throw_type_error("Array.filter callback must be a function");
                 return Value(ObjectFactory::create_array(0).release());
             }
         } else if (method_name == "reduce") {

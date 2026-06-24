@@ -143,7 +143,7 @@ void register_error_builtins(Context& ctx) {
     error_prototype.release();
 
     auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    type_error_prototype->set_property("name", Value(std::string("TypeError")));
+    type_error_prototype->set_property("name", Value(std::string("TypeError")), PropertyAttributes::BuiltinFunction);
     Object* type_error_proto_ptr = type_error_prototype.get();
 
     auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
@@ -199,7 +199,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("TypeError", type_error_constructor.release());
 
     auto reference_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    reference_error_prototype->set_property("name", Value(std::string("ReferenceError")));
+    reference_error_prototype->set_property("name", Value(std::string("ReferenceError")), PropertyAttributes::BuiltinFunction);
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
     auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
@@ -254,7 +254,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("ReferenceError", reference_error_constructor.release());
 
     auto syntax_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    syntax_error_prototype->set_property("name", Value(std::string("SyntaxError")));
+    syntax_error_prototype->set_property("name", Value(std::string("SyntaxError")), PropertyAttributes::BuiltinFunction);
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
     auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
@@ -309,7 +309,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("SyntaxError", syntax_error_constructor.release());
 
     auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    range_error_prototype->set_property("name", Value(std::string("RangeError")));
+    range_error_prototype->set_property("name", Value(std::string("RangeError")), PropertyAttributes::BuiltinFunction);
     Object* range_error_proto_ptr = range_error_prototype.get();
 
     auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
@@ -365,7 +365,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("RangeError", range_error_constructor.release());
 
     auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    uri_error_prototype->set_property("name", Value(std::string("URIError")));
+    uri_error_prototype->set_property("name", Value(std::string("URIError")), PropertyAttributes::BuiltinFunction);
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
     auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
@@ -413,7 +413,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("URIError", uri_error_constructor.release());
 
     auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    eval_error_prototype->set_property("name", Value(std::string("EvalError")));
+    eval_error_prototype->set_property("name", Value(std::string("EvalError")), PropertyAttributes::BuiltinFunction);
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
     auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
@@ -461,7 +461,7 @@ void register_error_builtins(Context& ctx) {
     ctx.register_built_in_object("EvalError", eval_error_constructor.release());
 
     auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
-    aggregate_error_prototype->set_property("name", Value(std::string("AggregateError")));
+    aggregate_error_prototype->set_property("name", Value(std::string("AggregateError")), PropertyAttributes::BuiltinFunction);
 
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 
@@ -564,8 +564,8 @@ void register_error_builtins(Context& ctx) {
     }
 
     auto suppressed_error_prototype = ObjectFactory::create_object(error_prototype_ptr2);
-    suppressed_error_prototype->set_property("name", Value(std::string("SuppressedError")));
-    suppressed_error_prototype->set_property("message", Value(std::string("")));
+    suppressed_error_prototype->set_property("name", Value(std::string("SuppressedError")), PropertyAttributes::BuiltinFunction);
+    suppressed_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* suppressed_proto_ptr = suppressed_error_prototype.get();
 
     auto suppressed_error_constructor = ObjectFactory::create_native_constructor("SuppressedError",
