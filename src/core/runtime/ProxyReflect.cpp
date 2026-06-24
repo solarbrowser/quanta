@@ -1370,9 +1370,16 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
         }
     }
 
-    // If newTarget == target, use normal construct
+    // If newTarget == target, use normal construct. Explicitly set new.target rather than
+    // relying on Function::construct's own fallback (which only fires when new.target was
+    // undefined) -- this call may itself be nested inside another constructor's body, which
+    // would otherwise leak that enclosing new.target into this independent construction.
     if (newTarget == target) {
-        return target->construct(ctx, construct_args);
+        Value old_new_target = ctx.get_new_target();
+        ctx.set_new_target(Value(static_cast<Object*>(target)));
+        Value result = target->construct(ctx, construct_args);
+        ctx.set_new_target(old_new_target);
+        return result;
     }
 
     // Reflect.construct(target, args, newTarget): call target with new.target = newTarget

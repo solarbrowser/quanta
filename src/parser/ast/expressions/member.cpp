@@ -1418,7 +1418,16 @@ Value NewExpression::evaluate(Context& ctx) {
     if (ctx.has_exception()) return Value();
 
     Function* constructor_fn = constructor_value.as_function();
-    return constructor_fn->construct(ctx, arg_values);
+    // A literal `new X()` always targets X, regardless of any ambient new.target left
+    // over from an enclosing constructor call -- without this, a `new Y()` evaluated
+    // inside another constructor's body would inherit the outer new.target and use the
+    // wrong .prototype (Function::construct only resets new.target when it was undefined,
+    // which is correct for super() chaining but wrong for this independent nested case).
+    Value old_new_target = ctx.get_new_target();
+    ctx.set_new_target(constructor_value);
+    Value result = constructor_fn->construct(ctx, arg_values);
+    ctx.set_new_target(old_new_target);
+    return result;
 }
 
 std::string NewExpression::to_string() const {

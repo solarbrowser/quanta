@@ -1193,8 +1193,12 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Propagate any exception from the constructor body before checking super state
     if (ctx.has_exception()) return Value();
 
-    // Explicit constructor that never called super() -- ReferenceError
-    if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+    // Spec: an explicit `return <object>` from the constructor body returns that object
+    // immediately, without ever reaching GetThisBinding() -- so a derived constructor that
+    // returns an object without calling super() is legal (no `this` access ever happens).
+    // Only an implicit/undefined completion forces the this-binding check.
+    if (!result.is_object() && !result.is_function() &&
+        !super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
         ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
