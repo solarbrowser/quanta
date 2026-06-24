@@ -78,6 +78,69 @@ void register_bigint_builtins(Context& ctx) {
             });
         bigint_constructor->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
     }
+    // BigInt.prototype.toString([radix])
+    {
+        auto bigint_toString = ObjectFactory::create_native_function("toString",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Value this_val = ctx.get_binding("this");
+                BigInt* bi = nullptr;
+                if (this_val.is_bigint()) bi = this_val.as_bigint();
+                else if (this_val.is_object()) {
+                    Value pv = this_val.as_object()->get_property("valueOf");
+                    if (!ctx.has_exception() && pv.is_function()) {
+                        Value r = pv.as_function()->call(ctx, {}, this_val);
+                        if (!ctx.has_exception() && r.is_bigint()) bi = r.as_bigint();
+                    }
+                }
+                if (!bi) { ctx.throw_type_error("BigInt.prototype.toString requires a BigInt this"); return Value(); }
+                int radix = 10;
+                if (!args.empty() && !args[0].is_undefined()) {
+                    if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to number"); return Value(); }
+                    double r = args[0].to_number();
+                    if (ctx.has_exception()) return Value();
+                    radix = static_cast<int>(r);
+                    if (radix < 2 || radix > 36) { ctx.throw_range_error("toString radix must be between 2 and 36"); return Value(); }
+                }
+                if (radix == 10) return Value(bi->to_string());
+                // Proper radix conversion using repeated BigInt division
+                static const char* digits = "0123456789abcdefghijklmnopqrstuvwxyz";
+                bool negative = bi->is_negative();
+                BigInt n(*bi);
+                if (negative) n = -n;
+                BigInt zero(static_cast<int64_t>(0));
+                BigInt base(static_cast<int64_t>(radix));
+                if (n == zero) return Value(std::string("0"));
+                std::string result;
+                while (!(n == zero)) {
+                    BigInt rem = n % base;
+                    int64_t r = rem.to_int64();
+                    result = digits[r < 0 ? -r : r] + result;
+                    n = n / base;
+                }
+                if (negative) result = "-" + result;
+                return Value(result);
+            }, 1);
+        Value proto_val = bigint_constructor->get_property("prototype");
+        if (proto_val.is_object()) proto_val.as_object()->set_property("toString", Value(bigint_toString.release()), PropertyAttributes::BuiltinFunction);
+    }
+
+    // BigInt.prototype.valueOf()
+    {
+        auto bigint_valueOf = ObjectFactory::create_native_function("valueOf",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Value this_val = ctx.get_binding("this");
+                if (this_val.is_bigint()) return this_val;
+                if (this_val.is_object()) {
+                    Value pv = this_val.as_object()->get_property("[[PrimitiveValue]]");
+                    if (!pv.is_undefined() && pv.is_bigint()) return pv;
+                }
+                ctx.throw_type_error("BigInt.prototype.valueOf requires a BigInt this");
+                return Value();
+            }, 0);
+        Value proto_val = bigint_constructor->get_property("prototype");
+        if (proto_val.is_object()) proto_val.as_object()->set_property("valueOf", Value(bigint_valueOf.release()), PropertyAttributes::BuiltinFunction);
+    }
+
     // ES2022 20.2.3.10: BigInt.prototype[@@toStringTag] = "BigInt", configurable:true
     {
         Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);

@@ -18,7 +18,7 @@ void register_error_builtins(Context& ctx) {
     PropertyDescriptor error_proto_name_desc(Value(std::string("Error")),
         PropertyAttributes::BuiltinFunction);
     error_prototype->set_property_descriptor("name", error_proto_name_desc);
-    error_prototype->set_property("message", Value(std::string("")));
+    error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
 
     // Add Error.prototype.toString method
     auto error_proto_toString = ObjectFactory::create_native_function("toString",
@@ -144,6 +144,7 @@ void register_error_builtins(Context& ctx) {
 
     auto type_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     type_error_prototype->set_property("name", Value(std::string("TypeError")), PropertyAttributes::BuiltinFunction);
+    type_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* type_error_proto_ptr = type_error_prototype.get();
 
     auto type_error_constructor = ObjectFactory::create_native_constructor("TypeError",
@@ -200,6 +201,7 @@ void register_error_builtins(Context& ctx) {
 
     auto reference_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     reference_error_prototype->set_property("name", Value(std::string("ReferenceError")), PropertyAttributes::BuiltinFunction);
+    reference_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* reference_error_proto_ptr = reference_error_prototype.get();
 
     auto reference_error_constructor = ObjectFactory::create_native_constructor("ReferenceError",
@@ -255,6 +257,7 @@ void register_error_builtins(Context& ctx) {
 
     auto syntax_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     syntax_error_prototype->set_property("name", Value(std::string("SyntaxError")), PropertyAttributes::BuiltinFunction);
+    syntax_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* syntax_error_proto_ptr = syntax_error_prototype.get();
 
     auto syntax_error_constructor = ObjectFactory::create_native_constructor("SyntaxError",
@@ -310,6 +313,7 @@ void register_error_builtins(Context& ctx) {
 
     auto range_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     range_error_prototype->set_property("name", Value(std::string("RangeError")), PropertyAttributes::BuiltinFunction);
+    range_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* range_error_proto_ptr = range_error_prototype.get();
 
     auto range_error_constructor = ObjectFactory::create_native_constructor("RangeError",
@@ -366,6 +370,7 @@ void register_error_builtins(Context& ctx) {
 
     auto uri_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     uri_error_prototype->set_property("name", Value(std::string("URIError")), PropertyAttributes::BuiltinFunction);
+    uri_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* uri_error_proto_ptr = uri_error_prototype.get();
 
     auto uri_error_constructor = ObjectFactory::create_native_constructor("URIError",
@@ -414,6 +419,7 @@ void register_error_builtins(Context& ctx) {
 
     auto eval_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     eval_error_prototype->set_property("name", Value(std::string("EvalError")), PropertyAttributes::BuiltinFunction);
+    eval_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
     Object* eval_error_proto_ptr = eval_error_prototype.get();
 
     auto eval_error_constructor = ObjectFactory::create_native_constructor("EvalError",
@@ -462,6 +468,7 @@ void register_error_builtins(Context& ctx) {
 
     auto aggregate_error_prototype = ObjectFactory::create_object(error_prototype_ptr);
     aggregate_error_prototype->set_property("name", Value(std::string("AggregateError")), PropertyAttributes::BuiltinFunction);
+    aggregate_error_prototype->set_property("message", Value(std::string("")), PropertyAttributes::BuiltinFunction);
 
     Object* agg_error_proto_ptr = aggregate_error_prototype.get();
 

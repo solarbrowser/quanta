@@ -12,6 +12,16 @@
 
 namespace Quanta {
 
+// Helper: reject a promise with a TypeError and return it
+static Value reject_with_type_error(Context& ctx, std::unique_ptr<Object> promise_obj, const std::string& msg) {
+    ctx.throw_type_error(msg);
+    static_cast<Promise*>(promise_obj.get())->reject(ctx.get_exception());
+    ctx.clear_exception();
+    return Value(promise_obj.release());
+}
+
+
+
 void register_promise_builtins(Context& ctx) {
     auto promise_constructor = ObjectFactory::create_native_constructor("Promise",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -327,14 +337,21 @@ void register_promise_builtins(Context& ctx) {
     auto promise_all_static = ObjectFactory::create_native_function("all",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("Promise.all expects an iterable")));
-                return Value();
+                auto _rej = ObjectFactory::create_promise(&ctx);
+                ctx.throw_type_error("Promise.all expects an iterable");
+                static_cast<Promise*>(_rej.get())->reject(ctx.get_exception());
+                ctx.clear_exception();
+                return Value(_rej.release());
             }
 
             // ES6: use this constructor's prototype for subclassing
-            Function* this_ctor = nullptr;
             Object* this_obj = ctx.get_this_binding();
+            if (!this_obj && ctx.original_this_was_nullish()) { ctx.throw_type_error("Promise method called on null or undefined"); return Value(); }
+            Value raw_this = ctx.get_binding("this");
+            if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise static methods require a constructor this"); return Value(); }
+            Function* this_ctor = nullptr;
             if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
+            else if (!this_ctor) { ctx.throw_type_error("Promise static methods require a callable constructor"); return Value(); }
 
             Object* iterable = args[0].as_object();
             // ES6: Support Symbol.iterator for non-array iterables
@@ -366,7 +383,7 @@ void register_promise_builtins(Context& ctx) {
                     }
                 }
                 if (!collected_arr) {
-                    ctx.throw_exception(Value(std::string("Promise.all expects an iterable")));
+                    ctx.throw_type_error("Promise.all expects an iterable");
                     return Value();
                 }
             }
@@ -454,16 +471,29 @@ void register_promise_builtins(Context& ctx) {
 
     auto promise_race_static = ObjectFactory::create_native_function("race",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("Promise.race expects an iterable")));
-                return Value();
+            // this validation is synchronous per spec
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj && ctx.original_this_was_nullish()) { ctx.throw_type_error("Promise method called on null or undefined"); return Value(); }
+            Value raw_this = ctx.get_binding("this");
+            if (!raw_this.is_object() && !raw_this.is_function()) { ctx.throw_type_error("Promise static methods require a constructor this"); return Value(); }
+            Function* this_ctor = nullptr;
+            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
+            else if (!this_ctor) { ctx.throw_type_error("Promise static methods require a callable constructor"); return Value(); }
+
+            // Create result promise first (IfAbruptRejectPromise pattern)
+            auto _race_result_obj = ObjectFactory::create_promise(&ctx);
+            Promise* _race_result = static_cast<Promise*>(_race_result_obj.get());
+            if (this_ctor) { Value _p = this_ctor->get_property("prototype"); if (_p.is_object()) _race_result->set_prototype(_p.as_object()); }
+
+            // If argument is not iterable, reject promise (not synchronous throw)
+            if (args.empty() || (!args[0].is_object() && !args[0].is_function())) {
+                ctx.throw_type_error("Promise.race requires an iterable argument");
+                _race_result->reject(ctx.get_exception());
+                ctx.clear_exception();
+                return Value(_race_result_obj.release());
             }
 
-            Function* this_ctor = nullptr;
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj && dynamic_cast<Function*>(this_obj)) this_ctor = static_cast<Function*>(this_obj);
-
-            Object* iterable = args[0].as_object();
+            Object* iterable = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             // ES6: Support Symbol.iterator for non-array iterables
             Object* race_collected = nullptr;
             std::unique_ptr<Object> race_collected_owner;
@@ -493,19 +523,17 @@ void register_promise_builtins(Context& ctx) {
                     }
                 }
                 if (!race_collected) {
-                    ctx.throw_exception(Value(std::string("Promise.race expects an iterable")));
-                    return Value();
+                    ctx.throw_type_error("Promise.race expects an iterable");
+                    _race_result->reject(ctx.get_exception());
+                    ctx.clear_exception();
+                    return Value(_race_result_obj.release());
                 }
             }
 
             uint32_t length = iterable->get_length();
-            auto result_promise_obj = ObjectFactory::create_promise(&ctx);
-            Promise* result_promise = static_cast<Promise*>(result_promise_obj.get());
-
-            if (this_ctor) {
-                Value proto = this_ctor->get_property("prototype");
-                if (proto.is_object()) result_promise->set_prototype(proto.as_object());
-            }
+            // Use the already-created result promise
+            auto& result_promise_obj = _race_result_obj;
+            Promise* result_promise = _race_result;
 
             if (length == 0) {
                 return Value(result_promise_obj.release());
@@ -562,8 +590,11 @@ void register_promise_builtins(Context& ctx) {
     auto promise_allSettled_static = ObjectFactory::create_native_function("allSettled",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("Promise.allSettled expects an iterable")));
-                return Value();
+                auto _rej = ObjectFactory::create_promise(&ctx);
+                ctx.throw_type_error("Promise.allSettled expects an iterable");
+                static_cast<Promise*>(_rej.get())->reject(ctx.get_exception());
+                ctx.clear_exception();
+                return Value(_rej.release());
             }
 
             Object* iterable = args[0].as_object();
@@ -818,8 +849,11 @@ void register_promise_builtins(Context& ctx) {
     auto promise_any_static = ObjectFactory::create_native_function("any",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_object()) {
-                ctx.throw_exception(Value(std::string("Promise.any expects an iterable")));
-                return Value();
+                auto _rej = ObjectFactory::create_promise(&ctx);
+                ctx.throw_type_error("Promise.any expects an iterable");
+                static_cast<Promise*>(_rej.get())->reject(ctx.get_exception());
+                ctx.clear_exception();
+                return Value(_rej.release());
             }
 
             Object* iterable = args[0].as_object();
