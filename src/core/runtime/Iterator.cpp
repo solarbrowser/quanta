@@ -58,13 +58,13 @@ Value Iterator::iterator_next(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.next called on non-object")));
+        ctx.throw_type_error("Iterator.prototype.next called on non-object");
         return Value();
     }
     
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.next called on non-iterator")));
+        ctx.throw_type_error("Iterator.prototype.next called on non-iterator");
         return Value();
     }
     
@@ -79,13 +79,13 @@ Value Iterator::iterator_return(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.return called on non-object")));
+        ctx.throw_type_error("Iterator.prototype.return called on non-object");
         return Value();
     }
     
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.return called on non-iterator")));
+        ctx.throw_type_error("Iterator.prototype.return called on non-iterator");
         return Value();
     }
     
@@ -100,13 +100,13 @@ Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
     
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.throw called on non-object")));
+        ctx.throw_type_error("Iterator.prototype.throw called on non-object");
         return Value();
     }
     
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Iterator.prototype.throw called on non-iterator")));
+        ctx.throw_type_error("Iterator.prototype.throw called on non-iterator");
         return Value();
     }
     
@@ -285,12 +285,12 @@ Value StringIterator::string_iterator_next_method(Context& ctx, const std::vecto
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("StringIterator next() called without proper this binding")));
+        ctx.throw_type_error("StringIterator next() called without proper this binding");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("StringIterator next() called on non-iterator object")));
+        ctx.throw_type_error("StringIterator next() called on non-iterator object");
         return Value();
     }
     
@@ -318,12 +318,12 @@ Value MapIterator::map_iterator_next_method(Context& ctx, const std::vector<Valu
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("MapIterator next() called without proper this binding")));
+        ctx.throw_type_error("MapIterator next() called without proper this binding");
         return Value();
     }
-    
+
     if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("MapIterator next() called on non-iterator object")));
+        ctx.throw_type_error("MapIterator next() called on non-iterator object");
         return Value();
     }
     
@@ -382,12 +382,12 @@ Value SetIterator::set_iterator_next_method(Context& ctx, const std::vector<Valu
     
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("SetIterator next() called without proper this binding")));
+        ctx.throw_type_error("SetIterator next() called without proper this binding");
         return Value();
     }
     
     if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("SetIterator next() called on non-iterator object")));
+        ctx.throw_type_error("SetIterator next() called on non-iterator object");
         return Value();
     }
     
@@ -504,7 +504,7 @@ void for_of_loop(const Value& iterable,
                  Context& ctx) {
     auto iterator = get_iterator(iterable, ctx);
     if (!iterator) {
-        ctx.throw_exception(Value(std::string("Value is not iterable")));
+        ctx.throw_type_error("Value is not iterable");
         return;
     }
     
@@ -569,7 +569,7 @@ void setup_array_iterator_methods(Context& ctx) {
                 (void)args;
                 Object* array = ctx.get_this_binding();
                 if (!array) {
-                    ctx.throw_exception(Value(std::string("Array.prototype[Symbol.iterator] called on non-object")));
+                    ctx.throw_type_error("Array.prototype[Symbol.iterator] called on non-object");
                     return Value();
                 }
                 auto iterator = ArrayIterator::create_values_iterator(array);

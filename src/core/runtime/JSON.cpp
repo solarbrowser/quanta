@@ -603,6 +603,9 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
         return "null";
     } else if (value.is_undefined()) {
         return "null";
+    } else if (value.is_bigint()) {
+        if (context_) context_->throw_type_error("Do not know how to serialize a BigInt");
+        return "null";
     } else if (value.is_symbol()) {
         // ES6: symbols serialize as undefined (which becomes "null" in arrays, omitted in objects)
         return "null";

@@ -102,6 +102,19 @@ static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
                 if (ctx.has_exception()) return {};
             }
         }
+        // Check @@toPrimitive first (string hint).
+        Symbol* toPrim_sym = Symbol::get_well_known("Symbol.toPrimitive");
+        if (toPrim_sym) {
+            Value toPrim = obj->get_property(toPrim_sym->to_property_key());
+            if (ctx.has_exception()) return {};
+            if (toPrim.is_function()) {
+                Value r = toPrim.as_function()->call(ctx, {Value(std::string("string"))}, v);
+                if (ctx.has_exception()) return {};
+                if (!r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+                ctx.throw_type_error("Cannot convert object to string");
+                return {};
+            }
+        }
         Value ts = obj->get_property("toString");
         if (ctx.has_exception()) return {};
         if (ts.is_function()) {
@@ -317,17 +330,17 @@ void register_string_builtins(Context& ctx) {
                 if (sym_match.is_undefined()) {
                     // No Symbol.match property - check if it's a RegExp
                     if (arg_obj->get_type() == Object::ObjectType::RegExp) {
-                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                        ctx.throw_type_error("First argument to String.prototype.includes must not be a regular expression");
                         return Value();
                     }
                 } else if (sym_match.to_boolean()) {
-                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                    ctx.throw_type_error("First argument to String.prototype.includes must not be a regular expression");
                     return Value();
                 }
             }
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
+                ctx.throw_type_error("Cannot convert a Symbol value to a string");
                 return Value();
             }
 
@@ -335,7 +348,7 @@ void register_string_builtins(Context& ctx) {
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
+                    ctx.throw_type_error("Cannot convert a Symbol value to a number");
                     return Value();
                 }
                 position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -379,17 +392,17 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (sym_match.is_undefined()) {
                     if (arg_obj->get_type() == Object::ObjectType::RegExp) {
-                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
+                        ctx.throw_type_error("First argument to String.prototype.startsWith must not be a regular expression");
                         return Value();
                     }
                 } else if (sym_match.to_boolean()) {
-                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.startsWith must not be a regular expression")));
+                    ctx.throw_type_error("First argument to String.prototype.startsWith must not be a regular expression");
                     return Value();
                 }
             }
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
+                ctx.throw_type_error("Cannot convert a Symbol value to a string");
                 return Value();
             }
 
@@ -397,7 +410,7 @@ void register_string_builtins(Context& ctx) {
             size_t position = 0;
             if (args.size() > 1) {
                 if (args[1].is_symbol()) {
-                    ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
+                    ctx.throw_type_error("Cannot convert a Symbol value to a number");
                     return Value();
                 }
                 position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -435,17 +448,17 @@ void register_string_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (sym_match.is_undefined()) {
                     if (arg_obj->get_type() == Object::ObjectType::RegExp) {
-                        ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
+                        ctx.throw_type_error("First argument to String.prototype.endsWith must not be a regular expression");
                         return Value();
                     }
                 } else if (sym_match.to_boolean()) {
-                    ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.endsWith must not be a regular expression")));
+                    ctx.throw_type_error("First argument to String.prototype.endsWith must not be a regular expression");
                     return Value();
                 }
             }
 
             if (args[0].is_symbol()) {
-                ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
+                ctx.throw_type_error("Cannot convert a Symbol value to a string");
                 return Value();
             }
 
@@ -2071,7 +2084,7 @@ void register_string_builtins(Context& ctx) {
     auto string_raw_fn = ObjectFactory::create_native_function("raw",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) {
-                ctx.throw_exception(Value(std::string("TypeError: String.raw requires at least 1 argument")));
+                ctx.throw_type_error("String.raw requires at least 1 argument");
                 return Value();
             }
 
@@ -2130,7 +2143,7 @@ void register_string_builtins(Context& ctx) {
             for (const auto& arg : args) {
                 double num = arg.to_number();
                 if (num < 0 || num > 0x10FFFF || num != std::floor(num)) {
-                    ctx.throw_exception(Value(std::string("RangeError: Invalid code point")));
+                    ctx.throw_range_error("Invalid code point");
                     return Value();
                 }
                 uint32_t code = static_cast<uint32_t>(num);
@@ -2177,16 +2190,16 @@ void register_string_builtins(Context& ctx) {
                         if (ctx.has_exception()) return Value();
                         if (sym_match.is_undefined()) {
                             if (arg_obj->get_type() == Object::ObjectType::RegExp) {
-                                ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                                ctx.throw_type_error("First argument to String.prototype.includes must not be a regular expression");
                                 return Value();
                             }
                         } else if (sym_match.to_boolean()) {
-                            ctx.throw_exception(Value(std::string("TypeError: First argument to String.prototype.includes must not be a regular expression")));
+                            ctx.throw_type_error("First argument to String.prototype.includes must not be a regular expression");
                             return Value();
                         }
                     }
                     if (args[0].is_symbol()) {
-                        ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a string")));
+                        ctx.throw_type_error("Cannot convert a Symbol value to a string");
                         return Value();
                     }
                     // Convert argument to string (call toString() for objects)
@@ -2205,7 +2218,7 @@ void register_string_builtins(Context& ctx) {
                     size_t position = 0;
                     if (args.size() > 1) {
                         if (args[1].is_symbol()) {
-                            ctx.throw_exception(Value(std::string("TypeError: Cannot convert a Symbol value to a number")));
+                            ctx.throw_type_error("Cannot convert a Symbol value to a number");
                             return Value();
                         }
                         position = static_cast<size_t>(std::max(0.0, args[1].to_number()));
@@ -2232,7 +2245,7 @@ void register_string_builtins(Context& ctx) {
                         try {
                             this_val = ctx.get_binding("this");
                         } catch (...) {
-                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.valueOf called on non-object")));
+                            ctx.throw_type_error("String.prototype.valueOf called on non-object");
                             return Value();
                         }
                     }
@@ -2275,7 +2288,7 @@ void register_string_builtins(Context& ctx) {
                         try {
                             this_val = ctx.get_binding("this");
                         } catch (...) {
-                            ctx.throw_exception(Value(std::string("TypeError: String.prototype.toString called on non-object")));
+                            ctx.throw_type_error("String.prototype.toString called on non-object");
                             return Value();
                         }
                     }
