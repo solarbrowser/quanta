@@ -926,6 +926,10 @@ void Set::setup_set_prototype(Context& ctx) {
         }
         Value size_val = other->get_property("size");
         if (ctx.has_exception()) return false;
+        if (size_val.is_symbol() || size_val.is_bigint()) {
+            ctx.throw_type_error("GetSetRecord: size cannot be a Symbol or BigInt");
+            return false;
+        }
         double num_size = size_val.to_number();
         if (ctx.has_exception()) return false;
         if (std::isnan(num_size)) {

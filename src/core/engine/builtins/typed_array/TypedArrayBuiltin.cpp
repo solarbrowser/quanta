@@ -942,20 +942,18 @@ void register_typed_array_builtins(Context& ctx) {
                 if (elem.is_object() || elem.is_function()) {
                     Object* obj = elem.is_function() ? static_cast<Object*>(elem.as_function()) : elem.as_object();
                     locale_fn = obj->get_property("toLocaleString");
-                } else if (elem.is_number()) {
-                    Value num_ctor = ctx.get_binding("Number");
-                    Object* np_obj = nullptr;
-                    if (num_ctor.is_function()) {
-                        Value np = static_cast<Object*>(num_ctor.as_function())->get_property("prototype");
+                } else if (elem.is_number() || elem.is_bigint()) {
+                    const char* ctor_name = elem.is_bigint() ? "BigInt" : "Number";
+                    Value ctor = ctx.get_binding(ctor_name);
+                    if (ctor.is_function()) {
+                        Value np = static_cast<Object*>(ctor.as_function())->get_property("prototype");
                         if (!ctx.has_exception()) {
-                            if (np.is_object()) np_obj = np.as_object();
-                            else if (np.is_function()) np_obj = static_cast<Object*>(np.as_function());
+                            Object* np_obj = np.is_object() ? np.as_object() : (np.is_function() ? static_cast<Object*>(np.as_function()) : nullptr);
+                            if (np_obj) {
+                                Value tls = np_obj->get_property("toLocaleString");
+                                if (!ctx.has_exception() && tls.is_function()) locale_fn = tls;
+                            }
                         }
-                        if (ctx.has_exception()) ctx.clear_exception();
-                    }
-                    if (np_obj) {
-                        Value tls = np_obj->get_property("toLocaleString");
-                        if (!ctx.has_exception() && tls.is_function()) locale_fn = tls;
                         if (ctx.has_exception()) ctx.clear_exception();
                     }
                 }
