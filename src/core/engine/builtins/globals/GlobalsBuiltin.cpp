@@ -834,9 +834,11 @@ void register_global_builtins(Context& ctx) {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
             // ToIndex(bits): Symbol/BigInt → TypeError, negative → RangeError
             if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
-            double n_d = args[0].to_number();
+            double n_raw = args[0].to_number();
             if (ctx.has_exception()) return Value();
-            if (std::isnan(n_d) || n_d < 0 || n_d > 9007199254740991.0) { ctx.throw_range_error("Invalid width"); return Value(); }
+            // ToIndex: NaN → 0, then truncate towards 0, then check >= 0
+            double n_d = std::isnan(n_raw) ? 0.0 : (n_raw < 0 ? std::ceil(n_raw) : std::floor(n_raw));
+            if (n_d < 0 || n_d > 9007199254740991.0 || std::isinf(n_d)) { ctx.throw_range_error("Invalid width"); return Value(); }
             int64_t n = static_cast<int64_t>(n_d);
             // ToBigInt(bigint): convert if needed
             Value bv = args[1];
@@ -873,9 +875,10 @@ void register_global_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
             if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
-            double n_d = args[0].to_number();
+            double n_raw2 = args[0].to_number();
             if (ctx.has_exception()) return Value();
-            if (std::isnan(n_d) || n_d < 0 || n_d > 9007199254740991.0) { ctx.throw_range_error("Invalid width"); return Value(); }
+            double n_d = std::isnan(n_raw2) ? 0.0 : (n_raw2 < 0 ? std::ceil(n_raw2) : std::floor(n_raw2));
+            if (n_d < 0 || n_d > 9007199254740991.0 || std::isinf(n_d)) { ctx.throw_range_error("Invalid width"); return Value(); }
             int64_t n = static_cast<int64_t>(n_d);
             Value bv = args[1];
             if (!bv.is_bigint()) {
