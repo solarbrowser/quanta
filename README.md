@@ -5,15 +5,7 @@ Quanta is an experimental ECMAScript (or JS) engine focused on both **memory eff
 
 ## Specification Support
 
-> Tested with Kangax compatibility tables
-
-| ECMAScript Version | Support |
-|--------------------|--------|
-| ES1-ES5            | ~100%  |
-| ES6                | ~99%   |
-| ES2016+            | ~85%   |
-
-## Test262
+### Test262
   
 You can review executed tests here: [quanta.js.org](https://quanta.js.org/test262/test262.html)
 
