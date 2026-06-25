@@ -163,6 +163,25 @@ void register_symbol_builtins(Context& ctx) {
             });
         sym_proto->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
+        // Symbol.prototype[Symbol.toPrimitive] -- returns the raw symbol value, which causes
+        // TypeError when callers try to ToSTRING it (e.g. "".indexOf(Object(Symbol()))).
+        Symbol* toPrim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+        if (toPrim_sym) {
+            auto sym_toPrimitive = ObjectFactory::create_native_function("[Symbol.toPrimitive]",
+                [](Context& ctx, const std::vector<Value>&) -> Value {
+                    Value prim = ctx.get_binding("__primitive_this__");
+                    if (prim.is_symbol()) return prim;
+                    Object* obj = ctx.get_this_binding();
+                    if (obj) {
+                        Value inner = obj->get_property("[[PrimitiveValue]]");
+                        if (inner.is_symbol()) return inner;
+                    }
+                    ctx.throw_type_error("Symbol.prototype[Symbol.toPrimitive] requires a symbol");
+                    return Value();
+                }, 1);
+            sym_proto->set_property(toPrim_sym->to_property_key(), Value(sym_toPrimitive.release()), PropertyAttributes::BuiltinFunction);
+        }
+
         symbol_constructor->set_property("prototype", Value(sym_proto.release()));
     }
 

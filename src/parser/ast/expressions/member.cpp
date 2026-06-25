@@ -412,7 +412,7 @@ Value MemberExpression::evaluate(Context& ctx) {
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
             NumberLiteral* num_lit = static_cast<NumberLiteral*>(property_.get());
             double index_double = num_lit->get_value();
-            if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
+            if (__builtin_expect(std::isfinite(index_double) && index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
                 uint32_t index = static_cast<uint32_t>(index_double);
                 Value element = obj->get_element(index);
                 if (!element.is_undefined()) {
@@ -423,10 +423,11 @@ Value MemberExpression::evaluate(Context& ctx) {
 
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        // fp: Variable array index
+        // fp: Variable array index -- guard std::isfinite to avoid UB from
+        // static_cast<uint32_t>(Infinity) which compilers exploit as always-true.
         if (__builtin_expect(prop_value.is_number(), 1)) {
             double index_double = prop_value.as_number();
-            if (__builtin_expect(index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
+            if (__builtin_expect(std::isfinite(index_double) && index_double >= 0 && index_double == static_cast<uint32_t>(index_double), 1)) {
                 uint32_t index = static_cast<uint32_t>(index_double);
                 Value element = obj->get_element(index);
                 if (!element.is_undefined()) {
@@ -1356,11 +1357,19 @@ Value MemberExpression::evaluate(Context& ctx) {
             Value prop_value = property_->evaluate(ctx);
             if (ctx.has_exception()) return Value();
             
-            if (obj->is_array() && prop_value.is_number()) {
-                uint32_t index = static_cast<uint32_t>(prop_value.as_number());
-                return obj->get_element(index);
+            if (prop_value.is_number()) {
+                double d = prop_value.as_number();
+                if (std::isfinite(d) && d >= 0 && d == std::floor(d) && d < 4294967295.0) {
+                    uint32_t idx = static_cast<uint32_t>(d);
+                    if (obj->is_array()) {
+                        return obj->get_element(idx);
+                    }
+                } else if (obj->is_array()) {
+                    // Non-integer / infinite / NaN index on array: no element
+                    return Value();
+                }
             }
-            
+
             return obj->get_property(prop_value.to_string());
         } else {
             if (property_->get_type() == ASTNode::Type::IDENTIFIER) {

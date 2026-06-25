@@ -34,13 +34,13 @@ static std::string apply_substitution(const std::string& replacement, const std:
         else if (next == '&') { result += matched; i++; }
         else if (next == '`') { result += str.substr(0, match_pos); i++; }
         else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
-        else if (next >= '1' && next <= '9') {
+        else if (next >= '0' && next <= '9') {
             size_t n = next - '0';
             if (i + 2 < replacement.size() && replacement[i+2] >= '0' && replacement[i+2] <= '9') {
                 size_t n2 = n * 10 + (replacement[i+2] - '0');
-                if (n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
+                if (n2 >= 1 && n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
             }
-            if (n <= captures.size()) { result += captures[n-1]; i++; }
+            if (n >= 1 && n <= captures.size()) { result += captures[n-1]; i++; }
             else result += replacement[i];
         } else { result += replacement[i]; }
     }
@@ -159,27 +159,9 @@ void register_string_builtins(Context& ctx) {
                 if (arg.is_symbol()) {
                     str_value = arg.as_symbol()->to_string();
                 } else if (arg.is_object() || arg.is_function()) {
-                    // Spec: ToString for objects calls ToPrimitive("string") -> toString then valueOf
-                    Object* obj = arg.is_function() ? static_cast<Object*>(arg.as_function()) : arg.as_object();
-                    Value ts = obj->get_property("toString");
-                    if (!ctx.has_exception() && ts.is_function()) {
-                        Value r = ts.as_function()->call(ctx, {}, arg);
-                        if (!ctx.has_exception() && !r.is_object() && !r.is_function()) {
-                            str_value = r.to_string();
-                        } else if (!ctx.has_exception()) {
-                            Value vof = obj->get_property("valueOf");
-                            if (!ctx.has_exception() && vof.is_function()) {
-                                Value r2 = vof.as_function()->call(ctx, {}, arg);
-                                if (!ctx.has_exception() && !r2.is_object() && !r2.is_function()) {
-                                    str_value = r2.to_string();
-                                } else if (!ctx.has_exception()) {
-                                    ctx.throw_type_error("Cannot convert object to string");
-                                }
-                            }
-                        }
-                    } else if (!ctx.has_exception()) {
-                        str_value = arg.to_string();
-                    }
+                    // Spec: ToString for objects: ToPrimitive("string") -> toString then valueOf.
+                    bool _ok;
+                    str_value = string_this_coerce(ctx, arg, _ok);
                     if (ctx.has_exception()) return Value();
                 } else {
                     str_value = arg.to_string();
@@ -257,14 +239,27 @@ void register_string_builtins(Context& ctx) {
             size_t pad_need = target - str_len;
             std::string padding;
             if (!pad_string.empty()) {
-                // Truncate by UTF-16 code unit, not byte -- a naive byte-level resize() would
-                // chop a multi-byte UTF-8 sequence (surrogate pair / astral char) mid-encoding.
+                // Truncate by UTF-16 code unit; combine surrogate pairs into proper 4-byte
+                // UTF-8 supplementary chars so the result compares equal to the original string.
                 std::string repeated;
                 while (utf16_length(repeated) < pad_need) repeated += pad_string;
                 for (size_t i = 0; i < pad_need; i++) {
                     int32_t unit = utf16_code_unit_at(repeated, i);
                     if (unit < 0) break;
-                    padding += encode_utf16_unit(static_cast<uint32_t>(unit));
+                    uint32_t u = static_cast<uint32_t>(unit);
+                    if (u >= 0xD800 && u <= 0xDBFF && i + 1 < pad_need) {
+                        int32_t low = utf16_code_unit_at(repeated, i + 1);
+                        if (low >= 0xDC00 && low <= 0xDFFF) {
+                            uint32_t cp = 0x10000 + ((u - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
+                            padding += static_cast<char>(0xF0 | (cp >> 18));
+                            padding += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                            padding += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            padding += static_cast<char>(0x80 | (cp & 0x3F));
+                            i++;
+                            continue;
+                        }
+                    }
+                    padding += encode_utf16_unit(u);
                 }
             }
             return Value(padding + str);
@@ -296,14 +291,25 @@ void register_string_builtins(Context& ctx) {
             size_t pad_need = target - str_len;
             std::string padding;
             if (!pad_string.empty()) {
-                // Truncate by UTF-16 code unit, not byte -- a naive byte-level resize() would
-                // chop a multi-byte UTF-8 sequence (surrogate pair / astral char) mid-encoding.
                 std::string repeated;
                 while (utf16_length(repeated) < pad_need) repeated += pad_string;
                 for (size_t i = 0; i < pad_need; i++) {
                     int32_t unit = utf16_code_unit_at(repeated, i);
                     if (unit < 0) break;
-                    padding += encode_utf16_unit(static_cast<uint32_t>(unit));
+                    uint32_t u = static_cast<uint32_t>(unit);
+                    if (u >= 0xD800 && u <= 0xDBFF && i + 1 < pad_need) {
+                        int32_t low = utf16_code_unit_at(repeated, i + 1);
+                        if (low >= 0xDC00 && low <= 0xDFFF) {
+                            uint32_t cp = 0x10000 + ((u - 0xD800) << 10) + (static_cast<uint32_t>(low) - 0xDC00);
+                            padding += static_cast<char>(0xF0 | (cp >> 18));
+                            padding += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                            padding += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                            padding += static_cast<char>(0x80 | (cp & 0x3F));
+                            i++;
+                            continue;
+                        }
+                    }
+                    padding += encode_utf16_unit(u);
                 }
             }
             return Value(str + padding);
@@ -630,67 +636,26 @@ void register_string_builtins(Context& ctx) {
             std::string str = get_string_this(ctx, this_ok);
             if (!this_ok) return Value();
 
-            // RegExpCreate(regexp, "g"): no built-in RegExp.prototype[Symbol.matchAll] exists
-            // in this engine, so hand-roll the RegExpStringIterator algorithm directly here.
+            // RegExpCreate(regexp, "g"): check for any installed RegExp.prototype[Symbol.matchAll]
+            // (no built-in, but tests/user code can install one) before falling back to iterator.
             Value regexp_ctor = ctx.get_binding("RegExp");
             if (!regexp_ctor.is_function()) { ctx.throw_type_error("RegExp constructor not found"); return Value(); }
             Value rx = regexp_ctor.as_function()->construct(ctx, {regexp, Value(std::string("g"))});
             if (ctx.has_exception()) return Value();
             Object* rx_obj = rx.is_function() ? static_cast<Object*>(rx.as_function()) : (rx.is_object() ? rx.as_object() : nullptr);
             if (!rx_obj) { ctx.throw_type_error("RegExpCreate did not return an object"); return Value(); }
-
-            struct MatchAllState {
-                std::string str;
-                Value regex;
-                bool done = false;
-            };
-            auto state = std::make_shared<MatchAllState>(MatchAllState{str, rx, false});
-
-            auto iterator = ObjectFactory::create_object();
-            Object* iter_ptr = iterator.get();
-
-            auto next_fn = ObjectFactory::create_native_function("next",
-                [state](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    auto result = ObjectFactory::create_object();
-                    if (state->done) {
-                        result->set_property("done", Value(true));
-                        result->set_property("value", Value());
-                        return Value(result.release());
-                    }
-                    Object* rx = state->regex.as_object();
-                    Value exec_method = rx->get_property("exec");
-                    if (!exec_method.is_function()) {
-                        state->done = true;
-                        result->set_property("done", Value(true));
-                        result->set_property("value", Value());
-                        return Value(result.release());
-                    }
-                    Value match = exec_method.as_function()->call(ctx, {Value(state->str)}, state->regex);
-                    if (ctx.has_exception()) return Value();
-                    if (match.is_null() || match.is_undefined()) {
-                        state->done = true;
-                        result->set_property("done", Value(true));
-                        result->set_property("value", Value());
-                    } else {
-                        result->set_property("done", Value(false));
-                        result->set_property("value", match);
-                    }
-                    return Value(result.release());
-                }, 0);
-            iterator->set_property("next", Value(next_fn.release()));
-
-            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-            if (iter_sym) {
-                auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-                    [iter_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                        (void)ctx; (void)args;
-                        return Value(iter_ptr);
-                    }, 0);
-                iterator->set_property(iter_sym->to_property_key(), Value(sym_iter_fn.release()));
+            Value rx_matchAll = rx_obj->get_property("Symbol.matchAll");
+            if (ctx.has_exception()) return Value();
+            if (rx_matchAll.is_function()) {
+                return rx_matchAll.as_function()->call(ctx, {Value(str)}, rx);
             }
-
-            return Value(iterator.release());
+            // Invoke(rx, @@matchAll, «S»): undefined/non-callable throws TypeError (per spec Invoke).
+            if (!rx_matchAll.is_function()) {
+                ctx.throw_type_error(rx_matchAll.is_null() || rx_matchAll.is_undefined()
+                    ? "rx[Symbol.matchAll] is not defined" : "rx[Symbol.matchAll] is not a function");
+                return Value();
+            }
+            return rx_matchAll.as_function()->call(ctx, {Value(str)}, rx);
         }, 1);
     PropertyDescriptor matchAll_desc(Value(matchAll_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -958,7 +923,9 @@ void register_string_builtins(Context& ctx) {
             if (args.size() == 0 || str.empty()) return Value();
 
             if (args[0].is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a number"); return Value(); }
-            int32_t pos = static_cast<int32_t>(args[0].to_number());
+            double dpos = args[0].to_number();
+            if (ctx.has_exception()) return Value();
+            int32_t pos = std::isnan(dpos) ? 0 : static_cast<int32_t>(dpos);
             if (pos < 0 || static_cast<size_t>(pos) >= utf16_length(str)) {
                 return Value();
             }
@@ -1016,12 +983,14 @@ void register_string_builtins(Context& ctx) {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             std::string str = this_value.to_string();
 
-            if (args.empty()) return Value();
-            if (args[0].is_symbol() || args[0].is_bigint()) {
+            Value idx_arg = args.empty() ? Value() : args[0];  // undefined if no args → ToInteger → 0
+            if (idx_arg.is_symbol() || idx_arg.is_bigint()) {
                 ctx.throw_type_error("Cannot convert Symbol/BigInt to number");
                 return Value();
             }
-            int64_t index = static_cast<int64_t>(args[0].to_number());
+            double d = idx_arg.to_number();
+            if (ctx.has_exception()) return Value();
+            int64_t index = std::isnan(d) ? 0 : static_cast<int64_t>(d);
             int64_t len = static_cast<int64_t>(utf16_length(str));
 
             if (index < 0) {
@@ -1130,10 +1099,10 @@ void register_string_builtins(Context& ctx) {
             }
 
             auto result_array = ObjectFactory::create_array(0);
-            if (lim == 0) return Value(result_array.release());
 
             if (separator.is_undefined()) {
-                result_array->set_element(0, Value(str));
+                if (lim != 0) result_array->set_element(0, Value(str));
+                if (lim != 0) result_array->set_length(1);
                 return Value(result_array.release());
             }
 
@@ -1149,7 +1118,7 @@ void register_string_builtins(Context& ctx) {
                 // Object with no usable Symbol.split -- fall through to string coercion below.
             }
 
-            // Fallback: ToString(separator) and do a pure string split.
+            // Fallback: ToString(separator) -- must happen BEFORE the lim=0 early-exit per ES2024.
             std::string sep_str;
             if (separator.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
             if (separator.is_object() || separator.is_function()) {
@@ -1158,6 +1127,8 @@ void register_string_builtins(Context& ctx) {
             } else {
                 sep_str = separator.to_string();
             }
+
+            if (lim == 0) return Value(result_array.release());
 
             uint32_t idx = 0;
             if (sep_str.empty()) {
@@ -1197,12 +1168,15 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("toLowerCase", toLowerCase_desc);
 
     auto str_concat_fn = ObjectFactory::create_native_function("concat",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string result = toString_helper(ctx, this_value);
+            if (ctx.has_exception()) return Value();
 
             for (const auto& arg : args) {
-                result += arg.to_string();
+                std::string s = obj_to_string(ctx, arg);
+                if (ctx.has_exception()) return Value();
+                result += s;
             }
 
             return Value(result);
@@ -1283,7 +1257,7 @@ void register_string_builtins(Context& ctx) {
 
     // ES1: 15.5.4.7 String.prototype.lastIndexOf(searchString, position)
     auto str_lastIndexOf_fn = ObjectFactory::create_native_function("lastIndexOf",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
 
@@ -1291,11 +1265,13 @@ void register_string_builtins(Context& ctx) {
                 return Value(-1.0);
             }
 
-            std::string search = args[0].to_string();
+            std::string search = obj_to_string(ctx, args[0]);
+            if (ctx.has_exception()) return Value();
             size_t start = str.length();
 
-            if (args.size() > 1) {
+            if (args.size() > 1 && !args[1].is_undefined()) {
                 double pos = args[1].to_number();
+                if (ctx.has_exception()) return Value();
                 if (std::isnan(pos) || pos >= static_cast<double>(str.length())) {
                     start = str.length();
                 } else if (pos < 0) {
@@ -1341,7 +1317,7 @@ void register_string_builtins(Context& ctx) {
                 }
             }
 
-            if (args.size() > 1) {
+            if (args.size() > 1 && !args[1].is_undefined()) {
                 double end_num = args[1].to_number();
                 if (std::isnan(end_num) || end_num < 0) {
                     end = 0;
@@ -1814,7 +1790,9 @@ void register_string_builtins(Context& ctx) {
                 ctx.throw_type_error("String.raw: template.raw.length is a Symbol");
                 return Value();
             }
-            uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.to_number()) : 0;
+            double length_d = len_val.is_number() ? len_val.to_number() : 0.0;
+            if (length_d <= 0 || std::isnan(length_d)) return Value(std::string(""));
+            uint32_t length = static_cast<uint32_t>(std::min(length_d, static_cast<double>(0xFFFFFFFFu)));
             if (ctx.has_exception()) return Value();
             std::string result;
             for (uint32_t i = 0; i < length; i++) {
@@ -1861,7 +1839,8 @@ void register_string_builtins(Context& ctx) {
             std::string result;
             for (const auto& arg : args) {
                 double num = arg.to_number();
-                if (num < 0 || num > 0x10FFFF || num != std::floor(num)) {
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(num) || num < 0 || num > 0x10FFFF || num != std::floor(num)) {
                     ctx.throw_range_error("Invalid code point");
                     return Value();
                 }
