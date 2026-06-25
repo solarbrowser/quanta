@@ -1137,6 +1137,12 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
         Value deferred_iter_close_obj;
         bool deferred_iter_close_needed = false;
 
+        // MemberExpression targets get their reference evaluated once up front, before iterator.next() -- cache those values per element index so the assignment below reuses them instead of re-evaluating.
+        size_t elem_count_for_precompute = static_cast<ArrayLiteral*>(pattern)->get_elements().size();
+        std::vector<Value> precomputed_member_obj(elem_count_for_precompute);
+        std::vector<Value> precomputed_member_key(elem_count_for_precompute);
+        std::vector<bool> has_precomputed_member(elem_count_for_precompute, false);
+
         // For codepoint-aware string destructuring
         std::vector<std::string> str_codepoints;
 
@@ -1359,15 +1365,16 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                                         if (tgt && tgt->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
                                             auto* mem = static_cast<MemberExpression*>(tgt);
                                             try {
-                                                mem->get_object()->evaluate(ctx);
+                                                precomputed_member_obj[ei] = mem->get_object()->evaluate(ctx);
                                             } catch (const GeneratorReturnException&) {
                                                 close_iter_for_generator_return();
                                                 return;
                                             }
                                             if (ctx.has_exception()) { close_iter(); return; }
+                                            has_precomputed_member[ei] = true;
                                             if (mem->is_computed()) {
                                                 try {
-                                                    mem->get_property()->evaluate(ctx);
+                                                    precomputed_member_key[ei] = mem->get_property()->evaluate(ctx);
                                                 } catch (const GeneratorReturnException&) {
                                                     close_iter_for_generator_return();
                                                     return;
@@ -1427,7 +1434,6 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 }
                 rest_arr->set_length(rest_idx);
                 assign_to_target(ctx, rest_target, Value(rest_arr.release()));
-                if (ctx.has_exception()) return;
                 break;
             }
 
@@ -1470,7 +1476,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                     } else {
                         elem_value = assign->right_->evaluate(ctx);
                     }
-                    if (ctx.has_exception()) return;
+                    // Break (not return) so the deferred IteratorClose below still runs -- it preserves this exception over any of its own.
+                    if (ctx.has_exception()) break;
                     if (elem_value.is_function() && is_anonymous_function_def(assign->right_.get()) &&
                             lhs && lhs->get_type() == ASTNode::Type::IDENTIFIER) {
                         Function* fn = elem_value.as_function();
@@ -1482,8 +1489,12 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
                 target = lhs;
             }
 
-            assign_to_target(ctx, target, elem_value);
-            if (ctx.has_exception()) return;
+            if (i < has_precomputed_member.size() && has_precomputed_member[i]) {
+                assign_to_target(ctx, target, elem_value, &precomputed_member_obj[i], &precomputed_member_key[i]);
+            } else {
+                assign_to_target(ctx, target, elem_value);
+            }
+            if (ctx.has_exception()) break;
         }
         // Spec ArrayAssignmentPattern step 5: IteratorClose if iterator not exhausted.
         if (deferred_iter_close_needed && deferred_iter_close_obj.is_object()) {
@@ -1508,7 +1519,8 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
 }
 
 // Helper: assign a value to a target node (Identifier, MemberExpression, or nested pattern)
-void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const Value& value) {
+void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const Value& value,
+                                              const Value* precomputed_obj, const Value* precomputed_key) {
     if (!target) return;
 
     if (target->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -1537,7 +1549,8 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
         }
     } else if (target->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         auto* member = static_cast<MemberExpression*>(target);
-        Value obj_val = member->get_object()->evaluate(ctx);
+        // Reuse a reference already evaluated earlier (e.g. destructuring's evaluate-target-before-next() ordering) instead of re-evaluating and re-triggering side effects.
+        Value obj_val = precomputed_obj ? *precomputed_obj : member->get_object()->evaluate(ctx);
         if (ctx.has_exception()) return;
         if (obj_val.is_null() || obj_val.is_undefined()) {
             ctx.throw_type_error(std::string("Cannot set properties of ") +
@@ -1549,13 +1562,10 @@ void AssignmentExpression::assign_to_target(Context& ctx, ASTNode* target, const
                                               : static_cast<Object*>(obj_val.as_function());
             std::string prop_name;
             if (member->is_computed()) {
-                Value key_val = member->get_property()->evaluate(ctx);
+                Value key_val = precomputed_key ? *precomputed_key : member->get_property()->evaluate(ctx);
                 if (ctx.has_exception()) return;
-                if (key_val.is_symbol()) {
-                    prop_name = key_val.as_symbol()->to_property_key();
-                } else {
-                    prop_name = key_val.to_string();
-                }
+                prop_name = key_val.to_property_key();
+                if (ctx.has_exception()) return;
             } else if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 prop_name = static_cast<Identifier*>(member->get_property())->get_name();
             }

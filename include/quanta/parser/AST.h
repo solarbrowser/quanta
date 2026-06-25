@@ -442,7 +442,8 @@ public:
 
     // ES6: Destructuring assignment helpers
     static void destructuring_assign(Context& ctx, ASTNode* pattern, const Value& source_value);
-    static void assign_to_target(Context& ctx, ASTNode* target, const Value& value);
+    static void assign_to_target(Context& ctx, ASTNode* target, const Value& value,
+                                  const Value* precomputed_obj = nullptr, const Value* precomputed_key = nullptr);
 };
 
 class DestructuringAssignment : public ASTNode {
