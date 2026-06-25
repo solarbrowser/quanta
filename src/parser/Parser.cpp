@@ -5959,6 +5959,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
         }
     }
     cls_expr->set_source_text(cls_expr_src);
+    cls_expr->set_is_expression(true);
     return cls_expr;
 }
 

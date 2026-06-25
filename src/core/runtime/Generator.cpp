@@ -521,12 +521,14 @@ void Generator::setup_generator_prototype(Context& ctx) {
                 if (i > 0) params_str += ", ";
                 params_str += param_names[i];
             }
-            std::string func_src = "function* anonymous(" + params_str + ") {" + body_str + "}";
+            std::string toString_src = "function* anonymous(" + params_str + "\n) {\n" + body_str + "\n}";
+            std::string func_src = "(" + toString_src + ")";
 
             try {
                 Lexer lexer(func_src);
                 TokenSequence tokens = lexer.tokenize();
                 Parser parser(tokens);
+                parser.set_source(func_src);
                 auto expr = parser.parse_expression();
                 if (parser.has_errors()) {
                     auto& errors = parser.get_errors();
@@ -541,6 +543,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
                         if (fe->is_generator()) {
                             auto body_clone = fe->get_body() ? fe->get_body()->clone() : nullptr;
                             auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
                     } else if (expr->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
@@ -548,6 +551,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
                         if (fd->is_generator()) {
                             auto body_clone = fd->get_body() ? fd->get_body()->clone() : nullptr;
                             auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            gen_fn->set_source_text(toString_src);
                             return Value(gen_fn.release());
                         }
                     }
@@ -555,6 +559,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
             } catch (...) {}
 
             auto gen_fn = std::make_unique<GeneratorFunction>("anonymous", param_names, nullptr, &ctx);
+            gen_fn->set_source_text(toString_src);
             return Value(gen_fn.release());
         });
 

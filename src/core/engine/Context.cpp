@@ -231,9 +231,9 @@ bool Context::create_lexical_binding(const std::string& name, const Value& value
     return false;
 }
 
-void Context::create_global_function_binding(const std::string& name, const Value& value) {
+void Context::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
     if (variable_environment_) {
-        variable_environment_->create_global_function_binding(name, value);
+        variable_environment_->create_global_function_binding(name, value, configurable);
     }
 }
 
@@ -837,11 +837,14 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
     return Value();
 }
 
-bool Environment::set_binding_direct(const std::string& name, const Value& value) {
+bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
     if (type_ == Type::Object && binding_object_) {
-        // SetMutableBinding step 2: its own HasProperty check (no @@unscopables).
-        // Per spec, Set is still attempted in non-strict mode even if this is false -- callers needing the strict-mode ReferenceError check the property first.
-        binding_object_->has_own_property(name);
+        // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
+        bool still_exists = binding_object_->has_own_property(name);
+        if (!still_exists && ctx && ctx->is_strict_mode()) {
+            ctx->throw_reference_error("'" + name + "' is not defined");
+            return false;
+        }
         return binding_object_->set_property(name, value);
     }
     if (is_mutable_binding(name)) {
@@ -868,12 +871,13 @@ void Environment::create_uninitialized_binding(const std::string& name, bool is_
     initialized_flags_[name] = false;
 }
 
-void Environment::create_global_function_binding(const std::string& name, const Value& value) {
+void Environment::create_global_function_binding(const std::string& name, const Value& value, bool configurable) {
     if (type_ == Type::Object && binding_object_) {
         PropertyDescriptor existing = binding_object_->get_property_descriptor(name);
         PropertyDescriptor desc;
         if (!binding_object_->has_own_property(name) || existing.is_configurable()) {
-            int attrs = PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable;
+            int attrs = PropertyAttributes::Writable | PropertyAttributes::Enumerable;
+            if (configurable) attrs |= PropertyAttributes::Configurable;
             desc = PropertyDescriptor(value, static_cast<PropertyAttributes>(attrs));
         } else {
             desc = PropertyDescriptor(value, existing.get_attributes());

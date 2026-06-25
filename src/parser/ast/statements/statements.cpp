@@ -337,9 +337,38 @@ Value VariableDeclaration::evaluate(Context& ctx) {
         if (name.empty() && declarator->get_init()) {
             Value result = declarator->get_init()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            // Destructuring pattern in variable declaration (const [{x}] = [...])
             ASTNode* id_node = declarator->get_id();
             ASTNode::Type id_type = id_node ? id_node->get_type() : ASTNode::Type::IDENTIFIER;
+            VariableDeclarator::Kind destr_kind = declarator->get_kind();
+            bool is_lex_decl = (destr_kind == VariableDeclarator::Kind::LET ||
+                                destr_kind == VariableDeclarator::Kind::CONST);
+
+            // Pre-create lexical bindings so let/const destructuring lands in this block scope instead of leaking via set_binding's outer-scope walk.
+            if (is_lex_decl) {
+                std::function<void(ASTNode*)> collect_and_bind = [&](ASTNode* node) {
+                    if (!node) return;
+                    auto t = node->get_type();
+                    if (t == ASTNode::Type::IDENTIFIER) {
+                        auto* id = static_cast<Identifier*>(node);
+                        if (!id->get_name().empty())
+                            ctx.create_lexical_binding(id->get_name(), Value(),
+                                destr_kind == VariableDeclarator::Kind::LET);
+                    } else if (t == ASTNode::Type::ARRAY_LITERAL) {
+                        for (auto& elem : static_cast<ArrayLiteral*>(node)->get_elements())
+                            if (elem) collect_and_bind(elem.get());
+                    } else if (t == ASTNode::Type::OBJECT_LITERAL) {
+                        for (auto& prop : static_cast<ObjectLiteral*>(node)->get_properties())
+                            if (prop && prop->value) collect_and_bind(prop->value.get());
+                    } else if (t == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                        collect_and_bind(static_cast<AssignmentExpression*>(node)->get_left());
+                    } else if (t == ASTNode::Type::SPREAD_ELEMENT) {
+                        collect_and_bind(static_cast<SpreadElement*>(node)->get_argument());
+                    }
+                };
+                collect_and_bind(id_node);
+                if (ctx.has_exception()) return Value();
+            }
+
             if (id_type == ASTNode::Type::OBJECT_LITERAL || id_type == ASTNode::Type::ARRAY_LITERAL) {
                 AssignmentExpression::destructuring_assign(ctx, id_node, result);
                 if (ctx.has_exception()) return Value();
@@ -606,6 +635,9 @@ Value BlockStatement::evaluate(Context& ctx) {
     try {
         for (const auto& statement : statements_) {
             if (statement->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                // Generator/async function declarations are block-scoped per spec, not hoisted.
+                auto* fd = static_cast<FunctionDeclaration*>(statement.get());
+                if (fd->is_generator() || fd->is_async()) continue;
                 g_empty_completion = false;
                 last_value = statement->evaluate(ctx);
                 if (ctx.has_exception()) { exiting = true; break; }
@@ -615,19 +647,21 @@ Value BlockStatement::evaluate(Context& ctx) {
         if (!exiting) {
             for (const auto& statement : statements_) {
                 ASTNode::Type stype = statement->get_type();
-                if (stype != ASTNode::Type::FUNCTION_DECLARATION) {
-                    g_empty_completion = false;
-                    Value result = statement->evaluate(ctx);
-                    bool stmt_empty = g_empty_completion;
-                    if (!stmt_empty) {
-                        last_value = result;
-                        block_had_non_empty = true;
-                    }
-                    if (ctx.has_exception() || ctx.has_return_value() ||
-                        ctx.has_break() || ctx.has_continue()) {
-                        exiting = true;
-                        break;
-                    }
+                if (stype == ASTNode::Type::FUNCTION_DECLARATION) {
+                    auto* fd = static_cast<FunctionDeclaration*>(statement.get());
+                    if (!fd->is_generator() && !fd->is_async()) continue;
+                }
+                g_empty_completion = false;
+                Value result = statement->evaluate(ctx);
+                bool stmt_empty = g_empty_completion;
+                if (!stmt_empty) {
+                    last_value = result;
+                    block_had_non_empty = true;
+                }
+                if (ctx.has_exception() || ctx.has_return_value() ||
+                    ctx.has_break() || ctx.has_continue()) {
+                    exiting = true;
+                    break;
                 }
             }
         }
@@ -2558,6 +2592,17 @@ Value TryStatement::evaluate(Context& ctx) {
 
             if (param_name == "__destr_pattern__" && catch_node->get_destructuring_pattern()) {
                 auto* destr = static_cast<DestructuringAssignment*>(catch_node->get_destructuring_pattern());
+                // Pre-create lexical bindings so destructuring writes to catch scope; skip targets that are only a nested pattern's outer property key (e.g. `w` in `{w: {x,y,z}}`).
+                for (const auto& tgt : destr->get_targets()) {
+                    if (!tgt || tgt->get_name().empty()) continue;
+                    const std::string& tname = tgt->get_name();
+                    bool is_key = false;
+                    for (const auto& m : destr->get_property_mappings()) {
+                        if (m.property_name == tname) { is_key = true; break; }
+                    }
+                    if (!is_key)
+                        ctx.create_lexical_binding(tname, Value(), true);
+                }
                 destr->evaluate_with_value(ctx, exception_value);
                 if (ctx.has_exception()) { catch_param_ok = false; }
             } else if (param_name.length() > 14 && param_name.substr(0, 14) == "__destr_array:") {

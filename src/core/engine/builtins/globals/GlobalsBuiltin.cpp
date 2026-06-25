@@ -356,15 +356,20 @@ void register_global_builtins(Context& ctx) {
                     bool is_direct = ctx.is_direct_eval_call();
                     auto* lex_env = ctx.get_lexical_environment();
                     auto* var_env = ctx.get_variable_environment();
-                    if (is_direct) {
-                        if (lex_env) {
-                            for (const auto& vname : var_names) {
-                                if (lex_env->has_lexical_declaration(vname)) {
-                                    ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
-                                    return Value();
-                                }
+
+                    // var-vs-lexical-declaration collision is a SyntaxError regardless of direct/indirect; indirect eval checks the global env, not the caller's lex_env.
+                    Environment* global_lex_env = (!is_direct && engine && engine->get_global_context())
+                        ? engine->get_global_context()->get_lexical_environment()
+                        : lex_env;
+                    if (global_lex_env) {
+                        for (const auto& vname : var_names) {
+                            if (global_lex_env->has_lexical_declaration(vname)) {
+                                ctx.throw_syntax_error("Variable '" + vname + "' has already been declared");
+                                return Value();
                             }
                         }
+                    }
+                    if (is_direct) {
                         if (lex_env != var_env) {
                             Environment* env = lex_env;
                             while (env && env != var_env) {
