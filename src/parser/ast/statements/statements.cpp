@@ -808,6 +808,31 @@ Value ForStatement::evaluate(Context& ctx) {
     Value result;
     Value V; // spec ForBodyEvaluation: V tracks last non-empty body completion
     try {
+        bool has_per_iteration_scope = false;
+        std::vector<std::string> iter_var_names;
+
+        // Destructuring for-init (`for (let [x] = ...;;)`) is a bare AssignmentExpression, not a VariableDeclaration -- pre-create its lexical bindings before evaluating so they don't leak to the outer scope.
+        if (init_ && (init_decl_kind_ == 1 || init_decl_kind_ == 2)) {
+            ASTNode* destr_node = init_.get();
+            if (destr_node->get_type() == ASTNode::Type::ASSIGNMENT_EXPRESSION) {
+                destr_node = static_cast<AssignmentExpression*>(destr_node)->get_left();
+            }
+            if (auto* destr = dynamic_cast<DestructuringAssignment*>(destr_node)) {
+                for (const auto& tgt : destr->get_targets()) {
+                    if (!tgt || tgt->get_name().empty()) continue;
+                    const std::string& tname = tgt->get_name();
+                    bool is_key = false;
+                    for (const auto& m : destr->get_property_mappings()) {
+                        if (m.property_name == tname) { is_key = true; break; }
+                    }
+                    if (is_key) continue;
+                    ctx.create_lexical_binding(tname, Value(), true);
+                    if (init_decl_kind_ == 1) iter_var_names.push_back(tname);
+                }
+                has_per_iteration_scope = !iter_var_names.empty();
+            }
+        }
+
         if (init_) {
             init_->evaluate(ctx);
             if (ctx.has_exception()) {
@@ -819,8 +844,6 @@ Value ForStatement::evaluate(Context& ctx) {
     unsigned int safety_counter = 0;
     const unsigned int max_iterations = 1000000000U;
 
-    bool has_per_iteration_scope = false;
-    std::vector<std::string> iter_var_names;
     if (init_ && init_->get_type() == Type::VARIABLE_DECLARATION) {
         auto* var_decl = static_cast<VariableDeclaration*>(init_.get());
         // Spec 14.7.4.2: only let (not const) gets per-iteration environments.
@@ -1042,7 +1065,8 @@ std::unique_ptr<ASTNode> ForStatement::clone() const {
     std::unique_ptr<ASTNode> cloned_update = update_ ? update_->clone() : nullptr;
     return std::make_unique<ForStatement>(
         std::move(cloned_init), std::move(cloned_test),
-        std::move(cloned_update), body_->clone(), start_, end_
+        std::move(cloned_update), body_->clone(), start_, end_,
+        init_decl_kind_
     );
 }
 

@@ -788,19 +788,23 @@ private:
     std::unique_ptr<ASTNode> test_;
     std::unique_ptr<ASTNode> update_;
     std::unique_ptr<ASTNode> body_;
+    int init_decl_kind_; // -1=none, 0=var, 1=let, 2=const (set when init is a destructuring pattern -- a plain VariableDeclaration carries its own kind instead)
 
 public:
     ForStatement(std::unique_ptr<ASTNode> init, std::unique_ptr<ASTNode> test,
                  std::unique_ptr<ASTNode> update, std::unique_ptr<ASTNode> body,
-                 const Position& start, const Position& end)
-        : ASTNode(Type::FOR_STATEMENT, start, end), 
-          init_(std::move(init)), test_(std::move(test)), 
-          update_(std::move(update)), body_(std::move(body)) {}
-    
+                 const Position& start, const Position& end,
+                 int init_decl_kind = -1)
+        : ASTNode(Type::FOR_STATEMENT, start, end),
+          init_(std::move(init)), test_(std::move(test)),
+          update_(std::move(update)), body_(std::move(body)),
+          init_decl_kind_(init_decl_kind) {}
+
     ASTNode* get_init() const { return init_.get(); }
     ASTNode* get_test() const { return test_.get(); }
     ASTNode* get_update() const { return update_.get(); }
     ASTNode* get_body() const { return body_.get(); }
+    int get_init_decl_kind() const { return init_decl_kind_; }
 
     bool is_nested_loop() const;
     bool can_optimize_as_simple_loop() const;
