@@ -4498,7 +4498,8 @@ for_semicolon:
 
     Position end = get_current_position();
     return std::make_unique<ForStatement>(std::move(init), std::move(test),
-                                         std::move(update), std::move(body), start, end);
+                                         std::move(update), std::move(body), start, end,
+                                         for_of_decl_kind);
 }
 
 std::unique_ptr<ASTNode> Parser::parse_while_statement() {
