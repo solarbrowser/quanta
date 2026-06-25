@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/ProxyReflect.h"
+#include "quanta/core/runtime/Generator.h"
 
 namespace Quanta {
 
@@ -371,19 +372,6 @@ void register_function_builtins(Context& ctx) {
             len_desc.set_writable(false);
             bound_function->set_property_descriptor("length", len_desc);
 
-            auto thrower = ObjectFactory::create_native_function("", [](Context& ctx, const std::vector<Value>&) -> Value {
-                ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                return Value();
-            }, 0);
-            Function* thrower_raw = thrower.release();
-            PropertyDescriptor poison;
-            poison.set_getter(thrower_raw);
-            poison.set_setter(thrower_raw);
-            poison.set_enumerable(false);
-            poison.set_configurable(true);
-            bound_function->set_property_descriptor("caller", poison);
-            bound_function->set_property_descriptor("arguments", poison);
-
             return Value(bound_function.release());
         });
 
@@ -462,24 +450,58 @@ void register_function_builtins(Context& ctx) {
         }
     }
 
+    // Only strict/class/arrow functions restrict caller and arguments; non-strict functions allow access
     {
-        auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
-                ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+        auto get_this_fn = [](Context& ctx) -> Function* {
+            Value this_val = ctx.get_binding("this");
+            if (this_val.is_function()) return this_val.as_function();
+            if (this_val.is_object()) {
+                Object* obj = this_val.as_object();
+                if (obj && obj->is_function()) return static_cast<Function*>(obj);
+            }
+            return nullptr;
+        };
+
+        auto poison_getter = ObjectFactory::create_native_function("ThrowTypeError",
+            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
+                Function* fn = get_this_fn(ctx);
+                if (fn) {
+                    bool is_bound = !fn->get_property("__bound_target__").is_undefined();
+                    bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
+                    if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
+                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                        return Value();
+                    }
+                }
                 return Value();
             });
-        Function* thrower_raw = thrower_fn.release();
+        auto poison_setter = ObjectFactory::create_native_function("ThrowTypeError",
+            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
+                Function* fn = get_this_fn(ctx);
+                if (fn) {
+                    bool is_bound = !fn->get_property("__bound_target__").is_undefined();
+                    bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
+                    if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor()) {
+                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                        return Value();
+                    }
+                }
+                return Value();
+            });
+
+        Function* getter_raw = poison_getter.release();
+        Function* setter_raw = poison_setter.release();
 
         PropertyDescriptor caller_desc;
-        caller_desc.set_getter(thrower_raw);
-        caller_desc.set_setter(thrower_raw);
+        caller_desc.set_getter(getter_raw);
+        caller_desc.set_setter(setter_raw);
         caller_desc.set_configurable(true);
         caller_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("caller", caller_desc);
 
         PropertyDescriptor arguments_desc;
-        arguments_desc.set_getter(thrower_raw);
-        arguments_desc.set_setter(thrower_raw);
+        arguments_desc.set_getter(getter_raw);
+        arguments_desc.set_setter(setter_raw);
         arguments_desc.set_configurable(true);
         arguments_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("arguments", arguments_desc);
