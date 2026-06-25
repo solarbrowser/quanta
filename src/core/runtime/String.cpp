@@ -164,6 +164,20 @@ int32_t utf16_code_point_at(const std::string& s, size_t index) {
     return -1;
 }
 
+// Returns the byte offset in s corresponding to the start of UTF-16 code unit `index`.
+// If index >= utf16_length(s), returns s.size() (end of string).
+size_t utf16_index_to_byte_pos(const std::string& s, size_t index) {
+    size_t pos = 0, units = 0;
+    while (pos < s.size()) {
+        if (units == index) return pos;
+        size_t len;
+        uint32_t cp = decode_utf8_at(s, pos, &len);
+        units += (cp > 0xFFFF) ? 2 : 1;
+        pos += len;
+    }
+    return s.size();
+}
+
 bool utf16_is_well_formed(const std::string& s) {
     size_t pos = 0;
     bool pending_high = false;

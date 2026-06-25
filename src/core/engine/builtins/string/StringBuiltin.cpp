@@ -120,14 +120,20 @@ static std::string string_this_coerce(Context& ctx, const Value& v, bool& ok) {
         if (ts.is_function()) {
             Value r = ts.as_function()->call(ctx, {}, v);
             if (ctx.has_exception()) return {};
-            if (!r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+            if (!r.is_object() && !r.is_function()) {
+                if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
+                ok = true; return r.to_string();
+            }
         }
         Value vof = obj->get_property("valueOf");
         if (ctx.has_exception()) return {};
         if (vof.is_function()) {
             Value r = vof.as_function()->call(ctx, {}, v);
             if (ctx.has_exception()) return {};
-            if (!r.is_object() && !r.is_function()) { ok = true; return r.to_string(); }
+            if (!r.is_object() && !r.is_function()) {
+                if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return {}; }
+                ok = true; return r.to_string();
+            }
         }
         ctx.throw_type_error("Cannot convert object to string");
         return {};
@@ -157,6 +163,10 @@ void register_string_builtins(Context& ctx) {
             } else {
                 const Value& arg = args[0];
                 if (arg.is_symbol()) {
+                    if (ctx.is_in_constructor_call()) {
+                        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+                        return Value();
+                    }
                     str_value = arg.as_symbol()->to_string();
                 } else if (arg.is_object() || arg.is_function()) {
                     // Spec: ToString for objects: ToPrimitive("string") -> toString then valueOf.
@@ -198,7 +208,9 @@ void register_string_builtins(Context& ctx) {
                         }
                         return Value(std::string(""));
                     });
-                this_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+                // Don't add own toString: spec doesn't define one on wrapper instances;
+                // it should be inherited from String.prototype.toString.
+                (void)toString_fn;
                 return Value(this_obj.release());
             }
 
@@ -702,7 +714,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("search", search_desc);
 
     auto replace_fn = ObjectFactory::create_native_function("replace",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             // Spec: GetMethod(searchValue, @@replace) must happen BEFORE ToString(this).
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }
             Value this_value = ctx.get_binding("this");
@@ -756,8 +768,8 @@ void register_string_builtins(Context& ctx) {
                 std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(pos)), Value(str) };
                 Value r = replace_value.as_function()->call(ctx, fn_args, Value());
                 if (ctx.has_exception()) return Value();
-                if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-                replacement = r.to_string();
+                replacement = obj_to_string(ctx, r);
+                if (ctx.has_exception()) return Value();
             } else {
                 replacement = apply_substitution(replace_str, str, pos, search);
             }
@@ -769,7 +781,7 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("replace", replace_desc);
 
     auto replaceAll_fn = ObjectFactory::create_native_function("replaceAll",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [obj_to_string](Context& ctx, const std::vector<Value>& args) -> Value {
             // Spec order matters: RequireObjectCoercible(this) only checks nullish here --
             // ToString(this) must NOT run yet, since the IsRegExp/flags validation below has
             // to happen first and can throw before `this` or replaceValue are ever coerced.
@@ -806,6 +818,16 @@ void register_string_builtins(Context& ctx) {
                             ctx.throw_type_error("String.prototype.replaceAll must be called with a global RegExp");
                             return Value();
                         }
+                    }
+                    // GetMethod(searchValue, @@replace): delegate if callable.
+                    // Object.cpp's own-undefined-property fix ensures explicit Symbol.replace=undefined
+                    // won't find the prototype method, so this correctly skips delegation for those.
+                    Value this_raw = ctx.get_binding("this");
+                    Value replacer = sv_obj->get_property("Symbol.replace");
+                    if (ctx.has_exception()) return Value();
+                    if (!replacer.is_null() && !replacer.is_undefined()) {
+                        if (!replacer.is_function()) { ctx.throw_type_error("Symbol.replace is not a function"); return Value(); }
+                        return replacer.as_function()->call(ctx, {this_raw, replace_value}, search_value);
                     }
                 }
             }
@@ -857,8 +879,8 @@ void register_string_builtins(Context& ctx) {
                     std::vector<Value> fn_args = { Value(search), Value(static_cast<double>(p)), Value(str) };
                     Value r = replace_value.as_function()->call(ctx, fn_args);
                     if (ctx.has_exception()) return Value();
-                    if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return Value(); }
-                    replacement = r.to_string();
+                    replacement = obj_to_string(ctx, r);
+                    if (ctx.has_exception()) return Value();
                 } else {
                     replacement = apply_substitution(replace_str, str, p, search);
                 }
@@ -1234,22 +1256,31 @@ void register_string_builtins(Context& ctx) {
         [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
-            int len = static_cast<int>(str.length());
 
             if (args.empty()) return Value(str);
 
-            int start = static_cast<int>(args[0].to_number());
+            // Spec uses UTF-16 code unit positions, not byte positions.
+            int utf16len = static_cast<int>(utf16_length(str));
+            auto to_int_or_inf = [](double d, int len) -> int {
+                if (std::isnan(d)) return 0;
+                if (d == std::numeric_limits<double>::infinity()) return len;
+                if (d == -std::numeric_limits<double>::infinity()) return 0;
+                return static_cast<int>(std::min(std::max(d, static_cast<double>(INT_MIN)), static_cast<double>(INT_MAX)));
+            };
+            int start = to_int_or_inf(args[0].to_number(), utf16len);
             int end = (args.size() > 1 && !args[1].is_undefined())
-                ? static_cast<int>(args[1].to_number()) : len;
+                ? to_int_or_inf(args[1].to_number(), utf16len) : utf16len;
 
-            if (start < 0) start = std::max(len + start, 0);
-            else start = std::min(start, len);
+            if (start < 0) start = std::max(utf16len + start, 0);
+            else start = std::min(start, utf16len);
 
-            if (end < 0) end = std::max(len + end, 0);
-            else end = std::min(end, len);
+            if (end < 0) end = std::max(utf16len + end, 0);
+            else end = std::min(end, utf16len);
 
             if (start >= end) return Value(std::string(""));
-            return Value(str.substr(start, end - start));
+            size_t byte_start = utf16_index_to_byte_pos(str, static_cast<size_t>(start));
+            size_t byte_end = utf16_index_to_byte_pos(str, static_cast<size_t>(end));
+            return Value(str.substr(byte_start, byte_end - byte_start));
         }, 2);
     PropertyDescriptor str_slice_desc(Value(str_slice_fn.release()),
         PropertyAttributes::BuiltinFunction);

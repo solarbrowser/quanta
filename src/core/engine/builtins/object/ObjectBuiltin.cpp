@@ -1450,7 +1450,8 @@ void register_object_builtins(Context& ctx) {
                     builtinTag = "Arguments";
                 } else if (is_arr) {
                     builtinTag = "Array";
-                } else if (obj_type == Object::ObjectType::String) {
+                } else if (obj_type == Object::ObjectType::String ||
+                    (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_string())) {
                     builtinTag = "String";
                 } else if (obj_type == Object::ObjectType::Number) {
                     builtinTag = "Number";
