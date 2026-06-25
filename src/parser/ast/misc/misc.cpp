@@ -126,10 +126,12 @@ Value RegexLiteral::evaluate(Context& ctx) {
             });
 
         auto toString_fn = ObjectFactory::create_native_function("toString",
-            [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx;
+            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
-                return Value(regexp_impl->to_string());
+                // Use sorted `flags` property per spec (RegExp.prototype.toString = /source/flags).
+                Value flags_v = obj_ptr->get_property("flags");
+                std::string flags_str = flags_v.is_string() ? flags_v.to_string() : regexp_impl->get_flags();
+                return Value("/" + regexp_impl->get_source() + "/" + flags_str);
             });
 
         auto compile_fn = ObjectFactory::create_native_function("compile",

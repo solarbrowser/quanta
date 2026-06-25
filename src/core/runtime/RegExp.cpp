@@ -281,7 +281,25 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
             // ECMAScript only allows specific escape sequences; unknown ones → literal.
             static const char* js_valid_escapes = "dDwWsSnrtfvbBxu0123456789().[]{}\\^$|*+?/";
             bool is_valid = false;
-            if (next == 'k' || next == 'p' || next == 'P') {
+            // In non-Unicode mode, \k<name> with no named group → literal 'k' (identity escape).
+            // Scan ahead to check if the referenced group exists in the pattern.
+            if (next == 'k' && i + 2 < pat.size() && pat[i+2] == '<') {
+                size_t close = pat.find('>', i + 3);
+                if (close != std::string::npos) {
+                    std::string ref = pat.substr(i + 3, close - (i + 3));
+                    bool group_exists = pat.find("(?<" + ref + ">") != std::string::npos;
+                    if (group_exists) {
+                        is_valid = true;
+                    } else {
+                        // Identity escape: output 'k' literally and continue
+                        result += 'k';
+                        i += 2;
+                        continue;
+                    }
+                } else {
+                    result += 'k'; i += 2; continue;
+                }
+            } else if (next == 'k' || next == 'p' || next == 'P') {
                 is_valid = true; // named backrefs, unicode properties
             } else {
                 for (const char* p = js_valid_escapes; *p; ++p) {
