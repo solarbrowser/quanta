@@ -596,7 +596,7 @@ void setup_string_iterator_methods(Context& ctx) {
     
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        auto string_iterator_fn = ObjectFactory::create_native_function("@@iterator",
+        auto string_iterator_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 if (ctx.original_this_was_nullish()) { ctx.throw_type_error("String method called on null or undefined"); return Value(); }

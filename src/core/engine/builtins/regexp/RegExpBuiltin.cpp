@@ -15,7 +15,8 @@
 namespace Quanta {
 
 static std::string regexp_get_substitution(const std::string& replacement, const std::string& str,
-        size_t match_pos, const std::string& matched, const std::vector<std::string>& captures) {
+        size_t match_pos, const std::string& matched, const std::vector<std::string>& captures,
+        Object* named_groups = nullptr) {
     std::string result;
     for (size_t i = 0; i < replacement.size(); i++) {
         if (replacement[i] != '$' || i + 1 >= replacement.size()) { result += replacement[i]; continue; }
@@ -24,6 +25,15 @@ static std::string regexp_get_substitution(const std::string& replacement, const
         else if (next == '&') { result += matched; i++; }
         else if (next == '`') { result += str.substr(0, match_pos); i++; }
         else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
+        else if (next == '<' && named_groups) {
+            size_t close = replacement.find('>', i + 2);
+            if (close != std::string::npos) {
+                std::string name = replacement.substr(i + 2, close - i - 2);
+                Value val = named_groups->get_property(name);
+                if (!val.is_undefined()) result += val.to_string();
+                i = close;
+            } else { result += replacement[i]; }
+        }
         else if (next >= '0' && next <= '9') {
             size_t n = next - '0';
             if (i + 2 < replacement.size() && replacement[i+2] >= '0' && replacement[i+2] <= '9') {
@@ -438,7 +448,9 @@ void register_regexp_builtins(Context& ctx) {
                                 Value cv = match.as_object()->get_element(ci);
                                 caps.push_back(cv.is_undefined() ? "" : cv.to_string());
                             }
-                            replacement = regexp_get_substitution(replace_val.to_string(), str, index, matched_str, caps);
+                            Value grps = match.as_object()->get_property("groups");
+                            Object* ng = (!grps.is_undefined() && !grps.is_null() && grps.is_object()) ? grps.as_object() : nullptr;
+                            replacement = regexp_get_substitution(replace_val.to_string(), str, index, matched_str, caps, ng);
                         }
                         return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
                     }
@@ -450,7 +462,7 @@ void register_regexp_builtins(Context& ctx) {
             Value exec_fn = this_obj->get_property("exec");
             if (!exec_fn.is_function()) return Value(str);
             Function* exec_func = exec_fn.as_function();
-            struct MatchRecord { int index; std::string matched; std::vector<std::string> captures; };
+            struct MatchRecord { int index; std::string matched; std::vector<std::string> captures; Object* groups = nullptr; };
             std::vector<MatchRecord> matches;
             size_t safety = 0;
             const size_t max_iter = str.length() + 2;
@@ -473,7 +485,9 @@ void register_regexp_builtins(Context& ctx) {
                     Value cv = m->get_element(ci);
                     caps.push_back(cv.is_undefined() ? "" : cv.to_string());
                 }
-                matches.push_back({idx, matched_s, caps});
+                Value grps_v = m->get_property("groups");
+                Object* grps_obj = (!grps_v.is_undefined() && !grps_v.is_null() && grps_v.is_object()) ? grps_v.as_object() : nullptr;
+                matches.push_back({idx, matched_s, caps, grps_obj});
             }
             if (matches.empty()) return Value(str);
             std::string result;
@@ -490,7 +504,7 @@ void register_regexp_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     repl = r.to_string();
                 } else {
-                    repl = regexp_get_substitution(replace_str, str, mr.index, mr.matched, mr.captures);
+                    repl = regexp_get_substitution(replace_str, str, mr.index, mr.matched, mr.captures, mr.groups);
                 }
                 result += repl;
                 last_end = mr.index + static_cast<int>(mr.matched.length());
