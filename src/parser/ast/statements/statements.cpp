@@ -1394,8 +1394,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
     if (pre_iter_env) ctx.set_lexical_environment(pre_iter_env);
 
     if (is_await_) {
-        AsyncExecutor* exec = AsyncExecutor::get_current();
-        Context* gctx = (exec && exec->engine_) ? exec->engine_->get_current_context() : &ctx;
+        // AsyncExecutor::current_ is thread-local and survives AsyncGenerator::enter_fiber's ucontext swap, so it can still point at an unrelated outer exec -- check the async-generator fiber first to avoid swapcontext-ing into the wrong coroutine.
+        AsyncGenerator* async_gen = AsyncGenerator::get_current();
+        bool in_async_gen_fiber = async_gen && !async_gen->fiber_stack_.empty();
+        AsyncExecutor* exec = in_async_gen_fiber ? nullptr : AsyncExecutor::get_current();
+        Context* gctx = in_async_gen_fiber
+            ? (async_gen->get_outer_context() ? async_gen->get_outer_context() : async_gen->get_generator_context())
+            : (exec && exec->engine_) ? exec->engine_->get_current_context() : &ctx;
 
         if (!iterable.is_object()) {
             ctx.throw_type_error("for-await-of: value is not iterable");
@@ -1471,7 +1476,72 @@ Value ForOfStatement::evaluate(Context& ctx) {
         const uint32_t MAX_ITER = 1000000;
         for (uint32_t i = 0; i < MAX_ITER; i++) {
             Value awaited;
-            if (exec && !exec->fiber_stack_.empty()) {
+            if (in_async_gen_fiber) {
+                // Fiber-based (async generator's own fiber): call next(), await the result
+                Value next_method_val = iterator_obj->get_property("next");
+                if (!next_method_val.is_function()) {
+                    ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
+                    return Value();
+                }
+                Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+                if (ctx.has_exception()) return Value();
+
+                bool is_pending = false;
+                bool settled_throw = false;
+                Value settled_val;
+
+                if (AsyncUtils::is_promise(next_result)) {
+                    Promise* prom = static_cast<Promise*>(next_result.as_object());
+                    if (prom->get_state() == PromiseState::FULFILLED) {
+                        settled_val = prom->get_value();
+                    } else if (prom->get_state() == PromiseState::REJECTED) {
+                        settled_val = prom->get_value();
+                        settled_throw = true;
+                    } else {
+                        is_pending = true;
+                        auto self = async_gen;
+                        auto on_f = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                                return Value();
+                            });
+                        auto on_r = ObjectFactory::create_native_function("",
+                            [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                                return Value();
+                            });
+                        std::string key = std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                        Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
+                        prom->set_property("__af_" + key, Value(on_f.release()));
+                        prom->set_property("__ar_" + key, Value(on_r.release()));
+                        prom->then(ff_tmp_, fr_tmp_);
+                    }
+                } else {
+                    settled_val = next_result;
+                }
+
+                if (!is_pending) {
+                    auto self = async_gen;
+                    Value val = settled_val;
+                    bool thr = settled_throw;
+                    if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
+                }
+
+                async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
+                async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+
+                if (async_gen->await_is_throw_) {
+                    ctx.throw_exception(async_gen->await_result_, true);
+                    async_gen->await_is_throw_ = false;
+                    async_gen->await_result_ = Value();
+                    return Value();
+                }
+                awaited = async_gen->await_result_;
+                async_gen->await_result_ = Value();
+            } else if (exec && !exec->fiber_stack_.empty()) {
                 // Fiber-based: call next(), await the result
                 Value next_method_val = iterator_obj->get_property("next");
                 if (!next_method_val.is_function()) {
@@ -1572,7 +1642,59 @@ Value ForOfStatement::evaluate(Context& ctx) {
             // each yielded value is PromiseResolve'd and Awaited -- e.g.
             // `for await (const x of [Promise.resolve(1)])` must yield `1`, not the Promise.
             if (!used_async_iterator) {
-                if (exec && !exec->fiber_stack_.empty()) {
+                if (in_async_gen_fiber) {
+                    bool v_is_pending = false;
+                    bool v_settled_throw = false;
+                    Value v_settled_val;
+                    if (AsyncUtils::is_promise(value)) {
+                        Promise* vp = static_cast<Promise*>(value.as_object());
+                        if (vp->get_state() == PromiseState::FULFILLED) {
+                            v_settled_val = vp->get_value();
+                        } else if (vp->get_state() == PromiseState::REJECTED) {
+                            v_settled_val = vp->get_value();
+                            v_settled_throw = true;
+                        } else {
+                            v_is_pending = true;
+                            auto self = async_gen;
+                            auto on_f = ObjectFactory::create_native_function("",
+                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value val = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                                    return Value();
+                                });
+                            auto on_r = ObjectFactory::create_native_function("",
+                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                                    Value reason = args.empty() ? Value() : args[0];
+                                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                                    return Value();
+                                });
+                            std::string vkey = "fav_" + std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+                            Function* vff = on_f.get(); Function* vfr = on_r.get();
+                            vp->set_property("__af_" + vkey, Value(on_f.release()));
+                            vp->set_property("__ar_" + vkey, Value(on_r.release()));
+                            vp->then(vff, vfr);
+                        }
+                    } else {
+                        v_settled_val = value;
+                    }
+                    if (!v_is_pending) {
+                        auto self = async_gen;
+                        Value vv = v_settled_val;
+                        bool vthr = v_settled_throw;
+                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume_from_await(vv, vthr); });
+                    }
+                    async_gen->await_result_ = value;  // pin as GC root during suspension
+                    async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+                    swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                    if (async_gen->await_is_throw_) {
+                        ctx.throw_exception(async_gen->await_result_, true);
+                        async_gen->await_is_throw_ = false;
+                        async_gen->await_result_ = Value();
+                        return Value();
+                    }
+                    value = async_gen->await_result_;
+                    async_gen->await_result_ = Value();
+                } else if (exec && !exec->fiber_stack_.empty()) {
                     bool v_is_pending = false;
                     bool v_settled_throw = false;
                     Value v_settled_val;
