@@ -1014,15 +1014,30 @@ Value Function::get_property(const std::string& key) const {
         return Value(name_ == "<arrow>" ? std::string("") : name_);
     }
     if (key == "length") {
-        PropertyDescriptor desc = get_property_descriptor(key);
-        if (desc.has_value() && desc.is_data_descriptor()) {
-            return desc.get_value();
+        if (descriptors_ && descriptors_->count("length")) {
+            PropertyDescriptor desc = (*descriptors_)["length"];
+            if (desc.is_data_descriptor()) return desc.get_value();
+            if (desc.is_accessor_descriptor()) {
+                Object* getter = desc.get_getter();
+                if (getter && current_context_) {
+                    Function* gfn = dynamic_cast<Function*>(getter);
+                    if (gfn) return gfn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
+                }
+                return Value();
+            }
+        }
+        if (overflow_properties_ && overflow_properties_->count("length")) {
+            return (*overflow_properties_)["length"];
+        }
+        // After delete f.length, has_own_property is false -- traverse prototype chain instead of
+        // falling back to parameters_.size() which would ignore the deletion.
+        if (!has_own_property("length") && get_prototype()) {
+            return Object::get_property(key);
         }
         return Value(static_cast<double>(parameters_.size()));
     }
     if (key == "prototype") {
         if (prototype_ != nullptr) return Value(prototype_);
-        // Check base property table (e.g. prototype set to a non-object like a number)
         Value base_val = get_own_property(key);
         if (!base_val.is_undefined()) return base_val;
         return Value();
@@ -1193,20 +1208,17 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     // Propagate any exception from the constructor body before checking super state
     if (ctx.has_exception()) return Value();
 
-    // Spec: an explicit `return <object>` from the constructor body returns that object
-    // immediately, without ever reaching GetThisBinding() -- so a derived constructor that
-    // returns an object without calling super() is legal (no `this` access ever happens).
-    // Only an implicit/undefined completion forces the this-binding check.
-    if (!result.is_object() && !result.is_function() &&
-        !super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
-        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
+    bool is_derived = !super_constructor_prop.is_undefined();
+
+    // TypeError for explicit non-object return must come before ReferenceError for missing super (spec 13c)
+    if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {
+        ctx.throw_type_error("Derived constructors may only return object or undefined");
         return Value();
     }
 
-    // In derived class constructors, returning a primitive throws TypeError
-    bool is_derived = !super_constructor_prop.is_undefined();
-    if (is_derived && !result.is_undefined() && !result.is_object() && !result.is_function()) {
-        ctx.throw_type_error("Derived constructors may only return object or undefined");
+    if (!result.is_object() && !result.is_function() &&
+        !super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
+        ctx.throw_reference_error("Must call super constructor before accessing 'this' in derived class constructor");
         return Value();
     }
 
@@ -1236,7 +1248,11 @@ std::string Function::to_string() const {
         return "function " + name_ + "() { [native code] }";
     }
     if (!source_text_.empty()) {
-        return source_text_;
+        // Trim trailing whitespace -- source_text_ may include a trailing newline.
+        std::string s = source_text_;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
+            s.pop_back();
+        return s;
     }
     // Non-native function without preserved source text: use NativeFunction format
     // (test262's assertToStringOrNativeFunction accepts "function name() { [native code] }").

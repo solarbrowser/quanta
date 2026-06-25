@@ -19,28 +19,43 @@ namespace Quanta {
 void register_function_builtins(Context& ctx) {
     auto function_constructor = ObjectFactory::create_native_constructor("Function",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            // ES1: new Function([arg1[, arg2[, ... argN]],] functionBody)
-            // Last argument is the function body, previous arguments are parameter names
-
             std::string params = "";
             std::string body = "";
 
+            auto js_tostring = [&](const Value& v) -> std::string {
+                if (!v.is_object() && !v.is_function()) return v.to_string();
+                Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+                Value toString_fn = obj->get_property("toString");
+                if (toString_fn.is_function()) {
+                    Value r = toString_fn.as_function()->call(ctx, {}, v);
+                    if (!ctx.has_exception() && !r.is_object() && !r.is_function()) return r.to_string();
+                    if (!ctx.has_exception()) {
+                        Value valueOf_fn = obj->get_property("valueOf");
+                        if (valueOf_fn.is_function()) {
+                            r = valueOf_fn.as_function()->call(ctx, {}, v);
+                            if (!ctx.has_exception() && !r.is_object() && !r.is_function()) return r.to_string();
+                        }
+                    }
+                }
+                if (!ctx.has_exception()) ctx.throw_type_error("Cannot convert object to string");
+                return "";
+            };
+
             if (args.size() == 0) {
-                // new Function() - empty function
                 body = "";
             } else if (args.size() == 1) {
-                // new Function(body) - no parameters
-                body = args[0].to_string();
+                body = js_tostring(args[0]);
+                if (ctx.has_exception()) return Value();
             } else {
-                // new Function(param1, param2, ..., body)
                 for (size_t i = 0; i < args.size() - 1; i++) {
                     if (i > 0) params += ",";
-                    params += args[i].to_string();
+                    params += js_tostring(args[i]);
+                    if (ctx.has_exception()) return Value();
                 }
-                body = args[args.size() - 1].to_string();
+                body = js_tostring(args[args.size() - 1]);
+                if (ctx.has_exception()) return Value();
             }
 
-            // Check if body contains "use strict" directive
             bool is_strict = false;
             {
                 std::string trimmed = body;
@@ -53,7 +68,6 @@ void register_function_builtins(Context& ctx) {
                 }
             }
 
-            // ES5: Check for duplicate parameters in strict mode
             if (is_strict && args.size() > 2) {
                 std::vector<std::string> param_list;
                 for (size_t i = 0; i < args.size() - 1; i++) {
@@ -68,11 +82,9 @@ void register_function_builtins(Context& ctx) {
                 }
             }
 
-            // Spec-compliant Function constructor toString format
             std::string toString_src = "function anonymous(" + params + "\n) {\n" + body + "\n}";
             std::string func_code = "(" + toString_src + ")";
 
-            // Parse and create the function
             try {
                 Lexer lexer(func_code);
                 TokenSequence tokens = lexer.tokenize();
@@ -240,6 +252,10 @@ void register_function_builtins(Context& ctx) {
             
             std::vector<Value> call_args;
             if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
+                if (!args[1].is_object() && !args[1].is_function()) {
+                    ctx.throw_type_error("CreateListFromArrayLike: argArray must be an object");
+                    return Value();
+                }
                 if (args[1].is_object()) {
                     Object* args_array = args[1].as_object();
                     // ES5: Accept any array-like object (object with length property)
@@ -276,7 +292,6 @@ void register_function_builtins(Context& ctx) {
                 return Value();
             }
             Object* function_obj = ctx.get_this_binding();
-            // Accept plain functions or Proxy objects wrapping a function
             Function* target_func = nullptr;
             if (function_obj && function_obj->is_function()) {
                 target_func = static_cast<Function*>(function_obj);
@@ -299,8 +314,6 @@ void register_function_builtins(Context& ctx) {
                 bound_args.push_back(args[i]);
             }
 
-            // Spec: HasOwnProperty(Target,"length") fires getOwnPropertyDescriptor trap,
-            // then Get(Target,"length") fires get trap on Proxy
             double target_length = 0.0;
             {
                 if (function_obj->get_type() == Object::ObjectType::Proxy) {
@@ -310,31 +323,66 @@ void register_function_builtins(Context& ctx) {
                 Value target_length_val = function_obj->get_property("length");
                 target_length = target_length_val.is_number() ? target_length_val.as_number() : 0.0;
             }
-            double bound_length = target_length - static_cast<double>(bound_args.size());
-            if (bound_length < 0) bound_length = 0;
-            uint32_t bound_arity = static_cast<uint32_t>(bound_length);
+            if (std::isnan(target_length) || target_length == 0.0 || target_length == -0.0) {
+                target_length = 0.0;
+            } else if (!std::isinf(target_length)) {
+                target_length = (target_length < 0)
+                    ? -std::floor(-target_length) : std::floor(target_length);
+                if (target_length == -0.0) target_length = 0.0;
+            }
+            double bound_length = std::isinf(target_length)
+                ? (target_length > 0 ? target_length : 0.0)
+                : std::max(0.0, target_length - static_cast<double>(bound_args.size()));
+            uint32_t bound_arity = 0;
 
             Value name_val = function_obj->get_property("name");
             std::string bound_name = "bound " + (name_val.is_string() ? name_val.to_string() : target_func->get_name());
+            // new.target is stored as VALUE_OBJECT, so compare via raw Object* pointer
+            auto self_ptr = std::make_shared<Function*>(nullptr);
             auto bound_function = ObjectFactory::create_native_function(bound_name,
-                [target_func, bound_this, bound_args](Context& ctx, const std::vector<Value>& call_args) -> Value {
+                [target_func, bound_this, bound_args, self_ptr](Context& ctx, const std::vector<Value>& call_args) -> Value {
                     std::vector<Value> final_args = bound_args;
                     final_args.insert(final_args.end(), call_args.begin(), call_args.end());
 
                     if (ctx.is_in_constructor_call()) {
+                        Value new_tgt = ctx.get_new_target();
+                        Object* new_tgt_raw = new_tgt.is_function()
+                            ? static_cast<Object*>(new_tgt.as_function())
+                            : new_tgt.is_object() ? new_tgt.as_object() : nullptr;
+                        if (new_tgt_raw && new_tgt_raw == static_cast<Object*>(*self_ptr)) {
+                            ctx.set_new_target(Value(static_cast<Object*>(target_func)));
+                        }
                         return target_func->construct(ctx, final_args);
                     } else {
                         return target_func->call(ctx, final_args, bound_this);
                     }
                 }, bound_arity);
+            *self_ptr = bound_function.get();
 
-            // ES6 19.2.3.2 step 12: bound function's [[Prototype]] should be target's [[Prototype]]
             bound_function->set_prototype(target_func->get_prototype());
+            bound_function->set_property("__bound_target__", Value(static_cast<Object*>(target_func)));
 
-            // Bound functions are constructable iff target is constructable
             if (target_func->is_constructor()) {
                 bound_function->set_is_constructor(true);
             }
+
+            PropertyDescriptor len_desc(Value(bound_length), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            len_desc.set_enumerable(false);
+            len_desc.set_writable(false);
+            bound_function->set_property_descriptor("length", len_desc);
+
+            auto thrower = ObjectFactory::create_native_function("", [](Context& ctx, const std::vector<Value>&) -> Value {
+                ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
+                return Value();
+            }, 0);
+            Function* thrower_raw = thrower.release();
+            PropertyDescriptor poison;
+            poison.set_getter(thrower_raw);
+            poison.set_setter(thrower_raw);
+            poison.set_enumerable(false);
+            poison.set_configurable(true);
+            bound_function->set_property_descriptor("caller", poison);
+            bound_function->set_property_descriptor("arguments", poison);
 
             return Value(bound_function.release());
         });
@@ -352,7 +400,6 @@ void register_function_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* function_obj = ctx.get_this_binding();
-            // Proxy wrapping a function: delegate to the underlying target.
             if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
                 Proxy* proxy = static_cast<Proxy*>(function_obj);
                 Object* target = proxy->get_proxy_target();
@@ -387,15 +434,16 @@ void register_function_builtins(Context& ctx) {
             auto has_inst_fn = ObjectFactory::create_native_function("[Symbol.hasInstance]",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     Value raw_this = ctx.get_binding("this");
-                    if (!raw_this.is_function() && !raw_this.is_object()) {
-                        ctx.throw_type_error("Function.prototype[Symbol.hasInstance] requires a function this");
-                        return Value();
-                    }
+                    // OrdinaryHasInstance step 1: IsCallable(C) == false → return false
+                    if (!raw_this.is_function() && !raw_this.is_object()) return Value(false);
                     if (args.empty()) return Value(false);
                     Value v = args[0];
                     if (!v.is_object() && !v.is_function()) return Value(false);
-                    // Per spec OrdinaryHasInstance: if F.prototype is not an object, throw TypeError.
                     Object* f_obj = raw_this.is_function() ? static_cast<Object*>(raw_this.as_function()) : raw_this.as_object();
+                    Value bound_target = f_obj->get_property("__bound_target__");
+                    if (!bound_target.is_undefined()) {
+                        return Value(v.instanceof_check(bound_target));
+                    }
                     Value prot = f_obj->get_property("prototype");
                     if (ctx.has_exception()) return Value();
                     if (!prot.is_object() && !prot.is_function()) {
@@ -405,62 +453,38 @@ void register_function_builtins(Context& ctx) {
                     return Value(v.instanceof_check(raw_this));
                 }, 1);
             has_inst_fn->set_property("name", Value(std::string("[Symbol.hasInstance]")), PropertyAttributes::Configurable);
-            PropertyDescriptor has_inst_desc(Value(has_inst_fn.release()),
-                static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            PropertyDescriptor has_inst_desc;
+            has_inst_desc.set_value(Value(has_inst_fn.release()));
+            has_inst_desc.set_writable(false);
+            has_inst_desc.set_enumerable(false);
+            has_inst_desc.set_configurable(false);
             function_prototype->set_property_descriptor(has_inst_sym->to_property_key(), has_inst_desc);
         }
     }
 
-    // ES6: Function.prototype.caller/.arguments throw TypeError for strict/class functions.
     {
-        auto get_this_fn = [](Context& ctx) -> Function* {
-            Value this_val = ctx.get_binding("this");
-            if (this_val.is_function()) return this_val.as_function();
-            if (this_val.is_object()) {
-                Object* obj = this_val.as_object();
-                if (obj && obj->is_function()) return static_cast<Function*>(obj);
-            }
-            return nullptr;
-        };
-
-        auto poison_getter = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
-                Function* fn = get_this_fn(ctx);
-                if (fn && (fn->is_strict() || fn->is_class_constructor() || fn->is_arrow())) {
-                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                    return Value();
-                }
+        auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
                 return Value();
             });
-        auto poison_setter = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
-                Function* fn = get_this_fn(ctx);
-                if (fn && (fn->is_strict() || fn->is_class_constructor())) {
-                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                    return Value();
-                }
-                return Value();
-            });
-
-        Function* getter_raw = poison_getter.release();
-        Function* setter_raw = poison_setter.release();
+        Function* thrower_raw = thrower_fn.release();
 
         PropertyDescriptor caller_desc;
-        caller_desc.set_getter(getter_raw);
-        caller_desc.set_setter(setter_raw);
-        caller_desc.set_configurable(false);
+        caller_desc.set_getter(thrower_raw);
+        caller_desc.set_setter(thrower_raw);
+        caller_desc.set_configurable(true);
         caller_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("caller", caller_desc);
 
         PropertyDescriptor arguments_desc;
-        arguments_desc.set_getter(getter_raw);
-        arguments_desc.set_setter(setter_raw);
-        arguments_desc.set_configurable(false);
+        arguments_desc.set_getter(thrower_raw);
+        arguments_desc.set_setter(thrower_raw);
+        arguments_desc.set_configurable(true);
         arguments_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("arguments", arguments_desc);
     }
 
-    // Set Function.prototype's prototype to Object.prototype so Function objects inherit Object methods
     Object* object_proto = ObjectFactory::get_object_prototype();
     if (object_proto) {
         function_prototype->set_prototype(object_proto);

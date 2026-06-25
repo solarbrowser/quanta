@@ -1189,8 +1189,12 @@ bool Object::set_property_descriptor(const std::string& key, const PropertyDescr
                         if (!descriptors_) descriptors_ = std::make_unique<std::unordered_map<std::string, PropertyDescriptor>>();
                         (*descriptors_)[key] = merged;
                     }
-                } else {
+                } else if (existed_before_this_call) {
                     set_property(key, coerced_value, desc.get_attributes());
+                } else {
+                    // [[DefineOwnProperty]] creates own property directly, bypassing inherited setters
+                    store_in_overflow(key, coerced_value);
+                    (*descriptors_)[key] = desc;
                 }
             }
             if (length_shrink_blocked) {

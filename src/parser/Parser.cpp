@@ -4961,7 +4961,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
                    (current_token().get_type() == TokenType::YIELD &&
                     !is_generator && !options_.strict_mode) ||
                    ((current_token().get_type() == TokenType::LET ||
-                     current_token().get_type() == TokenType::STATIC) &&
+                     current_token().get_type() == TokenType::STATIC ||
+                     current_token().get_type() == TokenType::UNDEFINED) &&
                     !options_.strict_mode)) {
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
@@ -5182,7 +5183,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_declaration() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, false, is_generator
     );
-    fn_decl->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    fn_decl->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
     return fn_decl;
 }
 
@@ -5569,7 +5570,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_declaration() {
 
     Position end = get_current_position();
 
-    std::string class_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::string class_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
     std::unique_ptr<ClassDeclaration> cls_decl;
     if (superclass) {
         cls_decl = std::make_unique<ClassDeclaration>(
@@ -5923,7 +5924,7 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
     Position end = get_current_position();
 
-    std::string cls_expr_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::string cls_expr_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
     std::unique_ptr<ClassDeclaration> cls_expr;
     if (id) {
         if (superclass) {
@@ -6462,7 +6463,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
 
-    std::string method_src = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::string method_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
 
     auto function_expr = std::make_unique<FunctionExpression>(
         nullptr,
@@ -6609,7 +6610,8 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
                    (current_token().get_type() == TokenType::YIELD &&
                     !is_generator && !options_.strict_mode) ||
                    ((current_token().get_type() == TokenType::LET ||
-                     current_token().get_type() == TokenType::STATIC) &&
+                     current_token().get_type() == TokenType::STATIC ||
+                     current_token().get_type() == TokenType::UNDEFINED) &&
                     !options_.strict_mode)) {
             param_name = std::make_unique<Identifier>(current_token().get_value(),
                                                       current_token().get_start(), current_token().get_end());
@@ -6829,7 +6831,7 @@ std::unique_ptr<ASTNode> Parser::parse_function_expression() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, is_generator
     );
-    fn_expr->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    fn_expr->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
     return fn_expr;
 }
 
@@ -7112,7 +7114,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
     }
 
     Position end = get_current_position();
-    std::string src_text = get_source_slice(start.offset, previous_token().get_start().offset + 1);
+    std::string src_text = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
     if (is_generator) {
         auto gen_expr = std::make_unique<FunctionExpression>(
             std::move(id), std::move(params),
@@ -7412,7 +7414,7 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_declaration() {
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body.release())),
         start, end, true, is_generator
     );
-    async_fn_decl->set_source_text(get_source_slice(start.offset, previous_token().get_start().offset + 1));
+    async_fn_decl->set_source_text(get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1));
     return async_fn_decl;
 }
 
@@ -8505,7 +8507,7 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
             }
             
             {
-                std::string method_src = get_source_slice(prop_start.offset, previous_token().get_start().offset + 1);
+                std::string method_src = get_source_slice(prop_start.offset, last_meaningful_token().get_start().offset + 1);
                 if (!method_src.empty()) {
                     if (method_value->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
                         static_cast<FunctionExpression*>(method_value.get())->set_source_text(method_src);

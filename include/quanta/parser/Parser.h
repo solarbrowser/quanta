@@ -195,6 +195,17 @@ public:
         if (end_offset > source_.size()) end_offset = source_.size();
         return source_.substr(start_offset, end_offset - start_offset);
     }
+    // advance() skips trivia, so previous_token() points at the last skipped NEWLINE/COMMENT, not the real token
+    const Token& last_meaningful_token() const {
+        size_t idx = current_token_index_;
+        while (idx > 0) {
+            idx--;
+            TokenType t = tokens_[idx].get_type();
+            if (t != TokenType::WHITESPACE && t != TokenType::NEWLINE && t != TokenType::COMMENT)
+                return tokens_[idx];
+        }
+        return tokens_[0];
+    }
     Position get_current_position() const;
     
     bool at_end() const;
