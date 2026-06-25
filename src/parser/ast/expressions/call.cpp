@@ -178,7 +178,13 @@ Value CallExpression::evaluate(Context& ctx) {
         return callee_val.as_function()->call(ctx, arg_values);
     }
 
-    if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
+    // Tagged template calls with MemberExpression callees (e.g. String.raw`...`) must be
+    // intercepted here before handle_member_expression_call takes over, since that path
+    // uses process_arguments_with_spread which doesn't know about template literals.
+    if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION && is_tagged_template_ &&
+        arguments_.size() == 1 && arguments_[0]->get_type() == ASTNode::Type::TEMPLATE_LITERAL) {
+        // fall through to tagged template block
+    } else if (callee_->get_type() == ASTNode::Type::MEMBER_EXPRESSION) {
         return handle_member_expression_call(ctx);
     }
     

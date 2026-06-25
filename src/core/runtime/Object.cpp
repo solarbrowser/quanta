@@ -292,11 +292,24 @@ Value Object::get_property(const std::string& key) const {
                 const PropertyDescriptor& desc = desc_it->second;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
-                    if (getter_fn && getter_fn->get_name().find("get [Symbol.") == 0) {
-                        if (original_receiver->is_function()) {
-                            return Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)));
+                    if (getter_fn) {
+                        if (getter_fn->get_name().find("get [Symbol.") == 0) {
+                            // Well-known Symbol getters return the original receiver.
+                            if (original_receiver->is_function()) {
+                                return Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)));
+                            }
+                            return Value(const_cast<Object*>(original_receiver));
                         }
-                        return Value(const_cast<Object*>(original_receiver));
+                        // Native getters must be called with the original receiver as `this`;
+                        // without this, the native getter runs with `this` = the prototype
+                        // (wrong) and returns the prototype object instead of calling itself.
+                        // JS getters fall through to get_own_property which handles them correctly.
+                        if (getter_fn->is_native() && current_context_) {
+                            Value recv = original_receiver->is_function()
+                                ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
+                                : Value(const_cast<Object*>(original_receiver));
+                            return getter_fn->call(*current_context_, {}, recv);
+                        }
                     }
                 }
             }
@@ -354,7 +367,7 @@ Value Object::get_own_property(const std::string& key) const {
                 if (getter) {
                     Function* getter_fn = dynamic_cast<Function*>(getter);
                     if (getter_fn) {
-                        if (!getter_fn->is_native() && current_context_) {
+                        if (current_context_) {
                             return getter_fn->call(*current_context_, {}, Value(const_cast<Object*>(this)));
                         }
                         if (this->is_function()) {

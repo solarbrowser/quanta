@@ -112,7 +112,15 @@ Value RegexLiteral::evaluate(Context& ctx) {
                 std::string str = args[0].to_string();
                 Value result = regexp_impl->exec(str);
 
-                obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+                int new_last = regexp_impl->get_last_index();
+                if ((regexp_impl->get_global() || regexp_impl->get_sticky()) &&
+                    !result.is_null() && result.is_object()) {
+                    Value matched = result.as_object()->get_element(0);
+                    if (!matched.is_undefined() && matched.to_string().empty()) {
+                        new_last = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0) + 1;
+                    }
+                }
+                obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
 
                 return result;
             });

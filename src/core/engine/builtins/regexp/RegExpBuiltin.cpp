@@ -24,13 +24,13 @@ static std::string regexp_get_substitution(const std::string& replacement, const
         else if (next == '&') { result += matched; i++; }
         else if (next == '`') { result += str.substr(0, match_pos); i++; }
         else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
-        else if (next >= '1' && next <= '9') {
+        else if (next >= '0' && next <= '9') {
             size_t n = next - '0';
             if (i + 2 < replacement.size() && replacement[i+2] >= '0' && replacement[i+2] <= '9') {
                 size_t n2 = n * 10 + (replacement[i+2] - '0');
-                if (n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
+                if (n2 >= 1 && n2 <= captures.size()) { result += captures[n2-1]; i += 2; continue; }
             }
-            if (n <= captures.size()) { result += captures[n-1]; i++; }
+            if (n >= 1 && n <= captures.size()) { result += captures[n-1]; i++; }
             else result += replacement[i];
         } else { result += replacement[i]; }
     }
@@ -109,9 +109,21 @@ void register_regexp_builtins(Context& ctx) {
                         flags = fl.is_undefined() ? "" : fl.to_string();
                     }
                 } else {
-                    pattern = pat_obj->get_property("_isRegExp").is_undefined() ? args[0].to_string() : "";
-                    // For ordinary objects without IsRegExp, convert to string
-                    pattern = args[0].to_string();
+                    // Non-IsRegExp object: ToString via JS-level toString/valueOf (not C++ to_string).
+                    Value ts = pat_obj->get_property("toString");
+                    if (!ctx.has_exception() && ts.is_function()) {
+                        Value r = ts.as_function()->call(ctx, {}, args[0]);
+                        if (!ctx.has_exception() && !r.is_object() && !r.is_function()) {
+                            pattern = r.to_string();
+                        } else if (!ctx.has_exception()) {
+                            Value vof = pat_obj->get_property("valueOf");
+                            if (!ctx.has_exception() && vof.is_function()) {
+                                Value r2 = vof.as_function()->call(ctx, {}, args[0]);
+                                if (!ctx.has_exception() && !r2.is_object() && !r2.is_function()) pattern = r2.to_string();
+                            }
+                        }
+                    }
+                    if (ctx.has_exception()) return Value();
                 }
             } else if (!args.empty() && !args[0].is_undefined()) {
                 pattern = args[0].to_string();
@@ -174,7 +186,16 @@ void register_regexp_builtins(Context& ctx) {
 
                         Value result = regexp_impl->exec(str);
 
-                        regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
+                        int new_last = regexp_impl->get_last_index();
+                        // Global/sticky: advance past zero-length matches to avoid infinite loops.
+                        if ((regexp_impl->get_global() || regexp_impl->get_sticky()) &&
+                            !result.is_null() && result.is_object()) {
+                            Value matched = result.as_object()->get_element(0);
+                            if (!matched.is_undefined() && matched.to_string().empty()) {
+                                new_last = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0) + 1;
+                            }
+                        }
+                        regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
 
                         return result;
                     });
@@ -211,7 +232,7 @@ void register_regexp_builtins(Context& ctx) {
                 regex_obj->set_property("compile", Value(compile_inst_fn.release()), PropertyAttributes::BuiltinFunction);
 
                 regex_obj->set_property("source", Value(regexp_impl->get_source()));
-                regex_obj->set_property("flags", Value(sorted_flags));
+                regex_obj->set_property("flags", Value(sorted_flags), PropertyAttributes::BuiltinFunction);
                 regex_obj->set_property("global", Value(regexp_impl->get_global()));
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()));
@@ -453,11 +474,6 @@ void register_regexp_builtins(Context& ctx) {
                     caps.push_back(cv.is_undefined() ? "" : cv.to_string());
                 }
                 matches.push_back({idx, matched_s, caps});
-                if (matched_s.empty()) {
-                    Value li = this_obj->get_property("lastIndex");
-                    int next = li.is_number() ? static_cast<int>(li.to_number()) : 0;
-                    this_obj->set_property("lastIndex", Value(static_cast<double>(next + 1)));
-                }
             }
             if (matches.empty()) return Value(str);
             std::string result;
@@ -519,17 +535,20 @@ void register_regexp_builtins(Context& ctx) {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
             std::string str = args.size() > 0 ? args[0].to_string() : "";
-            // ES6: SpeciesConstructor - check constructor[Symbol.species]
+            // ES6: SpeciesConstructor -- Construct(C, «rx, newFlags»)
             Value ctor_val = this_obj->get_property("constructor");
             if (ctor_val.is_object() || ctor_val.is_function()) {
                 Object* ctor_obj = ctor_val.is_function() ? static_cast<Object*>(ctor_val.as_function()) : ctor_val.as_object();
                 Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
                 if (species_sym) {
                     Value species_val = ctor_obj->get_property(species_sym->to_property_key());
-                    if (species_val.is_function()) {
+                    if (ctx.has_exception()) return Value();
+                    if (!species_val.is_null() && !species_val.is_undefined()) {
+                        if (!species_val.is_function()) { ctx.throw_type_error("Species constructor is not a constructor"); return Value(); }
                         Value flags_val = this_obj->get_property("flags");
+                        if (ctx.has_exception()) return Value();
                         std::vector<Value> species_args = { Value(this_obj), flags_val };
-                        Value splitter = species_val.as_function()->call(ctx, species_args, Value(ctor_obj));
+                        Value splitter = species_val.as_function()->construct(ctx, species_args);
                         if (ctx.has_exception()) return Value();
                         if (splitter.is_object() || splitter.is_function()) {
                             this_obj = splitter.is_function() ? static_cast<Object*>(splitter.as_function()) : splitter.as_object();
@@ -612,6 +631,53 @@ void register_regexp_builtins(Context& ctx) {
             return Value(result.release());
         }, 2);
     regexp_prototype->set_property("Symbol.split", Value(regexp_sym_split.release()), PropertyAttributes::BuiltinFunction);
+
+    // RegExp.prototype[Symbol.matchAll]: the per-spec built-in that matchAll delegates to.
+    {
+        auto regexp_sym_matchAll = ObjectFactory::create_native_function("[Symbol.matchAll]",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* this_obj = ctx.get_this_binding();
+                if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.matchAll] called on null"); return Value(); }
+                std::string str = args.empty() ? "" : args[0].to_string();
+                Value flags_val = this_obj->get_property("flags");
+                if (ctx.has_exception()) return Value();
+                std::string flags = flags_val.is_string() ? flags_val.to_string() :
+                    (flags_val.is_undefined() || flags_val.is_null() ? "" : flags_val.to_string());
+                if (flags.find('g') == std::string::npos) {
+                    ctx.throw_type_error("String.prototype.matchAll requires global flag");
+                    return Value();
+                }
+
+                struct MatchAllState { std::string str; Value regex; bool done = false; };
+                auto state = std::make_shared<MatchAllState>(MatchAllState{str, Value(this_obj), false});
+                auto iterator = ObjectFactory::create_object();
+                Object* iter_ptr = iterator.get();
+                auto next_fn = ObjectFactory::create_native_function("next",
+                    [state](Context& ctx, const std::vector<Value>&) -> Value {
+                        auto result = ObjectFactory::create_object();
+                        if (state->done) { result->set_property("done", Value(true)); result->set_property("value", Value()); return Value(result.release()); }
+                        Object* rx = state->regex.as_object();
+                        Value exec_fn = rx ? rx->get_property("exec") : Value();
+                        if (!exec_fn.is_function()) { state->done = true; result->set_property("done", Value(true)); result->set_property("value", Value()); return Value(result.release()); }
+                        Value match = exec_fn.as_function()->call(ctx, {Value(state->str)}, state->regex);
+                        if (ctx.has_exception()) return Value();
+                        if (match.is_null() || match.is_undefined()) { state->done = true; result->set_property("done", Value(true)); result->set_property("value", Value()); }
+                        else { result->set_property("done", Value(false)); result->set_property("value", match); }
+                        return Value(result.release());
+                    }, 0);
+                iterator->set_property("next", Value(next_fn.release()));
+                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+                if (iter_sym) {
+                    auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
+                        [iter_ptr](Context& ctx, const std::vector<Value>&) -> Value { (void)ctx; return Value(iter_ptr); }, 0);
+                    iterator->set_property(iter_sym->to_property_key(), Value(sym_iter_fn.release()));
+                }
+                return Value(iterator.release());
+            }, 1);
+        Symbol* matchAll_sym = Symbol::get_well_known(Symbol::MATCH_ALL);
+        regexp_prototype->set_property(matchAll_sym ? matchAll_sym->to_property_key() : std::string("Symbol.matchAll"),
+            Value(regexp_sym_matchAll.release()), PropertyAttributes::BuiltinFunction);
+    }
 
     regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
 
