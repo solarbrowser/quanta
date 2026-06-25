@@ -394,10 +394,16 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
 
     auto* parent_var_env = parent_context->get_variable_environment();
+    auto* parent_lex_env = parent_context->get_lexical_environment();
     std::unordered_set<std::string> parent_var_names;
     if (parent_var_env) {
         auto names = parent_var_env->get_binding_names();
         parent_var_names.insert(names.begin(), names.end());
+    }
+    // Also include let/const bindings from the lexical environment
+    if (parent_lex_env && parent_lex_env != parent_var_env) {
+        auto lex_names = parent_lex_env->get_binding_names();
+        parent_var_names.insert(lex_names.begin(), lex_names.end());
     }
     for (const auto& key : prop_keys) {
         if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
@@ -409,7 +415,12 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 // (same binding, just mutated). If the values differ, the closure captured
                 // a shadowing inner binding -- preserve the captured value.
                 if (parent_var_names.count(var_name)) {
-                    Value parent_val = parent_var_env->get_binding(var_name);
+                    Value parent_val;
+                    if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
+                        parent_val = parent_var_env->get_binding(var_name);
+                    } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
+                        parent_val = parent_lex_env->get_binding(var_name);
+                    }
                     if (!parent_val.is_undefined() && !parent_val.is_function() &&
                             parent_val.strict_equals(closure_value)) {
                         closure_value = parent_val;
@@ -553,17 +564,20 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         // After parameter binding (which may have mutated outer variables via generators),
         // refresh closure variables from the parent scope -- but only if the variable
         // was NOT already updated in this context (e.g. by iterator close callbacks).
-        if (parent_var_env) {
+        if (parent_var_env || parent_lex_env) {
             for (const auto& key : prop_keys) {
                 if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
                     std::string var_name = key.substr(10);
                     if (var_name == "this" || var_name == "arguments") continue;
                     if (parent_var_names.count(var_name)) {
-                        Value fresh_val = parent_var_env->get_binding(var_name);
-                        Value captured_val = this->get_property(key); // original captured value
+                        Value fresh_val;
+                        if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
+                            fresh_val = parent_var_env->get_binding(var_name);
+                        } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
+                            fresh_val = parent_lex_env->get_binding(var_name);
+                        }
+                        Value captured_val = this->get_property(key);
                         Value current_val = function_context.get_binding(var_name);
-                        // Only refresh if the function context still has the old captured value
-                        // (i.e., inner code hasn't already updated it via write-back)
                         if (!fresh_val.is_undefined() && !fresh_val.is_function() &&
                             current_val.strict_equals(captured_val)) {
                             function_context.set_binding(var_name, fresh_val);
@@ -897,8 +911,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
                     if (!current_value.strict_equals(old_value)) {
                         if (parent_var_names.count(var_name)) {
-                            // Variable is in the direct caller's scope -- write there.
-                            parent_var_env->set_binding(var_name, current_value);
+                            // Write to whichever parent environment actually owns the binding
+                            if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
+                                parent_var_env->set_binding(var_name, current_value);
+                            } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
+                                parent_lex_env->set_binding(var_name, current_value);
+                            } else if (parent_var_env) {
+                                parent_var_env->set_binding(var_name, current_value);
+                            }
                         } else if (closure_context_) {
                             auto* cve = closure_context_->get_variable_environment();
                             if (cve && cve->has_own_binding(var_name)) {

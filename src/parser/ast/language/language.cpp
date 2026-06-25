@@ -453,7 +453,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         } else {
             if (!ctx.create_binding(function_name, function_value, true)) {
                 if (ctx.get_type() == Context::Type::Eval && !ctx.is_strict_mode()) {
-                    ctx.create_global_function_binding(function_name, function_value);
+                    ctx.create_global_function_binding(function_name, function_value, true);
                 } else {
                     ctx.create_lexical_binding_force(function_name, function_value);
                 }
@@ -1119,10 +1119,11 @@ Value ClassDeclaration::evaluate(Context& ctx) {
         }
     }
 
-    // Class declarations are lexically scoped (like let/const), not var-scoped.
-    // Using create_lexical_binding ensures they don't leak out of eval or block scopes.
-    if (!ctx.create_lexical_binding(class_name, Value(constructor_fn.get()), true)) {
-        ctx.create_lexical_binding_force(class_name, Value(constructor_fn.get()));
+    // A named class expression binds its name only inside the class, not in the outer scope.
+    if (!is_expression_) {
+        if (!ctx.create_lexical_binding(class_name, Value(constructor_fn.get()), true)) {
+            ctx.create_lexical_binding_force(class_name, Value(constructor_fn.get()));
+        }
     }
 
     if (!static_field_initializers.empty()) {
@@ -1215,8 +1216,8 @@ std::unique_ptr<ASTNode> ClassDeclaration::clone() const {
             start_, end_
         );
     }
-    // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
     cloned->set_source_text(source_text_);
+    cloned->set_is_expression(is_expression_);
     return cloned;
 }
 

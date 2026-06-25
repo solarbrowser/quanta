@@ -978,13 +978,14 @@ void setup_async_functions(Context& ctx) {
                 body_str = args[0].to_string();
             }
 
-            // Parse and compile the async function body
-            std::string func_code = "(async function(" + params_str + ") { " + body_str + " })";
+            std::string toString_src = "async function anonymous(" + params_str + "\n) {\n" + body_str + "\n}";
+            std::string func_code = "(" + toString_src + ")";
             try {
                 Lexer lexer(func_code);
                 TokenSequence tokens = lexer.tokenize();
                 Parser::ParseOptions opts;
                 Parser parser(tokens, opts);
+                parser.set_source(func_code);
                 auto expr = parser.parse_expression();
                 if (parser.has_errors() || !expr) {
                     ctx.throw_syntax_error("Invalid async function body");

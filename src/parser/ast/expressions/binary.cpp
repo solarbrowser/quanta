@@ -1058,9 +1058,13 @@ Value UnaryExpression::evaluate(Context& ctx) {
             }
             Value operand_value = operand_->evaluate(ctx);
 
+            // typeof only suppresses ReferenceError when the operand itself is the unresolvable reference (`typeof x`), not a nested one (`typeof x.x`).
             if (ctx.has_exception()) {
-                ctx.clear_exception();
-                return Value(std::string("undefined"));
+                if (operand_->get_type() == ASTNode::Type::IDENTIFIER) {
+                    ctx.clear_exception();
+                    return Value(std::string("undefined"));
+                }
+                return Value();
             }
 
             return operand_value.typeof_op();
@@ -1178,7 +1182,8 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(numeric.to_number() + 1.0);
                 }
-                if (!ref_env->set_binding_direct(id->get_name(), incremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), incremented, &ctx)) {
+                    if (ctx.has_exception()) return Value();
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1235,7 +1240,8 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     incremented = Value(old_numeric.to_number() + 1.0);
                 }
-                if (!ref_env->set_binding_direct(id->get_name(), incremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), incremented, &ctx)) {
+                    if (ctx.has_exception()) return Value();
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1292,7 +1298,8 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(numeric.to_number() - 1.0);
                 }
-                if (!ref_env->set_binding_direct(id->get_name(), decremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), decremented, &ctx)) {
+                    if (ctx.has_exception()) return Value();
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();
@@ -1349,7 +1356,8 @@ Value UnaryExpression::evaluate(Context& ctx) {
                 } else {
                     decremented = Value(old_numeric.to_number() - 1.0);
                 }
-                if (!ref_env->set_binding_direct(id->get_name(), decremented)) {
+                if (!ref_env->set_binding_direct(id->get_name(), decremented, &ctx)) {
+                    if (ctx.has_exception()) return Value();
                     if (ctx.is_strict_mode() || ctx.is_strict_const(id->get_name())) {
                         ctx.throw_type_error("Assignment to constant variable '" + id->get_name() + "'");
                         return Value();

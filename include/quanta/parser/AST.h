@@ -985,8 +985,12 @@ private:
     std::unique_ptr<ASTNode> superclass_;
     std::unique_ptr<BlockStatement> body_;
     std::string source_text_;
+    bool is_expression_ = false;
 
 public:
+    void set_is_expression(bool v) { is_expression_ = v; }
+    bool is_expression() const { return is_expression_; }
+
     ClassDeclaration(std::unique_ptr<Identifier> id,
                     std::unique_ptr<ASTNode> superclass,
                     std::unique_ptr<BlockStatement> body,

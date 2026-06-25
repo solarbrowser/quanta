@@ -179,7 +179,7 @@ public:
     void create_lexical_binding_force(const std::string& name, const Value& value);
     bool create_var_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
     bool create_lexical_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true);
-    void create_global_function_binding(const std::string& name, const Value& value);
+    void create_global_function_binding(const std::string& name, const Value& value, bool configurable = false);
     bool delete_binding(const std::string& name);
     bool is_in_tdz(const std::string& name) const;
 
@@ -375,7 +375,7 @@ public:
     Value get_binding_with_depth(const std::string& name, int depth) const;
     bool set_binding(const std::string& name, const Value& value);
     Value get_binding_direct(const std::string& name, Context* ctx = nullptr) const;
-    bool set_binding_direct(const std::string& name, const Value& value);
+    bool set_binding_direct(const std::string& name, const Value& value, Context* ctx = nullptr);
     Environment* find_binding_env(const std::string& name);
     bool create_binding(const std::string& name, const Value& value = Value(), bool mutable_binding = true, bool deletable = true, bool enumerable = true);
     void force_set_binding(const std::string& name, const Value& value);
@@ -396,7 +396,7 @@ public:
     void mark_lexical_declaration(const std::string& name) { lexical_names_.insert(name); }
     bool is_const_binding(const std::string& name) const { return const_binding_names_.count(name) > 0; }
     void mark_const_binding(const std::string& name) { const_binding_names_.insert(name); }
-    void create_global_function_binding(const std::string& name, const Value& value);
+    void create_global_function_binding(const std::string& name, const Value& value, bool configurable = false);
     void create_uninitialized_binding(const std::string& name, bool is_mutable = true);
 };
 
