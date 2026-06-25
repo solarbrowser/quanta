@@ -1152,8 +1152,10 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     Value this_value(new_object.get());
     
     Value constructor_prototype = get_property("prototype");
-    if (constructor_prototype.is_object()) {
-        Object* proto_obj = constructor_prototype.as_object();
+    if (constructor_prototype.is_object() || constructor_prototype.is_function()) {
+        Object* proto_obj = constructor_prototype.is_function()
+            ? static_cast<Object*>(constructor_prototype.as_function())
+            : constructor_prototype.as_object();
         new_object->set_prototype(proto_obj);
     }
     

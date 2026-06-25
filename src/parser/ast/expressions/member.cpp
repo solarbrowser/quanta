@@ -384,7 +384,8 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
 
             // Check prototype chain for accessor descriptors (e.g. class get/set)
-            {
+            // Only if obj has no own property -- own properties shadow inherited accessors
+            if (!obj->has_own_property(prop_name)) {
                 Object* proto = obj->get_prototype();
                 while (proto) {
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
@@ -396,7 +397,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                         }
                         return Value();
                     }
-                    if (proto_desc.has_value()) break;  // Found as data property, stop
+                    if (proto_desc.has_value()) break;
                     proto = proto->get_prototype();
                 }
             }
