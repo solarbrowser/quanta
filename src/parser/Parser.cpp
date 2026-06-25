@@ -2188,18 +2188,36 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         bool has_unicode_flag = flags.find('u') != std::string::npos || flags.find('v') != std::string::npos;
         const std::string& p = pattern;
 
-        // Pre-scan: collect ALL named groups for forward-reference support
-        std::unordered_set<std::string> seen_groups; // for duplicate detection in main loop
+        // Pre-scan: collect ALL named groups; detect same-alternative duplicates.
+        // Track per-alternative seen-sets: push on '(', pop on ')', clear top on '|'.
+        std::vector<std::unordered_set<std::string>> alt_stack;
+        alt_stack.push_back({});
+        bool esc = false;
         for (size_t i = 0; i < p.size(); i++) {
-            if (p[i] == '(' && i + 3 < p.size() && p[i+1] == '?' && p[i+2] == '<') {
-                if (p[i+3] != '=' && p[i+3] != '!') {
-                    size_t end = p.find('>', i + 3);
-                    if (end != std::string::npos) {
-                        named_groups.insert(p.substr(i + 3, end - (i + 3)));
+            if (esc) { esc = false; continue; }
+            if (p[i] == '\\') { esc = true; continue; }
+            if (p[i] == '(' && i + 3 < p.size() && p[i+1] == '?' && p[i+2] == '<'
+                && p[i+3] != '=' && p[i+3] != '!') {
+                size_t end = p.find('>', i + 3);
+                if (end != std::string::npos) {
+                    std::string name = p.substr(i + 3, end - (i + 3));
+                    if (!alt_stack.empty() && alt_stack.back().count(name)) {
+                        add_error("SyntaxError: Duplicate named capturing groups in the same alternative");
+                        return nullptr;
                     }
+                    if (!alt_stack.empty()) alt_stack.back().insert(name);
+                    named_groups.insert(name);
                 }
+                alt_stack.push_back({});
+            } else if (p[i] == '(') {
+                alt_stack.push_back({});
+            } else if (p[i] == ')') {
+                if (!alt_stack.empty()) alt_stack.pop_back();
+            } else if (p[i] == '|') {
+                if (!alt_stack.empty()) alt_stack.back().clear();
             }
         }
+        std::unordered_set<std::string> seen_groups; // kept for compat with loop below
 
         // Unicode-mode (/u or /v) strict validation
         if (has_unicode_flag) {
@@ -2350,10 +2368,7 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                             add_error(err);
                             return nullptr;
                         }
-                        if (seen_groups.count(name)) {
-                            add_error("SyntaxError: Duplicate named capture group: " + name);
-                            return nullptr;
-                        }
+                        // ES2025: duplicate named groups in different alternatives are allowed.
                         seen_groups.insert(name);
                         named_groups.insert(name);
                     }
@@ -2377,8 +2392,11 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         }
         for (const auto& ref : backrefs) {
             if (named_groups.find(ref) == named_groups.end()) {
-                add_error("SyntaxError: Invalid named capture group reference: \\k<" + ref + ">");
-                return nullptr;
+                // In non-Unicode mode, \k<name> with no group is a legacy identity escape (not an error).
+                if (has_unicode_flag) {
+                    add_error("SyntaxError: Invalid named capture group reference: \\k<" + ref + ">");
+                    return nullptr;
+                }
             }
         }
 

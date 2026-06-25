@@ -1174,16 +1174,147 @@ void register_string_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("split", string_split_desc);
 
+    // SpecialCasing.txt non-conditional toUpperCase multi-char mappings.
+    static const std::unordered_map<utf8proc_int32_t, std::vector<utf8proc_int32_t>> special_upper = {
+        {0x00DF, {0x0053, 0x0053}},  // ß → SS
+        {0x0149, {0x02BC, 0x004E}},  // ŉ → ʼN
+        {0x0390, {0x0399, 0x0308, 0x0301}},  // ΐ → Ϊ́
+        {0x03B0, {0x03A5, 0x0308, 0x0301}},  // ΰ → Ϋ́
+        {0x01F0, {0x004A, 0x030C}},  // ǰ → J̌
+        {0x1E96, {0x0048, 0x0331}},  // ẖ → H̱
+        {0x1E97, {0x0054, 0x0308}},  // ẗ → T̈
+        {0x1E98, {0x0057, 0x030A}},  // ẘ → Ẉ
+        {0x1E99, {0x0059, 0x030A}},  // ẙ → Y̊
+        {0x1E9A, {0x0041, 0x02BE}},  // ẚ → Aʾ
+        {0x0587, {0x0535, 0x0552}},  // ﬓ → ԵՒ
+        {0xFB00, {0x0046, 0x0046}},  // ﬀ → FF
+        {0xFB01, {0x0046, 0x0049}},  // ﬁ → FI
+        {0xFB02, {0x0046, 0x004C}},  // ﬂ → FL
+        {0xFB03, {0x0046, 0x0046, 0x0049}},  // ﬃ → FFI
+        {0xFB04, {0x0046, 0x0046, 0x004C}},  // ﬄ → FFL
+        {0xFB05, {0x0053, 0x0054}},  // ﬅ → ST
+        {0xFB06, {0x0053, 0x0054}},  // ﬆ → ST
+        {0xFB13, {0x0544, 0x0546}},  // ﬓ → ՄՆ
+        {0xFB14, {0x0544, 0x0535}},  // ﬔ → ՄԵ
+        {0xFB15, {0x0544, 0x053B}},  // ﬕ → ՄԻ
+        {0xFB16, {0x054E, 0x0546}},  // ﬖ → ՎՆ
+        {0xFB17, {0x0544, 0x053D}},  // ﬗ → ՄԽ
+        {0x1F50, {0x03A5, 0x0313}},  {0x1F52, {0x03A5, 0x0313, 0x0300}},
+        {0x1F54, {0x03A5, 0x0313, 0x0301}},  {0x1F56, {0x03A5, 0x0313, 0x0342}},
+        {0x1FB6, {0x0391, 0x0342}},  {0x1FC6, {0x0397, 0x0342}},
+        {0x1FD2, {0x0399, 0x0308, 0x0300}},  {0x1FD3, {0x0399, 0x0308, 0x0301}},
+        {0x1FD6, {0x0399, 0x0342}},  {0x1FD7, {0x0399, 0x0308, 0x0342}},
+        {0x1FE2, {0x03A5, 0x0308, 0x0300}},  {0x1FE3, {0x03A5, 0x0308, 0x0301}},
+        {0x1FE4, {0x03A1, 0x0313}},  {0x1FE6, {0x03A5, 0x0342}},
+        {0x1FE7, {0x03A5, 0x0308, 0x0342}},  {0x1FF6, {0x03A9, 0x0342}},
+        {0x1FB2, {0x1FBA, 0x0399}},  {0x1FB3, {0x0391, 0x0399}},
+        {0x1FB4, {0x0386, 0x0399}},  {0x1FB7, {0x0391, 0x0342, 0x0399}},
+        {0x1FBC, {0x0391, 0x0399}},  {0x1FC2, {0x1FCA, 0x0399}},
+        {0x1FC3, {0x0397, 0x0399}},  {0x1FC4, {0x0389, 0x0399}},
+        {0x1FC7, {0x0397, 0x0342, 0x0399}},  {0x1FCC, {0x0397, 0x0399}},
+        {0x1FF2, {0x1FFA, 0x0399}},  {0x1FF3, {0x03A9, 0x0399}},
+        {0x1FF4, {0x038F, 0x0399}},  {0x1FF7, {0x03A9, 0x0342, 0x0399}},
+        {0x1FFC, {0x03A9, 0x0399}},
+        {0x1F80, {0x1F08, 0x0399}},  {0x1F81, {0x1F09, 0x0399}},
+        {0x1F82, {0x1F0A, 0x0399}},  {0x1F83, {0x1F0B, 0x0399}},
+        {0x1F84, {0x1F0C, 0x0399}},  {0x1F85, {0x1F0D, 0x0399}},
+        {0x1F86, {0x1F0E, 0x0399}},  {0x1F87, {0x1F0F, 0x0399}},
+        {0x1F88, {0x1F08, 0x0399}},  {0x1F89, {0x1F09, 0x0399}},
+        {0x1F8A, {0x1F0A, 0x0399}},  {0x1F8B, {0x1F0B, 0x0399}},
+        {0x1F8C, {0x1F0C, 0x0399}},  {0x1F8D, {0x1F0D, 0x0399}},
+        {0x1F8E, {0x1F0E, 0x0399}},  {0x1F8F, {0x1F0F, 0x0399}},
+        {0x1F90, {0x1F28, 0x0399}},  {0x1F91, {0x1F29, 0x0399}},
+        {0x1F92, {0x1F2A, 0x0399}},  {0x1F93, {0x1F2B, 0x0399}},
+        {0x1F94, {0x1F2C, 0x0399}},  {0x1F95, {0x1F2D, 0x0399}},
+        {0x1F96, {0x1F2E, 0x0399}},  {0x1F97, {0x1F2F, 0x0399}},
+        {0x1F98, {0x1F28, 0x0399}},  {0x1F99, {0x1F29, 0x0399}},
+        {0x1F9A, {0x1F2A, 0x0399}},  {0x1F9B, {0x1F2B, 0x0399}},
+        {0x1F9C, {0x1F2C, 0x0399}},  {0x1F9D, {0x1F2D, 0x0399}},
+        {0x1F9E, {0x1F2E, 0x0399}},  {0x1F9F, {0x1F2F, 0x0399}},
+        {0x1FA0, {0x1F68, 0x0399}},  {0x1FA1, {0x1F69, 0x0399}},
+        {0x1FA2, {0x1F6A, 0x0399}},  {0x1FA3, {0x1F6B, 0x0399}},
+        {0x1FA4, {0x1F6C, 0x0399}},  {0x1FA5, {0x1F6D, 0x0399}},
+        {0x1FA6, {0x1F6E, 0x0399}},  {0x1FA7, {0x1F6F, 0x0399}},
+        {0x1FA8, {0x1F68, 0x0399}},  {0x1FA9, {0x1F69, 0x0399}},
+        {0x1FAA, {0x1F6A, 0x0399}},  {0x1FAB, {0x1F6B, 0x0399}},
+        {0x1FAC, {0x1F6C, 0x0399}},  {0x1FAD, {0x1F6D, 0x0399}},
+        {0x1FAE, {0x1F6E, 0x0399}},  {0x1FAF, {0x1F6F, 0x0399}},
+    };
+
+    // Unicode-aware case conversion using utf8proc codepoint functions + SpecialCasing.txt table.
+    auto unicode_case_convert = [](const std::string& s, bool to_lower) -> std::string {
+        // Pre-decode all codepoints for context-sensitive rules (Final Sigma).
+        std::vector<utf8proc_int32_t> cps;
+        std::vector<size_t> offsets;
+        { size_t j = 0; while (j < s.size()) { utf8proc_int32_t c2=0; utf8proc_ssize_t l2 = utf8proc_iterate(reinterpret_cast<const utf8proc_uint8_t*>(s.c_str()+j), s.size()-j, &c2); if (l2<=0){j++;continue;} offsets.push_back(j); cps.push_back(c2); j+=l2; } offsets.push_back(s.size()); }
+        auto is_cased = [](utf8proc_int32_t c) -> bool {
+            utf8proc_category_t cat = utf8proc_category(c);
+            return cat == UTF8PROC_CATEGORY_LU || cat == UTF8PROC_CATEGORY_LL || cat == UTF8PROC_CATEGORY_LT;
+        };
+        auto is_case_ignorable = [](utf8proc_int32_t c) -> bool {
+            utf8proc_category_t cat = utf8proc_category(c);
+            return cat == UTF8PROC_CATEGORY_MN || cat == UTF8PROC_CATEGORY_ME ||
+                   cat == UTF8PROC_CATEGORY_CF || cat == UTF8PROC_CATEGORY_LM ||
+                   cat == UTF8PROC_CATEGORY_SK || c == 0x0027 || c == 0x002E;
+        };
+
+        std::string result;
+        size_t i = 0;
+        size_t ci = 0;
+        while (ci < cps.size()) {
+            utf8proc_int32_t cp = cps[ci];
+            size_t byte_start = offsets[ci];
+            size_t byte_end = offsets[ci+1];
+            utf8proc_ssize_t len = byte_end - byte_start;
+            i = byte_end;
+            // SpecialCasing: İ (U+0130) → i + combining dot above in toLowerCase
+            if (to_lower && cp == 0x0130) { result += "\x69\xCC\x87"; ci++; continue; }
+            // SpecialCasing: ẞ (U+1E9E) → ß (U+00DF) in toLowerCase
+            if (to_lower && cp == 0x1E9E) { result += "\xC3\x9F"; ci++; continue; }
+            // Final Sigma: Σ (03A3) → ς (03C2) if preceded by Cased (skip Case_Ignorable) and NOT followed by Cased.
+            if (to_lower && cp == 0x03A3) {
+                bool preceded_by_cased = false;
+                for (int k = static_cast<int>(ci) - 1; k >= 0; k--) {
+                    if (is_cased(cps[k])) { preceded_by_cased = true; break; }
+                    if (!is_case_ignorable(cps[k])) break;
+                }
+                bool followed_by_cased = false;
+                for (size_t k = ci + 1; k < cps.size(); k++) {
+                    if (is_cased(cps[k])) { followed_by_cased = true; break; }
+                    if (!is_case_ignorable(cps[k])) break;
+                }
+                if (preceded_by_cased && !followed_by_cased) {
+                    result += "\xCF\x82"; ci++; continue;  // ς
+                }
+            }
+            // SpecialCasing toUpperCase: multi-char mappings
+            if (!to_lower) {
+                auto it = special_upper.find(cp);
+                if (it != special_upper.end()) {
+                    for (utf8proc_int32_t c2 : it->second) {
+                        utf8proc_uint8_t buf2[4];
+                        utf8proc_ssize_t o2 = utf8proc_encode_char(c2, buf2);
+                        if (o2 > 0) result.append(reinterpret_cast<char*>(buf2), o2);
+                    }
+                    ci++; continue;
+                }
+            }
+            utf8proc_int32_t mapped = to_lower ? utf8proc_tolower(cp) : utf8proc_toupper(cp);
+            utf8proc_uint8_t buf[4];
+            utf8proc_ssize_t out = utf8proc_encode_char(mapped, buf);
+            if (out > 0) result.append(reinterpret_cast<char*>(buf), out);
+            else if (ci < offsets.size()-1) result.append(s, offsets[ci], offsets[ci+1]-offsets[ci]);
+            ci++;
+        }
+        return result;
+    };
+
     auto toLowerCase_fn = ObjectFactory::create_native_function("toLowerCase",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
-
-            std::transform(str.begin(), str.end(), str.begin(),
-                [](unsigned char c) { return std::tolower(c); });
-
-            return Value(str);
+            return Value(unicode_case_convert(str, true));
         });
     PropertyDescriptor toLowerCase_desc(Value(toLowerCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1208,45 +1339,33 @@ void register_string_builtins(Context& ctx) {
     string_prototype->set_property_descriptor("concat", str_concat_desc);
 
     auto toUpperCase_fn = ObjectFactory::create_native_function("toUpperCase",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
-
-            std::transform(str.begin(), str.end(), str.begin(),
-                [](unsigned char c) { return std::toupper(c); });
-
-            return Value(str);
+            return Value(unicode_case_convert(str, false));
         });
     PropertyDescriptor toUpperCase_desc(Value(toUpperCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toUpperCase", toUpperCase_desc);
 
     auto toLocaleLowerCase_fn = ObjectFactory::create_native_function("toLocaleLowerCase",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
-
-            std::transform(str.begin(), str.end(), str.begin(),
-                [](unsigned char c) { return std::tolower(c); });
-
-            return Value(str);
+            return Value(unicode_case_convert(str, true));
         });
     PropertyDescriptor toLocaleLowerCase_desc(Value(toLocaleLowerCase_fn.release()),
         PropertyAttributes::BuiltinFunction);
     string_prototype->set_property_descriptor("toLocaleLowerCase", toLocaleLowerCase_desc);
 
     auto toLocaleUpperCase_fn = ObjectFactory::create_native_function("toLocaleUpperCase",
-        [toString_helper](Context& ctx, const std::vector<Value>& args) -> Value {
+        [toString_helper, unicode_case_convert](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_value = ctx.get_binding("this");
             std::string str = toString_helper(ctx, this_value);
-
-            std::transform(str.begin(), str.end(), str.begin(),
-                [](unsigned char c) { return std::toupper(c); });
-
-            return Value(str);
+            return Value(unicode_case_convert(str, false));
         });
     PropertyDescriptor toLocaleUpperCase_desc(Value(toLocaleUpperCase_fn.release()),
         PropertyAttributes::BuiltinFunction);

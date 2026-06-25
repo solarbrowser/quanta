@@ -212,10 +212,11 @@ void register_regexp_builtins(Context& ctx) {
                 regex_obj->set_property("exec", Value(exec_fn.release()), PropertyAttributes::BuiltinFunction);
 
                 auto toString_fn = ObjectFactory::create_native_function("toString",
-                    [regexp_impl](Context& ctx, const std::vector<Value>& args) -> Value {
-                        (void)ctx;
+                    [regexp_impl, regex_obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                         (void)args;
-                        return Value(regexp_impl->to_string());
+                        Value flags_v = regex_obj_ptr->get_property("flags");
+                        std::string flags_str = flags_v.is_string() ? flags_v.to_string() : regexp_impl->get_flags();
+                        return Value("/" + regexp_impl->get_source() + "/" + flags_str);
                     });
                 regex_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -599,6 +600,7 @@ void register_regexp_builtins(Context& ctx) {
             size_t safety = 0;
             while (safety++ <= str.length() + 1 && idx < lim) {
                 // Search from last_end by passing the substring; returned index is relative.
+                if (last_end >= str.size()) break;
                 std::string sub = str.substr(last_end);
                 if (sub.empty()) break;
                 Value match = exec_func->call(ctx, {Value(sub)}, Value(this_obj));
@@ -639,7 +641,10 @@ void register_regexp_builtins(Context& ctx) {
             // or (c) last real (non-zero-length) match ended at the end of the string.
             // Don't add for zero-length-advance paths (character-by-character iteration).
             if (idx < lim && (last_end < str.length() || !any_match || !last_was_zero_length_advance)) {
-                result->set_element(idx++, Value(str.substr(last_end)));
+                // Don't add empty trailing when we've consumed past the end (e.g. /$/split("x")).
+                if (last_end <= str.length()) {
+                    result->set_element(idx++, Value(str.substr(last_end)));
+                }
             }
             result->set_length(idx);
             return Value(result.release());
