@@ -167,15 +167,6 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
         return GeneratorResult(Value(), true);
     }
 
-    // Save outer state BEFORE body runs to compute diff at yield time
-    std::unordered_map<std::string, Value> pre_body_state;
-    if (outer_context_) {
-        auto keys = outer_context_->snapshot_bindings();
-        for (const auto& p : keys) {
-            if (!p.second.is_function()) pre_body_state[p.first] = p.second;
-        }
-    }
-
     try {
         last_value_ = sent_value;
 
@@ -204,23 +195,6 @@ Generator::GeneratorResult Generator::execute_until_yield(const Value& sent_valu
     } catch (const YieldException& yield_ex) {
         set_current_generator(nullptr);
         state_ = State::SuspendedYield;
-        // Save OUTER closure variable state at this yield point
-        size_t yi = target_yield_index_ - 1;
-        if (yi >= yield_states_.size()) yield_states_.resize(yi + 1);
-        auto& snap = yield_states_[yi];
-        // Capture closure variables from outer scope via generator function's __closure_* props
-        // Save ONLY variables that the generator body MODIFIED (diff from pre-body state)
-        if (outer_context_ && !pre_body_state.empty()) {
-            auto post_snap = outer_context_->snapshot_bindings();
-            for (const auto& pair : post_snap) {
-                if (pair.second.is_function()) continue;
-                auto it = pre_body_state.find(pair.first);
-                if (it != pre_body_state.end() && !it->second.strict_equals(pair.second)) {
-                    // This var was changed by the generator body
-                    snap[pair.first] = pair.second;
-                }
-            }
-        }
         return GeneratorResult(yield_ex.yielded_value, false);
 
     } catch (const std::exception& e) {
@@ -259,7 +233,6 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
             return GeneratorResult::make_exception(exc);
         }
         complete_generator(result);
-        writeback_closures();
 
         return GeneratorResult(result, true);
 
@@ -277,25 +250,6 @@ Generator::GeneratorResult Generator::execute_until_yield_throw(const Value& exc
     }
 }
 
-void Generator::writeback_closures() {
-    if (!generator_function_) return;
-    Context* cc = generator_function_->get_closure_context();
-    if (!cc) return;
-    auto pk = generator_function_->get_internal_property_keys();
-    for (const auto& k : pk) {
-        if (k.length() <= 10 || k.substr(0, 10) != "__closure_") continue;
-        std::string vn = k.substr(10);
-        if (vn == "this" || vn == "arguments") continue;
-        if (!generator_context_->has_binding(vn)) continue;
-        Value nv = generator_context_->get_binding(vn);
-        Value ov = generator_function_->get_property(k);
-        if (!nv.strict_equals(ov) && !nv.is_function()) {
-            generator_function_->set_property(k, nv);
-            cc->set_binding(vn, nv);
-        }
-    }
-}
-
 Generator::GeneratorResult Generator::execute_until_yield_return(const Value& value) {
     if (!body_) {
         complete_generator(value);
@@ -307,7 +261,6 @@ Generator::GeneratorResult Generator::execute_until_yield_return(const Value& va
     // Per spec, return() causes a return completion at the current suspension point.
     if (state_ == State::SuspendedYield && target_yield_index_ > 0) {
         complete_generator(value);
-        writeback_closures();
         return GeneratorResult(value, true);
     }
 
@@ -325,14 +278,12 @@ Generator::GeneratorResult Generator::execute_until_yield_return(const Value& va
         set_current_generator(nullptr);
         returning_ = false;
         complete_generator(value);
-        writeback_closures();
         return GeneratorResult(value, true);
 
     } catch (const YieldException&) {
         set_current_generator(nullptr);
         returning_ = false;
         complete_generator(value);
-        writeback_closures();
         return GeneratorResult(value, true);
 
     } catch (const std::exception& e) {
@@ -655,16 +606,16 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         gen_context.set_binding("this", bound_this_g);
     }
 
-    // Copy closure variables stored as __closure_xxx properties on this GeneratorFunction
+    // A named class's own name is bound as an immutable self-reference inside its
+    // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
+    // else resolves through closure_environment_, no materialization needed.
     auto prop_keys = this->get_internal_property_keys();
     for (const auto& key : prop_keys) {
-        if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
             std::string var_name = key.substr(10);
-            Value closure_value = this->get_property(key);
-            if (var_name != "arguments" && var_name != "this") {
-                if (!ctx.has_binding(var_name)) {
-                    gen_context.create_binding(var_name, closure_value, true);
-                }
+            if (this->has_property("__closure_const_" + var_name)) {
+                Value closure_value = this->get_property(key);
+                gen_context.create_lexical_binding(var_name, closure_value, false);
             }
         }
     }
