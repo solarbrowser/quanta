@@ -248,58 +248,6 @@ static bool contains_direct_eval(ASTNode* node) {
     }
 }
 
-// Collects the names a function body will hoist as its own `var` bindings (mirrors Function::scan_for_var_declarations, stopping at nested function boundaries); closure-capture below excludes these so the function's own declaration gets a fresh binding instead of sharing the outer one.
-static void collect_own_var_names(ASTNode* node, std::set<std::string>& names) {
-    if (!node) return;
-    if (node->get_type() == ASTNode::Type::VARIABLE_DECLARATION) {
-        auto* var_decl = static_cast<VariableDeclaration*>(node);
-        for (const auto& d : var_decl->get_declarations()) {
-            if (d->get_kind() == VariableDeclarator::Kind::VAR && d->get_id()) {
-                names.insert(d->get_id()->get_name());
-            }
-        }
-    } else if (node->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
-        for (const auto& s : static_cast<BlockStatement*>(node)->get_statements()) {
-            collect_own_var_names(s.get(), names);
-        }
-    } else if (node->get_type() == ASTNode::Type::IF_STATEMENT) {
-        auto* if_stmt = static_cast<IfStatement*>(node);
-        collect_own_var_names(if_stmt->get_consequent(), names);
-        if (if_stmt->get_alternate()) collect_own_var_names(if_stmt->get_alternate(), names);
-    } else if (node->get_type() == ASTNode::Type::FOR_STATEMENT) {
-        auto* for_stmt = static_cast<ForStatement*>(node);
-        if (for_stmt->get_init()) collect_own_var_names(for_stmt->get_init(), names);
-        collect_own_var_names(for_stmt->get_body(), names);
-    } else if (node->get_type() == ASTNode::Type::WHILE_STATEMENT) {
-        collect_own_var_names(static_cast<WhileStatement*>(node)->get_body(), names);
-    } else if (node->get_type() == ASTNode::Type::DO_WHILE_STATEMENT) {
-        collect_own_var_names(static_cast<DoWhileStatement*>(node)->get_body(), names);
-    } else if (node->get_type() == ASTNode::Type::WITH_STATEMENT) {
-        collect_own_var_names(static_cast<WithStatement*>(node)->get_body(), names);
-    } else if (node->get_type() == ASTNode::Type::TRY_STATEMENT) {
-        auto* try_stmt = static_cast<TryStatement*>(node);
-        collect_own_var_names(try_stmt->get_try_block(), names);
-        if (try_stmt->get_catch_clause()) collect_own_var_names(try_stmt->get_catch_clause(), names);
-        if (try_stmt->get_finally_block()) collect_own_var_names(try_stmt->get_finally_block(), names);
-    } else if (node->get_type() == ASTNode::Type::SWITCH_STATEMENT) {
-        for (const auto& c : static_cast<SwitchStatement*>(node)->get_cases()) {
-            for (const auto& s : static_cast<CaseClause*>(c.get())->get_consequent()) {
-                collect_own_var_names(s.get(), names);
-            }
-        }
-    } else if (node->get_type() == ASTNode::Type::LABELED_STATEMENT) {
-        collect_own_var_names(static_cast<LabeledStatement*>(node)->get_statement(), names);
-    } else if (node->get_type() == ASTNode::Type::FOR_IN_STATEMENT) {
-        auto* forin = static_cast<ForInStatement*>(node);
-        if (forin->get_left()) collect_own_var_names(forin->get_left(), names);
-        collect_own_var_names(forin->get_body(), names);
-    } else if (node->get_type() == ASTNode::Type::FOR_OF_STATEMENT) {
-        auto* forof = static_cast<ForOfStatement*>(node);
-        if (forof->get_left()) collect_own_var_names(forof->get_left(), names);
-        collect_own_var_names(forof->get_body(), names);
-    }
-}
-
 Value FunctionDeclaration::evaluate(Context& ctx) {
     const std::string& function_name = id_->get_name();
 
@@ -334,68 +282,9 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     }
 
 
-    if (function_obj) {
-        // Guard: never call get_binding() on variables that live in the global Object env.
-        // The global Object env (outer==nullptr, type==Object) may have accessor properties
-        // whose getters have side effects (e.g. deleting themselves). Those variables are
-        // always reachable via the env chain at call time; no closure capture needed.
-        auto is_global_obj_binding = [&](const std::string& n) -> bool {
-            Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object;
-        };
-
-        std::set<std::string> own_var_names;
-        collect_own_var_names(body_.get(), own_var_names);
-        // Functions containing a direct eval skip closure capture entirely below, relying on the function's real closure_context_-based environment chain (Context.cpp's create_function_context) instead.
-        bool has_eval = contains_direct_eval(body_.get());
-
-        auto var_env = ctx.get_variable_environment();
-        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
-            auto var_binding_names = var_env->get_binding_names();
-            for (const auto& name : var_binding_names) {
-                if (name != "this" && name != "arguments" && !own_var_names.count(name)) {
-                    Value value = ctx.get_binding(name);
-                    if (!value.is_undefined()) {
-                        function_obj->set_property("__closure_" + name, value);
-                    }
-                }
-            }
-        }
-
-        auto lex_env = ctx.get_lexical_environment();
-        Environment* walk = lex_env;
-        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
-            if (walk->get_type() != Environment::Type::Object) {
-                auto lex_binding_names = walk->get_binding_names();
-                for (const auto& name : lex_binding_names) {
-                    if (name != "this" && name != "arguments" && !own_var_names.count(name)) {
-                        if (!function_obj->has_property("__closure_" + name) && !is_global_obj_binding(name)) {
-                            Value value = ctx.get_binding(name);
-                            if (!value.is_undefined()) {
-                                function_obj->set_property("__closure_" + name, value);
-                            }
-                        }
-                    }
-                }
-            }
-            walk = walk->get_outer();
-        }
-
-        if (!has_eval) {
-            std::vector<std::string> potential_vars = {"count", "outerVar", "value", "data", "result", "i", "j", "x", "y", "z"};
-            for (const auto& var_name : potential_vars) {
-                if (own_var_names.count(var_name)) continue;
-                if (ctx.has_binding(var_name) && !is_global_obj_binding(var_name)) {
-                    Value value = ctx.get_binding(var_name);
-                    if (!value.is_undefined()) {
-                        if (!function_obj->has_property("__closure_" + var_name)) {
-                            function_obj->set_property("__closure_" + var_name, value);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Outer variables resolve through Function's closure_environment_ (the real
+    // lexical environment captured at creation time, wired in by create_function_context)
+    // -- no value snapshot needed here.
 
     if (function_obj && !source_text_.empty()) {
         function_obj->set_source_text(source_text_);
@@ -1297,11 +1186,6 @@ Value FunctionExpression::evaluate(Context& ctx) {
         param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
     }
 
-    std::set<std::string> param_names;
-    for (const auto& param : param_clones) {
-        param_names.insert(param->get_name()->get_name());
-    }
-
     std::unique_ptr<Function> function;
     if (is_async_ && is_generator_) {
         std::vector<std::unique_ptr<Parameter>> gen_params;
@@ -1320,48 +1204,8 @@ Value FunctionExpression::evaluate(Context& ctx) {
             function->set_is_param_default(true);
         }
 
-        auto is_global_obj_binding_fe = [&](const std::string& n) -> bool {
-            Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object;
-        };
-
-        std::set<std::string> own_var_names;
-        collect_own_var_names(body_.get(), own_var_names);
-        // See FunctionDeclaration::evaluate's matching comment on has_eval.
-        bool has_eval = contains_direct_eval(body_.get());
-
-        auto var_env = ctx.get_variable_environment();
-        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
-            auto var_binding_names = var_env->get_binding_names();
-            for (const auto& name : var_binding_names) {
-                if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
-                    Value value = ctx.get_binding(name);
-                    if (!value.is_undefined()) {
-                        function->set_property("__closure_" + name, value);
-                    }
-                }
-            }
-        }
-
-        auto lex_env = ctx.get_lexical_environment();
-        Environment* walk = lex_env;
-        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
-            if (walk->get_type() != Environment::Type::Object) {
-                auto lex_binding_names = walk->get_binding_names();
-                for (const auto& name : lex_binding_names) {
-                    if (name != "this" && name != "arguments" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
-                        if (!function->has_property("__closure_" + name) && !is_global_obj_binding_fe(name)) {
-                            Value value = ctx.get_binding(name);
-                            if (!value.is_undefined()) {
-                                function->set_property("__closure_" + name, value);
-                            }
-                        }
-                    }
-                }
-            }
-            walk = walk->get_outer();
-        }
-
+        // Outer variables resolve through Function's closure_environment_ (the real
+        // lexical environment captured at creation time) -- no value snapshot needed here.
         bool is_strict = ctx.is_strict_mode();
         if (!is_strict && body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             BlockStatement* block = static_cast<BlockStatement*>(body_.get());
@@ -1483,44 +1327,8 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
             }
         }
 
-        std::set<std::string> async_param_set;
-        for (const auto& p : params_) async_param_set.insert(p->get_name()->get_name());
-        std::set<std::string> own_var_names;
-        collect_own_var_names(body_.get(), own_var_names);
-        // See FunctionDeclaration::evaluate's matching comment on has_eval.
+        // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
         bool has_eval = contains_direct_eval(body_.get());
-        auto is_global_obj_binding_af = [&](const std::string& n) -> bool {
-            Environment* e = ctx.find_binding_env(n);
-            return e && e->get_type() == Environment::Type::Object;
-        };
-        auto var_env = ctx.get_variable_environment();
-        if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
-            for (const auto& bname : var_env->get_binding_names()) {
-                if (bname != "this" && async_param_set.find(bname) == async_param_set.end() && !own_var_names.count(bname)) {
-                    Value value = ctx.get_binding(bname);
-                    if (!value.is_undefined()) {
-                        async_fn->set_property("__closure_" + bname, value);
-                    }
-                }
-            }
-        }
-        auto lex_env = ctx.get_lexical_environment();
-        Environment* walk = lex_env;
-        while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
-            if (walk->get_type() != Environment::Type::Object) {
-                for (const auto& bname : walk->get_binding_names()) {
-                    if (bname != "this" && async_param_set.find(bname) == async_param_set.end() && !own_var_names.count(bname)) {
-                        if (!async_fn->has_property("__closure_" + bname) && !is_global_obj_binding_af(bname)) {
-                            Value value = ctx.get_binding(bname);
-                            if (!value.is_undefined()) {
-                                async_fn->set_property("__closure_" + bname, value);
-                            }
-                        }
-                    }
-                }
-            }
-            walk = walk->get_outer();
-        }
 
         if (!source_text_.empty()) {
             async_fn->set_source_text(source_text_);
@@ -1560,52 +1368,8 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
         arrow_function->set_property("__arrow_new_target__", enclosing_new_target);
     }
 
-    std::set<std::string> param_names;
-    for (const auto& param : params_) {
-        param_names.insert(param->get_name()->get_name());
-    }
-
-    auto is_global_obj_binding_ar = [&](const std::string& n) -> bool {
-        Environment* e = ctx.find_binding_env(n);
-        return e && e->get_type() == Environment::Type::Object;
-    };
-
-    std::set<std::string> own_var_names;
-    collect_own_var_names(body_.get(), own_var_names);
-    // See FunctionDeclaration::evaluate's matching comment on has_eval.
+    // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
     bool has_eval = contains_direct_eval(body_.get());
-
-    auto var_env = ctx.get_variable_environment();
-    if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
-        auto var_binding_names = var_env->get_binding_names();
-        for (const auto& name : var_binding_names) {
-            if (name != "this" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
-                Value value = ctx.get_binding(name);
-                if (!value.is_undefined()) {
-                    arrow_function->set_property("__closure_" + name, value);
-                }
-            }
-        }
-    }
-
-    auto lex_env = ctx.get_lexical_environment();
-    Environment* walk = lex_env;
-    while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
-        if (walk->get_type() != Environment::Type::Object) {
-            auto lex_binding_names = walk->get_binding_names();
-            for (const auto& name : lex_binding_names) {
-                if (name != "this" && param_names.find(name) == param_names.end() && !own_var_names.count(name)) {
-                    if (!arrow_function->has_property("__closure_" + name) && !is_global_obj_binding_ar(name)) {
-                        Value value = ctx.get_binding(name);
-                        if (!value.is_undefined()) {
-                            arrow_function->set_property("__closure_" + name, value);
-                        }
-                    }
-                }
-            }
-        }
-        walk = walk->get_outer();
-    }
 
     if (!source_text_.empty()) {
         arrow_function->set_source_text(source_text_);
@@ -2830,46 +2594,8 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
         }
     }
 
-    std::set<std::string> param_set;
-    for (const auto& p : params_) {
-        if (p->get_name()) param_set.insert(p->get_name()->get_name());
-    }
-    std::set<std::string> own_var_names;
-    collect_own_var_names(body_.get(), own_var_names);
-    // See FunctionDeclaration::evaluate's matching comment on has_eval.
+    // Outer variables resolve through Function's closure_environment_ -- no value snapshot needed here.
     bool has_eval = contains_direct_eval(body_.get());
-    auto is_global_obj = [&](const std::string& n) -> bool {
-        Environment* e = ctx.find_binding_env(n);
-        return e && e->get_type() == Environment::Type::Object;
-    };
-    auto var_env = ctx.get_variable_environment();
-    if (!has_eval && var_env && var_env->get_type() != Environment::Type::Object) {
-        for (const auto& bname : var_env->get_binding_names()) {
-            if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end() && !own_var_names.count(bname)) {
-                Value value = ctx.get_binding(bname);
-                if (!value.is_undefined()) {
-                    fn->set_property("__closure_" + bname, value);
-                }
-            }
-        }
-    }
-    auto lex_env = ctx.get_lexical_environment();
-    Environment* walk = lex_env;
-    while (!has_eval && walk && walk != var_env && !walk->is_closure_boundary()) {
-        if (walk->get_type() != Environment::Type::Object) {
-            for (const auto& bname : walk->get_binding_names()) {
-                if (bname != "this" && bname != "arguments" && param_set.find(bname) == param_set.end() && !own_var_names.count(bname)) {
-                    if (!fn->has_property("__closure_" + bname) && !is_global_obj(bname)) {
-                        Value value = ctx.get_binding(bname);
-                        if (!value.is_undefined()) {
-                            fn->set_property("__closure_" + bname, value);
-                        }
-                    }
-                }
-            }
-        }
-        walk = walk->get_outer();
-    }
 
     if (has_eval) {
         fn->set_property("__contains_eval__", Value(true));

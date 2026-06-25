@@ -358,99 +358,25 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
     }
 
     if (!function_context.create_binding("this", actual_this, true)) {
-        // Binding already exists (e.g. set from __closure_this) -- force update
+        // Binding already exists -- force update
         function_context.set_binding("this", actual_this);
     }
 
     auto prop_keys = this->get_internal_property_keys();
 
-    // Pre-pull: refresh own closure values from sibling closure functions before loading.
-    // This handles async/microtask scenarios where a sibling ran before us (e.g., in a
-    // promise chain) and updated its own __closure_* values which we need as our starting
-    // point. Priority: parent_context > sibling pull > own stale value.
-    {
-        std::unordered_map<std::string, Value> sibling_updates;
-        for (const auto& pk : prop_keys) {
-            if (pk.length() <= 10 || pk.substr(0, 10) != "__closure_") continue;
-            Value pval = this->get_property(pk);
-            if (!pval.is_function()) continue;
-            Function* pfn = pval.as_function();
-            if (pfn == this) continue;
-            auto sib_keys = pfn->get_internal_property_keys();
-            for (const auto& sk : sib_keys) {
-                if (sk.length() <= 10 || sk.substr(0, 10) != "__closure_") continue;
-                Value sv = pfn->get_property(sk);
-                if (sv.is_undefined() || sv.is_function()) continue;
-                if (!this->has_property(sk)) continue;
-                Value our_val = this->get_property(sk);
-                if (!sv.strict_equals(our_val) && !our_val.is_function()) {
-                    sibling_updates[sk] = sv;
-                }
-            }
-        }
-        for (auto& [uk, uv] : sibling_updates) {
-            this->set_property(uk, uv);
-        }
-    }
-
-    auto* parent_var_env = parent_context->get_variable_environment();
-    auto* parent_lex_env = parent_context->get_lexical_environment();
-    std::unordered_set<std::string> parent_var_names;
-    if (parent_var_env) {
-        auto names = parent_var_env->get_binding_names();
-        parent_var_names.insert(names.begin(), names.end());
-    }
-    // Also include let/const bindings from the lexical environment
-    if (parent_lex_env && parent_lex_env != parent_var_env) {
-        auto lex_names = parent_lex_env->get_binding_names();
-        parent_var_names.insert(lex_names.begin(), lex_names.end());
-    }
+    // A named class's own name is bound as an immutable self-reference inside its
+    // methods (__closure_const_<name>) since the class's name binding doesn't exist
+    // in scope yet when its methods are created -- see ClassDeclaration::evaluate.
+    // Everything else resolves through closure_environment_, no materialization needed.
     for (const auto& key : prop_keys) {
-        if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
             std::string var_name = key.substr(10);
-            Value closure_value = this->get_property(key);
-            bool is_const_closure = this->has_property("__closure_const_" + var_name);
-            if (var_name != "arguments" && var_name != "this" && !is_const_closure) {
-                // Use the caller's current value only when it matches the captured closure
-                // (same binding, just mutated). If the values differ, the closure captured
-                // a shadowing inner binding -- preserve the captured value.
-                if (parent_var_names.count(var_name)) {
-                    Value parent_val;
-                    if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
-                        parent_val = parent_var_env->get_binding(var_name);
-                    } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
-                        parent_val = parent_lex_env->get_binding(var_name);
-                    }
-                    if (!parent_val.is_undefined() && !parent_val.is_function() &&
-                            parent_val.strict_equals(closure_value)) {
-                        closure_value = parent_val;
-                    }
-                }
-                // Skip materializing only if the variable lives in the global Object env
-                // AND the closure captured the same value (not a shadowing inner binding).
-                bool skip_materialize = false;
-                Environment* check_env = parent_context->get_lexical_environment();
-                while (check_env) {
-                    if (check_env->has_own_binding(var_name)) {
-                        if (check_env->get_type() == Environment::Type::Object &&
-                                check_env->get_outer() == nullptr) {
-                            Value global_val = check_env->get_binding(var_name);
-                            skip_materialize = global_val.strict_equals(closure_value);
-                        }
-                        break;
-                    }
-                    check_env = check_env->get_outer();
-                }
-                if (skip_materialize) continue;
-            }
-            if (is_const_closure) {
-                // Class name binding: always materialize as const, shadowing any outer binding
+            if (this->has_property("__closure_const_" + var_name)) {
+                Value closure_value = this->get_property(key);
                 Environment* fn_lex = function_context.get_lexical_environment();
                 if (!fn_lex || !fn_lex->has_own_binding(var_name)) {
                     function_context.create_lexical_binding(var_name, closure_value, false);
                 }
-            } else {
-                function_context.create_binding(var_name, closure_value, true);
             }
         }
     }
@@ -560,32 +486,6 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
         function_context.set_in_param_eval(false);
-
-        // After parameter binding (which may have mutated outer variables via generators),
-        // refresh closure variables from the parent scope -- but only if the variable
-        // was NOT already updated in this context (e.g. by iterator close callbacks).
-        if (parent_var_env || parent_lex_env) {
-            for (const auto& key : prop_keys) {
-                if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
-                    std::string var_name = key.substr(10);
-                    if (var_name == "this" || var_name == "arguments") continue;
-                    if (parent_var_names.count(var_name)) {
-                        Value fresh_val;
-                        if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
-                            fresh_val = parent_var_env->get_binding(var_name);
-                        } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
-                            fresh_val = parent_lex_env->get_binding(var_name);
-                        }
-                        Value captured_val = this->get_property(key);
-                        Value current_val = function_context.get_binding(var_name);
-                        if (!fresh_val.is_undefined() && !fresh_val.is_function() &&
-                            current_val.strict_equals(captured_val)) {
-                            function_context.set_binding(var_name, fresh_val);
-                        }
-                    }
-                }
-            }
-        }
     } else {
         for (size_t i = 0; i < parameters_.size(); ++i) {
             Value arg_value = (i < args.size()) ? args[i] : Value();
@@ -594,8 +494,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
     }
     
-    // Arrow functions don't have their own arguments object - they use the
-    // lexical arguments captured from the enclosing scope via __closure_arguments
+    // Arrow functions don't have their own arguments object -- they resolve
+    // `arguments` lexically through closure_environment_ to the enclosing scope.
     if (!is_arrow_) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
         // Elements for non-mapped indices; mapped ones get accessor descriptors below.
@@ -771,27 +671,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             }
         }
 
-        std::unordered_set<std::string> pre_scan_names;
-        {
-            auto* ve = function_context.get_variable_environment();
-            if (ve) {
-                auto ns = ve->get_binding_names();
-                pre_scan_names.insert(ns.begin(), ns.end());
-            }
-        }
-
         if (body_->get_type() == ASTNode::Type::BLOCK_STATEMENT) {
             scan_for_var_declarations(body_.get(), function_context);
-        }
-
-        std::unordered_set<std::string> scan_created_names;
-        {
-            auto* ve = function_context.get_variable_environment();
-            if (ve) {
-                for (const auto& n : ve->get_binding_names()) {
-                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
-                }
-            }
         }
 
         Context* prev_context = Object::current_context_;
@@ -804,182 +685,9 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             ctx.set_super_called(true);
         }
 
-        // let/const declared at the function's top level are created while the
-        // body runs (after the pre-scan above), so a function declaration hoisted
-        // before them captured a stale/undefined __closure_ snapshot. Walk the
-        // post-execution variable environment and lexical chain (up to the
-        // variable environment) to also pick those names up for re-capture.
-        {
-            auto* post_ve = function_context.get_variable_environment();
-            if (post_ve) {
-                for (const auto& n : post_ve->get_binding_names()) {
-                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
-                }
-            }
-            Environment* lex = function_context.get_lexical_environment();
-            while (lex && lex != post_ve) {
-                for (const auto& n : lex->get_binding_names()) {
-                    if (!pre_scan_names.count(n)) scan_created_names.insert(n);
-                }
-                lex = lex->get_outer();
-            }
-        }
-
-        // Re-capture closure variables on function objects in this scope.
-        // This handles the case where function declarations are hoisted before
-        // var initializations, so their __closure_ properties had stale values.
-        {
-            auto var_env = function_context.get_variable_environment();
-            if (var_env && !scan_created_names.empty()) {
-                std::vector<std::pair<std::string, Value>> var_values;
-                std::vector<std::pair<std::string, Value>> func_values;
-                std::vector<Function*> func_objects;
-
-                // Build set of parameter names to exclude from sibling closure propagation
-                std::unordered_set<std::string> param_name_set(parameters_.begin(), parameters_.end());
-                if (parameter_objects_.empty() == false) {
-                    for (const auto& p : parameter_objects_) {
-                        param_name_set.insert(p->get_name()->get_name());
-                    }
-                }
-
-                for (const auto& bname : scan_created_names) {
-                    if (bname == "this" || bname == "arguments") continue;
-                    if (param_name_set.count(bname)) continue;
-                    Value val = function_context.get_binding(bname);
-                    if (val.is_function()) {
-                        Function* fn = val.as_function();
-                        if (fn != this) {
-                            func_objects.push_back(fn);
-                            func_values.push_back({bname, val});
-                        }
-                    } else {
-                        var_values.push_back({bname, val});
-                    }
-                }
-
-                for (auto* func : func_objects) {
-                    for (auto& [vname, vval] : var_values) {
-                        func->set_property("__closure_" + vname, vval);
-                    }
-                    for (auto& [fname, fval] : func_values) {
-                        if (fval.as_function() != func) {
-                            func->set_property("__closure_" + fname, fval);
-                        }
-                    }
-                }
-
-                // Also update the return value if it's a function not already in scope
-                if (function_context.has_return_value()) {
-                    Value ret_val = function_context.get_return_value();
-                    if (ret_val.is_function()) {
-                        Function* ret_func = ret_val.as_function();
-                        bool already_updated = false;
-                        for (auto* func : func_objects) {
-                            if (func == ret_func) {
-                                already_updated = true;
-                                break;
-                            }
-                        }
-                        if (!already_updated) {
-                            for (auto& [vname, vval] : var_values) {
-                                ret_func->set_property("__closure_" + vname, vval);
-                            }
-                            for (auto& [fname, fval] : func_values) {
-                                if (fval.as_function() != ret_func) {
-                                    ret_func->set_property("__closure_" + fname, fval);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Write back modified closure variables to this function object, propagate to parent context, and update sibling closures.
-        // __contains_eval__ functions never had any __closure_* properties captured to begin with (see language.cpp), so this is just a no-op guard, not the primary mechanism.
-        std::vector<std::pair<std::string, Value>> modified_closures;
-        auto prop_keys2 = this->has_property("__contains_eval__") ? std::vector<std::string>() : this->get_internal_property_keys();
-        for (const auto& key : prop_keys2) {
-            if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
-                std::string var_name = key.substr(10);
-
-                if (function_context.has_binding(var_name)) {
-                    Value current_value = function_context.get_binding(var_name);
-                    Value old_value = this->get_property(key);
-                    this->set_property(key, current_value);
-
-                    if (!current_value.strict_equals(old_value)) {
-                        if (parent_var_names.count(var_name)) {
-                            // Write to whichever parent environment actually owns the binding
-                            if (parent_var_env && parent_var_env->has_own_binding(var_name)) {
-                                parent_var_env->set_binding(var_name, current_value);
-                            } else if (parent_lex_env && parent_lex_env->has_own_binding(var_name)) {
-                                parent_lex_env->set_binding(var_name, current_value);
-                            } else if (parent_var_env) {
-                                parent_var_env->set_binding(var_name, current_value);
-                            }
-                        } else if (closure_context_) {
-                            auto* cve = closure_context_->get_variable_environment();
-                            if (cve && cve->has_own_binding(var_name)) {
-                                cve->set_binding(var_name, current_value);
-                                // For non-global envs (Function/Declarative), the own
-                                // binding is a closure-loaded copy.  Propagate the write
-                                // up the outer chain so callers at higher scopes (e.g.
-                                // global) also see the updated value.
-                                if (cve->get_type() != Environment::Type::Object &&
-                                    cve->get_type() != Environment::Type::Global) {
-                                    Environment* outer = cve->get_outer();
-                                    while (outer) {
-                                        if (outer->has_own_binding(var_name)) {
-                                            outer->set_binding(var_name, current_value);
-                                            break;
-                                        }
-                                        outer = outer->get_outer();
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (!current_value.strict_equals(old_value)) {
-                        modified_closures.push_back({var_name, current_value});
-                    }
-                }
-            }
-        }
-
-        if (!modified_closures.empty()) {
-            auto* var_env = parent_context->get_variable_environment();
-            if (var_env) {
-                auto sibling_names = var_env->get_binding_names();
-                for (const auto& sname : sibling_names) {
-                    Value sval = parent_var_env->get_binding(sname);
-                    if (sval.is_function() && sval.as_function() != this) {
-                        Function* sibling = sval.as_function();
-                        for (auto& [vname, vval] : modified_closures) {
-                            if (sibling->has_property("__closure_" + vname)) {
-                                sibling->set_property("__closure_" + vname, vval);
-                            }
-                        }
-                    }
-                }
-            }
-            auto own_keys = this->get_internal_property_keys();
-            for (const auto& okey : own_keys) {
-                if (okey.length() > 10 && okey.substr(0, 10) == "__closure_") {
-                    Value sval = this->get_property(okey);
-                    if (sval.is_function() && sval.as_function() != this) {
-                        Function* sibling = sval.as_function();
-                        for (auto& [vname, vval] : modified_closures) {
-                            if (sibling->has_property("__closure_" + vname)) {
-                                sibling->set_property("__closure_" + vname, vval);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Outer-variable writes during body execution went straight through
+        // closure_environment_ to the real defining Environment already (live,
+        // by construction) -- no post-hoc diff/write-back/sibling-update needed.
 
         
         if (function_context.has_return_value()) {

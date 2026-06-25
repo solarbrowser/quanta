@@ -113,7 +113,6 @@ public:
     size_t target_yield_index_ = 0;
     Value last_value_;
     std::vector<Value> sent_values_;
-    std::vector<std::unordered_map<std::string, Value>> yield_states_;
 
     Context* get_context() const { return generator_context_; }
 
@@ -142,7 +141,6 @@ private:
     GeneratorResult execute_until_yield_throw(const Value& exception);
     GeneratorResult execute_until_yield_return(const Value& value);
     void complete_generator(const Value& value);
-    void writeback_closures();
 };
 
 /**

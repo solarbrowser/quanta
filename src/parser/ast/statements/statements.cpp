@@ -903,18 +903,9 @@ Value ForStatement::evaluate(Context& ctx) {
             }
         }
 
-        // Spec 14.7.4.4 step 3e: update runs in the CURRENT per-iteration env.
-        if (update_) {
-            update_->evaluate(ctx);
-            if (ctx.has_exception()) {
-                if (has_per_iteration_scope) ctx.pop_block_scope();
-                FOR_CLEANUP();
-                return Value();
-            }
-        }
-
-        // Spec 14.7.4.4 step 3f: CreatePerIterationEnvironment AFTER update.
-        // Read the post-update values from the current per-iter env, then replace it.
+        // Spec 14.7.4.4 step e: CreatePerIterationEnvironment BEFORE the increment, so the
+        // increment mutates the *new* environment -- not the one this round's body (and any
+        // closures it created) captured by reference. Read the pre-increment values, fork.
         if (has_per_iteration_scope) {
             std::vector<Value> iter_values;
             for (const auto& vname : iter_var_names) {
@@ -924,6 +915,16 @@ Value ForStatement::evaluate(Context& ctx) {
             ctx.push_block_scope();
             for (size_t vi = 0; vi < iter_var_names.size(); vi++) {
                 ctx.create_lexical_binding(iter_var_names[vi], iter_values[vi], true);
+            }
+        }
+
+        // Spec 14.7.4.4 step f: increment runs in the freshly forked per-iteration env.
+        if (update_) {
+            update_->evaluate(ctx);
+            if (ctx.has_exception()) {
+                if (has_per_iteration_scope) ctx.pop_block_scope();
+                FOR_CLEANUP();
+                return Value();
             }
         }
     }

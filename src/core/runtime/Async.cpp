@@ -169,13 +169,15 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
         exec_ctx->create_binding("__super__", super_ctor, false);
     }
 
-    // Restore captured closure variables
+    // A named class's own name is bound as an immutable self-reference inside its
+    // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
+    // else resolves through closure_environment_, no materialization needed.
     for (const auto& key : get_internal_property_keys()) {
-        if (key.size() <= 10 || key.substr(0, 10) != "__closure_") continue;
+        if (key.size() <= 10 || key.substr(0, 10) != "__closure_" || key.substr(0, 16) == "__closure_const_") continue;
         std::string var_name = key.substr(10);
-        if (var_name == "this") continue;
-        bool is_const = has_property("__closure_const_" + var_name);
-        exec_ctx->create_binding(var_name, get_property(key), !is_const);
+        if (has_property("__closure_const_" + var_name)) {
+            exec_ctx->create_binding(var_name, get_property(key), false);
+        }
     }
 
     // Spec 15.8.4 NamedEvaluation / FunctionDeclarationInstantiation: a named
@@ -1172,16 +1174,16 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
         gen_ctx->set_binding("this", bound_this);
     }
 
-    // Apply closures
+    // A named class's own name is bound as an immutable self-reference inside its
+    // methods (__closure_const_<name>) -- see ClassDeclaration::evaluate. Everything
+    // else resolves through closure_environment_, no materialization needed.
     auto prop_keys = get_internal_property_keys();
     for (const auto& key : prop_keys) {
-        if (key.length() > 10 && key.substr(0, 10) == "__closure_") {
+        if (key.length() > 10 && key.substr(0, 10) == "__closure_" && key.substr(0, 16) != "__closure_const_") {
             std::string var_name = key.substr(10);
-            Value closure_value = get_property(key);
-            if (var_name != "arguments" && var_name != "this") {
-                if (!ctx.has_binding(var_name)) {
-                    gen_ctx->create_binding(var_name, closure_value, true);
-                }
+            if (has_property("__closure_const_" + var_name)) {
+                Value closure_value = get_property(key);
+                gen_ctx->create_lexical_binding(var_name, closure_value, false);
             }
         }
     }
