@@ -616,8 +616,8 @@ void Context::initialize_built_ins() {
     WeakSet::setup_weakset_prototype(*this);
     
     AsyncUtils::setup_async_functions(*this);
-    AsyncGenerator::setup_async_generator_prototype(*this);
     AsyncIterator::setup_async_iterator_prototype(*this);
+    AsyncGenerator::setup_async_generator_prototype(*this);
     
     Iterator::setup_iterator_prototype(*this);
 

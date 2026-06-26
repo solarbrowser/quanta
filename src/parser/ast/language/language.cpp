@@ -1435,9 +1435,37 @@ Value AwaitExpression::evaluate(Context& ctx) {
         bool settled_throw = false;
         bool is_pending = false;
         Promise* awaited_promise = nullptr;
+        Value wrapped_keepalive; // pins a freshly created wrapper promise as a GC root, if one was needed
 
         if (AsyncUtils::is_promise(expr_val)) {
             awaited_promise = static_cast<Promise*>(expr_val.as_object());
+        } else if (AsyncUtils::is_thenable(expr_val)) {
+            // Spec Await step 2 (PromiseResolve): a non-Promise thenable must be wrapped in a real Promise via NewPromiseCapability, not awaited as-is.
+            auto wrapped_obj = ObjectFactory::create_promise(gctx);
+            Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+            auto res_fn = ObjectFactory::create_native_function("",
+                [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                    wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+                }, 1);
+            auto rej_fn = ObjectFactory::create_native_function("",
+                [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                    wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+                }, 1);
+            wrapped_raw->set_property("__tr_", Value(res_fn.release()));
+            wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+            Object* thenable_obj = expr_val.as_object();
+            Value then_val = thenable_obj->get_property("then");
+            if (then_val.is_function()) {
+                Value r = wrapped_raw->get_property("__tr_");
+                Value j = wrapped_raw->get_property("__tj_");
+                then_val.as_function()->call(ctx, {r, j}, expr_val);
+                ctx.clear_exception();
+            }
+            awaited_promise = wrapped_raw;
+            wrapped_keepalive = Value(wrapped_obj.release());
+        }
+
+        if (awaited_promise) {
             if (awaited_promise->get_state() == PromiseState::FULFILLED) {
                 settled_val = awaited_promise->get_value();
             } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
@@ -1476,7 +1504,7 @@ Value AwaitExpression::evaluate(Context& ctx) {
             if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
         }
 
-        async_gen->await_result_ = expr_val;  // pin awaited value as GC root during suspension
+        async_gen->await_result_ = wrapped_keepalive.is_undefined() ? expr_val : wrapped_keepalive;  // pin awaited value (or wrapper promise) as GC root during suspension
         async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
         swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
 
@@ -1944,7 +1972,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                     Object::current_context_ = prev_oc_r;
                     if (ctx.has_exception()) return Value();
                     if (!ret_fn_v.is_function()) {
-                        // No return method: just close (return the arg directly)
+                        // Spec 27.6.3.9 step 8.b.iii: no return method -- still Await the return argument (generatorKind is always async here) before closing.
+                        if (!await_before_yield(ret_arg)) return Value();
                         last_val = ret_arg;
                         delegate_done = true;
                         break;
@@ -2462,13 +2491,38 @@ Value YieldExpression::evaluate(Context& ctx) {
         if (AsyncGenerator::get_current()) {
             AsyncGenerator* async_gen = AsyncGenerator::get_current();
 
-            // Spec 27.6.3.7 AsyncGeneratorYield step 5: Await(value) before yielding.
-            // If the yielded value is a promise, await it. A rejection propagates as a
-            // throw inside the generator (may be caught by a try-catch around the yield).
-            if (AsyncUtils::is_promise(yield_value)) {
+            // Spec 27.6.3.7 AsyncGeneratorYield step 5: Await(value) before yielding -- a non-Promise thenable must also be wrapped and awaited, not just genuine Promise instances.
+            if (AsyncUtils::is_promise(yield_value) || AsyncUtils::is_thenable(yield_value)) {
                 Context* gctx = async_gen->get_outer_context() ? async_gen->get_outer_context()
                                                                : async_gen->get_generator_context();
-                Promise* p = static_cast<Promise*>(yield_value.as_object());
+                Promise* p;
+                Value wrapped_keepalive; // pins a freshly created wrapper promise as a GC root, if one was needed
+                if (AsyncUtils::is_promise(yield_value)) {
+                    p = static_cast<Promise*>(yield_value.as_object());
+                } else {
+                    auto wrapped_obj = ObjectFactory::create_promise(gctx);
+                    Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+                    auto res_fn = ObjectFactory::create_native_function("",
+                        [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                            wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+                        }, 1);
+                    auto rej_fn = ObjectFactory::create_native_function("",
+                        [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                            wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+                        }, 1);
+                    wrapped_raw->set_property("__tr_", Value(res_fn.release()));
+                    wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+                    Object* thenable_obj = yield_value.as_object();
+                    Value then_val = thenable_obj->get_property("then");
+                    if (then_val.is_function()) {
+                        Value r = wrapped_raw->get_property("__tr_");
+                        Value j = wrapped_raw->get_property("__tj_");
+                        then_val.as_function()->call(ctx, {r, j}, yield_value);
+                        ctx.clear_exception();
+                    }
+                    p = wrapped_raw;
+                    wrapped_keepalive = Value(wrapped_obj.release());
+                }
                 if (p->get_state() == PromiseState::FULFILLED) {
                     yield_value = p->get_value();
                 } else if (p->get_state() == PromiseState::REJECTED) {
@@ -2496,7 +2550,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     p->set_property("__af_" + aw_key, Value(on_f.release()));
                     p->set_property("__ar_" + aw_key, Value(on_r.release()));
                     p->then(ff_tmp, fr_tmp);
-                    async_gen->await_result_ = yield_value;
+                    async_gen->await_result_ = wrapped_keepalive.is_undefined() ? yield_value : wrapped_keepalive;
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                     swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
                     if (async_gen->await_is_throw_) {
