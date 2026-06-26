@@ -401,6 +401,10 @@ public:
     void create_uninitialized_binding(const std::string& name, bool is_mutable = true);
 };
 
+// Suspends the current async fiber until `value` settles (mirrors AwaitExpression::evaluate);
+// returns true and sets out_result to the rejection reason if it rejected, else the fulfilled value.
+bool await_value(Context& ctx, const Value& value, Value& out_result);
+
 /**
  * Context factory for creating specialized contexts
  */

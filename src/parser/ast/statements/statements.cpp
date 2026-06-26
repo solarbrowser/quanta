@@ -485,6 +485,43 @@ std::unique_ptr<ASTNode> VariableDeclaration::clone() const {
 }
 
 
+// GetDisposeMethod + AddDisposableResource: registers `val` for disposal in the current dispose
+// scope. null/undefined is a no-op for plain `using`, but still records a no-op resource for
+// `await using`'s mandatory Await(undefined) tick.
+static bool register_disposable_resource(Context& ctx, const Value& val, bool is_await) {
+    if (val.is_null() || val.is_undefined()) {
+        if (is_await) ctx.add_disposable_resource(Value(), Value(), true);
+        return true;
+    }
+    if (!val.is_object() && !val.is_function()) {
+        ctx.throw_type_error("using declarations require the value to be an object or null/undefined");
+        return false;
+    }
+    Object* obj = val.is_object() ? val.as_object() : static_cast<Object*>(val.as_function());
+    Value dispose_method;
+    if (is_await) {
+        dispose_method = obj->get_property(Symbol::ASYNC_DISPOSE);
+        if (ctx.has_exception()) return false;
+        if (dispose_method.is_undefined() || dispose_method.is_null()) {
+            dispose_method = obj->get_property(Symbol::DISPOSE);
+        }
+    } else {
+        dispose_method = obj->get_property(Symbol::DISPOSE);
+    }
+    if (ctx.has_exception()) return false;
+    if (dispose_method.is_undefined() || dispose_method.is_null()) {
+        ctx.throw_type_error(is_await ? "Value must have a [Symbol.asyncDispose] or [Symbol.dispose] method"
+                                       : "Value must have a [Symbol.dispose] method");
+        return false;
+    }
+    if (!dispose_method.is_function()) {
+        ctx.throw_type_error("Value's [Symbol.dispose] is not callable");
+        return false;
+    }
+    ctx.add_disposable_resource(val, dispose_method, is_await);
+    return true;
+}
+
 Value UsingDeclaration::evaluate(Context& ctx) {
     for (const auto& binding : bindings_) {
         if (!binding.initializer) {
@@ -503,43 +540,7 @@ Value UsingDeclaration::evaluate(Context& ctx) {
             }
         }
 
-        // Plain `using` skips null/undefined entirely; `await using` still records a no-op resource for its Await(undefined) tick.
-        if (val.is_null() || val.is_undefined()) {
-            if (is_await_) ctx.add_disposable_resource(Value(), Value(), true);
-        } else {
-            if (!val.is_object() && !val.is_function()) {
-                ctx.throw_type_error(
-                    "using declarations require the value to be an object or null/undefined");
-                return Value();
-            }
-            // GetDisposeMethod (spec 7.5.4): `await using` prefers Symbol.asyncDispose,
-            // falling back to Symbol.dispose -- called identically by run_dispose_resources,
-            // so no wrapper closure is needed.
-            Object* obj = val.is_object() ? val.as_object() : static_cast<Object*>(val.as_function());
-            Value dispose_method;
-            if (is_await_) {
-                dispose_method = obj->get_property(Symbol::ASYNC_DISPOSE);
-                if (ctx.has_exception()) return Value();
-                if (dispose_method.is_undefined() || dispose_method.is_null()) {
-                    dispose_method = obj->get_property(Symbol::DISPOSE);
-                }
-            } else {
-                dispose_method = obj->get_property(Symbol::DISPOSE);
-            }
-            if (ctx.has_exception()) return Value();
-            if (dispose_method.is_undefined() || dispose_method.is_null()) {
-                ctx.throw_type_error(
-                    is_await_ ? "Value must have a [Symbol.asyncDispose] or [Symbol.dispose] method"
-                              : "Value must have a [Symbol.dispose] method");
-                return Value();
-            }
-            if (!dispose_method.is_function()) {
-                ctx.throw_type_error(
-                    "Value's [Symbol.dispose] is not callable");
-                return Value();
-            }
-            ctx.add_disposable_resource(val, dispose_method, is_await_);
-        }
+        if (!register_disposable_resource(ctx, val, is_await_)) return Value();
 
         bool success = ctx.create_lexical_binding(binding.name, val, false);
         if (!success) {
@@ -1494,6 +1495,15 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                 if (AsyncUtils::is_promise(next_result)) {
                     Promise* prom = static_cast<Promise*>(next_result.as_object());
+                    // PromiseResolve on an already-Promise value still Gets "constructor"
+                    // (step 1a) -- side effect only, no subclass rewrap.
+                    prom->get_property("constructor");
+                    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                            && Object::current_context_->has_exception()) {
+                        ctx.throw_exception(Object::current_context_->get_exception(), true);
+                        Object::current_context_->clear_exception();
+                    }
+                    if (ctx.has_exception()) return Value();
                     if (prom->get_state() == PromiseState::FULFILLED) {
                         settled_val = prom->get_value();
                     } else if (prom->get_state() == PromiseState::REJECTED) {
@@ -1505,13 +1515,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         auto on_f = ObjectFactory::create_native_function("",
                             [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
-                                if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                                self->resume_from_await(val, false);
                                 return Value();
                             });
                         auto on_r = ObjectFactory::create_native_function("",
                             [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
-                                if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                                self->resume_from_await(reason, true);
                                 return Value();
                             });
                         std::string key = std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
@@ -1551,15 +1561,128 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     ctx.throw_exception(Value(std::string("for-await-of: iterator has no next method")));
                     return Value();
                 }
-                Value next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
-                if (ctx.has_exception()) return Value();
 
                 bool is_pending = false;
                 bool settled_throw = false;
                 Value settled_val;
+                Value next_result;
 
+                if (!used_async_iterator) {
+                    // AsyncFromSyncIteratorContinuation: the sync iterator's `.value` is
+                    // PromiseResolve'd and awaited first, then the resulting {value,done} is
+                    // delivered through a SEPARATE promise that this loop's own Await(nextResult)
+                    // awaits again -- two independent PromiseResolve calls, each its own tick.
+                    // A getter invoked here may throw via Object::current_context_ instead of
+                    // ctx -- rescue it.
+                    auto rescue_getter_exception = [&ctx]() {
+                        if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                                && Object::current_context_->has_exception()) {
+                            ctx.throw_exception(Object::current_context_->get_exception(), true);
+                            Object::current_context_->clear_exception();
+                        }
+                    };
+
+                    Value sync_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+                    rescue_getter_exception();
+                    if (ctx.has_exception()) return Value();
+                    if (!sync_result.is_object()) {
+                        ctx.throw_type_error("for-await-of: iterator result must be an object");
+                        return Value();
+                    }
+                    Value sync_done_val = sync_result.as_object()->get_property("done");
+                    rescue_getter_exception();
+                    if (ctx.has_exception()) return Value();
+                    Value sync_value_val = sync_result.as_object()->get_property("value");
+                    rescue_getter_exception();
+                    if (ctx.has_exception()) return Value();
+                    bool sync_done = sync_done_val.to_boolean();
+
+                    auto nr_obj = ObjectFactory::create_promise(gctx);
+                    Promise* next_result_promise = static_cast<Promise*>(nr_obj.release());
+
+                    Promise* value_wrapper = nullptr;
+                    if (AsyncUtils::is_promise(sync_value_val)) {
+                        value_wrapper = static_cast<Promise*>(sync_value_val.as_object());
+                        value_wrapper->get_property("constructor");
+                        rescue_getter_exception();
+                        if (ctx.has_exception()) {
+                            // IfAbruptRejectPromise: no valueWrapper at all -- reject
+                            // next_result_promise directly.
+                            Value err = ctx.get_exception();
+                            ctx.clear_exception();
+                            next_result_promise->reject(err);
+                            value_wrapper = nullptr;
+                        }
+                    } else {
+                        auto vw_obj = ObjectFactory::create_promise(gctx);
+                        Promise* vw_raw = static_cast<Promise*>(vw_obj.get());
+                        vw_raw->fulfill(sync_value_val);
+                        value_wrapper = static_cast<Promise*>(vw_obj.release());
+                    }
+
+                    if (value_wrapper) {
+                        auto unwrap_f = ObjectFactory::create_native_function("",
+                            [next_result_promise, sync_done](Context&, const std::vector<Value>& args) -> Value {
+                                Value val = args.empty() ? Value() : args[0];
+                                auto res_obj = ObjectFactory::create_object();
+                                res_obj->set_property("value", val);
+                                res_obj->set_property("done", Value(sync_done));
+                                next_result_promise->fulfill(Value(res_obj.release()));
+                                return Value();
+                            });
+                        auto unwrap_r = ObjectFactory::create_native_function("",
+                            [next_result_promise](Context&, const std::vector<Value>& args) -> Value {
+                                Value reason = args.empty() ? Value() : args[0];
+                                next_result_promise->reject(reason);
+                                return Value();
+                            });
+                        std::string vw_key = "afsi_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
+                        Function* uf = unwrap_f.get(); Function* ur = unwrap_r.get();
+                        value_wrapper->set_property("__af_" + vw_key, Value(unwrap_f.release()));
+                        value_wrapper->set_property("__ar_" + vw_key, Value(unwrap_r.release()));
+                        value_wrapper->then(uf, ur);
+                    }
+
+                    // Outer Await(nextResultPromise) pays its own constructor lookup + tick,
+                    // even when next_result_promise was just rejected directly above.
+                    next_result_promise->get_property("constructor");
+                    rescue_getter_exception();
+                    if (ctx.has_exception()) return Value();
+
+                    next_result = Value(next_result_promise);
+                    is_pending = true;
+                    auto self = exec->shared_from_this();
+                    auto on_f2 = ObjectFactory::create_native_function("",
+                        [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            Value val = args.empty() ? Value() : args[0];
+                            self->resume(val, false);
+                            return Value();
+                        });
+                    auto on_r2 = ObjectFactory::create_native_function("",
+                        [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                            Value reason = args.empty() ? Value() : args[0];
+                            self->resume(reason, true);
+                            return Value();
+                        });
+                    std::string nrkey = "afsi_outer_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
+                    Function* ff2 = on_f2.get(); Function* fr2 = on_r2.get();
+                    next_result_promise->set_property("__af_" + nrkey, Value(on_f2.release()));
+                    next_result_promise->set_property("__ar_" + nrkey, Value(on_r2.release()));
+                    next_result_promise->then(ff2, fr2);
+                } else {
+                next_result = next_method_val.as_function()->call(ctx, {}, iterator_val);
+                if (ctx.has_exception()) return Value();
                 if (AsyncUtils::is_promise(next_result)) {
                     Promise* prom = static_cast<Promise*>(next_result.as_object());
+                    // PromiseResolve on an already-Promise value still Gets "constructor"
+                    // (step 1a) -- side effect only, no subclass rewrap.
+                    prom->get_property("constructor");
+                    if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                            && Object::current_context_->has_exception()) {
+                        ctx.throw_exception(Object::current_context_->get_exception(), true);
+                        Object::current_context_->clear_exception();
+                    }
+                    if (ctx.has_exception()) return Value();
                     if (prom->get_state() == PromiseState::FULFILLED) {
                         settled_val = prom->get_value();
                     } else if (prom->get_state() == PromiseState::REJECTED) {
@@ -1571,13 +1694,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         auto on_f = ObjectFactory::create_native_function("",
                             [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value val = args.empty() ? Value() : args[0];
-                                if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
+                                self->resume(val, false);
                                 return Value();
                             });
                         auto on_r = ObjectFactory::create_native_function("",
                             [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                 Value reason = args.empty() ? Value() : args[0];
-                                if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
+                                self->resume(reason, true);
                                 return Value();
                             });
                         std::string key = std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
@@ -1587,7 +1710,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                         prom->then(ff_tmp_, fr_tmp_);
                     }
                 } else {
+                    if (ctx.has_exception()) return Value();
                     settled_val = next_result;
+                }
                 }
 
                 if (!is_pending) {
@@ -1663,13 +1788,13 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             auto on_f = ObjectFactory::create_native_function("",
                                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                     Value val = args.empty() ? Value() : args[0];
-                                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                                    self->resume_from_await(val, false);
                                     return Value();
                                 });
                             auto on_r = ObjectFactory::create_native_function("",
                                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                                     Value reason = args.empty() ? Value() : args[0];
-                                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                                    self->resume_from_await(reason, true);
                                     return Value();
                                 });
                             std::string vkey = "fav_" + std::to_string(i) + "_ag_" + std::to_string(reinterpret_cast<uintptr_t>(async_gen));
@@ -1700,57 +1825,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     value = async_gen->await_result_;
                     async_gen->await_result_ = Value();
                 } else if (exec && !exec->fiber_stack_.empty()) {
-                    bool v_is_pending = false;
-                    bool v_settled_throw = false;
-                    Value v_settled_val;
-                    if (AsyncUtils::is_promise(value)) {
-                        Promise* vp = static_cast<Promise*>(value.as_object());
-                        if (vp->get_state() == PromiseState::FULFILLED) {
-                            v_settled_val = vp->get_value();
-                        } else if (vp->get_state() == PromiseState::REJECTED) {
-                            v_settled_val = vp->get_value();
-                            v_settled_throw = true;
-                        } else {
-                            v_is_pending = true;
-                            auto self = exec->shared_from_this();
-                            auto on_f = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                                    Value val = args.empty() ? Value() : args[0];
-                                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
-                                    return Value();
-                                });
-                            auto on_r = ObjectFactory::create_native_function("",
-                                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
-                                    Value reason = args.empty() ? Value() : args[0];
-                                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
-                                    return Value();
-                                });
-                            std::string vkey = "fav_" + std::to_string(i) + "_" + std::to_string(reinterpret_cast<uintptr_t>(exec));
-                            Function* vff = on_f.get(); Function* vfr = on_r.get();
-                            vp->set_property("__af_" + vkey, Value(on_f.release()));
-                            vp->set_property("__ar_" + vkey, Value(on_r.release()));
-                            vp->then(vff, vfr);
-                        }
-                    } else {
-                        v_settled_val = value;
-                    }
-                    if (!v_is_pending) {
-                        auto self = exec->shared_from_this();
-                        Value vv = v_settled_val;
-                        bool vthr = v_settled_throw;
-                        if (gctx) gctx->queue_microtask([self, vv, vthr]() mutable { self->resume(vv, vthr); });
-                    }
-                    exec->await_result_ = value;  // pin as GC root during suspension
-                    swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
-                    Object::current_context_ = &ctx;
-                    if (exec->await_is_throw_) {
-                        ctx.throw_exception(exec->await_result_, true);
-                        exec->await_is_throw_ = false;
-                        exec->await_result_ = Value();
-                        return Value();
-                    }
-                    value = exec->await_result_;
-                    exec->await_result_ = Value();
+                    // `value` was already fully wrapped, awaited, and unwrapped by the
+                    // AsyncFromSyncIteratorContinuation step above (next_result_promise's
+                    // resolution) -- nothing further to await here.
                 } else {
                     if (AsyncUtils::is_promise(value)) {
                         Promise* vp = static_cast<Promise*>(value.as_object());
@@ -2054,6 +2131,9 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                 } else {
                                     bool forof_per_iter = (var_kind == VariableDeclarator::Kind::LET ||
                                                           var_kind == VariableDeclarator::Kind::CONST);
+                                    bool is_using = (left_->get_type() == Type::USING_DECLARATION);
+                                    bool using_is_await = is_using &&
+                                        static_cast<UsingDeclaration*>(left_.get())->is_await();
                                     if (forof_per_iter) {
                                         loop_ctx->push_block_scope();
                                         loop_ctx->create_lexical_binding(var_name, value, var_kind != VariableDeclarator::Kind::CONST);
@@ -2064,9 +2144,26 @@ Value ForOfStatement::evaluate(Context& ctx) {
                                         loop_ctx->create_binding(var_name, value, is_mutable);
                                     }
 
+                                    // ForIn/OfBodyEvaluation: a using/await using LHS opens a fresh
+                                    // DisposeCapability for this iteration's environment, disposed
+                                    // (possibly awaited) right after the body, before checking completion.
+                                    if (is_using) {
+                                        loop_ctx->push_dispose_scope();
+                                        if (!register_disposable_resource(*loop_ctx, value, using_is_await)) {
+                                            loop_ctx->run_dispose_resources();
+                                            if (forof_per_iter) loop_ctx->pop_block_scope();
+                                            close_iterator();
+                                            return Value();
+                                        }
+                                    }
+
                                     {
                                         Value br = body_->evaluate(*loop_ctx);
                                         if (!g_empty_completion) V_iter = br;
+                                    }
+
+                                    if (is_using) {
+                                        loop_ctx->run_dispose_resources();
                                     }
 
                                     if (forof_per_iter) {
@@ -2631,6 +2728,16 @@ Value ReturnStatement::evaluate(Context& ctx) {
     if (has_argument()) {
         return_value = argument_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
+
+        // Only an async *generator*'s `return <expr>;` explicitly Awaits the value -- a plain
+        // async function's return has no separate Await step.
+        AsyncGenerator* async_gen = AsyncGenerator::get_current();
+        if (async_gen && async_gen->get_generator_context() == &ctx) {
+            Value awaited;
+            bool threw = await_value(ctx, return_value, awaited);
+            if (threw) { ctx.throw_exception(awaited, true); return Value(); }
+            return_value = awaited;
+        }
     } else {
         return_value = Value();
     }

@@ -110,6 +110,7 @@ class AsyncGenerator : public Object {
 public:
     enum class State {
         SuspendedStart,
+        Executing,
         SuspendedYield,
         Completed
     };
@@ -151,10 +152,10 @@ public:
     // next()/throw()/return() input (written by caller, read by fiber after resume)
     Value sent_value_;
     bool  throwing_    = false;  // throw the sent_value_ into generator
-    bool  returning_   = false;  // return(sent_value_) — close generator
+    bool  returning_   = false;  // return(sent_value_) -- close generator
     Value return_arg_;
 
-    // Await protocol (internal — fiber suspends/resumes transparently)
+    // Await protocol (internal -- fiber suspends/resumes transparently)
     Value await_result_;
     bool  await_is_throw_ = false;
 
@@ -261,7 +262,13 @@ public:
 namespace AsyncUtils {
     bool is_promise(const Value& value);
     bool is_thenable(const Value& value);
-    
+
+    // NewPromiseResolveThenableJob (27.2.1.3.2 step 12): calling a thenable's `then` happens in
+    // its own queued microtask, not synchronously -- one extra tick versus calling it inline.
+    // If the job throws, rejects `wrapper` with the thrown value.
+    void call_thenable_job(Context* job_ctx, Function* then_fn, const Value& thenable,
+                            const Value& resolve_arg, const Value& reject_arg, Promise* wrapper);
+
     std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx);
     std::unique_ptr<Promise> promise_all(const std::vector<Value>& promises, Context& ctx);
     std::unique_ptr<Promise> promise_race(const std::vector<Value>& promises, Context& ctx);
