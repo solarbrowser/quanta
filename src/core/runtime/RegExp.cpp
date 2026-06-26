@@ -436,11 +436,13 @@ void RegExp::do_compile() {
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
 
-    pcre2_compile_context* cctx = nullptr;
-    if (!unicode_) {
-        cctx = pcre2_compile_context_create(nullptr);
-        if (cctx)
-            pcre2_set_compile_extra_options(cctx, PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL);
+    // Lone surrogates (e.g. \uDC00) are valid in JS regex source but PCRE2_UTF rejects
+    // them by default, silently falling through to the always-fail "(?!)" below.
+    pcre2_compile_context* cctx = pcre2_compile_context_create(nullptr);
+    if (cctx) {
+        uint32_t extra = PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES;
+        if (!unicode_) extra |= PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL;
+        pcre2_set_compile_extra_options(cctx, extra);
     }
 
     pcre2_code* re = pcre2_compile(
