@@ -518,6 +518,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
 
     if (s_generator_function_prototype_) {
         s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+        generator_function_constructor->set_property("prototype", Value(s_generator_function_prototype_), PropertyAttributes::None);
     }
     s_generator_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
 

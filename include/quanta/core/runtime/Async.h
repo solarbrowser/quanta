@@ -195,6 +195,8 @@ public:
 
     static void setup_async_generator_prototype(Context& ctx);
     static Object* s_async_generator_prototype_;
+    // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
+    static Object* s_async_generator_function_prototype_;
 
     static AsyncGenerator* get_current() { return current_; }
     static void set_current(AsyncGenerator* g) { current_ = g; }

@@ -424,6 +424,7 @@ std::unique_ptr<Promise> AsyncAwaitExpression::to_promise(const Value& value, Co
 
 
 Object* AsyncGenerator::s_async_generator_prototype_ = nullptr;
+Object* AsyncGenerator::s_async_generator_function_prototype_ = nullptr;
 thread_local AsyncGenerator* AsyncGenerator::current_ = nullptr;
 
 AsyncGenerator::AsyncGenerator(std::unique_ptr<Context> ctx, std::unique_ptr<ASTNode> body, Context* outer_ctx)
@@ -651,16 +652,23 @@ Value AsyncGenerator::get_async_iterator() {
 
 void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
     auto async_gen_prototype = ObjectFactory::create_object();
-    
+
+    // %AsyncGeneratorPrototype%.[[Prototype]] = %AsyncIteratorPrototype% (spec 27.6.1).
+    // Requires AsyncIterator::setup_async_iterator_prototype to have already run.
+    Value async_iter_proto_val = ctx.get_binding("AsyncIteratorPrototype");
+    if (async_iter_proto_val.is_object()) {
+        async_gen_prototype->set_prototype(async_iter_proto_val.as_object());
+    }
+
     auto next_fn = ObjectFactory::create_native_function("next", async_generator_next, 1);
     async_gen_prototype->set_property("next", Value(next_fn.release()));
-    
+
     auto return_fn = ObjectFactory::create_native_function("return", async_generator_return, 1);
     async_gen_prototype->set_property("return", Value(return_fn.release()));
-    
+
     auto throw_fn = ObjectFactory::create_native_function("throw", async_generator_throw, 1);
     async_gen_prototype->set_property("throw", Value(throw_fn.release()));
-    
+
     Symbol* async_iterator_symbol = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
     if (async_iterator_symbol) {
         auto async_iterator_fn = ObjectFactory::create_native_function("@@asyncIterator",
@@ -671,8 +679,102 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
         async_gen_prototype->set_property(async_iterator_symbol->to_property_key(), Value(async_iterator_fn.release()));
     }
 
+    Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+    if (tag_sym) {
+        PropertyDescriptor ag_tag(Value(std::string("AsyncGenerator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        async_gen_prototype->set_property_descriptor(tag_sym->to_property_key(), ag_tag);
+    }
+
     s_async_generator_prototype_ = async_gen_prototype.get();
     ctx.create_binding("AsyncGeneratorPrototype", Value(async_gen_prototype.release()));
+
+    // %AsyncGeneratorFunction.prototype% -- [[Prototype]] of all async generator functions
+    // Per spec: %AsyncGeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
+    auto async_gen_fn_proto = ObjectFactory::create_object();
+    Object* func_proto = ObjectFactory::get_function_prototype();
+    async_gen_fn_proto->set_prototype(func_proto ? func_proto : s_async_generator_prototype_);
+    if (tag_sym) {
+        PropertyDescriptor agf_tag(Value(std::string("AsyncGeneratorFunction")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        async_gen_fn_proto->set_property_descriptor(tag_sym->to_property_key(), agf_tag);
+    }
+    // %AsyncGeneratorFunction.prototype%.prototype = %AsyncGeneratorPrototype% (non-writable, non-enumerable, non-configurable per spec 27.4.3.3)
+    PropertyDescriptor agfp_proto_desc(Value(s_async_generator_prototype_), static_cast<PropertyAttributes>(PropertyAttributes::None));
+    async_gen_fn_proto->set_property_descriptor("prototype", agfp_proto_desc);
+
+    s_async_generator_function_prototype_ = async_gen_fn_proto.get();
+    ctx.create_binding("@@AsyncGeneratorFunctionPrototype", Value(async_gen_fn_proto.release()));
+
+    // AsyncGeneratorFunction constructor
+    auto async_generator_function_constructor = ObjectFactory::create_native_constructor("AsyncGeneratorFunction",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            std::vector<std::string> param_names;
+            std::string body_str = "";
+
+            if (args.size() > 1) {
+                body_str = args.back().to_string();
+                for (size_t i = 0; i < args.size() - 1; ++i) {
+                    param_names.push_back(args[i].to_string());
+                }
+            } else if (args.size() == 1) {
+                body_str = args[0].to_string();
+            }
+
+            std::string params_str;
+            for (size_t i = 0; i < param_names.size(); ++i) {
+                if (i > 0) params_str += ", ";
+                params_str += param_names[i];
+            }
+            std::string toString_src = "async function* anonymous(" + params_str + "\n) {\n" + body_str + "\n}";
+            std::string func_src = "(" + toString_src + ")";
+
+            try {
+                Lexer lexer(func_src);
+                TokenSequence tokens = lexer.tokenize();
+                Parser parser(tokens);
+                parser.set_source(func_src);
+                auto expr = parser.parse_expression();
+                if (parser.has_errors()) {
+                    auto& errors = parser.get_errors();
+                    std::string msg = errors.empty() ? "SyntaxError" : errors[0].message;
+                    if (msg.substr(0, 13) == "SyntaxError: ") msg = msg.substr(13);
+                    ctx.throw_syntax_error(msg);
+                    return Value();
+                }
+                if (expr) {
+                    if (expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                        FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
+                        if (fe->is_async() && fe->is_generator()) {
+                            auto body_clone = fe->get_body() ? fe->get_body()->clone() : nullptr;
+                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            gen_fn->set_source_text(toString_src);
+                            return Value(gen_fn.release());
+                        }
+                    } else if (expr->get_type() == ASTNode::Type::FUNCTION_DECLARATION) {
+                        FunctionDeclaration* fd = static_cast<FunctionDeclaration*>(expr.get());
+                        if (fd->is_async() && fd->is_generator()) {
+                            auto body_clone = fd->get_body() ? fd->get_body()->clone() : nullptr;
+                            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", param_names, std::move(body_clone), &ctx);
+                            gen_fn->set_source_text(toString_src);
+                            return Value(gen_fn.release());
+                        }
+                    }
+                }
+            } catch (...) {}
+
+            auto gen_fn = std::make_unique<AsyncGeneratorFunction>("anonymous", param_names, nullptr, &ctx);
+            gen_fn->set_source_text(toString_src);
+            return Value(gen_fn.release());
+        });
+
+    async_generator_function_constructor->set_property("name", Value(std::string("AsyncGeneratorFunction")));
+
+    if (s_async_generator_function_prototype_) {
+        s_async_generator_function_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+        async_generator_function_constructor->set_property("prototype", Value(s_async_generator_function_prototype_), PropertyAttributes::None);
+    }
+    s_async_generator_prototype_->set_property("constructor", Value(async_generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+
+    ctx.create_binding("AsyncGeneratorFunction", Value(async_generator_function_constructor.release()));
 }
 
 Value AsyncGenerator::async_generator_next(Context& ctx, const std::vector<Value>& args) {
@@ -1147,13 +1249,36 @@ AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                const std::vector<std::string>& params,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
-    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {}
+    : Function(name, params, nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
+    // Each async generator function gets a unique 'prototype' object inheriting from %AsyncGeneratorPrototype%
+    if (AsyncGenerator::s_async_generator_prototype_) {
+        auto fn_proto = ObjectFactory::create_object();
+        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
+        if (AsyncGenerator::s_async_generator_function_prototype_) {
+            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+        }
+    }
+}
 
 AsyncGeneratorFunction::AsyncGeneratorFunction(const std::string& name,
                                                std::vector<std::unique_ptr<Parameter>> params,
                                                std::unique_ptr<ASTNode> body,
                                                Context* closure_context)
-    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {}
+    : Function(name, std::move(params), nullptr, closure_context), body_(std::move(body)) {
+    set_is_constructor(false);
+    if (AsyncGenerator::s_async_generator_prototype_) {
+        auto fn_proto = ObjectFactory::create_object();
+        fn_proto->set_prototype(AsyncGenerator::s_async_generator_prototype_);
+        PropertyDescriptor proto_desc(Value(fn_proto.release()), PropertyAttributes::Writable);
+        this->set_property_descriptor("prototype", proto_desc);
+        if (AsyncGenerator::s_async_generator_function_prototype_) {
+            this->set_prototype(AsyncGenerator::s_async_generator_function_prototype_);
+        }
+    }
+}
 
 Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     auto gen_ctx = ContextFactory::create_function_context(ctx.get_engine(), &ctx, this);
