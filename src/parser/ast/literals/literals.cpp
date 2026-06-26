@@ -131,6 +131,7 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         }
 
         std::string key;
+        Value computed_key_value; // only set when prop->computed -- reused below instead of re-evaluating prop->key
 
         if (!prop->key) {
             ctx.throw_exception(Value(std::string("Property missing key")));
@@ -138,9 +139,9 @@ Value ObjectLiteral::evaluate(Context& ctx) {
         }
 
         if (prop->computed) {
-            Value key_value = prop->key->evaluate(ctx);
+            computed_key_value = prop->key->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            key = literal_to_property_key(ctx, key_value);
+            key = literal_to_property_key(ctx, computed_key_value);
             if (ctx.has_exception()) return Value();
         } else {
             if (prop->key->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -199,12 +200,9 @@ Value ObjectLiteral::evaluate(Context& ctx) {
                                (prop->value && is_anon_fn_def(prop->value.get()));
             if (should_name && (fn->get_name().empty() || fn->get_name() == "<arrow>")) {
                 std::string func_name = key;
-                if (prop->computed) {
-                    Value key_check = prop->key->evaluate(ctx);
-                    if (key_check.is_symbol()) {
-                        std::string desc = key_check.as_symbol()->get_description();
-                        func_name = desc.empty() ? "" : "[" + desc + "]";
-                    }
+                if (prop->computed && computed_key_value.is_symbol()) {
+                    std::string desc = computed_key_value.as_symbol()->get_description();
+                    func_name = desc.empty() ? "" : "[" + desc + "]";
                 }
                 if (prop->type == ObjectLiteral::PropertyType::Getter) {
                     fn->set_name("get " + func_name);

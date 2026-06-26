@@ -1107,6 +1107,7 @@ private:
     bool is_generator_;
     bool is_async_;
     std::string source_text_;
+    bool is_decl_form_ = false; // `export default function fn(){}`: HoistableDeclaration, not NamedEvaluation
 
 public:
     FunctionExpression(std::unique_ptr<Identifier> id,
@@ -1128,6 +1129,8 @@ public:
     bool is_async() const { return is_async_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
+    void set_decl_form(bool v) { is_decl_form_ = v; }
+    bool is_decl_form() const { return is_decl_form_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;
@@ -1203,6 +1206,7 @@ private:
     std::unique_ptr<BlockStatement> body_;
     bool is_arrow_ = false;
     std::string source_text_;
+    bool is_decl_form_ = false; // `export default async function fn(){}`: HoistableDeclaration, not NamedEvaluation
 
 public:
     AsyncFunctionExpression(std::unique_ptr<Identifier> id,
@@ -1221,6 +1225,8 @@ public:
     bool is_arrow() const { return is_arrow_; }
     void set_source_text(const std::string& s) { source_text_ = s; }
     const std::string& get_source_text() const { return source_text_; }
+    void set_decl_form(bool v) { is_decl_form_ = v; }
+    bool is_decl_form() const { return is_decl_form_; }
 
     Value evaluate(Context& ctx) override;
     std::string to_string() const override;

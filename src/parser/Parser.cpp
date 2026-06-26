@@ -1977,7 +1977,8 @@ std::unique_ptr<ASTNode> Parser::parse_template_literal() {
             std::string expr_str = cooked_str.substr(expr_start + 2, expr_end - expr_start - 2);
             Lexer expr_lexer(expr_str);
             TokenSequence expr_tokens = expr_lexer.tokenize();
-            Parser expr_parser(std::move(expr_tokens));
+            // Inherit outer parser context so `yield`/`await` inside a `${...}` substitution resolve correctly.
+            Parser expr_parser(std::move(expr_tokens), options_);
             auto expression = expr_parser.parse_expression();
             if (!expression) {
                 add_error("Invalid expression in template literal: " + expr_str);
@@ -6864,11 +6865,11 @@ std::unique_ptr<ASTNode> Parser::parse_async_function_expression() {
             return nullptr;
         }
         return parse_async_arrow_function(start);
-    } else if (match(TokenType::IDENTIFIER) ||
-               // Contextual keywords (of, from, static, ...) used as async arrow single param
-               (current_token().get_start().line == async_end_line &&
-                is_keyword_token(current_token().get_type()) &&
-                peek_token().get_type() == TokenType::ARROW)) {
+    } else if (current_token().get_start().line == async_end_line &&
+               (match(TokenType::IDENTIFIER) ||
+                // Contextual keywords (of, from, static, ...) used as async arrow single param
+                (is_keyword_token(current_token().get_type()) &&
+                 peek_token().get_type() == TokenType::ARROW))) {
         return parse_async_arrow_function_single_param(start);
     } else {
         // Not an async function/arrow — `async` is being used as an identifier
@@ -9402,6 +9403,13 @@ std::unique_ptr<ASTNode> Parser::parse_export_statement() {
             if (!default_export) {
                 add_error("Expected declaration after 'export default'");
                 return nullptr;
+            }
+            // `export default function fn(){}` is a HoistableDeclaration, not a NamedEvaluation expression --
+            // fn's own-name binding must stay the normal mutable module-scope one.
+            if (default_export->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                static_cast<FunctionExpression*>(default_export.get())->set_decl_form(true);
+            } else if (default_export->get_type() == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                static_cast<AsyncFunctionExpression*>(default_export.get())->set_decl_form(true);
             }
             if (match(TokenType::LEFT_PAREN)) {
                 add_error("SyntaxError: Anonymous function declaration cannot be immediately invoked");

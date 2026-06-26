@@ -10,6 +10,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/String.h"
 #include "../ast_internal.h"
 #include <algorithm>
 
@@ -269,6 +270,26 @@ std::unique_ptr<ASTNode> JSXElement::clone() const {
 }
 
 
+// ES5: property access on a primitive (string/number/boolean) reads through that primitive's
+// wrapper constructor's prototype (mirrors MemberExpression::evaluate's primitive-boxing branch).
+static Value box_primitive_and_get_property(Context& ctx, const Value& object_value, const std::string& prop_name) {
+    std::string ctor_name = object_value.is_string() ? "String" :
+        (object_value.is_number() ? "Number" : "Boolean");
+    Value ctor = ctx.get_binding(ctor_name);
+    if (!ctor.is_object() && !ctor.is_function()) return Value();
+    Object* ctor_obj = ctor.is_object() ? ctor.as_object() : ctor.as_function();
+    Value prototype = ctor_obj->get_property("prototype");
+    if (!prototype.is_object()) return Value();
+    Object* proto_obj = prototype.as_object();
+
+    PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
+    if (desc.is_accessor_descriptor() && desc.has_getter()) {
+        Function* getter = dynamic_cast<Function*>(desc.get_getter());
+        if (getter) return getter->call(ctx, {}, object_value);
+    }
+    return proto_obj->get_property(prop_name);
+}
+
 Value OptionalChainingExpression::evaluate(Context& ctx) {
     Value object_value = object_->evaluate(ctx);
     if (ctx.has_exception()) return Value();
@@ -281,6 +302,17 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
         Value property_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
 
+        // Indexing a primitive string by a numeric index returns the character, same as a
+        // plain (non-optional) MemberExpression -- e.g. `"hello"?.[0]` must yield "h".
+        if (object_value.is_string() && property_value.is_number()) {
+            std::string str_value = object_value.to_string();
+            int index = static_cast<int>(property_value.to_number());
+            if (index >= 0 && index < static_cast<int>(str_value.length())) {
+                return Value(std::string(1, str_value[index]));
+            }
+            return Value();
+        }
+
         std::string prop_name;
         if (property_value.is_symbol()) {
             prop_name = property_value.as_symbol()->to_property_key();
@@ -291,6 +323,9 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
         if (object_value.is_object()) {
             Object* obj = object_value.as_object();
             return obj->get_property(prop_name);
+        }
+        if (object_value.is_string() || object_value.is_number() || object_value.is_boolean()) {
+            return box_primitive_and_get_property(ctx, object_value, prop_name);
         }
     } else {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
@@ -311,6 +346,12 @@ Value OptionalChainingExpression::evaluate(Context& ctx) {
                     if (obj->has_private_slot(qualified)) prop_name = qualified;
                 }
                 return obj->get_property(prop_name);
+            }
+            if (object_value.is_string() && prop_name == "length") {
+                return Value(static_cast<double>(utf16_length(object_value.to_string())));
+            }
+            if (object_value.is_string() || object_value.is_number() || object_value.is_boolean()) {
+                return box_primitive_and_get_property(ctx, object_value, prop_name);
             }
         }
     }

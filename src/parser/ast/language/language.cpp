@@ -333,7 +333,8 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     } else {
         // In strict mode inside a block/function where lex != var env, use lexical binding
         // so block-scoped function declarations don't bleed into the outer function scope.
-        bool use_lexical = ctx.is_strict_mode() &&
+        // Annex B.3.3's sloppy-mode var-scope leak applies only to plain FunctionDeclarations.
+        bool use_lexical = (ctx.is_strict_mode() || is_generator_ || is_async_) &&
             ctx.get_lexical_environment() != ctx.get_variable_environment();
         if (use_lexical) {
             if (!ctx.create_lexical_binding(function_name, function_value, true)) {
@@ -410,7 +411,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
     auto prototype = ObjectFactory::create_object();
 
     std::unique_ptr<ASTNode> constructor_body = nullptr;
-    std::vector<std::string> constructor_params;
+    std::vector<std::unique_ptr<Parameter>> constructor_params;
     std::vector<std::unique_ptr<ASTNode>> field_initializers;
     std::vector<std::unique_ptr<ASTNode>> static_field_initializers;
     bool has_explicit_constructor = false;
@@ -452,7 +453,10 @@ Value ClassDeclaration::evaluate(Context& ctx) {
             if (stmt->get_type() == Type::METHOD_DEFINITION) {
                 MethodDefinition* method = static_cast<MethodDefinition*>(stmt.get());
                 std::string method_name;
-                if (method->is_computed()) {
+                // Static methods get rebuilt (and their computed key re-evaluated) in the pass below --
+                // skip here so a `yield`/`await` key expression doesn't run twice.
+                if (method->is_computed() && method->is_static()) {
+                } else if (method->is_computed()) {
                     Value key_val = method->get_key()->evaluate(ctx);
                     if (ctx.has_exception()) return Value();
                     method_name = computed_key_to_property_key(ctx, key_val);
@@ -475,7 +479,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                         const auto& params = func_expr->get_params();
                         constructor_params.reserve(params.size());
                         for (const auto& param : params) {
-                            constructor_params.push_back(param->get_name()->get_name());
+                            constructor_params.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(param->clone().release())));
                         }
                     }
                 } else if (method->is_static()) {
@@ -676,7 +680,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
 
     auto constructor_fn = ObjectFactory::create_js_function(
         class_name,
-        constructor_params,
+        std::move(constructor_params),
         std::move(constructor_body),
         &ctx
     );
@@ -1199,6 +1203,14 @@ Value FunctionExpression::evaluate(Context& ctx) {
         function = std::make_unique<Function>(name, std::move(param_clones), body_->clone(), &ctx);
     }
 
+    // NamedEvaluation (spec 15.2.5/15.5.3): give a named function expression an immutable
+    // self-reference binding so its name resolves inside the body without aliasing an outer one.
+    if (function && is_named() && !is_decl_form_) {
+        Environment* func_env = new Environment(Environment::Type::Declarative, ctx.get_lexical_environment());
+        func_env->create_binding(name, Value(function.get()), false, false, false);
+        function->set_closure_environment(func_env);
+    }
+
     if (function) {
         if (ctx.is_in_param_eval()) {
             function->set_is_param_default(true);
@@ -1295,6 +1307,7 @@ std::unique_ptr<ASTNode> FunctionExpression::clone() const {
     );
     // set_source_text() is set post-construction, so clone() must propagate it explicitly or toString() loses the source.
     cloned->set_source_text(source_text_);
+    cloned->set_decl_form(is_decl_form_);
     return cloned;
 }
 
@@ -1459,7 +1472,11 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 Value r = wrapped_raw->get_property("__tr_");
                 Value j = wrapped_raw->get_property("__tj_");
                 then_val.as_function()->call(ctx, {r, j}, expr_val);
-                ctx.clear_exception();
+                if (ctx.has_exception()) {
+                    // An abrupt completion calling then() rejects the wrapper promise, not silently discarded.
+                    wrapped_raw->reject(ctx.get_exception());
+                    ctx.clear_exception();
+                }
             }
             awaited_promise = wrapped_raw;
             wrapped_keepalive = Value(wrapped_obj.release());
@@ -1578,7 +1595,11 @@ Value AwaitExpression::evaluate(Context& ctx) {
                 Value r = wrapped_raw->get_property("__tr_");
                 Value j = wrapped_raw->get_property("__tj_");
                 then_val.as_function()->call(ctx, {r, j}, expr_val);
-                ctx.clear_exception();
+                if (ctx.has_exception()) {
+                    // An abrupt completion calling then() rejects the wrapper promise, not silently discarded.
+                    wrapped_raw->reject(ctx.get_exception());
+                    ctx.clear_exception();
+                }
             }
             awaited_promise = wrapped_raw;
             // Keep wrapped promise alive on exec until fiber resumes
@@ -1972,11 +1993,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                     Object::current_context_ = prev_oc_r;
                     if (ctx.has_exception()) return Value();
                     if (!ret_fn_v.is_function()) {
-                        // Spec 27.6.3.9 step 8.b.iii: no return method -- still Await the return argument (generatorKind is always async here) before closing.
+                        // No return method: Await the arg, then propagate as a Return completion that
+                        // terminates the whole generator, same as the done-result case below.
                         if (!await_before_yield(ret_arg)) return Value();
-                        last_val = ret_arg;
-                        delegate_done = true;
-                        break;
+                        throw GeneratorReturnException(ret_arg);
                     }
                     Value ret_result = ret_fn_v.as_function()->call(ctx, {ret_arg}, iter_val);
                     if (ctx.has_exception()) return Value();
@@ -2159,6 +2179,8 @@ Value YieldExpression::evaluate(Context& ctx) {
                 current_gen->yield_raw_result_ = true;
                 current_gen->set_state(Generator::State::SuspendedYield);
                 swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                // Caller side may have repointed this thread-local during suspension -- restore it.
+                Object::current_context_ = &ctx;
                 // Resumed -- forward the value sent to outer generator into inner next()
                 next_arg = current_gen->sent_value_;
                 if (current_gen->returning_) {
@@ -2193,6 +2215,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->yield_raw_result_ = true;
                     current_gen->set_state(Generator::State::SuspendedYield);
                     swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                    Object::current_context_ = &ctx;
                     next_arg = current_gen->sent_value_;
                     if (current_gen->returning_) {
                         current_gen->returning_ = false;
@@ -2244,6 +2267,7 @@ Value YieldExpression::evaluate(Context& ctx) {
                     current_gen->yield_raw_result_ = true;
                     current_gen->set_state(Generator::State::SuspendedYield);
                     swapcontext(&current_gen->fiber_ctx_, &current_gen->caller_ctx_);
+                    Object::current_context_ = &ctx;
                     next_arg = current_gen->sent_value_;
                     if (current_gen->returning_) {
                         current_gen->returning_ = false;
@@ -2518,7 +2542,10 @@ Value YieldExpression::evaluate(Context& ctx) {
                         Value r = wrapped_raw->get_property("__tr_");
                         Value j = wrapped_raw->get_property("__tj_");
                         then_val.as_function()->call(ctx, {r, j}, yield_value);
-                        ctx.clear_exception();
+                        if (ctx.has_exception()) {
+                            wrapped_raw->reject(ctx.get_exception());
+                            ctx.clear_exception();
+                        }
                     }
                     p = wrapped_raw;
                     wrapped_keepalive = Value(wrapped_obj.release());
@@ -2630,12 +2657,36 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
 
     auto* fn = new AsyncFunction(function_name, std::move(async_params), std::unique_ptr<ASTNode>(body_->clone().release()), &ctx);
 
+    // NamedEvaluation (spec 15.8.4): see FunctionExpression::evaluate for the same pattern.
+    if (id_ && !is_arrow_ && !is_decl_form_) {
+        Environment* func_env = new Environment(Environment::Type::Declarative, ctx.get_lexical_environment());
+        func_env->create_binding(function_name, Value(fn), false, false, false);
+        fn->set_closure_environment(func_env);
+    }
+
     if (is_arrow_) {
         fn->set_is_arrow(true);
         fn->set_is_constructor(false);
         if (ctx.has_binding("this")) {
             fn->set_property("__arrow_this__", ctx.get_binding("this"));
         }
+    }
+
+    {
+        bool is_strict = ctx.is_strict_mode();
+        if (!is_strict && body_) {
+            for (const auto& s : body_->get_statements()) {
+                if (s->get_type() != ASTNode::Type::EXPRESSION_STATEMENT) break;
+                auto* es = static_cast<ExpressionStatement*>(s.get());
+                if (!es->get_expression() || es->get_expression()->get_type() != ASTNode::Type::STRING_LITERAL) break;
+                auto* sl = static_cast<StringLiteral*>(es->get_expression());
+                if (sl->get_value() == "use strict" && !sl->has_escapes()) {
+                    is_strict = true;
+                    break;
+                }
+            }
+        }
+        if (is_strict) fn->set_is_strict(true);
     }
 
     if (ctx.has_binding("AsyncFunction")) {
@@ -2686,12 +2737,14 @@ std::unique_ptr<ASTNode> AsyncFunctionExpression::clone() const {
         );
     }
 
-    return std::make_unique<AsyncFunctionExpression>(
+    auto cloned = std::make_unique<AsyncFunctionExpression>(
         id_ ? std::unique_ptr<Identifier>(static_cast<Identifier*>(id_->clone().release())) : nullptr,
         std::move(cloned_params),
         std::unique_ptr<BlockStatement>(static_cast<BlockStatement*>(body_->clone().release())),
         start_, end_, is_arrow_
     );
+    cloned->set_decl_form(is_decl_form_);
+    return cloned;
 }
 
 

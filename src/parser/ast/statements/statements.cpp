@@ -503,8 +503,10 @@ Value UsingDeclaration::evaluate(Context& ctx) {
             }
         }
 
-        // AddDisposableResource: null/undefined are allowed (skipped), other primitives throw
-        if (!val.is_null() && !val.is_undefined()) {
+        // Plain `using` skips null/undefined entirely; `await using` still records a no-op resource for its Await(undefined) tick.
+        if (val.is_null() || val.is_undefined()) {
+            if (is_await_) ctx.add_disposable_resource(Value(), Value(), true);
+        } else {
             if (!val.is_object() && !val.is_function()) {
                 ctx.throw_type_error(
                     "using declarations require the value to be an object or null/undefined");
@@ -536,7 +538,7 @@ Value UsingDeclaration::evaluate(Context& ctx) {
                     "Value's [Symbol.dispose] is not callable");
                 return Value();
             }
-            ctx.add_disposable_resource(val, dispose_method);
+            ctx.add_disposable_resource(val, dispose_method, is_await_);
         }
 
         bool success = ctx.create_lexical_binding(binding.name, val, false);
@@ -1532,6 +1534,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                 async_gen->await_result_ = next_result;  // pin promise as GC root during suspension
                 async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                 swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                Object::current_context_ = &ctx;
 
                 if (async_gen->await_is_throw_) {
                     ctx.throw_exception(async_gen->await_result_, true);
@@ -1596,6 +1599,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
 
                 exec->await_result_ = next_result;  // pin promise as GC root during suspension
                 swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+                Object::current_context_ = &ctx;
 
                 if (exec->await_is_throw_) {
                     ctx.throw_exception(exec->await_result_, true);
@@ -1686,6 +1690,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     async_gen->await_result_ = value;  // pin as GC root during suspension
                     async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
                     swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+                    Object::current_context_ = &ctx;
                     if (async_gen->await_is_throw_) {
                         ctx.throw_exception(async_gen->await_result_, true);
                         async_gen->await_is_throw_ = false;
@@ -1737,6 +1742,7 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     }
                     exec->await_result_ = value;  // pin as GC root during suspension
                     swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+                    Object::current_context_ = &ctx;
                     if (exec->await_is_throw_) {
                         ctx.throw_exception(exec->await_result_, true);
                         exec->await_is_throw_ = false;
@@ -1767,6 +1773,12 @@ Value ForOfStatement::evaluate(Context& ctx) {
                     d->evaluate_with_value(ctx, value);
                 } else {
                     AssignmentExpression::destructuring_assign(ctx, left_.get(), value);
+                }
+                // A setter invoked during destructuring may throw via Object::current_context_ instead of ctx -- rescue it.
+                if (!ctx.has_exception() && Object::current_context_ && Object::current_context_ != &ctx
+                        && Object::current_context_->has_exception()) {
+                    ctx.throw_exception(Object::current_context_->get_exception(), true);
+                    Object::current_context_->clear_exception();
                 }
                 if (ctx.has_exception()) return Value();
                 body_->evaluate(ctx);
@@ -1868,8 +1880,11 @@ Value ForOfStatement::evaluate(Context& ctx) {
                             }
                             var_kind = VariableDeclarator::Kind::CONST; // using bindings are immutable
                         } else if (left_->get_type() == Type::IDENTIFIER) {
+                            // A bare identifier (no let/const/var) references an existing binding --
+                            // must write through to it, not shadow it with a fresh per-iteration one.
                             Identifier* id = static_cast<Identifier*>(left_.get());
                             var_name = id->get_name();
+                            var_kind = VariableDeclarator::Kind::VAR;
                         } else if (left_->get_type() == Type::DESTRUCTURING_ASSIGNMENT) {
                             var_name = "__destructuring__";
                         } else if (left_->get_type() == Type::ARRAY_LITERAL ||

@@ -1095,10 +1095,168 @@ void Context::push_dispose_scope() {
     dispose_scope_stack_.push_back({});
 }
 
-void Context::add_disposable_resource(const Value& resource, const Value& method) {
+void Context::add_disposable_resource(const Value& resource, const Value& method, bool is_async_dispose) {
     if (!dispose_scope_stack_.empty()) {
-        dispose_scope_stack_.back().push_back({resource, method});
+        dispose_scope_stack_.back().push_back({resource, method, is_async_dispose});
     }
+}
+
+// Suspends the current async fiber until `value` settles (mirrors AwaitExpression::evaluate);
+// returns true and sets out_result to the rejection reason if it rejected, else the fulfilled value.
+static bool await_for_dispose(Context& ctx, const Value& value, Value& out_result) {
+    AsyncGenerator* async_gen = AsyncGenerator::get_current();
+    AsyncExecutor* exec = AsyncExecutor::get_current();
+    bool in_gen_fiber = async_gen && !async_gen->fiber_stack_.empty();
+    bool in_exec_fiber = !in_gen_fiber && exec && !exec->fiber_stack_.empty();
+
+    Context* gctx = nullptr;
+    if (in_gen_fiber) {
+        gctx = async_gen->get_outer_context() ? async_gen->get_outer_context() : async_gen->get_generator_context();
+    } else if (in_exec_fiber) {
+        gctx = exec->engine_ ? exec->engine_->get_current_context() : exec->exec_context_;
+    }
+
+    Promise* awaited_promise = nullptr;
+    Value settled_val;
+    bool settled_throw = false;
+    bool is_pending = false;
+    Value wrapped_keepalive;
+
+    if (AsyncUtils::is_promise(value)) {
+        awaited_promise = static_cast<Promise*>(value.as_object());
+    } else if (AsyncUtils::is_thenable(value)) {
+        auto wrapped_obj = ObjectFactory::create_promise(gctx);
+        Promise* wrapped_raw = static_cast<Promise*>(wrapped_obj.get());
+        auto res_fn = ObjectFactory::create_native_function("",
+            [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                wrapped_raw->fulfill(args.empty() ? Value() : args[0]); return Value();
+            }, 1);
+        auto rej_fn = ObjectFactory::create_native_function("",
+            [wrapped_raw](Context&, const std::vector<Value>& args) -> Value {
+                wrapped_raw->reject(args.empty() ? Value() : args[0]); return Value();
+            }, 1);
+        wrapped_raw->set_property("__tr_", Value(res_fn.release()));
+        wrapped_raw->set_property("__tj_", Value(rej_fn.release()));
+        Object* thenable_obj = value.as_object();
+        Value then_val = thenable_obj->get_property("then");
+        if (then_val.is_function()) {
+            Value r = wrapped_raw->get_property("__tr_");
+            Value j = wrapped_raw->get_property("__tj_");
+            then_val.as_function()->call(ctx, {r, j}, value);
+            ctx.clear_exception();
+        }
+        awaited_promise = wrapped_raw;
+        wrapped_keepalive = Value(wrapped_obj.release());
+    }
+
+    if (awaited_promise) {
+        if (awaited_promise->get_state() == PromiseState::FULFILLED) {
+            settled_val = awaited_promise->get_value();
+        } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
+            settled_val = awaited_promise->get_value();
+            settled_throw = true;
+        } else {
+            is_pending = true;
+        }
+    } else {
+        settled_val = value;
+    }
+
+    if (in_gen_fiber) {
+        if (is_pending) {
+            auto self = async_gen;
+            auto on_f = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value val = args.empty() ? Value() : args[0];
+                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                    return Value();
+                });
+            auto on_r = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value reason = args.empty() ? Value() : args[0];
+                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                    return Value();
+                });
+            std::string key = std::to_string(reinterpret_cast<uintptr_t>(async_gen));
+            Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
+            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->then(ff_tmp_, fr_tmp_);
+        } else {
+            auto self = async_gen;
+            Value val = settled_val; bool thr = settled_throw;
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume_from_await(val, thr); });
+        }
+        async_gen->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
+        async_gen->suspend_reason_ = AsyncGenerator::SuspendReason::Await;
+        swapcontext(&async_gen->fiber_ctx_, &async_gen->caller_ctx_);
+        if (async_gen->await_is_throw_) {
+            out_result = async_gen->await_result_;
+            async_gen->await_is_throw_ = false;
+            async_gen->await_result_ = Value();
+            return true;
+        }
+        out_result = async_gen->await_result_;
+        async_gen->await_result_ = Value();
+        return false;
+    }
+
+    if (in_exec_fiber) {
+        if (is_pending) {
+            auto self = exec->shared_from_this();
+            auto on_f = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value val = args.empty() ? Value() : args[0];
+                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
+                    return Value();
+                });
+            auto on_r = ObjectFactory::create_native_function("",
+                [self, gctx](Context&, const std::vector<Value>& args) -> Value {
+                    Value reason = args.empty() ? Value() : args[0];
+                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
+                    return Value();
+                });
+            std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
+            Function* ff_tmp_ = on_f.get(); Function* fr_tmp_ = on_r.get();
+            awaited_promise->set_property("__af_" + key, Value(on_f.release()));
+            awaited_promise->set_property("__ar_" + key, Value(on_r.release()));
+            awaited_promise->then(ff_tmp_, fr_tmp_);
+        } else {
+            auto self = exec->shared_from_this();
+            Value val = settled_val; bool thr = settled_throw;
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
+        }
+        exec->await_result_ = wrapped_keepalive.is_undefined() ? value : wrapped_keepalive;
+        swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
+        if (exec->await_is_throw_) {
+            out_result = exec->await_result_;
+            exec->await_is_throw_ = false;
+            exec->await_result_ = Value();
+            return true;
+        }
+        out_result = exec->await_result_;
+        exec->await_result_ = Value();
+        return false;
+    }
+
+    // No active fiber (e.g. top-level await context): drain microtasks synchronously, bounded.
+    if (awaited_promise && awaited_promise->get_state() == PromiseState::PENDING) {
+        Context* top_gctx = ctx.get_engine() ? ctx.get_engine()->get_global_context() : &ctx;
+        int spins = 0;
+        while (awaited_promise->get_state() == PromiseState::PENDING && spins < 100000) {
+            if (!top_gctx || !top_gctx->has_pending_microtasks()) break;
+            top_gctx->drain_microtasks();
+            spins++;
+        }
+        if (awaited_promise->get_state() == PromiseState::FULFILLED) {
+            settled_val = awaited_promise->get_value();
+        } else if (awaited_promise->get_state() == PromiseState::REJECTED) {
+            settled_val = awaited_promise->get_value();
+            settled_throw = true;
+        }
+    }
+    out_result = settled_val;
+    return settled_throw;
 }
 
 void Context::run_dispose_resources() {
@@ -1118,13 +1276,30 @@ void Context::run_dispose_resources() {
 
     // Dispose in reverse order (spec: reverse list order)
     for (auto it = resources.rbegin(); it != resources.rend(); ++it) {
-        if (!it->dispose_method.is_function()) continue;
-        Function* fn = it->dispose_method.as_function();
-        fn->call(*this, {}, it->resource_value);
+        // No method: `await using` still owes its Await(undefined) tick (Dispose step 3); plain `using` skips entirely.
+        if (!it->dispose_method.is_function() && !it->is_async_dispose) continue;
 
-        if (has_exception_) {
-            Value new_error = current_exception_;
+        Value call_result;
+        if (it->dispose_method.is_function()) {
+            Function* fn = it->dispose_method.as_function();
+            call_result = fn->call(*this, {}, it->resource_value);
+        }
+
+        bool threw = has_exception_;
+        Value new_error;
+        if (threw) {
+            new_error = current_exception_;
             clear_exception();
+        } else if (it->is_async_dispose) {
+            // `await using` always Awaits the call's result, even a sync Symbol.dispose fallback.
+            Value awaited;
+            if (await_for_dispose(*this, call_result, awaited)) {
+                threw = true;
+                new_error = awaited;
+            }
+        }
+
+        if (threw) {
             if (has_current_error) {
                 // Spec: create SuppressedError(newError, existingError)
                 Value suppressed_ctor = get_global_object()
