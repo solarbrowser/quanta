@@ -1101,9 +1101,7 @@ void Context::add_disposable_resource(const Value& resource, const Value& method
     }
 }
 
-// Suspends the current async fiber until `value` settles (mirrors AwaitExpression::evaluate);
-// returns true and sets out_result to the rejection reason if it rejected, else the fulfilled value.
-static bool await_for_dispose(Context& ctx, const Value& value, Value& out_result) {
+bool await_value(Context& ctx, const Value& value, Value& out_result) {
     AsyncGenerator* async_gen = AsyncGenerator::get_current();
     AsyncExecutor* exec = AsyncExecutor::get_current();
     bool in_gen_fiber = async_gen && !async_gen->fiber_stack_.empty();
@@ -1142,8 +1140,7 @@ static bool await_for_dispose(Context& ctx, const Value& value, Value& out_resul
         if (then_val.is_function()) {
             Value r = wrapped_raw->get_property("__tr_");
             Value j = wrapped_raw->get_property("__tj_");
-            then_val.as_function()->call(ctx, {r, j}, value);
-            ctx.clear_exception();
+            AsyncUtils::call_thenable_job(gctx ? gctx : &ctx, then_val.as_function(), value, r, j, wrapped_raw);
         }
         awaited_promise = wrapped_raw;
         wrapped_keepalive = Value(wrapped_obj.release());
@@ -1168,13 +1165,13 @@ static bool await_for_dispose(Context& ctx, const Value& value, Value& out_resul
             auto on_f = ObjectFactory::create_native_function("",
                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                     Value val = args.empty() ? Value() : args[0];
-                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume_from_await(val, false); });
+                    self->resume_from_await(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
-                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume_from_await(reason, true); });
+                    self->resume_from_await(reason, true);
                     return Value();
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(async_gen));
@@ -1207,13 +1204,13 @@ static bool await_for_dispose(Context& ctx, const Value& value, Value& out_resul
             auto on_f = ObjectFactory::create_native_function("",
                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                     Value val = args.empty() ? Value() : args[0];
-                    if (gctx) gctx->queue_microtask([self, val]() mutable { self->resume(val, false); });
+                    self->resume(val, false);
                     return Value();
                 });
             auto on_r = ObjectFactory::create_native_function("",
                 [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                     Value reason = args.empty() ? Value() : args[0];
-                    if (gctx) gctx->queue_microtask([self, reason]() mutable { self->resume(reason, true); });
+                    self->resume(reason, true);
                     return Value();
                 });
             std::string key = std::to_string(reinterpret_cast<uintptr_t>(exec));
@@ -1293,7 +1290,7 @@ void Context::run_dispose_resources() {
         } else if (it->is_async_dispose) {
             // `await using` always Awaits the call's result, even a sync Symbol.dispose fallback.
             Value awaited;
-            if (await_for_dispose(*this, call_result, awaited)) {
+            if (await_value(*this, call_result, awaited)) {
                 threw = true;
                 new_error = awaited;
             }

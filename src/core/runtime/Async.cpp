@@ -369,17 +369,13 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
                 auto on_fulfill = ObjectFactory::create_native_function("",
                     [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                         Value val = args.empty() ? Value() : args[0];
-                        if (gctx) gctx->queue_microtask([self, val]() mutable {
-                            self->resume(val, false);
-                        });
+                        self->resume(val, false);
                         return Value();
                     });
                 auto on_reject = ObjectFactory::create_native_function("",
                     [self, gctx](Context&, const std::vector<Value>& args) -> Value {
                         Value reason = args.empty() ? Value() : args[0];
-                        if (gctx) gctx->queue_microtask([self, reason]() mutable {
-                            self->resume(reason, true);
-                        });
+                        self->resume(reason, true);
                         return Value();
                     });
 
@@ -401,15 +397,13 @@ Value AsyncAwaitExpression::evaluate(Context& ctx) {
             auto self = exec->shared_from_this();
             Value val = settled_val;
             bool thr = settled_throw;
-            if (gctx) gctx->queue_microtask([self, val, thr]() mutable {
-                self->resume(val, thr);
-            });
+            if (gctx) gctx->queue_microtask([self, val, thr]() mutable { self->resume(val, thr); });
         }
 
-        // Suspend fiber — return control to the microtask runner
+        // Suspend fiber -- return control to the microtask runner
         swapcontext(&exec->fiber_ctx_, &exec->caller_ctx_);
 
-        // Resumed by resume() — await_result_ holds the settled value
+        // Resumed by resume() -- await_result_ holds the settled value
         exec->outer_promise_->delete_property(pin_key);
         exec->outer_promise_->delete_property(pin_key + "_v");
 
@@ -542,7 +536,7 @@ void AsyncGenerator::handle_suspension() {
             break;
         }
         case SuspendReason::Await:
-            // Internal suspension — pending_promise_ stays; fiber will resume via resume_from_await()
+            // Internal suspension -- pending_promise_ stays; fiber will resume via resume_from_await()
             break;
         case SuspendReason::Done: {
             Promise* settled = pending_promise_;
@@ -619,17 +613,12 @@ void AsyncGenerator::process_next_request() {
     throwing_    = (front.type == Request::Type::Throw);
     returning_   = (front.type == Request::Type::Return);
 
-    if (state_ == State::SuspendedStart) {
-        // Per spec: the first next() call must run the generator body synchronously
-        // up to the first yield/await so that side effects (e.g. callCount++) are
-        // visible immediately after next() returns.
-        enter_fiber();
-    } else {
-        // generator_context_ is always set (constructed in the AsyncGenerator constructor).
-        Context* queue_ctx = outer_context_ ? outer_context_ : generator_context_;
-        auto self = this;
-        queue_ctx->queue_microtask([self]() { self->enter_fiber(); });
-    }
+    // AsyncGeneratorResume (27.6.3.12) always resumes synchronously, suspendedStart or
+    // suspendedYield alike -- a `.return()` call's effects only *look* deferred because the
+    // resumed code immediately hits Await(resumptionValue.Value), which itself always
+    // defers by a tick.
+    state_ = State::Executing;
+    enter_fiber();
 }
 
 AsyncGenerator::AsyncGeneratorResult AsyncGenerator::enqueue_request(Request::Type type, const Value& value, std::unique_ptr<Promise> promise) {
@@ -1004,6 +993,24 @@ bool is_thenable(const Value& value) {
     Object* obj = value.as_object();
     // Only a *callable* "then" makes a value thenable (Promise Resolve Functions step 8).
     return obj->get_property("then").is_function();
+}
+
+void call_thenable_job(Context* job_ctx, Function* then_fn, const Value& thenable,
+                        const Value& resolve_arg, const Value& reject_arg, Promise* wrapper) {
+    if (!job_ctx) return;
+    // Queue on the global context, not job_ctx, so this job's relative order against unrelated
+    // Promise chains (which always schedule on the global queue) matches real chronological
+    // enqueue order -- per-instance queues don't interleave across each other.
+    Context* queue_ctx = job_ctx->get_engine() && job_ctx->get_engine()->get_global_context()
+        ? job_ctx->get_engine()->get_global_context() : job_ctx;
+    queue_ctx->queue_microtask([job_ctx, then_fn, thenable, resolve_arg, reject_arg, wrapper]() {
+        then_fn->call(*job_ctx, {resolve_arg, reject_arg}, thenable);
+        if (job_ctx->has_exception()) {
+            Value exc = job_ctx->get_exception();
+            job_ctx->clear_exception();
+            if (wrapper) wrapper->reject(exc);
+        }
+    });
 }
 
 std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
