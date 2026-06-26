@@ -112,8 +112,8 @@ Value Iterator::iterator_throw(Context& ctx, const std::vector<Value>& args) {
     
     Iterator* iterator = static_cast<Iterator*>(obj);
     iterator->done_ = true;
-    
-    ctx.throw_exception(exception);
+
+    ctx.throw_exception(exception, true);
     return Value();
 }
 

@@ -122,6 +122,13 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
         generator_context_->clear_exception();
         return GeneratorResult::make_exception(exc);
     }
+    // A `finally` block's own return overrides the return() completion -- same precedence
+    // as next()'s check below.
+    if (generator_context_->has_return_value()) {
+        Value ret_val = generator_context_->get_return_value();
+        generator_context_->clear_return_value();
+        return GeneratorResult(ret_val, true);
+    }
     // The fiber may have updated return_argument_ (e.g. yield* delegating to inner
     // iterator whose return() returns a different value). Use it as the return value.
     return GeneratorResult(return_argument_, true);
@@ -147,7 +154,12 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
             generator_context_->clear_exception();
             return GeneratorResult::make_exception(exc);
         }
-        return GeneratorResult(Value(), true);
+        Value ret_val;
+        if (generator_context_->has_return_value()) {
+            ret_val = generator_context_->get_return_value();
+            generator_context_->clear_return_value();
+        }
+        return GeneratorResult(ret_val, true);
     }
     if (generator_context_->has_exception()) {
         Value exc = generator_context_->get_exception();
@@ -318,7 +330,7 @@ Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
     auto result = generator->next(sent_value);
 
     if (result.has_exception) {
-        ctx.throw_exception(result.exception);
+        ctx.throw_exception(result.exception, true);
         return Value();
     }
 
@@ -381,7 +393,7 @@ Value Generator::generator_throw(Context& ctx, const std::vector<Value>& args) {
     auto result = generator->throw_exception(exception);
 
     if (result.has_exception) {
-        ctx.throw_exception(result.exception);
+        ctx.throw_exception(result.exception, true);
         return Value();
     }
 
