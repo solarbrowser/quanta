@@ -594,9 +594,8 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
 
     // Bind 'this' with sloppy-mode global coercion
     Value bound_this_g = this_value;
-    Value arrow_this_g = get_property("__arrow_this__");
-    if (!arrow_this_g.is_undefined()) {
-        bound_this_g = arrow_this_g;
+    if (is_arrow() && has_property("__arrow_this__")) {
+        bound_this_g = get_property("__arrow_this__");
     } else if (!gen_context.is_strict_mode() && (bound_this_g.is_undefined() || bound_this_g.is_null())) {
         Object* global = ctx.get_global_object();
         if (global) bound_this_g = Value(global);
@@ -638,6 +637,7 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
         arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
         arguments_obj->set_type(Object::ObjectType::Arguments);
+        setup_mapped_arguments(gen_context, args, arguments_obj.get());
         gen_context.create_binding("arguments", Value(arguments_obj.release()), false);
     }
 
@@ -661,7 +661,20 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
             if (param->is_rest()) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
-                gen_context.create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+                Value rest_val(rest_arr.release());
+                if (param->has_destructuring()) {
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
+                    if (destr) {
+                        destr->evaluate_with_value(gen_context, rest_val);
+                        if (gen_context.has_exception()) {
+                            gen_context.set_in_param_eval(false);
+                            ctx.throw_exception(gen_context.get_exception(), true);
+                            return nullptr;
+                        }
+                    }
+                } else {
+                    gen_context.create_binding(param->get_name()->get_name(), rest_val, false);
+                }
             } else {
                 const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
@@ -706,6 +719,18 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
         for (size_t i = 0; i < params.size(); ++i) {
             Value arg = i < args.size() ? args[i] : Value();
             gen_context.create_binding(params[i], arg);
+        }
+    }
+
+    // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    {
+        bool has_complex_params = false;
+        for (const auto& p : param_objs) {
+            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+        }
+        if (has_complex_params) {
+            gen_context.push_block_scope();
+            gen_context.set_variable_environment(gen_context.get_lexical_environment());
         }
     }
 

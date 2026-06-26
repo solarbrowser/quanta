@@ -52,7 +52,13 @@ static bool new_promise_capability(Context& ctx, Value C_val, PromiseCapabilityR
 
     Value executor_val(executor.release());
     std::vector<Value> ctor_args = { executor_val };
+    // construct() only resets new.target when it was undefined (correct for super() chaining);
+    // calling it directly here, unlike a literal `new C()`, must reset it itself or it leaks
+    // an unrelated outer constructor's new.target (e.g. .then() called from inside one).
+    Value old_new_target = ctx.get_new_target();
+    ctx.set_new_target(C_val);
     Value promise_val = C->construct(ctx, ctor_args);
+    ctx.set_new_target(old_new_target);
     if (ctx.has_exception()) return false;
 
     if (!state->resolve_fn || !state->reject_fn) {

@@ -57,10 +57,9 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
     auto* self = reinterpret_cast<AsyncExecutor*>(ptr);
 
     Context* ctx = self->exec_context_;
-    Value result;
     try {
         if (self->body_) {
-            result = self->body_->evaluate(*ctx);
+            self->body_->evaluate(*ctx);
         }
     } catch (const std::exception& e) {
         if (!ctx->has_exception()) {
@@ -92,7 +91,8 @@ void AsyncExecutor::fiber_entry(uint32_t lo, uint32_t hi) {
             self->outer_promise_->fulfill(ret);
         }
     } else {
-        self->outer_promise_->fulfill(result);
+        // Falling off the end without a `return` resolves to undefined, not the last statement's value.
+        self->outer_promise_->fulfill(Value());
     }
 
     // Function is fully done and won't be resumed again -- release the retain taken in AsyncFunction::call.
@@ -153,9 +153,11 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     if (is_strict()) exec_ctx->set_strict_mode(true);
 
     // Bind 'this' (arrow uses captured __arrow_this__; sloppy-mode undefined/null -> global)
+    // Use presence (has_property), not is_undefined(), since a captured this can legitimately BE undefined.
     Value bound_this = this_value;
-    Value arrow_this_val = get_property("__arrow_this__");
-    if (!arrow_this_val.is_undefined()) {
+    bool has_arrow_this = is_arrow() && has_property("__arrow_this__");
+    Value arrow_this_val = has_arrow_this ? get_property("__arrow_this__") : Value();
+    if (has_arrow_this) {
         bound_this = arrow_this_val;
     } else if (!exec_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
         Object* global = ctx.get_global_object();
@@ -209,7 +211,20 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
             if (param->is_rest()) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
-                exec_ctx->create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+                Value rest_val(rest_arr.release());
+                if (param->has_destructuring()) {
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
+                    if (destr) {
+                        destr->evaluate_with_value(*exec_ctx, rest_val);
+                        if (exec_ctx->has_exception()) {
+                            exec_ctx->set_in_param_eval(false);
+                            promise_raw->reject(exec_ctx->get_exception());
+                            return promise_value;
+                        }
+                    }
+                } else {
+                    exec_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
+                }
             } else {
                 std::string pname = param->get_name() ? param->get_name()->get_name() : "";
                 if (pname == "arguments") param_named_arguments = true;
@@ -260,14 +275,27 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
 
     // Arrow functions inherit arguments from the enclosing scope; regular async functions get their own.
     // Skip if a parameter was already named "arguments" (it takes precedence).
-    if (arrow_this_val.is_undefined() && !param_named_arguments) {
+    if (!is_arrow() && !param_named_arguments) {
         auto arguments_obj = ObjectFactory::create_array(args.size());
         for (size_t i = 0; i < args.size(); ++i) {
             arguments_obj->set_element(static_cast<uint32_t>(i), args[i]);
         }
         arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
         arguments_obj->set_type(Object::ObjectType::Arguments);
+        setup_mapped_arguments(*exec_ctx, args, arguments_obj.get());
         exec_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+    }
+
+    // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    {
+        bool has_complex_params = false;
+        for (const auto& p : param_objs) {
+            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+        }
+        if (has_complex_params) {
+            exec_ctx->push_block_scope();
+            exec_ctx->set_variable_environment(exec_ctx->get_lexical_environment());
+        }
     }
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
@@ -450,10 +478,9 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
     auto* self = reinterpret_cast<AsyncGenerator*>(ptr);
 
     Context* ctx = self->generator_context_;
-    Value result;
     try {
         if (self->body_) {
-            result = self->body_->evaluate(*ctx);
+            self->body_->evaluate(*ctx);
         }
     } catch (const GeneratorReturnException& ret_ex) {
         if (!ctx->has_return_value()) {
@@ -481,7 +508,8 @@ void AsyncGenerator::fiber_entry(uint32_t lo, uint32_t hi) {
         self->return_value_ = ctx->get_return_value();
         ctx->clear_return_value();
     } else {
-        self->return_value_ = result;
+        // Falling off the end without a `return` completes with undefined, not the last statement's value.
+        self->return_value_ = Value();
     }
 
     swapcontext(&self->fiber_ctx_, &self->caller_ctx_);
@@ -972,9 +1000,10 @@ bool is_thenable(const Value& value) {
     if (!value.is_object()) {
         return false;
     }
-    
+
     Object* obj = value.as_object();
-    return obj->has_property("then");
+    // Only a *callable* "then" makes a value thenable (Promise Resolve Functions step 8).
+    return obj->get_property("then").is_function();
 }
 
 std::unique_ptr<Promise> to_promise(const Value& value, Context& ctx) {
@@ -1286,9 +1315,8 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     if (is_strict()) gen_ctx->set_strict_mode(true);
 
     Value bound_this = this_value;
-    Value arrow_this_ag = get_property("__arrow_this__");
-    if (!arrow_this_ag.is_undefined()) {
-        bound_this = arrow_this_ag;
+    if (is_arrow() && has_property("__arrow_this__")) {
+        bound_this = get_property("__arrow_this__");
     } else if (!gen_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
         Object* global = ctx.get_global_object();
         if (global) bound_this = Value(global);
@@ -1343,7 +1371,20 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
             if (param->is_rest()) {
                 auto rest_arr = ObjectFactory::create_array(0);
                 for (size_t j = regular_count; j < args.size(); ++j) rest_arr->push(args[j]);
-                gen_ctx->create_binding(param->get_name()->get_name(), Value(rest_arr.release()), false);
+                Value rest_val(rest_arr.release());
+                if (param->has_destructuring()) {
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
+                    if (destr) {
+                        destr->evaluate_with_value(*gen_ctx, rest_val);
+                        if (gen_ctx->has_exception()) {
+                            gen_ctx->set_in_param_eval(false);
+                            ctx.throw_exception(gen_ctx->get_exception(), true);
+                            return Value();
+                        }
+                    }
+                } else {
+                    gen_ctx->create_binding(param->get_name()->get_name(), rest_val, false);
+                }
             } else {
                 const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
@@ -1398,7 +1439,20 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     }
     arguments_obj->set_property("length", Value(static_cast<double>(args.size())));
     arguments_obj->set_type(Object::ObjectType::Arguments);
+    setup_mapped_arguments(*gen_ctx, args, arguments_obj.get());
     gen_ctx->create_binding("arguments", Value(arguments_obj.release()), false);
+
+    // FDI step 27: param-default closures must not see the body's `var`s, so the body gets its own variable environment.
+    {
+        bool has_complex_params = false;
+        for (const auto& p : param_objs) {
+            if (p->has_default() || p->has_destructuring()) { has_complex_params = true; break; }
+        }
+        if (has_complex_params) {
+            gen_ctx->push_block_scope();
+            gen_ctx->set_variable_environment(gen_ctx->get_lexical_environment());
+        }
+    }
 
     // FunctionDeclarationInstantiation: hoist `var` declarations to the top of
     // the function body before it executes (see AsyncFunction::call for rationale).

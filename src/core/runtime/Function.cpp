@@ -148,6 +148,46 @@ Function::Function(const std::string& name,
 
 }
 
+void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>& args, Object* arguments_obj) {
+    // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple, non-strict parameter lists.
+    bool is_simple_params = true;
+    for (const auto& p : parameter_objects_) {
+        if (p->has_default() || p->is_rest() || p->has_destructuring()) {
+            is_simple_params = false; break;
+        }
+    }
+    if (fn_ctx.is_strict_mode() || parameter_objects_.empty() || !is_simple_params) return;
+
+    size_t map_count = std::min(args.size(), parameter_objects_.size());
+    for (size_t mi = 0; mi < map_count; mi++) {
+        const std::string& pname = parameter_objects_[mi]->get_name()->get_name();
+        if (pname.empty() || pname[0] == '_') continue;
+        auto name = std::make_shared<std::string>(pname);
+        // fn_ctx outlives the accessors, so a raw pointer is safe to capture.
+        Context* fc_ptr = &fn_ctx;
+        auto getter_fn = ObjectFactory::create_native_function("get",
+            [fc_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
+                (void)ctx;
+                return fc_ptr->get_binding(*name);
+            });
+        // Mark getter so get_property_descriptor can synthesize a DATA descriptor
+        getter_fn->set_property("__param_map__", Value(true));
+        auto setter_fn = ObjectFactory::create_native_function("set",
+            [fc_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
+                (void)ctx;
+                if (!a.empty()) fc_ptr->set_binding(*name, a[0]);
+                return Value();
+            });
+        PropertyDescriptor map_desc;
+        map_desc.set_getter(getter_fn.get());
+        map_desc.set_setter(setter_fn.get());
+        map_desc.set_enumerable(true);
+        map_desc.set_configurable(true);
+        getter_fn.release(); setter_fn.release();
+        arguments_obj->set_property_descriptor(std::to_string(mi), map_desc);
+    }
+}
+
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
     CallStack& stack = CallStack::instance();
     Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
@@ -442,7 +482,20 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                     rest_array->push(args[j]);
                 }
 
-                function_context.create_binding(param->get_name()->get_name(), Value(rest_array.release()), false);
+                Value rest_val(rest_array.release());
+                if (param->has_destructuring()) {
+                    auto* destr = dynamic_cast<DestructuringAssignment*>(param->get_destructuring_pattern());
+                    if (destr) {
+                        destr->evaluate_with_value(function_context, rest_val);
+                        if (function_context.has_exception()) {
+                            function_context.set_in_param_eval(false);
+                            ctx.throw_exception(function_context.get_exception(), true);
+                            return Value();
+                        }
+                    }
+                } else {
+                    function_context.create_binding(param->get_name()->get_name(), rest_val, false);
+                }
             } else {
                 const std::string& pname = param->get_name() ? param->get_name()->get_name() : std::string();
                 // Create TDZ binding first so self-referential defaults (x = x) throw ReferenceError
@@ -583,47 +636,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             arguments_obj->set_property_descriptor("callee", callee_desc);
         }
 
-        // ES5 10.6 / ES6 9.4.4: mapped arguments only for simple parameter lists
-        // (no defaults, no rest, no destructuring). Non-strict only.
-        bool is_simple_params = true;
-        for (const auto& p : parameter_objects_) {
-            if (p->has_default() || p->is_rest() || p->has_destructuring()) {
-                is_simple_params = false; break;
-            }
-        }
-        if (!function_context.is_strict_mode() && !parameter_objects_.empty() && is_simple_params) {
-            size_t map_count = std::min(args.size(), parameter_objects_.size());
-            for (size_t mi = 0; mi < map_count; mi++) {
-                const std::string& pname = parameter_objects_[mi]->get_name()->get_name();
-                if (pname.empty() || pname[0] == '_') continue;
-                // Shared index and param name captured by getter/setter
-                auto idx = std::make_shared<size_t>(mi);
-                auto name = std::make_shared<std::string>(pname);
-                // We need a stable pointer to function_context for the accessors.
-                // Since function_context outlives the argument evaluation, store a raw pointer.
-                Context* fc_ptr = &function_context;
-                auto getter_fn = ObjectFactory::create_native_function("get",
-                    [fc_ptr, name](Context& ctx, const std::vector<Value>&) -> Value {
-                        (void)ctx;
-                        return fc_ptr->get_binding(*name);
-                    });
-                // Mark getter so get_property_descriptor can synthesize a DATA descriptor
-                getter_fn->set_property("__param_map__", Value(true));
-                auto setter_fn = ObjectFactory::create_native_function("set",
-                    [fc_ptr, name](Context& ctx, const std::vector<Value>& a) -> Value {
-                        (void)ctx;
-                        if (!a.empty()) fc_ptr->set_binding(*name, a[0]);
-                        return Value();
-                    });
-                PropertyDescriptor map_desc;
-                map_desc.set_getter(getter_fn.get());
-                map_desc.set_setter(setter_fn.get());
-                map_desc.set_enumerable(true);
-                map_desc.set_configurable(true);
-                getter_fn.release(); setter_fn.release();
-                arguments_obj->set_property_descriptor(std::to_string(mi), map_desc);
-            }
-        }
+        setup_mapped_arguments(function_context, args, arguments_obj.get());
         function_context.create_binding("arguments", Value(arguments_obj.release()), true, false);
     }
 

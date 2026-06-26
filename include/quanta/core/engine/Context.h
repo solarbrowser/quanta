@@ -103,8 +103,9 @@ private:
 
     // Dispose scope stack for 'using' declarations (Explicit Resource Management)
     struct DisposableResource {
-        Value resource_value;   // passed as 'this' to dispose method
-        Value dispose_method;   // looked up once at initialization time
+        Value resource_value;     // passed as 'this' to dispose method
+        Value dispose_method;     // looked up once at initialization time
+        bool is_async_dispose;    // `await using` (vs `using`): Dispose() must Await() the call's result
     };
     std::vector<std::vector<DisposableResource>> dispose_scope_stack_;
 
@@ -164,7 +165,7 @@ public:
 
     // Explicit Resource Management ('using' declaration support)
     void push_dispose_scope();
-    void add_disposable_resource(const Value& resource, const Value& method);
+    void add_disposable_resource(const Value& resource, const Value& method, bool is_async_dispose = false);
     void run_dispose_resources();  // dispose current scope, pop it
 
     bool has_binding(const std::string& name) const;

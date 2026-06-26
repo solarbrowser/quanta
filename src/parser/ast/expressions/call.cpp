@@ -1771,7 +1771,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
+            method_name = key_value.to_property_key();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -1933,7 +1933,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
+            method_name = key_value.to_property_key();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
@@ -1979,7 +1979,7 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         if (member->is_computed()) {
             Value key_value = member->get_property()->evaluate(ctx);
             if (ctx.has_exception()) return Value();
-            method_name = key_value.is_symbol() ? key_value.as_symbol()->to_property_key() : key_value.to_string();
+            method_name = key_value.to_property_key();
         } else {
             if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
                 Identifier* prop = static_cast<Identifier*>(member->get_property());
