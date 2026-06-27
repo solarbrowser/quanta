@@ -481,7 +481,7 @@ void Generator::setup_generator_prototype(Context& ctx) {
 
             std::string params_str;
             for (size_t i = 0; i < param_names.size(); ++i) {
-                if (i > 0) params_str += ", ";
+                if (i > 0) params_str += ",";
                 params_str += param_names[i];
             }
             std::string toString_src = "function* anonymous(" + params_str + "\n) {\n" + body_str + "\n}";

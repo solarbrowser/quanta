@@ -738,7 +738,7 @@ void AsyncGenerator::setup_async_generator_prototype(Context& ctx) {
 
             std::string params_str;
             for (size_t i = 0; i < param_names.size(); ++i) {
-                if (i > 0) params_str += ", ";
+                if (i > 0) params_str += ",";
                 params_str += param_names[i];
             }
             std::string toString_src = "async function* anonymous(" + params_str + "\n) {\n" + body_str + "\n}";
@@ -1111,7 +1111,7 @@ void setup_async_functions(Context& ctx) {
             if (args.size() > 1) {
                 body_str = args.back().to_string();
                 for (size_t i = 0; i < args.size() - 1; ++i) {
-                    if (i > 0) params_str += ", ";
+                    if (i > 0) params_str += ",";
                     params_str += args[i].to_string();
                 }
             } else if (args.size() == 1) {

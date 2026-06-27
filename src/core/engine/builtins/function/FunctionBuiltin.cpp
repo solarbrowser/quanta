@@ -392,8 +392,12 @@ void register_function_builtins(Context& ctx) {
                 Proxy* proxy = static_cast<Proxy*>(function_obj);
                 Object* target = proxy->get_proxy_target();
                 if (target && target->is_function()) {
-                    return Value(static_cast<Function*>(target)->to_string());
+                    // A Proxy's toString is always implementation-defined NativeFunction
+                    // syntax -- the target's real source must never be shown.
+                    return Value(std::string("function () { [native code] }"));
                 }
+                ctx.throw_type_error("Function.prototype.toString called on non-function");
+                return Value();
             }
             if (!function_obj || !function_obj->is_function()) {
                 ctx.throw_type_error("Function.prototype.toString called on non-function");

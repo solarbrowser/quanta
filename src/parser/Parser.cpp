@@ -5967,12 +5967,16 @@ std::unique_ptr<ASTNode> Parser::parse_class_expression() {
 
 std::unique_ptr<ASTNode> Parser::parse_method_definition() {
     Position start = get_current_position();
-    
+    // toString's source text must exclude the `static` modifier (NativeFunction syntax
+    // starts at the method name) -- src_start tracks where the name actually begins.
+    Position src_start = start;
+
     bool is_static = false;
     if (current_token().get_value() == "static" && current_token().get_type() != TokenType::STATIC &&
         !current_token().has_escaped_keyword()) {
         is_static = true;
         advance();
+        src_start = get_current_position();
     } else if (current_token().get_type() == TokenType::STATIC) {
         // Peek: if followed by =, ;, }, or newline, this is a FIELD named 'static', not the modifier
         TokenType nxt = peek_token().get_type();
@@ -5989,6 +5993,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         } else {
             is_static = true;
             advance();
+            src_start = get_current_position();
         }
     }
 
@@ -6466,7 +6471,7 @@ std::unique_ptr<ASTNode> Parser::parse_method_definition() {
         }
     }
 
-    std::string method_src = get_source_slice(start.offset, last_meaningful_token().get_start().offset + 1);
+    std::string method_src = get_source_slice(src_start.offset, last_meaningful_token().get_start().offset + 1);
 
     auto function_expr = std::make_unique<FunctionExpression>(
         nullptr,

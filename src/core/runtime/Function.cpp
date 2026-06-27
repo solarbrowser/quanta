@@ -987,8 +987,14 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 }
 
 std::string Function::to_string() const {
+    // A well-known-symbol-named function's `name` is internally stored as "@@x" (e.g.
+    // "@@asyncIterator"); NativeFunction syntax requires the spec's bracketed form instead.
+    std::string display_name = name_;
+    if (display_name.size() > 2 && display_name[0] == '@' && display_name[1] == '@') {
+        display_name = "[Symbol." + display_name.substr(2) + "]";
+    }
     if (is_native_) {
-        return "function " + name_ + "() { [native code] }";
+        return "function " + display_name + "() { [native code] }";
     }
     if (!source_text_.empty()) {
         // Trim trailing whitespace -- source_text_ may include a trailing newline.
@@ -999,7 +1005,7 @@ std::string Function::to_string() const {
     }
     // Non-native function without preserved source text: use NativeFunction format
     // (test262's assertToStringOrNativeFunction accepts "function name() { [native code] }").
-    return "function " + name_ + "() { [native code] }";
+    return "function " + display_name + "() { [native code] }";
 }
 
 

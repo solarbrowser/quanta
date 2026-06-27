@@ -519,6 +519,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     } else {
                         instance_method = ObjectFactory::create_js_function(method_name, std::move(method_params), method->get_value()->get_body()->clone(), &ctx);
                     }
+                    if (!method->get_source_text().empty()) instance_method->set_source_text(method->get_source_text());
                     instance_method->set_is_strict(true);
                     // Class methods are non-constructors; non-generator methods have no prototype.
                     if (!method_is_gen) {
@@ -799,6 +800,7 @@ Value ClassDeclaration::evaluate(Context& ctx) {
                     } else {
                         static_method = ObjectFactory::create_js_function(method_name, std::move(static_params), method->get_value()->get_body()->clone(), &ctx);
                     }
+                    if (!method->get_source_text().empty()) static_method->set_source_text(method->get_source_text());
                     static_method->set_is_strict(true);
                     // Class static methods are non-constructors; non-generator methods have no prototype.
                     if (!static_is_gen) {
