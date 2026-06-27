@@ -59,9 +59,6 @@ void Promise::fulfill(const Value& value) {
         return;
     }
 
-    // Fast path only applies when `then` is still the standard built-in: if it has been
-    // overridden, fall through to the generic thenable-job handling below so the override
-    // is actually consulted (matches GetMethod/PromiseResolveThenableJob semantics).
     bool use_promise_fast_path = false;
     if (value.is_object() && value.as_object()->get_type() == ObjectType::Promise) {
         use_promise_fast_path = true;
@@ -75,6 +72,10 @@ void Promise::fulfill(const Value& value) {
                     Value inner_then = value.as_object()->get_property("then");
                     if (!(std_then.is_function() && inner_then.is_function() &&
                           std_then.as_function() == inner_then.as_function())) {
+                        use_promise_fast_path = false;
+                    }
+                    Value inner_ctor = value.as_object()->get_property("constructor");
+                    if (!(inner_ctor.is_function() && inner_ctor.as_function() == promise_ctor.as_function())) {
                         use_promise_fast_path = false;
                     }
                 }
