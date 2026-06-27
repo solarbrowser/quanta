@@ -135,7 +135,8 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
                 Object* self = ctx.get_this_binding();
                 return self ? Value(self) : Value();
             });
-        iter_proto->set_property(iter_sym->to_property_key(), Value(self_fn.release()));
+        PropertyDescriptor sym_iter_d(Value(self_fn.release()), PropertyAttributes::BuiltinFunction);
+        iter_proto->set_property_descriptor(iter_sym->to_property_key(), sym_iter_d);
     }
 
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);

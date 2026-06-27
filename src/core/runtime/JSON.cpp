@@ -81,7 +81,35 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    std::string json_string = args[0].to_string();
+    // Symbol cannot be converted to string (TypeError per spec)
+    if (args[0].is_symbol()) {
+        ctx.throw_type_error("JSON.parse: cannot convert Symbol to string");
+        return Value();
+    }
+
+    // For objects, call JS ToPrimitive (hint "string"): try toString, then valueOf.
+    std::string json_string;
+    if ((args[0].is_object() || args[0].is_function()) && args[0].as_object()) {
+        Value ts_fn = args[0].as_object()->get_property("toString");
+        if (ctx.has_exception()) return Value();
+        if (ts_fn.is_function()) {
+            Value ts_result = ts_fn.as_function()->call(ctx, {}, args[0]);
+            if (ctx.has_exception()) return Value();
+            json_string = ts_result.to_string();
+        } else {
+            Value vs_fn = args[0].as_object()->get_property("valueOf");
+            if (ctx.has_exception()) return Value();
+            if (vs_fn.is_function()) {
+                Value vs_result = vs_fn.as_function()->call(ctx, {}, args[0]);
+                if (ctx.has_exception()) return Value();
+                json_string = vs_result.to_string();
+            } else {
+                json_string = args[0].to_string();
+            }
+        }
+    } else {
+        json_string = args[0].to_string();
+    }
 
     if (json_string.empty()) {
         ctx.throw_syntax_error("JSON.parse: unexpected end of input");
@@ -103,8 +131,11 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
 
         // Apply reviver via InternalizeJSONProperty walk
         if (reviver) {
-            auto wrapper = std::make_unique<Object>();
-            wrapper->set_property("", result);
+            // Wrapper must have Object.prototype and use CreateDataPropertyOrThrow (not [[Set]])
+            auto wrapper = ObjectFactory::create_object();
+            PropertyDescriptor root_desc(result, static_cast<PropertyAttributes>(
+                PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+            wrapper->set_property_descriptor("", root_desc);
 
             result = internalize_json_property(ctx, wrapper.get(), "", reviver);
             wrapper.release();
@@ -146,34 +177,75 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
         } else if (args[1].is_object()) {
             Object* replacer_obj = args[1].as_object();
             if (replacer_obj && replacer_obj->is_array()) {
+                options.has_replacer_array = true;
                 Value length_val = replacer_obj->get_property("length");
                 uint32_t length = static_cast<uint32_t>(length_val.to_number());
+                std::vector<std::string>& ra = options.replacer_array;
                 for (uint32_t i = 0; i < length; i++) {
                     Value item = replacer_obj->get_element(i);
+                    std::string s;
                     if (item.is_string()) {
-                        options.replacer_array.push_back(item.to_string());
+                        s = item.to_string();
                     } else if (item.is_number()) {
-                        options.replacer_array.push_back(item.to_string());
+                        s = item.to_string();
+                    // Spec: only String/Number wrapper objects (with [[StringData]]/[[NumberData]])
+                    } else if (item.is_object() && item.as_object()) {
+                        Object* w = item.as_object();
+                        auto t = w->get_type();
+                        if (t == Object::ObjectType::String || t == Object::ObjectType::Number) {
+                            // Call toString() on the wrapper (spec: ToString(item))
+                            Value ts_fn = w->get_property("toString");
+                            if (ts_fn.is_function()) {
+                                Value r = ts_fn.as_function()->call(ctx, {}, item);
+                                if (!ctx.has_exception()) s = r.to_string();
+                                else ctx.clear_exception();
+                            }
+                        }
                     }
+                    if (!s.empty() && std::find(ra.begin(), ra.end(), s) == ra.end())
+                        ra.push_back(s);
                 }
             }
         }
     }
 
     if (args.size() > 2 && !args[2].is_undefined()) {
-        if (args[2].is_number()) {
-            int indent_count = static_cast<int>(args[2].to_number());
+        Value space_arg = args[2];
+        // Unwrap Number/String wrapper objects (call valueOf/toString per spec)
+        if (space_arg.is_object() && space_arg.as_object() && space_arg.as_object()->is_primitive_wrapper()) {
+            Object* sw = space_arg.as_object();
+            auto st = sw->get_type();
+            if (st == Object::ObjectType::Number) {
+                Value vof = sw->get_property("valueOf");
+                if (vof.is_function()) {
+                    Value r = vof.as_function()->call(ctx, {}, space_arg);
+                    if (ctx.has_exception()) return Value();
+                    space_arg = r;
+                }
+            } else if (st == Object::ObjectType::String) {
+                Value tsf = sw->get_property("toString");
+                if (tsf.is_function()) {
+                    Value r = tsf.as_function()->call(ctx, {}, space_arg);
+                    if (ctx.has_exception()) return Value();
+                    space_arg = r;
+                }
+            }
+        }
+        if (space_arg.is_number()) {
+            int indent_count = static_cast<int>(space_arg.to_number());
             if (indent_count > 0) {
                 options.indent = std::string(std::min(indent_count, 10), ' ');
             }
-        } else if (args[2].is_string()) {
-            options.indent = args[2].to_string().substr(0, 10);
+        } else if (space_arg.is_string()) {
+            options.indent = space_arg.to_string().substr(0, 10);
         }
     }
 
     try {
         Stringifier stringifier(options, &ctx);
         std::string result = stringifier.stringify(args[0]);
+        if (ctx.has_exception()) return Value();
+        if (result.empty() || result == "undefined_sentinel") return Value();
         return Value(result);
     } catch (const std::exception& e) {
         ctx.throw_type_error(std::string(e.what()));
@@ -572,29 +644,38 @@ bool JSON::Parser::is_hex_digit(char ch) const {
 
 
 JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx)
-    : options_(options), depth_(0), context_(ctx) {
+    : options_(options), depth_(0), context_(ctx), current_key_("") {
 }
 
 std::string JSON::Stringifier::stringify(const Value& value) {
-    // If replacer function exists, call it with empty string key for the root value
     if (options_.replacer_function && context_) {
-        std::vector<Value> args;
-        args.push_back(Value(std::string("")));  // empty key for root
-        args.push_back(value);
+        // Apply toJSON on root value BEFORE passing to replacer (spec order).
+        Value root = value;
+        if ((root.is_object() || root.is_function()) && root.as_object()) {
+            Value tj = const_cast<Object*>(root.as_object())->get_property("toJSON");
+            if (tj.is_function()) {
+                root = tj.as_function()->call(*context_, {Value(std::string(""))}, root);
+                if (context_->has_exception()) return "";
+            }
+        }
 
-        // Create a wrapper object to hold the value
-        auto wrapper = std::make_unique<Object>();
-        wrapper->set_property("", value);
+        std::vector<Value> args = { Value(std::string("")), root };
+
+        auto wrapper = ObjectFactory::create_object();
+        PropertyDescriptor wrap_desc(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+        wrapper->set_property_descriptor("", wrap_desc);
 
         Value result = options_.replacer_function->call(*context_, args, Value(wrapper.get()));
         wrapper.release();
 
-        if (context_->has_exception()) {
-            return "";
-        }
+        if (context_->has_exception()) return "";
+        if (result.is_undefined() || result.is_function() || result.is_symbol()) return "";
+        current_key_ = "";
         return stringify_value(result);
     }
 
+    current_key_ = "";
     return stringify_value(value);
 }
 
@@ -602,12 +683,13 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     if (value.is_null()) {
         return "null";
     } else if (value.is_undefined()) {
-        return "null";
+        return "null"; // arrays: undefined elements -> null; objects skip before calling here
     } else if (value.is_bigint()) {
         if (context_) context_->throw_type_error("Do not know how to serialize a BigInt");
-        return "null";
+        return "";
     } else if (value.is_symbol()) {
-        // ES6: symbols serialize as undefined (which becomes "null" in arrays, omitted in objects)
+        return "null";
+    } else if (value.is_function()) {
         return "null";
     } else if (value.is_boolean()) {
         return stringify_boolean(value.to_boolean());
@@ -621,8 +703,27 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_object()) {
         const Object* obj = value.as_object();
         if (obj) {
-            // For Proxy: check if target is array, use proxy's traps for serialization
             bool is_proxy = (obj->get_type() == Object::ObjectType::Proxy);
+
+            if (!is_proxy) {
+                // rawJSON objects: null prototype + own "rawJSON" property
+                if (obj->get_prototype() == nullptr && const_cast<Object*>(obj)->has_own_property("rawJSON")) {
+                    Value raw_str = const_cast<Object*>(obj)->get_property("rawJSON");
+                    return raw_str.is_string() ? raw_str.to_string() : "null";
+                }
+
+                // BigInt wrapper object (Object(0n)): prototype is BigInt.prototype -> TypeError
+                if (context_) {
+                    Value bigint_ctor = context_->get_binding("BigInt");
+                    if (bigint_ctor.is_function()) {
+                        Value bigint_proto = bigint_ctor.as_function()->get_property("prototype");
+                        if (bigint_proto.is_object() && obj->get_prototype() == bigint_proto.as_object()) {
+                            context_->throw_type_error("Do not know how to serialize a BigInt");
+                            return "";
+                        }
+                    }
+                }
+            }
             const Object* effective_obj = obj;
             if (is_proxy) {
                 const Proxy* proxy = static_cast<const Proxy*>(obj);
@@ -631,15 +732,52 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                 }
             }
 
-            // Per spec: always [[Get]] toJSON (invokes Proxy get trap via virtual dispatch)
+            // toJSON takes the current key as its first argument
             if (obj && context_) {
-                Value toJSON_val = obj->get_property("toJSON");
+                Value toJSON_val = const_cast<Object*>(obj)->get_property("toJSON");
                 if (toJSON_val.is_function()) {
                     Function* toJSON_fn = toJSON_val.as_function();
-                    std::vector<Value> args;
+                    std::vector<Value> args = { Value(current_key_) };
                     Value result = toJSON_fn->call(*context_, args, Value(const_cast<Object*>(obj)));
-                    if (!context_->has_exception()) {
-                        return stringify_value(result);
+                    if (context_->has_exception()) return "";
+                    if (result.is_undefined() || result.is_function() || result.is_symbol())
+                        return "undefined_sentinel";
+                    std::string saved = current_key_;
+                    std::string r = stringify_value(result);
+                    current_key_ = saved;
+                    return r;
+                }
+            }
+
+            // Boxed Boolean/Number/String: spec calls ToNumber(v) / ToString(v) which
+            // invokes valueOf()/toString() on the object (can throw).
+            if (obj && obj->is_primitive_wrapper() && context_) {
+                auto otype = obj->get_type();
+                if (otype == Object::ObjectType::Boolean) {
+                    Value pv = const_cast<Object*>(obj)->get_property("[[PrimitiveValue]]");
+                    return stringify_boolean(pv.to_boolean());
+                } else if (otype == Object::ObjectType::Number) {
+                    Value valueOf_fn = const_cast<Object*>(obj)->get_property("valueOf");
+                    double n;
+                    if (valueOf_fn.is_function()) {
+                        Value r = valueOf_fn.as_function()->call(*context_, {}, value);
+                        if (context_->has_exception()) return "";
+                        n = r.to_number();
+                    } else {
+                        Value pv = const_cast<Object*>(obj)->get_property("[[PrimitiveValue]]");
+                        n = pv.to_number();
+                    }
+                    if (std::isnan(n) || std::isinf(n)) return "null";
+                    return stringify_number(n);
+                } else if (otype == Object::ObjectType::String) {
+                    Value toString_fn = const_cast<Object*>(obj)->get_property("toString");
+                    if (toString_fn.is_function()) {
+                        Value r = toString_fn.as_function()->call(*context_, {}, value);
+                        if (context_->has_exception()) return "";
+                        return stringify_string(r.to_string());
+                    } else {
+                        Value pv = const_cast<Object*>(obj)->get_property("[[PrimitiveValue]]");
+                        return stringify_string(pv.to_string());
                     }
                 }
             }
@@ -647,7 +785,7 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
             if (effective_obj && effective_obj->is_array()) {
                 return stringify_array(effective_obj);
             } else {
-                return stringify_object(obj); // Pass proxy to get ownKeys trap
+                return stringify_object(obj);
             }
         }
         return "null";
@@ -691,28 +829,53 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
         keys = obj->get_enumerable_keys();
     }
 
-    // If replacer array is provided, filter keys to only those in the array
+    // Build the list of keys to process.
+    // If a replacer array is given (even empty), output follows replacer array order.
     std::vector<std::string> keys_to_process;
-    if (!options_.replacer_array.empty()) {
-        for (const std::string& key : keys) {
-            if (std::find(options_.replacer_array.begin(), options_.replacer_array.end(), key) != options_.replacer_array.end()) {
-                keys_to_process.push_back(key);
+    if (options_.has_replacer_array) {
+        // Emit keys in replacer-array order; only include keys present in the object.
+        for (const std::string& ra_key : options_.replacer_array) {
+            if (obj->get_type() == Object::ObjectType::Proxy ||
+                std::find(keys.begin(), keys.end(), ra_key) != keys.end()) {
+                keys_to_process.push_back(ra_key);
             }
         }
     } else {
         keys_to_process = keys;
     }
 
+    // Check if this is a RegExp object (its own properties should be hidden from JSON)
+    bool is_regexp_obj = (obj->get_type() == Object::ObjectType::RegExp);
+
     for (const std::string& key : keys_to_process) {
         if (key.substr(0, 2) == "__") continue;
-        // ES6: Skip symbol-keyed properties
+        if (key.size() >= 2 && key[0] == '[' && key[1] == '[') continue;
         if (key.find("@@sym:") == 0 || key.find("Symbol.") == 0) continue;
+        if (key.size() > 3 && key[0] == '_' && key[1] == 'i' && key[2] == 's') continue;
+        // RegExp instances: hide implementation properties from JSON serialization
+        if (is_regexp_obj && (key == "source" || key == "global" || key == "ignoreCase" ||
+            key == "multiline" || key == "dotAll" || key == "unicode" ||
+            key == "unicodeSets" || key == "sticky" || key == "flags" || key == "lastIndex" ||
+            key == "__pattern__" || key == "__flags__")) continue;
 
         Value prop_value;
         if (obj->get_type() == Object::ObjectType::Proxy) {
             prop_value = static_cast<Proxy*>(const_cast<Object*>(obj))->get_trap(Value(key));
         } else {
             prop_value = obj->get_property(key);
+        }
+
+        // Apply toJSON BEFORE replacer (spec: toJSON called first, then replacer sees result)
+        if (context_ && (prop_value.is_object() || prop_value.is_function())) {
+            Object* pobj = prop_value.is_function() ? static_cast<Object*>(prop_value.as_function()) : prop_value.as_object();
+            if (pobj) {
+                Value tj = pobj->get_property("toJSON");
+                if (tj.is_function()) {
+                    Value r = tj.as_function()->call(*context_, {Value(key)}, prop_value);
+                    if (context_->has_exception()) { visited_.erase(obj); depth_--; return ""; }
+                    prop_value = r;
+                }
+            }
         }
 
         // If replacer function exists, call it
@@ -732,9 +895,16 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
 
         if (prop_value.is_function() || prop_value.is_undefined() || prop_value.is_symbol()) continue;
 
-        if (!first) {
-            result += ",";
+        current_key_ = key;
+        std::string serialized = stringify_value(prop_value);
+        if (serialized == "undefined_sentinel") continue;
+        if (context_ && context_->has_exception()) {
+            visited_.erase(obj);
+            depth_--;
+            return "";
         }
+
+        if (!first) result += ",";
         first = false;
 
         if (!options_.indent.empty()) {
@@ -744,12 +914,8 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
 
         result += stringify_string(key);
         result += ":";
-
-        if (!options_.indent.empty()) {
-            result += " ";
-        }
-
-        result += stringify_value(prop_value);
+        if (!options_.indent.empty()) result += " ";
+        result += serialized;
     }
 
     if (!options_.indent.empty() && !first) {
@@ -796,7 +962,17 @@ std::string JSON::Stringifier::stringify_array(const Object* arr) {
         }
         
         Value element = arr->get_element(i);
-        result += stringify_value(element);
+        current_key_ = std::to_string(i);
+        if (options_.replacer_function && context_) {
+            std::vector<Value> rargs = { Value(current_key_), element };
+            Value rresult = options_.replacer_function->call(*context_, rargs, Value(const_cast<Object*>(arr)));
+            if (context_->has_exception()) { visited_.erase(arr); depth_--; return ""; }
+            element = rresult;
+        }
+        if (element.is_undefined() || element.is_function() || element.is_symbol()) element = Value();
+        std::string serialized = stringify_value(element);
+        if (serialized == "undefined_sentinel") serialized = "null";
+        result += serialized;
     }
     
     if (!options_.indent.empty() && !first) {
@@ -820,6 +996,7 @@ std::string JSON::Stringifier::stringify_string(const std::string& str) {
 }
 
 std::string JSON::Stringifier::stringify_number(double num) {
+    if (num == 0.0) return "0";
     std::ostringstream oss;
     oss << num;
     return oss.str();

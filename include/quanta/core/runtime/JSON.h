@@ -42,8 +42,9 @@ public:
         bool escape_unicode;
         Function* replacer_function;
         std::vector<std::string> replacer_array;
+        bool has_replacer_array;
 
-        StringifyOptions() : indent(""), max_depth(100), quote_keys(true), escape_unicode(false), replacer_function(nullptr) {}
+        StringifyOptions() : indent(""), max_depth(100), quote_keys(true), escape_unicode(false), replacer_function(nullptr), has_replacer_array(false) {}
     };
 
 public:
@@ -102,6 +103,7 @@ private:
         size_t depth_;
         std::set<const Object*> visited_;
         Context* context_;
+        std::string current_key_;
 
     public:
         Stringifier(const StringifyOptions& options, Context* ctx = nullptr);
