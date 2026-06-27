@@ -281,6 +281,21 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
         );
     }
 
+    // Generator/async function declarations get a Function subclass that the base
+    // Function constructor links to plain Function.prototype -- override with the
+    // matching intrinsic (GeneratorFunction.prototype etc.) so f.constructor is correct.
+    if (function_obj) {
+        const char* intrinsic_name = (is_async_ && is_generator_) ? "AsyncGeneratorFunction"
+                                    : is_generator_ ? "GeneratorFunction"
+                                    : is_async_ ? "AsyncFunction" : nullptr;
+        if (intrinsic_name && ctx.has_binding(intrinsic_name)) {
+            Value ctor = ctx.get_binding(intrinsic_name);
+            if (ctor.is_function()) {
+                Value proto = ctor.as_function()->get_property("prototype");
+                if (proto.is_object()) function_obj->set_prototype(proto.as_object());
+            }
+        }
+    }
 
     // Outer variables resolve through Function's closure_environment_ (the real
     // lexical environment captured at creation time, wired in by create_function_context)

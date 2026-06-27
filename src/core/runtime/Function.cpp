@@ -189,6 +189,9 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
 }
 
 Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_value) {
+    // Consumed immediately so a nested call triggered from inside this invocation
+    // (e.g. a native function calling another function) doesn't inherit it.
+    bool is_construct_invocation = ctx.consume_pending_construct_call();
     CallStack& stack = CallStack::instance();
     Position call_position = body_ ? body_->get_start() : Position(1, 1, 0);
     CallStackFrameGuard frame_guard(stack, get_name(), ctx.get_current_filename(), call_position, this);
@@ -286,11 +289,18 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         bool prev_nullish = ctx.original_this_was_nullish();
         ctx.set_original_this_nullish(was_nullish);
 
+        // A plain call (not this construct invocation) must see new.target == undefined --
+        // ctx is shared with the caller here since native calls don't get their own Context.
+        Value saved_new_target = ctx.get_new_target();
+        if (!is_construct_invocation) ctx.set_new_target(Value());
+
         Context* prev_context = Object::current_context_;
         Object::current_context_ = &ctx;
         Value result = native_fn_(ctx, args);
         Object::current_context_ = prev_context;
         ctx.set_original_this_nullish(prev_nullish);
+
+        if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
 
         ctx.set_this_binding(old_this);
 
@@ -788,6 +798,14 @@ Value Function::get_property(const std::string& key) const {
     if (!result.is_undefined()) {
         return result;
     }
+    // A setter-only own accessor must return undefined here, not fall through to an
+    // inherited getter for the same key.
+    if (descriptors_) {
+        auto it = descriptors_->find(key);
+        if (it != descriptors_->end() && it->second.is_accessor_descriptor()) {
+            return Value();
+        }
+    }
 
     // Lazy initialization: if our internal prototype is not set yet,
     // try to get Function.prototype (may be available now even if it wasn't during construction)
@@ -943,6 +961,7 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
         ctx.set_new_target(old_new_target);
     }
 
+    ctx.set_pending_construct_call(true);
     Value result = call(ctx, args, this_value);
     bool super_was_called = ctx.was_super_called();
     ctx.set_in_constructor_call(false);
