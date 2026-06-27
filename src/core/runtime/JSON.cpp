@@ -176,7 +176,17 @@ Value JSON::js_stringify(Context& ctx, const std::vector<Value>& args) {
             options.replacer_function = args[1].as_function();
         } else if (args[1].is_object()) {
             Object* replacer_obj = args[1].as_object();
-            if (replacer_obj && replacer_obj->is_array()) {
+
+            Object* effective_replacer = replacer_obj;
+            if (replacer_obj && replacer_obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* p = static_cast<Proxy*>(replacer_obj);
+                if (p->is_revoked()) {
+                    ctx.throw_type_error("Cannot perform 'IsArray' on a revoked proxy");
+                    return Value();
+                }
+                effective_replacer = p->get_proxy_target();
+            }
+            if (replacer_obj && effective_replacer && effective_replacer->is_array()) {
                 options.has_replacer_array = true;
                 Value length_val = replacer_obj->get_property("length");
                 uint32_t length = static_cast<uint32_t>(length_val.to_number());
@@ -322,31 +332,35 @@ Value JSON::Parser::parse_object() {
     advance();
     skip_whitespace();
     
-    auto obj = std::make_unique<Object>();
-    
+    // Use create_object so parsed objects inherit from Object.prototype.
+    auto obj = ObjectFactory::create_object();
+
     if (current_char() == '}') {
         advance();
         depth_--;
         return Value(obj.release());
     }
-    
+
     while (true) {
         skip_whitespace();
-        
+
         if (current_char() != '"') {
             throw_syntax_error("Expected string key in object");
         }
-        
+
         std::string key = parse_string_literal();
-        
+
         skip_whitespace();
         if (current_char() != ':') {
             throw_syntax_error("Expected ':' after object key");
         }
         advance();
-        
+
         Value value = parse_value();
-        obj->set_property(key, value);
+
+        PropertyDescriptor d(value, static_cast<PropertyAttributes>(
+            PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+        obj->set_property_descriptor(key, d);
         
         skip_whitespace();
         char ch = current_char();
@@ -685,7 +699,23 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_undefined()) {
         return "null"; // arrays: undefined elements -> null; objects skip before calling here
     } else if (value.is_bigint()) {
-        if (context_) context_->throw_type_error("Do not know how to serialize a BigInt");
+
+        if (context_) {
+            Value bigint_ctor = context_->get_binding("BigInt");
+            if (bigint_ctor.is_function()) {
+                Value bigint_proto = bigint_ctor.as_function()->get_property("prototype");
+                if (bigint_proto.is_object()) {
+                    Value toJSON_val = bigint_proto.as_object()->get_property("toJSON");
+                    if (toJSON_val.is_function()) {
+                        std::vector<Value> tj_args = { Value(current_key_) };
+                        Value result = toJSON_val.as_function()->call(*context_, tj_args, value);
+                        if (context_->has_exception()) return "";
+                        return stringify_value(result);
+                    }
+                }
+            }
+            context_->throw_type_error("Do not know how to serialize a BigInt");
+        }
         return "";
     } else if (value.is_symbol()) {
         return "null";
