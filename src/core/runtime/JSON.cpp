@@ -582,7 +582,12 @@ double JSON::Parser::parse_number_literal() {
         }
     }
     
-    return std::stod(number_str);
+    try {
+        return std::stod(number_str);
+    } catch (const std::out_of_range&) {
+        return number_str[0] == '-' ? -std::numeric_limits<double>::infinity()
+                                    : std::numeric_limits<double>::infinity();
+    }
 }
 
 Value JSON::Parser::parse_boolean() {
