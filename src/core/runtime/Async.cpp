@@ -1131,7 +1131,40 @@ void setup_async_functions(Context& ctx) {
                     ctx.throw_syntax_error("Invalid async function body");
                     return Value();
                 }
-                return expr->evaluate(ctx);
+                // Build the AsyncFunction directly (like GeneratorFunction does) instead of
+                // expr->evaluate(), which doesn't preserve toString_src.
+                std::vector<std::unique_ptr<Parameter>> param_clones;
+                ASTNode* body_node = nullptr;
+                bool matched = false;
+                if (expr->get_type() == ASTNode::Type::ASYNC_FUNCTION_EXPRESSION) {
+                    AsyncFunctionExpression* fe = static_cast<AsyncFunctionExpression*>(expr.get());
+                    for (const auto& p : fe->get_params()) param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                    body_node = fe->get_body();
+                    matched = true;
+                } else if (expr->get_type() == ASTNode::Type::FUNCTION_EXPRESSION) {
+                    FunctionExpression* fe = static_cast<FunctionExpression*>(expr.get());
+                    if (fe->is_async() && !fe->is_generator()) {
+                        for (const auto& p : fe->get_params()) param_clones.push_back(std::unique_ptr<Parameter>(static_cast<Parameter*>(p->clone().release())));
+                        body_node = fe->get_body();
+                        matched = true;
+                    }
+                }
+                if (matched) {
+                    auto body_clone = body_node ? body_node->clone() : nullptr;
+                    auto async_fn = std::make_unique<AsyncFunction>("anonymous", std::move(param_clones), std::move(body_clone), &ctx);
+                    async_fn->set_source_text(toString_src);
+                    if (ctx.has_binding("AsyncFunction")) {
+                        Value async_ctor = ctx.get_binding("AsyncFunction");
+                        if (async_ctor.is_function()) {
+                            Value proto = async_ctor.as_function()->get_property("prototype");
+                            if (proto.is_object()) async_fn->set_prototype(proto.as_object());
+                        }
+                    }
+                    return Value(async_fn.release());
+                }
+                Value result = expr->evaluate(ctx);
+                if (result.is_function()) result.as_function()->set_source_text(toString_src);
+                return result;
             } catch (...) {
                 ctx.throw_syntax_error("Invalid async function body in AsyncFunction constructor");
                 return Value();

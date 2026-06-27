@@ -79,6 +79,10 @@ private:
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Value new_target_;
     bool original_this_was_nullish_; // set when native call had null/undefined thisArg
+    // Set by Function::construct() right before it calls Function::call() on the same
+    // function, so call() can tell "I'm the construct invocation" apart from a plain call
+    // made from inside that constructor's body (which must see new.target == undefined).
+    bool pending_construct_call_ = false;
 
     bool strict_mode_;
     
@@ -234,6 +238,13 @@ public:
 
     Value get_new_target() const { return new_target_; }
     void set_new_target(const Value& val) { new_target_ = val; }
+
+    void set_pending_construct_call(bool v) { pending_construct_call_ = v; }
+    bool consume_pending_construct_call() {
+        bool v = pending_construct_call_;
+        pending_construct_call_ = false;
+        return v;
+    }
 
     void register_built_in_object(const std::string& name, Object* object);
     void register_built_in_function(const std::string& name, Function* function);
