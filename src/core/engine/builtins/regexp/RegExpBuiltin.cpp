@@ -139,6 +139,11 @@ void register_regexp_builtins(Context& ctx) {
                 pattern = args[0].to_string();
             }
 
+            if (flags.find('u') != std::string::npos && flags.find('v') != std::string::npos) {
+                ctx.throw_syntax_error("Regex flags 'u' and 'v' are mutually exclusive");
+                return Value();
+            }
+
             try {
                 // ObjectType::RegExp so toString's internal-slot tag and String.prototype's
                 // is_native_regexp checks (match/replace/split) see this the same as regex literals.
@@ -155,9 +160,13 @@ void register_regexp_builtins(Context& ctx) {
                 regex_obj->set_property("global", Value(regexp_impl->get_global()), PropertyAttributes::BuiltinFunction);
                 regex_obj->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()), PropertyAttributes::BuiltinFunction);
                 regex_obj->set_property("multiline", Value(regexp_impl->get_multiline()), PropertyAttributes::BuiltinFunction);
-                regex_obj->set_property("unicode", Value(regexp_impl->get_unicode()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property("unicode", Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::BuiltinFunction);
                 regex_obj->set_property("sticky", Value(regexp_impl->get_sticky()), PropertyAttributes::BuiltinFunction);
                 regex_obj->set_property("dotAll", Value(regexp_impl->get_dotall()), PropertyAttributes::BuiltinFunction);
+                {
+                    PropertyDescriptor us_desc(Value(regexp_impl->get_unicode_sets()), PropertyAttributes::BuiltinFunction);
+                    regex_obj->set_property_descriptor("unicodeSets", us_desc);
+                }
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())), PropertyAttributes::Writable);
                 
                 Object* regex_obj_ptr = regex_obj.get();
@@ -322,6 +331,7 @@ void register_regexp_builtins(Context& ctx) {
                 if (this_obj->get_property("multiline").to_boolean()) result += "m";
                 if (this_obj->get_property("dotAll").to_boolean()) result += "s";
                 if (this_obj->get_property("unicode").to_boolean()) result += "u";
+                if (this_obj->get_property("unicodeSets").to_boolean()) result += "v";
                 if (this_obj->get_property("sticky").to_boolean()) result += "y";
                 return Value(result);
             });
@@ -330,6 +340,31 @@ void register_regexp_builtins(Context& ctx) {
         flags_desc.set_enumerable(false);
         flags_desc.set_configurable(true);
         regexp_prototype->set_property_descriptor("flags", flags_desc);
+    }
+
+    // ES2024: RegExp.prototype.unicodeSets accessor (regexp-v-flag)
+    {
+        auto unicode_sets_getter_fn = ObjectFactory::create_native_function("get unicodeSets",
+            [regexp_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                Object* this_obj = ctx.get_this_binding();
+                if (!this_obj) {
+                    ctx.throw_type_error("RegExp.prototype.unicodeSets getter called on incompatible receiver");
+                    return Value();
+                }
+                if (this_obj == regexp_proto_ptr) return Value();
+                Value is_regexp = this_obj->get_property("_isRegExp");
+                if (!(is_regexp.is_boolean() && is_regexp.to_boolean())) {
+                    ctx.throw_type_error("RegExp.prototype.unicodeSets getter called on incompatible receiver");
+                    return Value();
+                }
+                return Value(this_obj->get_property("unicodeSets").to_boolean());
+            });
+        PropertyDescriptor unicode_sets_desc;
+        unicode_sets_desc.set_getter(unicode_sets_getter_fn.release());
+        unicode_sets_desc.set_enumerable(false);
+        unicode_sets_desc.set_configurable(true);
+        regexp_prototype->set_property_descriptor("unicodeSets", unicode_sets_desc);
     }
 
     // RegExp.prototype.exec - generic, delegates to own exec on instance
