@@ -7,6 +7,7 @@
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/RegExp.h"
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <unordered_set>
@@ -2223,6 +2224,81 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         // Unicode-mode (/u or /v) strict validation
         if (has_unicode_flag) {
             bool has_v_flag = flags.find('v') != std::string::npos;
+
+            // v-mode: ClassSetSyntaxCharacter and reserved double-punctuators are
+            // SyntaxErrors when unescaped inside a character class (breaking change from /u).
+            if (has_v_flag) {
+                static const std::string reserved_dbl_chars = "!#$%*+,.:;<=>?@^`~";
+                bool v_class_error = false;
+                std::function<void(size_t, size_t)> check_class_body = [&](size_t content_start, size_t content_end) {
+                    if (v_class_error) return;
+                    if (content_end - content_start == 1 && p[content_start] == '-') {
+                        add_error("SyntaxError: Unescaped '-' in character class in regexp /v");
+                        v_class_error = true;
+                        return;
+                    }
+                    for (size_t k = content_start; k < content_end; k++) {
+                        char ch = p[k];
+                        if (ch == '\\') {
+                            char nxt = (k + 1 < content_end) ? p[k+1] : '\0';
+                            if ((nxt == 'p' || nxt == 'P' || nxt == 'u' || nxt == 'q') &&
+                                k + 2 < content_end && p[k+2] == '{') {
+                                size_t close = p.find('}', k + 3);
+                                k = (close == std::string::npos || close >= content_end) ? content_end - 1 : close;
+                            } else {
+                                k++;
+                            }
+                            continue;
+                        }
+                        if (ch == '[') {
+                            size_t j = k + 1;
+                            int depth = 1;
+                            while (j < content_end && depth > 0) {
+                                if (p[j] == '\\' && j + 1 < content_end) { j += 2; continue; }
+                                if (p[j] == '[') { depth++; j++; continue; }
+                                if (p[j] == ']') { depth--; j++; continue; }
+                                j++;
+                            }
+                            check_class_body(k + 1, j > k + 1 ? j - 1 : j);
+                            if (v_class_error) return;
+                            k = (j > 0) ? j - 1 : j;
+                            continue;
+                        }
+                        if (ch == '(' || ch == ')' || ch == '{' || ch == '}' ||
+                            ch == '/' || ch == '|') {
+                            add_error("SyntaxError: Unescaped syntax character in character class in regexp /v");
+                            v_class_error = true;
+                            return;
+                        }
+                        if (k + 1 < content_end && p[k+1] == ch &&
+                            reserved_dbl_chars.find(ch) != std::string::npos) {
+                            add_error("SyntaxError: Reserved double punctuator in character class in regexp /v");
+                            v_class_error = true;
+                            return;
+                        }
+                    }
+                };
+                size_t ci = 0;
+                while (ci < p.size() && !v_class_error) {
+                    if (p[ci] == '\\' && ci + 1 < p.size()) { ci += 2; continue; }
+                    if (p[ci] != '[') { ci++; continue; }
+                    size_t j = ci + 1;
+                    int depth = 1;
+                    bool negated = (j < p.size() && p[j] == '^');
+                    size_t content_start = j + (negated ? 1 : 0);
+                    while (j < p.size() && depth > 0) {
+                        if (p[j] == '\\' && j + 1 < p.size()) { j += 2; continue; }
+                        if (p[j] == '[') { depth++; j++; continue; }
+                        if (p[j] == ']') { depth--; j++; continue; }
+                        j++;
+                    }
+                    size_t content_end = (j > 0) ? j - 1 : j;
+                    check_class_body(content_start, content_end);
+                    ci = j;
+                }
+                if (v_class_error) return nullptr;
+            }
+
             // Properties of strings (Unicode "binary string" properties): can only appear as
             // \p{Name} under /v, never \P{Name} and never inside a negated character class.
             static const std::unordered_set<std::string> string_properties = {
@@ -2259,6 +2335,18 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                     // \1..\7 are decimal escapes -- valid only with a group
                     } else if (next >= '1' && next <= '7') {
                         i++;
+                    // \q{...} string-literal escape: only valid under /v, only inside a class.
+                    } else if (next == 'q' && has_v_flag) {
+                        if (!in_class) {
+                            add_error("SyntaxError: \\q is only valid inside a character class in regexp /v");
+                            return nullptr;
+                        }
+                        i++;
+                        if (i + 1 < p.size() && p[i+1] == '{') {
+                            i++;
+                            while (i + 1 < p.size() && p[i+1] != '}') i++;
+                            if (i + 1 < p.size()) i++;
+                        }
                     // Non-identity escapes: letters that aren't valid
                     } else if (std::isalpha((unsigned char)next) &&
                                next != 'b' && next != 'B' && next != 'd' && next != 'D' &&
@@ -2332,12 +2420,30 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
             }
         }
         for (size_t i = 0; i < p.size(); i++) {
-            // Detect invalid group syntax: (?x where x is not :, =, !, <
-            // e.g. (?i:...) modifiers proposal -- not valid in standard ES
+            // Detect invalid group syntax: (?x where x is not :, =, !, <, or a modifier
+            // group (?ims-ims:...) per the regexp-modifiers proposal (ES2025).
             if (p[i] == '(' && i + 1 < p.size() && p[i+1] == '?') {
                 if (i + 2 < p.size()) {
                     char c3 = p[i+2];
-                    if (c3 != ':' && c3 != '=' && c3 != '!' && c3 != '<') {
+                    if (c3 == 'i' || c3 == 'm' || c3 == 's' || c3 == '-') {
+                        size_t j = i + 2;
+                        std::string add_mods, remove_mods;
+                        while (j < p.size() && (p[j] == 'i' || p[j] == 'm' || p[j] == 's')) add_mods += p[j++];
+                        bool has_dash = j < p.size() && p[j] == '-';
+                        if (has_dash) {
+                            j++;
+                            while (j < p.size() && (p[j] == 'i' || p[j] == 'm' || p[j] == 's')) remove_mods += p[j++];
+                        }
+                        auto has_dup = [](const std::string& s) {
+                            return (s.find('i') != s.rfind('i')) || (s.find('m') != s.rfind('m')) || (s.find('s') != s.rfind('s'));
+                        };
+                        bool overlaps = add_mods.find_first_of(remove_mods) != std::string::npos;
+                        if (j >= p.size() || p[j] != ':' || has_dup(add_mods) || has_dup(remove_mods) ||
+                            overlaps || (has_dash && add_mods.empty() && remove_mods.empty())) {
+                            add_error("SyntaxError: Invalid group syntax in regular expression");
+                            return nullptr;
+                        }
+                    } else if (c3 != ':' && c3 != '=' && c3 != '!' && c3 != '<') {
                         add_error("SyntaxError: Invalid group syntax in regular expression");
                         return nullptr;
                     }

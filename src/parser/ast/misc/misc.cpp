@@ -70,6 +70,10 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("unicode", Value(flags_.find('u') != std::string::npos));
         obj->set_property("sticky", Value(flags_.find('y') != std::string::npos));
         {
+            PropertyDescriptor us_desc(Value(flags_.find('v') != std::string::npos), PropertyAttributes::BuiltinFunction);
+            obj->set_property_descriptor("unicodeSets", us_desc);
+        }
+        {
             // ES2015 21.2.3.2.1: lastIndex is {Writable:true, Enumerable:false, Configurable:false}
             PropertyDescriptor li_desc(Value(0.0), PropertyAttributes::Writable);
             obj->set_property_descriptor("lastIndex", li_desc);

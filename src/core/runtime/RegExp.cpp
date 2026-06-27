@@ -42,7 +42,7 @@ static const std::string& sanitize_wtf8(const std::string& s, std::string& buf) 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), code_(nullptr),
       global_(false), ignore_case_(false), multiline_(false),
-      unicode_(false), sticky_(false), dotall_(false), last_index_(0) {
+      unicode_(false), sticky_(false), dotall_(false), unicode_sets_(false), last_index_(0) {
     parse_flags(flags);
     do_compile();
 }
@@ -63,6 +63,7 @@ void RegExp::parse_flags(const std::string& flags) {
             case 'u': unicode_ = true; break;
             case 'y': sticky_ = true; break;
             case 's': dotall_ = true; break;
+            case 'v': unicode_sets_ = true; unicode_ = true; break;
             default: break;
         }
     }
@@ -413,6 +414,207 @@ static std::string expand_gc_aliases(const std::string& pattern) {
     return result;
 }
 
+// v-mode ClassSetExpression support (--, &&, nested-class union, \q{...}). PCRE2 has no
+// native equivalent, so each operand becomes a lookahead/alternation fragment instead.
+namespace {
+struct VModeOperand {
+    bool is_simple = true;
+    std::string cc_text;
+    std::vector<std::string> alts;
+};
+}
+
+static std::string vmode_alt_join(const std::vector<std::string>& alts) {
+    std::string r;
+    for (size_t i = 0; i < alts.size(); i++) {
+        if (i) r += '|';
+        r += alts[i];
+    }
+    return r;
+}
+
+static std::string vmode_consume(const VModeOperand& op) {
+    return op.is_simple ? ("[" + op.cc_text + "]") : ("(?:" + vmode_alt_join(op.alts) + ")");
+}
+static std::string vmode_pos_lookahead(const VModeOperand& op) {
+    return op.is_simple ? ("(?=[" + op.cc_text + "])") : ("(?=" + vmode_alt_join(op.alts) + ")");
+}
+static std::string vmode_neg_lookahead(const VModeOperand& op) {
+    return op.is_simple ? ("(?![" + op.cc_text + "])") : ("(?!" + vmode_alt_join(op.alts) + ")");
+}
+
+static VModeOperand transform_vmode_class_body(const std::string& content);
+
+// Parses one ClassSetOperand starting at content[i] and advances i past it.
+static VModeOperand parse_vmode_operand(const std::string& content, size_t& i) {
+    VModeOperand op;
+    if (content[i] == '[') {
+        size_t j = i + 1;
+        int depth = 1;
+        while (j < content.size() && depth > 0) {
+            if (content[j] == '\\' && j + 1 < content.size()) { j += 2; continue; }
+            if (content[j] == '[') { depth++; j++; continue; }
+            if (content[j] == ']') { depth--; j++; continue; }
+            j++;
+        }
+        std::string inner = content.substr(i + 1, (j - 1) - (i + 1));
+        op = transform_vmode_class_body(inner);
+        i = j;
+        return op;
+    }
+    if (content[i] == '\\' && i + 1 < content.size() && content[i+1] == 'q' &&
+        i + 2 < content.size() && content[i+2] == '{') {
+        size_t end = content.find('}', i + 3);
+        if (end == std::string::npos) end = content.size();
+        std::string body = content.substr(i + 3, end - (i + 3));
+        op.is_simple = false;
+        size_t start = 0;
+        for (size_t k = 0; k <= body.size(); k++) {
+            if (k == body.size() || body[k] == '|') {
+                op.alts.push_back(body.substr(start, k - start));
+                start = k + 1;
+            }
+        }
+        i = end + 1;
+        return op;
+    }
+    if (content[i] == '\\' && i + 1 < content.size()) {
+        char nxt = content[i+1];
+        size_t start = i;
+        i += 2;
+        if ((nxt == 'p' || nxt == 'P' || nxt == 'u') && i < content.size() && content[i] == '{') {
+            size_t end = content.find('}', i + 1);
+            i = (end == std::string::npos) ? content.size() : end + 1;
+        }
+        op.cc_text = content.substr(start, i - start);
+        return op;
+    }
+    size_t start = i;
+    i++;
+    if (i + 1 < content.size() && content[i] == '-' && content[i+1] != '-') {
+        i++;
+        if (content[i] == '\\' && i + 1 < content.size()) {
+            char nxt = content[i+1];
+            i += 2;
+            if ((nxt == 'p' || nxt == 'P' || nxt == 'u') && i < content.size() && content[i] == '{') {
+                size_t end = content.find('}', i + 1);
+                i = (end == std::string::npos) ? content.size() : end + 1;
+            }
+        } else {
+            i++;
+        }
+    }
+    op.cc_text = content.substr(start, i - start);
+    return op;
+}
+
+// Transforms the body of a v-mode character class (the text between [ and ]).
+static VModeOperand transform_vmode_class_body(const std::string& content) {
+    bool has_diff = false, has_intersect = false;
+    {
+        int depth = 0;
+        for (size_t i = 0; i < content.size(); i++) {
+            if (content[i] == '\\' && i + 1 < content.size()) {
+                if (content[i+1] == 'q' && i + 2 < content.size() && content[i+2] == '{') {
+                    size_t end = content.find('}', i + 3);
+                    i = (end == std::string::npos) ? content.size() : end;
+                    continue;
+                }
+                i++;
+                continue;
+            }
+            if (content[i] == '[') { depth++; continue; }
+            if (content[i] == ']') { depth--; continue; }
+            if (depth == 0 && i + 1 < content.size()) {
+                if (content[i] == '-' && content[i+1] == '-') has_diff = true;
+                if (content[i] == '&' && content[i+1] == '&') has_intersect = true;
+            }
+        }
+    }
+
+    if (has_diff || has_intersect) {
+        char op_char = has_diff ? '-' : '&';
+        std::vector<VModeOperand> operands;
+        size_t i = 0;
+        while (i < content.size()) {
+            if (i + 1 < content.size() && content[i] == op_char && content[i+1] == op_char) {
+                i += 2;
+                continue;
+            }
+            operands.push_back(parse_vmode_operand(content, i));
+        }
+        VModeOperand result;
+        result.is_simple = false;
+        if (!operands.empty()) {
+            std::string body = vmode_pos_lookahead(operands[0]);
+            for (size_t k = 1; k < operands.size(); k++) {
+                body += has_diff ? vmode_neg_lookahead(operands[k]) : vmode_pos_lookahead(operands[k]);
+            }
+            body += vmode_consume(operands[0]);
+            result.alts.push_back("(?:" + body + ")");
+        }
+        return result;
+    }
+
+    std::vector<VModeOperand> operands;
+    size_t i = 0;
+    while (i < content.size()) {
+        operands.push_back(parse_vmode_operand(content, i));
+    }
+    bool all_simple = true;
+    for (auto& o : operands) if (!o.is_simple) { all_simple = false; break; }
+    VModeOperand result;
+    if (all_simple) {
+        for (auto& o : operands) result.cc_text += o.cc_text;
+        return result;
+    }
+    result.is_simple = false;
+    for (auto& o : operands) {
+        if (o.is_simple) result.alts.push_back("[" + o.cc_text + "]");
+        else for (auto& a : o.alts) result.alts.push_back(a);
+    }
+    return result;
+}
+
+static std::string transform_v_mode_classes(const std::string& pattern) {
+    std::string result;
+    result.reserve(pattern.size());
+    size_t i = 0;
+    while (i < pattern.size()) {
+        if (pattern[i] == '\\' && i + 1 < pattern.size()) {
+            result += pattern[i]; result += pattern[i+1];
+            i += 2;
+            continue;
+        }
+        if (pattern[i] == '[') {
+            size_t j = i + 1;
+            int depth = 1;
+            bool negated = (j < pattern.size() && pattern[j] == '^');
+            while (j < pattern.size() && depth > 0) {
+                if (pattern[j] == '\\' && j + 1 < pattern.size()) { j += 2; continue; }
+                if (pattern[j] == '[') { depth++; j++; continue; }
+                if (pattern[j] == ']') { depth--; j++; continue; }
+                j++;
+            }
+            size_t content_start = i + 1 + (negated ? 1 : 0);
+            std::string inner = pattern.substr(content_start, (j - 1) - content_start);
+            VModeOperand transformed = transform_vmode_class_body(inner);
+            if (transformed.is_simple) {
+                result += negated ? "[^" : "[";
+                result += transformed.cc_text;
+                result += "]";
+            } else {
+                std::string alt = vmode_alt_join(transformed.alts);
+                result += negated ? ("(?:(?!" + alt + ")[\\s\\S])") : ("(?:" + alt + ")");
+            }
+            i = j;
+            continue;
+        }
+        result += pattern[i++];
+    }
+    return result;
+}
+
 void RegExp::do_compile() {
     if (code_) {
         pcre2_code_free(static_cast<pcre2_code*>(code_));
@@ -422,6 +624,8 @@ void RegExp::do_compile() {
     std::string pat = unicode_
         ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_))))
         : fix_optional_backrefs(convert_unicode_escapes(preprocess_pattern(pattern_)));
+
+    if (unicode_sets_) pat = transform_v_mode_classes(pat);
 
     uint32_t options = PCRE2_UTF;
     if (unicode_) {
@@ -594,7 +798,7 @@ Value RegExp::exec(const std::string& str) {
 void RegExp::compile(const std::string& pattern, const std::string& flags) {
     pattern_ = pattern;
     flags_ = flags;
-    global_ = ignore_case_ = multiline_ = unicode_ = sticky_ = dotall_ = false;
+    global_ = ignore_case_ = multiline_ = unicode_ = sticky_ = dotall_ = unicode_sets_ = false;
     last_index_ = 0;
     parse_flags(flags_);
     do_compile();

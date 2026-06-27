@@ -23,6 +23,7 @@ private:
     bool unicode_;
     bool sticky_;
     bool dotall_;
+    bool unicode_sets_;
     int last_index_;
 
 public:
@@ -43,6 +44,7 @@ public:
     bool get_unicode() const { return unicode_; }
     bool get_sticky() const { return sticky_; }
     bool get_dotall() const { return dotall_; }
+    bool get_unicode_sets() const { return unicode_sets_; }
     int get_last_index() const { return last_index_; }
     void set_last_index(int index) { last_index_ = index; }
 
