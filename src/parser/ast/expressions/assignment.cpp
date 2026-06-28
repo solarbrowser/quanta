@@ -569,7 +569,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
 
             if (__builtin_expect(prop_value.is_number(), 1)) {
                 double idx_double = prop_value.as_number();
-                if (__builtin_expect(idx_double >= 0 && idx_double == static_cast<uint32_t>(idx_double) && idx_double < 0xFFFFFFFF, 1)) {
+                if (__builtin_expect(idx_double >= 0 && idx_double <= 4294967294.0 && idx_double == std::floor(idx_double), 1)) {
                     uint32_t index = static_cast<uint32_t>(idx_double);
                     obj->set_element(index, right_value);
                     return right_value;
