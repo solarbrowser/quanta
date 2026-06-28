@@ -370,22 +370,28 @@ Value MemberExpression::evaluate(Context& ctx) {
                 }
             }
 
-            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-            if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                Object* getter = desc.get_getter();
-                if (getter) {
-                    Function* getter_fn = dynamic_cast<Function*>(getter);
-                    if (getter_fn) {
-                        std::vector<Value> args;
-                        return getter_fn->call(ctx, args, object_value);
+            // For Proxy objects, skip own-descriptor/prototype-accessor checks:
+            // all property access goes through the Proxy's get trap.
+            if (obj->get_type() != Object::ObjectType::Proxy) {
+                PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+                if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                    Object* getter = desc.get_getter();
+                    if (getter) {
+                        Function* getter_fn = dynamic_cast<Function*>(getter);
+                        if (getter_fn) {
+                            std::vector<Value> args;
+                            return getter_fn->call(ctx, args, object_value);
+                        }
                     }
+                    return Value();
                 }
-                return Value();
             }
 
-            // Check prototype chain for accessor descriptors (e.g. class get/set)
-            // Only if obj has no own property -- own properties shadow inherited accessors
-            if (!obj->has_own_property(prop_name)) {
+            // Check prototype chain for accessor descriptors (e.g. class get/set).
+            // Skip for Proxy objects: their [[Get]] (get_property) handles everything
+            // through the get trap without separate has/getPrototypeOf calls.
+            if (obj->get_type() != Object::ObjectType::Proxy && !obj->has_own_property(prop_name)) {
+                if (ctx.has_exception()) return Value();
                 Object* proto = obj->get_prototype();
                 while (proto) {
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
@@ -401,6 +407,7 @@ Value MemberExpression::evaluate(Context& ctx) {
                     proto = proto->get_prototype();
                 }
             }
+            if (ctx.has_exception()) return Value();
 
             return obj->get_property(prop_name);
         }
@@ -440,17 +447,19 @@ Value MemberExpression::evaluate(Context& ctx) {
         std::string prop_name = to_js_property_key(ctx, prop_value);
         if (ctx.has_exception()) return Value();
 
-        PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
-        if (desc.is_accessor_descriptor() && desc.has_getter()) {
-            Object* getter = desc.get_getter();
-            if (getter) {
-                Function* getter_fn = dynamic_cast<Function*>(getter);
-                if (getter_fn) {
-                    std::vector<Value> args;
-                    return getter_fn->call(ctx, args, object_value);
+        if (obj->get_type() != Object::ObjectType::Proxy) {
+            PropertyDescriptor desc = obj->get_property_descriptor(prop_name);
+            if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                Object* getter = desc.get_getter();
+                if (getter) {
+                    Function* getter_fn = dynamic_cast<Function*>(getter);
+                    if (getter_fn) {
+                        std::vector<Value> args;
+                        return getter_fn->call(ctx, args, object_value);
+                    }
                 }
+                return Value();
             }
-            return Value();
         }
 
         return obj->get_property(prop_name);

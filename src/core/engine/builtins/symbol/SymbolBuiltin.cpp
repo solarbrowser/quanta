@@ -182,7 +182,7 @@ void register_symbol_builtins(Context& ctx) {
             sym_proto->set_property(toPrim_sym->to_property_key(), Value(sym_toPrimitive.release()), PropertyAttributes::BuiltinFunction);
         }
 
-        symbol_constructor->set_property("prototype", Value(sym_proto.release()));
+        symbol_constructor->set_property("prototype", Value(sym_proto.release()), PropertyAttributes::None);
     }
 
     ctx.register_built_in_object("Symbol", symbol_constructor.release());

@@ -548,7 +548,7 @@ void Map::setup_map_prototype(Context& ctx) {
         }
     }
 
-    map_constructor_fn->set_property("prototype", Value(map_prototype.release()));
+    map_constructor_fn->set_property("prototype", Value(map_prototype.release()), PropertyAttributes::None);
     ctx.create_binding("Map", Value(map_constructor_fn.release()));
 }
 
@@ -1147,7 +1147,7 @@ void Set::setup_set_prototype(Context& ctx) {
         }
     }
 
-    set_constructor_fn->set_property("prototype", Value(set_prototype.release()));
+    set_constructor_fn->set_property("prototype", Value(set_prototype.release()), PropertyAttributes::None);
     ctx.create_binding("Set", Value(set_constructor_fn.release()));
 }
 
@@ -1233,7 +1233,7 @@ void WeakMap::setup_weakmap_prototype(Context& ctx) {
 
     WeakMap::prototype_object = weakmap_prototype.get();
 
-    weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()));
+    weakmap_constructor_fn->set_property("prototype", Value(weakmap_prototype.release()), PropertyAttributes::None);
     ctx.create_binding("WeakMap", Value(weakmap_constructor_fn.release()));
 }
 
@@ -1276,7 +1276,7 @@ void WeakSet::setup_weakset_prototype(Context& ctx) {
     
     WeakSet::prototype_object = weakset_prototype.get();
     
-    weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()));
+    weakset_constructor_fn->set_property("prototype", Value(weakset_prototype.release()), PropertyAttributes::None);
     ctx.create_binding("WeakSet", Value(weakset_constructor_fn.release()));
 }
 

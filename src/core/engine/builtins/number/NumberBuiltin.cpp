@@ -492,7 +492,7 @@ void register_number_builtins(Context& ctx) {
             return Value(std::isfinite(args[0].to_number()));
         }, 1);
     number_constructor->set_property("isFinite", Value(isFinite_fn.release()), PropertyAttributes::BuiltinFunction);
-    number_constructor->set_property("prototype", Value(number_prototype.release()));
+    number_constructor->set_property("prototype", Value(number_prototype.release()), PropertyAttributes::None);
 
     ctx.register_built_in_object("Number", number_constructor.release());
 }

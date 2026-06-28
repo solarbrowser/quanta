@@ -409,7 +409,7 @@ void register_date_builtins(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     date_prototype->set_property_descriptor("constructor", date_proto_ctor_desc);
 
-    date_constructor_fn->set_property("prototype", Value(date_prototype.get()));
+    date_constructor_fn->set_property("prototype", Value(date_prototype.get()), PropertyAttributes::None);
 
     ctx.register_built_in_object("Date", date_constructor_fn.get());
 

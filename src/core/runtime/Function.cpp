@@ -885,9 +885,14 @@ std::vector<std::string> Function::get_own_property_keys() const {
 
 bool Function::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     if (key == "prototype") {
+        if (attrs == PropertyAttributes::Default && descriptors_) {
+            auto it = descriptors_->find("prototype");
+            if (it != descriptors_->end() && it->second.is_data_descriptor() && !it->second.is_writable()) {
+                return false;
+            }
+        }
         if (value.is_object()) {
             prototype_ = value.as_object();
-            // Remove from base property table if present
             Object::delete_property(key);
             return true;
         }
@@ -896,7 +901,6 @@ bool Function::set_property(const std::string& key, const Value& value, Property
             Object::delete_property(key);
             return true;
         }
-        // Non-object: clear internal pointer, store in base property table so typeof works
         prototype_ = nullptr;
         return Object::set_property(key, value, attrs);
     }
