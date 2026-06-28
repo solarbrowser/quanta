@@ -50,7 +50,7 @@ if(MSVC)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG /STACK:67108864")
     set(CMAKE_STATIC_LINKER_FLAGS "${CMAKE_STATIC_LINKER_FLAGS} /LTCG")
 else()
-    # GCC/Clang flags (MinGW on Windows or Linux)
+    # -ffast-math excluded: flushes denormals to zero, breaking IEEE 754 compliance.
     add_compile_options(
         -Wall
         -O3
@@ -59,19 +59,18 @@ else()
         -mtune=native
         -funroll-loops
         -finline-functions
-        -finline-limit=1000
-        -ftree-vectorize
-        -ftree-loop-vectorize
-        -faggressive-loop-optimizations
+        -fvectorize
+        -fslp-vectorize
         -fomit-frame-pointer
-        -ffast-math
-        -fno-signed-zeros
-        -fno-trapping-math
+        -fstrict-aliasing
+        -fstrict-enums
+        -pthread
     )
     add_compile_definitions(
         QUANTA_VERSION="0.0.2"
         PROMISE_STABILITY_FIXED
         NATIVE_BUILD
+        UTF8PROC_STATIC
     )
     # Stack size for MinGW
     if(WIN32)
