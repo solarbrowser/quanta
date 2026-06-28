@@ -283,11 +283,14 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
 
         // Native functions need to see null/undefined this as nullptr (per spec: ToObject throws).
         bool was_nullish = this_value.is_null() || this_value.is_undefined();
+        bool was_primitive = !was_nullish && !this_value.is_object() && !this_value.is_function();
         if (was_nullish) {
             ctx.set_this_binding(nullptr);
         }
         bool prev_nullish = ctx.original_this_was_nullish();
+        bool prev_primitive = ctx.original_this_was_primitive();
         ctx.set_original_this_nullish(was_nullish);
+        ctx.set_original_this_primitive(was_primitive);
 
         // A plain call (not this construct invocation) must see new.target == undefined --
         // ctx is shared with the caller here since native calls don't get their own Context.
@@ -299,6 +302,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         Value result = native_fn_(ctx, args);
         Object::current_context_ = prev_context;
         ctx.set_original_this_nullish(prev_nullish);
+        ctx.set_original_this_primitive(prev_primitive);
 
         if (!is_construct_invocation) ctx.set_new_target(saved_new_target);
 

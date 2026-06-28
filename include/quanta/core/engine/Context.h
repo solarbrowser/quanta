@@ -78,7 +78,8 @@ private:
     bool super_called_;
     bool this_needs_super_;  // derived class ctor: accessing 'this' before super() throws
     Value new_target_;
-    bool original_this_was_nullish_; // set when native call had null/undefined thisArg
+    bool original_this_was_nullish_;
+    bool original_this_was_primitive_; // set when native call had a non-null/undefined primitive thisArg
     // Set by Function::construct() right before it calls Function::call() on the same
     // function, so call() can tell "I'm the construct invocation" apart from a plain call
     // made from inside that constructor's body (which must see new.target == undefined).
@@ -149,6 +150,8 @@ public:
     void set_strict_mode(bool strict) { strict_mode_ = strict; }
     bool original_this_was_nullish() const { return original_this_was_nullish_; }
     void set_original_this_nullish(bool v) { original_this_was_nullish_ = v; }
+    bool original_this_was_primitive() const { return original_this_was_primitive_; }
+    void set_original_this_primitive(bool v) { original_this_was_primitive_ = v; }
 
     Object* get_global_object() const { return global_object_; }
     void set_global_object(Object* global);
