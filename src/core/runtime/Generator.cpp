@@ -608,9 +608,13 @@ std::unique_ptr<Generator> GeneratorFunction::create_generator(Context& ctx, con
     Value bound_this_g = this_value;
     if (is_arrow() && has_property("__arrow_this__")) {
         bound_this_g = get_property("__arrow_this__");
-    } else if (!gen_context.is_strict_mode() && (bound_this_g.is_undefined() || bound_this_g.is_null())) {
-        Object* global = ctx.get_global_object();
-        if (global) bound_this_g = Value(global);
+    } else if (!gen_context.is_strict_mode()) {
+        if (bound_this_g.is_undefined() || bound_this_g.is_null()) {
+            Object* global = ctx.get_global_object();
+            if (global) bound_this_g = Value(global);
+        } else {
+            bound_this_g = ObjectFactory::box_primitive_this_sloppy(ctx, bound_this_g);
+        }
     }
     try {
         gen_context.create_binding("this", bound_this_g, true);

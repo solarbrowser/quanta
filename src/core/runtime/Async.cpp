@@ -159,9 +159,13 @@ Value AsyncFunction::call(Context& ctx, const std::vector<Value>& args, Value th
     Value arrow_this_val = has_arrow_this ? get_property("__arrow_this__") : Value();
     if (has_arrow_this) {
         bound_this = arrow_this_val;
-    } else if (!exec_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
-        Object* global = ctx.get_global_object();
-        if (global) bound_this = Value(global);
+    } else if (!exec_ctx->is_strict_mode()) {
+        if (bound_this.is_undefined() || bound_this.is_null()) {
+            Object* global = ctx.get_global_object();
+            if (global) bound_this = Value(global);
+        } else {
+            bound_this = ObjectFactory::box_primitive_this_sloppy(ctx, bound_this);
+        }
     }
     exec_ctx->create_binding("this", bound_this, true);
 
@@ -1357,9 +1361,13 @@ Value AsyncGeneratorFunction::call(Context& ctx, const std::vector<Value>& args,
     Value bound_this = this_value;
     if (is_arrow() && has_property("__arrow_this__")) {
         bound_this = get_property("__arrow_this__");
-    } else if (!gen_ctx->is_strict_mode() && (bound_this.is_undefined() || bound_this.is_null())) {
-        Object* global = ctx.get_global_object();
-        if (global) bound_this = Value(global);
+    } else if (!gen_ctx->is_strict_mode()) {
+        if (bound_this.is_undefined() || bound_this.is_null()) {
+            Object* global = ctx.get_global_object();
+            if (global) bound_this = Value(global);
+        } else {
+            bound_this = ObjectFactory::box_primitive_this_sloppy(ctx, bound_this);
+        }
     }
     try {
         gen_ctx->create_binding("this", bound_this, true);

@@ -386,24 +386,8 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
             if (global) {
                 actual_this = Value(global);
             }
-        } else if (this_value.is_number() || this_value.is_string() || this_value.is_boolean()) {
-            // ES5 10.4.3: box primitive this to wrapper object in non-strict mode
-            Object* global = function_context.get_global_object();
-            const char* ctor_name = this_value.is_number() ? "Number"
-                                  : this_value.is_string() ? "String" : "Boolean";
-            Object::ObjectType obj_type = this_value.is_number() ? Object::ObjectType::Number
-                                        : this_value.is_string() ? Object::ObjectType::String
-                                        : Object::ObjectType::Boolean;
-            auto wrapper = std::make_unique<Object>(obj_type);
-            wrapper->set_property("[[PrimitiveValue]]", this_value);
-            if (global) {
-                Value ctor_val = global->get_property(ctor_name);
-                if (ctor_val.is_function()) {
-                    Value proto = ctor_val.as_function()->get_property("prototype");
-                    if (proto.is_object()) wrapper->set_prototype(proto.as_object());
-                }
-            }
-            actual_this = Value(wrapper.release());
+        } else {
+            actual_this = ObjectFactory::box_primitive_this_sloppy(function_context, this_value);
         }
     }
 
