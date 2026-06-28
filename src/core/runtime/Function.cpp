@@ -784,11 +784,7 @@ Value Function::get_property(const std::string& key) const {
         if (overflow_properties_ && overflow_properties_->count("length")) {
             return (*overflow_properties_)["length"];
         }
-        // After delete f.length, has_own_property is false -- traverse prototype chain instead of
-        // falling back to parameters_.size() which would ignore the deletion.
-        if (!has_own_property("length") && get_prototype()) {
-            return Object::get_property(key);
-        }
+        if (!has_own_property("length")) return Value(0.0);
         return Value(static_cast<double>(parameters_.size()));
     }
     if (key == "prototype") {

@@ -13,9 +13,22 @@
 #include <cmath>
 #include <sstream>
 #include <algorithm>
+
 #include "quanta/parser/AST.h"
 
 namespace Quanta {
+
+static Value from_prop_key(const std::string& key) {
+    if (key.find("Symbol.") == 0) {
+        Symbol* sym = Symbol::get_well_known(key);
+        if (sym) return Value(sym);
+    }
+    if (key.find("@@sym:") == 0) {
+        Symbol* sym = Symbol::find_by_property_key(key);
+        if (sym) return Value(sym);
+    }
+    return Value(key);
+}
 
 // Recovers the actual `this` value passed to a native call, including null/undefined
 // (ctx.get_this_binding() only reflects object/function `this`).
@@ -521,25 +534,43 @@ void register_object_builtins(Context& ctx) {
                 if (!source_obj) return Value();
 
                 bool source_is_proxy = (source_obj->get_type() == Object::ObjectType::Proxy);
-                std::vector<std::string> property_keys;
+                std::vector<std::string> all_keys;
                 if (source_is_proxy) {
-                    property_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
+                    all_keys = static_cast<Proxy*>(source_obj)->own_keys_trap();
                     if (ctx.has_exception()) return Value();
                 } else {
-                    property_keys = source_obj->get_own_property_keys();
+                    all_keys = source_obj->get_own_property_keys();
+                }
+
+                // For non-proxy: string-keyed props first, then symbol-keyed props.
+                // For proxy: preserve ownKeys trap order.
+                std::vector<std::string> property_keys;
+                if (!source_is_proxy) {
+                    std::vector<std::string> string_keys, symbol_keys;
+                    for (const std::string& k : all_keys) {
+                        if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) symbol_keys.push_back(k);
+                        else string_keys.push_back(k);
+                    }
+                    property_keys.insert(property_keys.end(), string_keys.begin(), string_keys.end());
+                    property_keys.insert(property_keys.end(), symbol_keys.begin(), symbol_keys.end());
+                } else {
+                    property_keys = all_keys;
                 }
 
                 for (const std::string& prop : property_keys) {
+                    if (prop.size() >= 2 && prop[0] == '_' && prop[1] == '_') continue;
+                    if (prop.size() >= 2 && prop[0] == '[' && prop[1] == '[') continue;
+                    if (prop.size() > 3 && prop[0] == '_' && prop[1] == 'i' && prop[2] == 's') continue;
+                    Value prop_key = from_prop_key(prop);
                     Value value;
                     bool is_enumerable = true;
                     if (source_is_proxy) {
-                        // Spec: Object.assign calls [[GetOwnProperty]] then [[Get]] for each key
                         Proxy* source_proxy = static_cast<Proxy*>(source_obj);
-                        PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(Value(prop));
+                        PropertyDescriptor desc = source_proxy->get_own_property_descriptor_trap(prop_key);
                         if (ctx.has_exception()) return Value();
                         if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
                         if (!desc.is_enumerable()) continue;
-                        value = source_proxy->get_trap(Value(prop));
+                        value = source_proxy->get_trap(prop_key);
                     } else {
                         PropertyDescriptor desc = source_obj->get_property_descriptor(prop);
                         if (!desc.is_enumerable() && desc.has_value()) {
@@ -1107,7 +1138,16 @@ void register_object_builtins(Context& ctx) {
             }
             if (ctx.has_exception()) return Value();
 
+            bool is_regexp = !is_proxy && obj->get_type() == Object::ObjectType::RegExp;
             for (const auto& prop_name : prop_names) {
+                // Filter internal implementation properties (not user-visible)
+                if (prop_name.size() >= 2 && prop_name[0] == '_' && prop_name[1] == '_') continue;
+                if (prop_name.size() >= 2 && prop_name[0] == '[' && prop_name[1] == '[') continue;
+                if (prop_name.size() > 3 && prop_name[0] == '_' && prop_name[1] == 'i' && prop_name[2] == 's') continue;
+                if (is_regexp && (prop_name == "source" || prop_name == "global" || prop_name == "ignoreCase" ||
+                    prop_name == "multiline" || prop_name == "dotAll" || prop_name == "unicode" ||
+                    prop_name == "unicodeSets" || prop_name == "sticky" || prop_name == "flags" ||
+                    prop_name == "__pattern__" || prop_name == "__flags__")) continue;
                 PropertyDescriptor desc = is_proxy
                     ? static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(Value(prop_name))
                     : obj->get_property_descriptor(prop_name);
@@ -1150,12 +1190,17 @@ void register_object_builtins(Context& ctx) {
 
     auto seal_fn = ObjectFactory::create_native_function("seal",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
             if (args.empty()) return Value();
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
-            obj->seal();
-
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                bool ok = proxy->prevent_extensions_trap();
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Object.seal: preventExtensions returned false"); return Value(); }
+            } else {
+                obj->seal();
+            }
             return args[0];
         }, 1);
     object_constructor->set_property("seal", Value(seal_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1166,10 +1211,10 @@ void register_object_builtins(Context& ctx) {
             if (!args[0].is_object() && !args[0].is_function()) return args[0];
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                // SetIntegrityLevel("frozen") via proxy traps
                 Proxy* proxy = static_cast<Proxy*>(obj);
-                proxy->prevent_extensions_trap();
+                bool ok = proxy->prevent_extensions_trap();
                 if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Object.freeze: preventExtensions returned false"); return Value(); }
                 std::vector<std::string> keys = proxy->own_keys_trap();
                 if (ctx.has_exception()) return Value();
                 Object* target = proxy->get_proxy_target();
@@ -1674,20 +1719,26 @@ void register_object_builtins(Context& ctx) {
                 return Value(); // non-object, non-null: no-op per spec
             Object* new_proto = args[0].is_null() ? nullptr
                 : (args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object());
-            // Proxy: call [[SetPrototypeOf]] trap
+            // If new proto == current proto, it's a no-op (allowed even on non-extensible).
+            Object* current_proto = this_obj->get_prototype();
+            if (new_proto == current_proto) return Value();
+            // Non-extensible: throw TypeError when changing prototype
+            if (!this_obj->is_extensible()) {
+                ctx.throw_type_error("Cannot set __proto__ of non-extensible object");
+                return Value();
+            }
             bool ok;
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
                 ok = static_cast<Proxy*>(this_obj)->set_prototype_of_trap(new_proto);
                 if (ctx.has_exception()) return Value();
             } else {
-                // Cycle detection: walk new_proto chain, fail if we reach this_obj
+                // Cycle detection
                 Object* p = new_proto;
                 while (p) {
                     if (p == this_obj) {
                         ctx.throw_type_error("Cyclic __proto__ value");
                         return Value();
                     }
-                    // Proxy exotic objects have non-ordinary [[GetPrototypeOf]] -- stop.
                     if (p->get_type() == Object::ObjectType::Proxy) break;
                     p = p->get_prototype();
                 }

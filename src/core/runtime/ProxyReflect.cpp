@@ -21,10 +21,14 @@ static std::string to_prop_key(const Value& key) {
     return key.to_string();
 }
 
-// Helper: create Value from property key string, using actual Symbol for well-known symbols
+// Helper: create Value from internal property key string, restoring actual Symbol objects.
 static Value from_prop_key(const std::string& key) {
     if (key.find("Symbol.") == 0) {
         Symbol* sym = Symbol::get_well_known(key);
+        if (sym) return Value(sym);
+    }
+    if (key.find("@@sym:") == 0) {
+        Symbol* sym = Symbol::find_by_property_key(key);
         if (sym) return Value(sym);
     }
     return Value(key);
@@ -924,9 +928,7 @@ Value Proxy::get_property(const std::string& key) const {
 }
 
 PropertyDescriptor Proxy::get_property_descriptor(const std::string& key) const {
-    // Route through [[GetOwnProperty]] trap so callers don't accidentally trigger
-    // [[HasProperty]] via the base Object::get_property_descriptor path.
-    return const_cast<Proxy*>(this)->get_own_property_descriptor_trap(Value(key));
+    return const_cast<Proxy*>(this)->get_own_property_descriptor_trap(from_prop_key(key));
 }
 
 
