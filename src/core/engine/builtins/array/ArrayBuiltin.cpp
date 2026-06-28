@@ -11,6 +11,7 @@
 #include "quanta/core/runtime/Iterator.h"
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/Promise.h"
+#include "quanta/core/engine/builtins/ObjectBuiltin.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>
@@ -595,7 +596,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                                 val = mapfn->call(ctx, {val, Value(static_cast<double>(idx))}, thisArg);
                                 if (ctx.has_exception()) { close_iter(); return Value(); }
                             }
-                            if (!create_data_property_or_throw(ctx, res, std::to_string(idx), val)) return Value();
+                            if (!create_data_property_or_throw(ctx, res, std::to_string(idx), val)) { close_iter(); return Value(); }
                             idx++;
                         }
                         bool ok = res->set_property("length", Value(static_cast<double>(idx)));
@@ -633,7 +634,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_binding = array_to_object(ctx);
             Function* constructor = nullptr;
-            if (this_binding && this_binding->is_function()) {
+            if (this_binding && this_binding->is_function() &&
+                static_cast<Function*>(this_binding)->is_constructor()) {
                 constructor = static_cast<Function*>(this_binding);
             }
 
@@ -837,7 +839,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto array_prototype = ObjectFactory::create_array();
 
-    array_prototype->set_prototype(function_prototype);
+    // Array.prototype's [[Prototype]] is %Object.prototype%, not %Function.prototype%.
+    Value object_ctor = ctx.get_binding("Object");
+    if (object_ctor.is_function()) {
+        Value object_proto = object_ctor.as_function()->get_property("prototype");
+        if (object_proto.is_object()) array_prototype->set_prototype(object_proto.as_object());
+    }
 
     auto find_fn = ObjectFactory::create_native_function("find",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -861,6 +868,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
                 Value result = callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
 
                 if (result.to_boolean()) {
                     return element;
@@ -1052,6 +1060,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            if (length == 0) return Value(false);
 
             double from_index = 0;
             if (args.size() > 1) {
@@ -1263,20 +1272,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return join_fn->call(ctx, call_args, Value(this_obj));
             }
 
-            // Spec step 3: if join isn't callable, fall back to %Object.prototype.toString%
-            // (NOT a hardcoded "[object Object]" -- it must still report e.g. "[object Array]"
-            // for an array missing its own join, or "[object Boolean]" for a boxed primitive).
-            Value obj_proto = ctx.get_binding("Object");
-            if (obj_proto.is_function()) {
-                Value proto = static_cast<Object*>(obj_proto.as_function())->get_property("prototype");
-                if (proto.is_object()) {
-                    Value obj_toString = proto.as_object()->get_property("toString");
-                    if (obj_toString.is_function()) {
-                        return obj_toString.as_function()->call(ctx, {}, Value(this_obj));
-                    }
-                }
-            }
-            return Value(std::string("[object Object]"));
+            // Spec step 3: if join isn't callable, fall back to the real %Object.prototype.toString%.
+            // Not a live "toString" lookup (a test can delete that property).
+            // Not a hardcoded "[object Object]" either (must still report e.g. "[object Array]").
+            return object_prototype_to_string(ctx, Value(this_obj));
         });
     PropertyDescriptor array_toString_desc(Value(array_toString_fn.release()),
         PropertyAttributes::BuiltinFunction);
@@ -1582,12 +1581,16 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(ObjectFactory::create_array().release());
 
-            uint32_t length = this_obj->get_length();
+            double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
+            // ArrayCreate(len): RangeError if len > 2**32 - 1, before touching any element.
+            if (len_d > 4294967295.0) { ctx.throw_range_error("Invalid array length"); return Value(); }
+            uint32_t length = static_cast<uint32_t>(len_d);
             auto result = ObjectFactory::create_array(length);
 
             for (uint32_t i = 0; i < length; i++) {
-                result->set_element(i, this_obj->get_element(length - 1 - i));
+                result->set_element(i, this_obj->get_property(Value(length - 1 - i).to_string()));
+                if (ctx.has_exception()) return Value();
             }
             result->set_length(length);
             return Value(result.release());
@@ -2080,6 +2083,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(true);
                 }
@@ -2112,6 +2116,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 Value element = this_obj->get_element(i);
                 std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), Value(this_obj) };
                 Value result = callback->call(ctx, callback_args, thisArg);
+                if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(static_cast<double>(i));
                 }
@@ -2653,6 +2658,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
         unscopables_obj->set_property("flatMap", Value(true));
         unscopables_obj->set_property("includes", Value(true));
         unscopables_obj->set_property("keys", Value(true));
+        unscopables_obj->set_property("toReversed", Value(true));
+        unscopables_obj->set_property("toSorted", Value(true));
+        unscopables_obj->set_property("toSpliced", Value(true));
         unscopables_obj->set_property("values", Value(true));
         PropertyDescriptor unscopables_desc(Value(unscopables_obj.release()), PropertyAttributes::Configurable);
         array_proto_ptr->set_property_descriptor(unscopables_symbol->get_description(), unscopables_desc);

@@ -42,6 +42,124 @@ static Value get_actual_this(Context& ctx) {
     }
 }
 
+Value object_prototype_to_string(Context& ctx, const Value& this_val) {
+    if (this_val.is_undefined()) {
+        return Value(std::string("[object Undefined]"));
+    }
+    if (this_val.is_null()) {
+        return Value(std::string("[object Null]"));
+    }
+
+    std::string builtinTag;
+    Object* tag_obj = nullptr;  // object to check Symbol.toStringTag on
+
+    auto get_proto_from_global = [&ctx](const std::string& name) -> Object* {
+        Value ctor = ctx.get_binding(name);
+        if (ctor.is_function()) {
+            Value proto = ctor.as_function()->get_property("prototype");
+            if (proto.is_object()) return proto.as_object();
+        }
+        return nullptr;
+    };
+
+    if (this_val.is_string()) {
+        builtinTag = "String";
+        tag_obj = get_proto_from_global("String");
+    } else if (this_val.is_number()) {
+        builtinTag = "Number";
+        tag_obj = get_proto_from_global("Number");
+    } else if (this_val.is_boolean()) {
+        builtinTag = "Boolean";
+        tag_obj = get_proto_from_global("Boolean");
+    } else if (this_val.is_symbol()) {
+        // No dedicated internal-slot tag (spec step 14 default).
+        // "[object Symbol/BigInt]" comes from the deletable @@toStringTag property below.
+        builtinTag = "Object";
+        tag_obj = get_proto_from_global("Symbol");
+    } else if (this_val.is_bigint()) {
+        builtinTag = "Object";
+        tag_obj = get_proto_from_global("BigInt");
+    } else if (this_val.is_object() || this_val.is_function()) {
+        Object* this_obj = this_val.is_function()
+            ? static_cast<Object*>(this_val.as_function())
+            : this_val.as_object();
+        tag_obj = this_obj;
+
+        Object::ObjectType obj_type = this_obj->get_type();
+
+        // Resolve IsArray/IsCallable through Proxy chains now.
+        // The @@toStringTag Get below may revoke a proxy along the chain mid-lookup.
+        bool is_arr = this_obj->is_array();
+        bool is_callable = this_obj->is_function();
+        if (obj_type == Object::ObjectType::Proxy) {
+            Object* target = this_obj;
+            while (target && target->get_type() == Object::ObjectType::Proxy) {
+                target = static_cast<Proxy*>(target)->get_proxy_target();
+            }
+            is_arr = target && target->is_array();
+            is_callable = target && target->is_function();
+        }
+
+        if (obj_type == Object::ObjectType::Arguments) {
+            builtinTag = "Arguments";
+        } else if (is_arr) {
+            builtinTag = "Array";
+        } else if (obj_type == Object::ObjectType::String ||
+            (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_string())) {
+            builtinTag = "String";
+        } else if (obj_type == Object::ObjectType::Number) {
+            builtinTag = "Number";
+        } else if (obj_type == Object::ObjectType::Boolean) {
+            builtinTag = "Boolean";
+        } else if (obj_type == Object::ObjectType::Date) {
+            builtinTag = "Date";
+        } else if (obj_type == Object::ObjectType::RegExp) {
+            builtinTag = "RegExp";
+        } else if (obj_type == Object::ObjectType::Error) {
+            builtinTag = "Error";
+        } else if (obj_type == Object::ObjectType::Function || is_callable) {
+            builtinTag = "Function";
+        } else {
+            builtinTag = "Object";
+        }
+    } else {
+        builtinTag = "Object";
+    }
+
+    // ES6: Check Symbol.toStringTag (overrides builtinTag).
+    // Walked manually instead of tag_obj->get_property(): its native-getter path returns `this`
+    // instead of invoking the getter, breaking tags like %IteratorPrototype%[@@toStringTag].
+    if (tag_obj) {
+        Value tag;
+        if (tag_obj->get_type() == Object::ObjectType::Proxy) {
+            tag = tag_obj->get_property("Symbol.toStringTag");
+        } else {
+            Object* cur = tag_obj;
+            while (cur) {
+                PropertyDescriptor d = cur->get_property_descriptor("Symbol.toStringTag");
+                if (d.is_accessor_descriptor()) {
+                    if (d.has_getter()) {
+                        Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
+                        if (getter_fn) tag = getter_fn->call(ctx, {}, Value(tag_obj));
+                    }
+                    break;
+                }
+                if (d.is_data_descriptor()) {
+                    tag = d.get_value();
+                    break;
+                }
+                cur = cur->get_prototype();
+            }
+        }
+        if (ctx.has_exception()) return Value();
+        if (tag.is_string()) {
+            builtinTag = tag.to_string();
+        }
+    }
+
+    return Value("[object " + builtinTag + "]");
+}
+
 // Wraps a primitive (string/number/boolean/symbol/bigint) in its wrapper object, mirroring
 // what `new Object(value)` does -- but called directly so ToObject (used internally by many
 // built-ins) never observably invokes a possibly-overridden global "Object" binding.
@@ -1434,125 +1552,7 @@ void register_object_builtins(Context& ctx) {
     auto proto_toString_fn = ObjectFactory::create_native_function("toString",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-
-            Value this_val = get_actual_this(ctx);
-
-            if (this_val.is_undefined()) {
-                return Value(std::string("[object Undefined]"));
-            }
-            if (this_val.is_null()) {
-                return Value(std::string("[object Null]"));
-            }
-
-            std::string builtinTag;
-            Object* tag_obj = nullptr;  // object to check Symbol.toStringTag on
-
-            auto get_proto_from_global = [&ctx](const std::string& name) -> Object* {
-                Value ctor = ctx.get_binding(name);
-                if (ctor.is_function()) {
-                    Value proto = ctor.as_function()->get_property("prototype");
-                    if (proto.is_object()) return proto.as_object();
-                }
-                return nullptr;
-            };
-
-            if (this_val.is_string()) {
-                builtinTag = "String";
-                tag_obj = get_proto_from_global("String");
-            } else if (this_val.is_number()) {
-                builtinTag = "Number";
-                tag_obj = get_proto_from_global("Number");
-            } else if (this_val.is_boolean()) {
-                builtinTag = "Boolean";
-                tag_obj = get_proto_from_global("Boolean");
-            } else if (this_val.is_symbol()) {
-                // No dedicated internal-slot tag (spec step 14 default); "[object Symbol/BigInt]"
-                // comes from the prototype's own deletable @@toStringTag property below.
-                builtinTag = "Object";
-                tag_obj = get_proto_from_global("Symbol");
-            } else if (this_val.is_bigint()) {
-                builtinTag = "Object";
-                tag_obj = get_proto_from_global("BigInt");
-            } else if (this_val.is_object() || this_val.is_function()) {
-                Object* this_obj = this_val.is_function()
-                    ? static_cast<Object*>(this_val.as_function())
-                    : this_val.as_object();
-                tag_obj = this_obj;
-
-                Object::ObjectType obj_type = this_obj->get_type();
-
-                // Resolve IsArray/IsCallable through Proxy chains NOW (before the @@toStringTag
-                // Get below, which may revoke a proxy along the chain mid-lookup).
-                bool is_arr = this_obj->is_array();
-                bool is_callable = this_obj->is_function();
-                if (obj_type == Object::ObjectType::Proxy) {
-                    Object* target = this_obj;
-                    while (target && target->get_type() == Object::ObjectType::Proxy) {
-                        target = static_cast<Proxy*>(target)->get_proxy_target();
-                    }
-                    is_arr = target && target->is_array();
-                    is_callable = target && target->is_function();
-                }
-
-                if (obj_type == Object::ObjectType::Arguments) {
-                    builtinTag = "Arguments";
-                } else if (is_arr) {
-                    builtinTag = "Array";
-                } else if (obj_type == Object::ObjectType::String ||
-                    (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_string())) {
-                    builtinTag = "String";
-                } else if (obj_type == Object::ObjectType::Number) {
-                    builtinTag = "Number";
-                } else if (obj_type == Object::ObjectType::Boolean) {
-                    builtinTag = "Boolean";
-                } else if (obj_type == Object::ObjectType::Date) {
-                    builtinTag = "Date";
-                } else if (obj_type == Object::ObjectType::RegExp) {
-                    builtinTag = "RegExp";
-                } else if (obj_type == Object::ObjectType::Error) {
-                    builtinTag = "Error";
-                } else if (obj_type == Object::ObjectType::Function || is_callable) {
-                    builtinTag = "Function";
-                } else {
-                    builtinTag = "Object";
-                }
-            } else {
-                builtinTag = "Object";
-            }
-
-            // ES6: Check Symbol.toStringTag (overrides builtinTag). Walked manually (rather than
-            // tag_obj->get_property) because Object::get_property's native-getter path doesn't
-            // invoke the getter -- it returns `this` instead, which breaks inherited accessor tags
-            // like %IteratorPrototype%[@@toStringTag].
-            if (tag_obj) {
-                Value tag;
-                if (tag_obj->get_type() == Object::ObjectType::Proxy) {
-                    tag = tag_obj->get_property("Symbol.toStringTag");
-                } else {
-                    Object* cur = tag_obj;
-                    while (cur) {
-                        PropertyDescriptor d = cur->get_property_descriptor("Symbol.toStringTag");
-                        if (d.is_accessor_descriptor()) {
-                            if (d.has_getter()) {
-                                Function* getter_fn = dynamic_cast<Function*>(d.get_getter());
-                                if (getter_fn) tag = getter_fn->call(ctx, {}, Value(tag_obj));
-                            }
-                            break;
-                        }
-                        if (d.is_data_descriptor()) {
-                            tag = d.get_value();
-                            break;
-                        }
-                        cur = cur->get_prototype();
-                    }
-                }
-                if (ctx.has_exception()) return Value();
-                if (tag.is_string()) {
-                    builtinTag = tag.to_string();
-                }
-            }
-
-            return Value("[object " + builtinTag + "]");
+            return object_prototype_to_string(ctx, get_actual_this(ctx));
         });
 
     PropertyDescriptor toString_name_desc(Value(std::string("toString")), PropertyAttributes::None);
