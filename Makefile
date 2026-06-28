@@ -1,13 +1,6 @@
-# =============================================================================
-# Quanta JavaScript Engine v0.1.0
-# Universal Build System (Windows/Linux/macOS)
-# =============================================================================
-
-# Build logging
 LOG_FILE = build/build.log
 ERROR_LOG = build/errors.log
 
-# Terminal colors (ANSI escape codes)
 C_RESET = \033[0m
 C_GREEN = \033[92m
 C_BLUE = \033[94m
@@ -15,25 +8,17 @@ C_YELLOW = \033[93m
 C_RED = \033[91m
 C_CYAN = \033[96m
 
-# Compiler and optimization flags (Clang-optimized)
 CXX = clang++
 CXXFLAGS = -std=c++20 -Wall -O3 -fPIC -march=native -mtune=native
 CXXFLAGS += -DQUANTA_VERSION="0.1.0"
 CXXFLAGS += -DPROMISE_STABILITY_FIXED -DNATIVE_BUILD -DUTF8PROC_STATIC
-
-# Clang-specific optimizations
 CXXFLAGS += -funroll-loops -finline-functions
 CXXFLAGS += -fvectorize -fslp-vectorize
-CXXFLAGS += -msse4.2 -mavx -mavx2
 CXXFLAGS += -fomit-frame-pointer
 CXXFLAGS += -fstrict-aliasing -fstrict-enums
-CXXFLAGS += -flto=thin
 CXXFLAGS += -pthread
 
-# NOTE: -ffast-math breaks denormal number handling (flushes them to zero)
-# Removed for IEEE 754 compliance.
-# CXXFLAGS += -ffast-math
-# CXXFLAGS += -fno-signed-zeros -fno-trapping-math
+LTO_FLAGS = -fuse-ld=lld -flto=thin
 
 DEBUG_FLAGS = -g -DDEBUG -O0
 
@@ -80,7 +65,6 @@ PCRE2_OBJS = $(PCRE2_SRCS:$(PCRE2_DIR)/%.c=$(OBJ_DIR)/pcre2/%.o)
 
 INCLUDES = -Iinclude -I$(PCRE2_DIR) -I$(UTF8PROC_DIR)
 
-# Platform detection
 UNAME_S := $(shell uname -s 2>/dev/null || echo Windows)
 
 # Platform-specific settings
@@ -124,7 +108,7 @@ BIN_DIR = $(BUILD_DIR)/bin
 
 rwildcard = $(foreach d,$(wildcard $1*),$(call rwildcard,$d/,$2)$(filter $(subst *,%,$2),$d))
 
-# Core source files - recursively find all in subdirectories
+# Core source files
 CORE_SOURCES = $(call rwildcard,$(CORE_SRC)/,*.cpp)
 LEXER_SOURCES = $(call rwildcard,$(LEXER_SRC)/,*.cpp)
 PARSER_SOURCES = $(call rwildcard,$(PARSER_SRC)/,*.cpp)
@@ -198,7 +182,7 @@ $(BIN_DIR)/quanta$(EXE_EXT): $(CONSOLE_MAIN) $(LIBQUANTA)
 	@$(MKDIR_P) $(BIN_DIR)
 	@echo "[LINK] Linking with ThinLTO..."
 	@echo "[LINK] Creating executable" >> $(LOG_FILE)
-	@$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS) 2>> $(ERROR_LOG) || (echo "[ERROR] Linking failed" >> $(LOG_FILE) && exit 1)
+	@$(CXX) $(CXXFLAGS) $(INCLUDES) $(LDFLAGS) $(LTO_FLAGS) -DMAIN_EXECUTABLE -o $@ $< -L$(BUILD_DIR) -lquanta $(LIBS) $(STACK_FLAGS) 2>> $(ERROR_LOG) || (echo "[ERROR] Linking failed" >> $(LOG_FILE) && exit 1)
 	@echo "[OK] Executable built: $@"
 
 # Object file compilation - create directories and compile
@@ -232,8 +216,8 @@ $(OBJ_DIR)/utf8proc/utf8proc.o: $(UTF8PROC_DIR)/utf8proc.c
 debug: CXXFLAGS += $(DEBUG_FLAGS)
 debug: all
 
-# Release build
-release: CXXFLAGS += -DNDEBUG -O3 -flto
+# Release build (same optimization set as the default build -- just strips asserts)
+release: CXXFLAGS += -DNDEBUG
 release: all
 
 # Clean
