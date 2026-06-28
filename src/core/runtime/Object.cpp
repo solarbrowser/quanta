@@ -237,20 +237,15 @@ Value Object::get_property(const std::string& key) const {
             return Value(static_cast<double>(get_length()));
         }
 
-        // has_own_property() is own-only; get_own_property() isn't for array-index keys
-        // (it falls back through get_element(), which itself walks the prototype chain),
-        // so only call it once we know there's an actual own property to avoid invoking
-        // an inherited getter here AND again in the explicit loop below.
         if (has_own_property(key)) {
             return get_own_property(key);
         }
 
-        // Check prototype chain for overridden methods
+        // Check prototype chain for overridden methods (e.g. a subclass's own "map").
         Object* current = header_.prototype;
         while (current) {
-            Value proto_result = current->get_own_property(key);
-            if (!proto_result.is_undefined()) {
-                return proto_result;
+            if (current->has_own_property(key)) {
+                return current->get_own_property(key);
             }
             current = current->get_prototype();
         }
@@ -265,6 +260,10 @@ Value Object::get_property(const std::string& key) const {
             key == "toSorted" || key == "with" || key == "at" || key == "toReversed") {
             return Value(ObjectFactory::create_array_method(key).release());
         }
+
+        // Already walked the whole chain above: don't fall through to the generic
+        // walk below, which would re-invoke any inherited accessor a second time.
+        return Value();
     }
     
     Value result = get_own_property(key);
@@ -352,7 +351,21 @@ Value Object::get_own_property(const std::string& key) const {
                 }
             }
         }
-        return get_element(index);
+        // get_element()'s fallback walks the prototype chain, which breaks own-only
+        // semantics here -- skip it except for TypedArray/Arguments, whose own-element
+        // handling lives only in get_element().
+        if (header_.type == ObjectType::TypedArray || header_.type == ObjectType::Arguments) {
+            return get_element(index);
+        }
+        bool is_hole = deleted_elements_ && deleted_elements_->count(index) > 0;
+        if (index < elements_.size() && !is_hole) {
+            return elements_[index];
+        }
+        if (overflow_properties_) {
+            auto it = overflow_properties_->find(key);
+            if (it != overflow_properties_->end()) return it->second;
+        }
+        return Value();
     }
 
 
