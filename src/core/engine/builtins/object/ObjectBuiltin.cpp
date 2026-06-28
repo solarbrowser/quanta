@@ -30,6 +30,24 @@ static Value from_prop_key(const std::string& key) {
     return Value(key);
 }
 
+// GetV(receiver, key): finds the property on lookup_obj's chain but calls any getter with the original receiver.
+static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, const std::string& key) {
+    Object* cur = lookup_obj;
+    while (cur) {
+        if (cur->has_own_property(key)) {
+            PropertyDescriptor d = cur->get_property_descriptor(key);
+            if (d.is_accessor_descriptor()) {
+                Function* getter_fn = d.has_getter() && d.get_getter()
+                    ? dynamic_cast<Function*>(d.get_getter()) : nullptr;
+                return getter_fn ? getter_fn->call(ctx, {}, receiver) : Value();
+            }
+            return d.get_value();
+        }
+        cur = cur->get_prototype();
+    }
+    return Value();
+}
+
 // Recovers the actual `this` value passed to a native call, including null/undefined
 // (ctx.get_this_binding() only reflects object/function `this`).
 static Value get_actual_this(Context& ctx) {
@@ -1683,7 +1701,7 @@ void register_object_builtins(Context& ctx) {
             Value this_val = get_actual_this(ctx);
             Object* this_obj = to_object_or_throw(ctx, this_val);
             if (!this_obj) return Value();
-            Value toString_method = this_obj->get_property("toString");
+            Value toString_method = get_v(ctx, this_obj, this_val, "toString");
             if (ctx.has_exception()) return Value();
             if (toString_method.is_function()) {
                 return toString_method.as_function()->call(ctx, {}, this_val);
