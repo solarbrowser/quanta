@@ -41,9 +41,7 @@ void Error::initialize_properties() {
         set_property("message", Value(message_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
 
-    if (!stack_trace_.empty()) {
-        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    }
+    // stack is provided via Error.prototype.stack getter, not as an own property.
 
 
     if (line_number_ > 0) {
@@ -119,10 +117,8 @@ void Error::generate_stack_trace() {
         }
         
         stack_trace_ = oss.str();
-        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     } catch (...) {
         stack_trace_ = name_ + (message_.empty() ? "" : ": " + message_);
-        set_property("stack", Value(stack_trace_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
 }
 
