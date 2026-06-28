@@ -162,7 +162,10 @@ Value Object::get_property(const std::string& key) const {
             if (desc.has_value() && desc.is_data_descriptor()) {
                 return desc.get_value();
             }
-            return Value(static_cast<double>(func->get_arity()));
+            if (has_own_property(key)) {
+                return Value(static_cast<double>(func->get_arity()));
+            }
+            return Value();
         }
 
         // call, apply, bind are now handled via Function.prototype

@@ -488,7 +488,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* obj = arg.as_object();
             while (obj && obj->get_type() == Object::ObjectType::Proxy) {
                 Proxy* proxy = static_cast<Proxy*>(obj);
-                if (proxy->is_revoked()) return Value(false);
+                if (proxy->is_revoked()) {
+                    ctx.throw_type_error("Array.isArray called on revoked Proxy");
+                    return Value();
+                }
                 Object* target = proxy->get_proxy_target();
                 if (!target) return Value(false);
                 obj = target;
@@ -669,7 +672,13 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             }
 
             for (size_t i = 0; i < args.size(); i++) {
-                result->set_element(static_cast<uint32_t>(i), args[i]);
+                std::string idx_s = std::to_string(i);
+                PropertyDescriptor d(args[i], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                if (!result->set_property_descriptor(idx_s, d)) {
+                    ctx.throw_type_error("Array.of: cannot define property");
+                    return Value();
+                }
+                if (ctx.has_exception()) return Value();
             }
             result->set_property("length", Value(static_cast<double>(args.size())));
             return Value(result);
@@ -903,7 +912,8 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
+            // ToLength: cap at 2^53-1 (not 2^32-1) for array-like objects
+            int64_t length = static_cast<int64_t>(len_d > 9007199254740991.0 ? 9007199254740991.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
                 ctx.throw_type_error("Array.prototype.findLast requires a callback function");
@@ -918,11 +928,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             Function* callback_fn = callback.as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
-            for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
+            for (int64_t i = static_cast<int64_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
                 Value result = callback_fn->call(ctx, callback_args, thisArg);
-
+                if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return element;
                 }
@@ -946,7 +956,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
             double len_d = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
+            int64_t length = static_cast<int64_t>(len_d > 9007199254740991.0 ? 9007199254740991.0 : (len_d < 0 ? 0 : len_d));
 
             if (args.empty()) {
                 ctx.throw_type_error("Array.prototype.findLastIndex requires a callback function");
@@ -962,11 +972,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Function* callback_fn = callback.as_function();
             Value thisArg = args.size() > 1 ? args[1] : Value();
             if (ctx.has_exception()) return Value();
-            for (int32_t i = static_cast<int32_t>(length) - 1; i >= 0; i--) {
+            for (int64_t i = static_cast<int64_t>(length) - 1; i >= 0; i--) {
                 Value element = this_obj->get_element(static_cast<uint32_t>(i));
                 std::vector<Value> callback_args = {element, Value(static_cast<double>(i)), Value(this_obj)};
                 Value result = callback_fn->call(ctx, callback_args, thisArg);
-
+                if (ctx.has_exception()) return Value();
                 if (result.to_boolean()) {
                     return Value(static_cast<double>(i));
                 }
@@ -2700,6 +2710,7 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     ObjectFactory::set_array_prototype(array_proto_ptr);
 
+    if (function_prototype) array_constructor->set_prototype(function_prototype);
     all_array_intrinsics().insert(array_constructor.get());
     ctx.register_built_in_object("Array", array_constructor.release());
 }

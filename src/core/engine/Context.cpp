@@ -657,6 +657,34 @@ void Context::initialize_built_ins() {
 
 void Context::setup_global_bindings() {
     register_global_builtins(*this);
+
+    // Set [[Prototype]] of built-in constructors to Function.prototype so that
+    // Object.getPrototypeOf(Array) === Function.prototype etc.
+    {
+        Value fn_ctor = get_binding("Function");
+        if (fn_ctor.is_function()) {
+            Value fn_proto = fn_ctor.as_function()->get_property("prototype");
+            if (fn_proto.is_object()) {
+                Object* fp = fn_proto.as_object();
+                static const char* ctors[] = {
+                    "Array","Object","String","Number","Boolean","RegExp","Date",
+                    "Error","TypeError","RangeError","ReferenceError","SyntaxError",
+                    "URIError","EvalError","AggregateError","SuppressedError",
+                    "Promise","Map","Set","WeakMap","WeakSet","Symbol","BigInt",
+                    "ArrayBuffer","SharedArrayBuffer","DataView","Proxy","Reflect",
+                    "Math","JSON","Iterator","Generator","AsyncFunction",
+                    nullptr
+                };
+                for (int ci = 0; ctors[ci]; ++ci) {
+                    Value ctor = get_binding(ctors[ci]);
+                    Object* cobj = nullptr;
+                    if (ctor.is_function()) cobj = static_cast<Object*>(ctor.as_function());
+                    else if (ctor.is_object()) cobj = ctor.as_object();
+                    if (cobj) cobj->set_prototype(fp);
+                }
+            }
+        }
+    }
 }
 
 
