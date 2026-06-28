@@ -560,24 +560,14 @@ void setup_array_iterator_methods(Context& ctx) {
         });
     
     array_proto->set_property("keys", Value(keys_fn.release()));
-    array_proto->set_property("values", Value(values_fn.release()));
+    Function* values_fn_ptr = values_fn.release();
+    array_proto->set_property("values", Value(values_fn_ptr));
     array_proto->set_property("entries", Value(entries_fn.release()));
-    
+
+    // Spec: Array.prototype[Symbol.iterator] is the same function object as Array.prototype.values.
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        auto default_iterator_fn = ObjectFactory::create_native_function("@@iterator", 
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args;
-                Object* array = ctx.get_this_binding();
-                if (!array) {
-                    ctx.throw_type_error("Array.prototype[Symbol.iterator] called on non-object");
-                    return Value();
-                }
-                auto iterator = ArrayIterator::create_values_iterator(array);
-                return Value(iterator.release());
-            });
-        
-        array_proto->set_property(iterator_symbol->to_property_key(), Value(default_iterator_fn.release()));
+        array_proto->set_property(iterator_symbol->to_property_key(), Value(values_fn_ptr));
     }
 }
 
