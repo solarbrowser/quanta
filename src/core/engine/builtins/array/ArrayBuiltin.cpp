@@ -89,29 +89,11 @@ static std::string sort_default_to_string(Context& ctx, const Value& v) {
 
 // ToNumber via ToPrimitive("number"): valueOf() then toString(), throwing if neither yields a
 // primitive (Value::to_number() just falls back to NaN instead).
+// Value::to_number() already implements ToPrimitive("number") with exception propagation.
 static double to_number_throwing(Context& ctx, const Value& v) {
-    if (v.is_symbol()) {
-        ctx.throw_type_error("Cannot convert a Symbol value to a number");
-        return 0;
-    }
-    if (!v.is_object() && !v.is_function()) return v.to_number();
-    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
-    Value valueOf_fn = obj->get_property("valueOf");
+    double n = v.to_number();
     if (ctx.has_exception()) return 0;
-    if (valueOf_fn.is_function()) {
-        Value prim = valueOf_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return 0;
-        if (!prim.is_object() && !prim.is_function()) return prim.to_number();
-    }
-    Value toString_fn = obj->get_property("toString");
-    if (ctx.has_exception()) return 0;
-    if (toString_fn.is_function()) {
-        Value prim = toString_fn.as_function()->call(ctx, {}, v);
-        if (ctx.has_exception()) return 0;
-        if (!prim.is_object() && !prim.is_function()) return prim.to_number();
-    }
-    ctx.throw_type_error("Cannot convert object to primitive value");
-    return 0;
+    return n;
 }
 
 // LengthOfArrayLike: ToLength(Get(obj, "length")), clamped to [0, 2^53-1] -- unlike
@@ -304,18 +286,15 @@ static void fa_request_next(Context& ctx, Promise* result_promise) {
 
 // CreateDataPropertyOrThrow: a non-configurable existing property always rejects
 // (the new descriptor always specifies configurable:true); otherwise overwrite freely.
+// CreateDataPropertyOrThrow: just [[DefineOwnProperty]], throwing if it returns false.
+// No has_own_property/is_extensible pre-check -- on a Proxy those fire extra traps.
 static bool create_data_property_or_throw(Context& ctx, Object* target, const std::string& key, const Value& v) {
-    if (target->has_own_property(key)) {
-        PropertyDescriptor pd = target->get_property_descriptor(key);
-        if (!pd.is_configurable()) {
-            ctx.throw_type_error("Cannot redefine property: " + key);
-            return false;
-        }
-    } else if (!target->is_extensible()) {
-        ctx.throw_type_error("Cannot add property " + key + ", object is not extensible");
+    bool ok = target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
+    if (ctx.has_exception()) return false;
+    if (!ok) {
+        ctx.throw_type_error("Cannot define property: " + key);
         return false;
     }
-    target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
     return true;
 }
 
@@ -674,11 +653,12 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             for (size_t i = 0; i < args.size(); i++) {
                 std::string idx_s = std::to_string(i);
                 PropertyDescriptor d(args[i], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                if (!result->set_property_descriptor(idx_s, d)) {
+                bool ok = result->set_property_descriptor(idx_s, d);
+                if (ctx.has_exception()) return Value();
+                if (!ok) {
                     ctx.throw_type_error("Array.of: cannot define property");
                     return Value();
                 }
-                if (ctx.has_exception()) return Value();
             }
             result->set_property("length", Value(static_cast<double>(args.size())));
             return Value(result);
@@ -1135,11 +1115,9 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                            : nullptr;
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            double final_index = flatten_into_array(ctx, result, this_obj, source_len, 0, depth);
+            // No explicit length-set step in the spec (see flatMap's identical case).
+            flatten_into_array(ctx, result, this_obj, source_len, 0, depth);
             if (ctx.has_exception()) return Value();
-            bool ok = result->set_property("length", Value(final_index));
-            if (ctx.has_exception()) return Value();
-            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
             return result_val;
         }, 0);
@@ -1175,11 +1153,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                            : nullptr;
             if (!result) { ctx.throw_type_error("Species constructor did not return an object"); return Value(); }
 
-            double final_index = flatten_into_array(ctx, result, this_obj, source_len, 0, 1, callback, thisArg);
+            // No explicit length-set step in the spec.
+            // A real array's length auto-updates as each index is defined.
+            flatten_into_array(ctx, result, this_obj, source_len, 0, 1, callback, thisArg);
             if (ctx.has_exception()) return Value();
-            bool ok = result->set_property("length", Value(final_index));
-            if (ctx.has_exception()) return Value();
-            if (!ok) { ctx.throw_type_error("Cannot set property 'length'"); return Value(); }
 
             return result_val;
         }, 1);
@@ -1192,51 +1169,27 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
     auto fill_fn = ObjectFactory::create_native_function("fill",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
-            if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value();
 
             Value fill_value = args.empty() ? Value() : args[0];
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-
-                double start_arg = args.size() > 1 ? args[1].to_number() : 0.0;
-                int32_t start = start_arg < 0
-                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(start_arg))
-                    : std::min(static_cast<uint32_t>(start_arg), length);
-
-                double end_arg = args.size() > 2 && !args[2].is_undefined() ? args[2].to_number() : static_cast<double>(length);
-                int32_t end = end_arg < 0
-                    ? std::max(0, static_cast<int32_t>(length) + static_cast<int32_t>(end_arg))
-                    : std::min(static_cast<uint32_t>(end_arg), length);
-
-                for (int32_t i = start; i < end; i++) {
-                    this_obj->set_property(std::to_string(i), fill_value);
-                }
-                return Value(this_obj);
-            }
-
-            double len_d = array_like_length(ctx, this_obj);
+            double length = array_like_length(ctx, this_obj);
             if (ctx.has_exception()) return Value();
-            uint32_t length = static_cast<uint32_t>(len_d > 4294967295.0 ? 4294967295.0 : (len_d < 0 ? 0 : len_d));
 
             double start_raw = args.size() > 1 ? to_integer_or_infinity_throwing(ctx, args[1]) : 0.0;
             if (ctx.has_exception()) return Value();
-            int32_t start = start_raw < 0
-                ? static_cast<int32_t>(std::max(0.0, static_cast<double>(length) + start_raw))
-                : static_cast<int32_t>(std::min(start_raw, static_cast<double>(length)));
+            double start = start_raw < 0 ? std::max(length + start_raw, 0.0) : std::min(start_raw, length);
 
             double end_raw = args.size() > 2 && !args[2].is_undefined()
-                ? to_integer_or_infinity_throwing(ctx, args[2]) : static_cast<double>(length);
+                ? to_integer_or_infinity_throwing(ctx, args[2]) : length;
             if (ctx.has_exception()) return Value();
-            int32_t end = end_raw < 0
-                ? static_cast<int32_t>(std::max(0.0, static_cast<double>(length) + end_raw))
-                : static_cast<int32_t>(std::min(end_raw, static_cast<double>(length)));
+            double end = end_raw < 0 ? std::max(length + end_raw, 0.0) : std::min(end_raw, length);
 
-            for (int32_t i = start; i < end; i++) {
-                this_obj->set_element(static_cast<uint32_t>(i), fill_value);
+            for (double k = start; k < end; k++) {
+                bool ok = this_obj->set_property(Value(k).to_string(), fill_value);
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot set property '" + Value(k).to_string() + "'"); return Value(); }
             }
             return Value(this_obj);
         }, 1);
@@ -2239,44 +2192,60 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
     auto reverse_fn = ObjectFactory::create_native_function("reverse",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
             if (ctx.original_this_was_nullish()) { ctx.throw_type_error("Array method called on null or undefined"); return Value(); }
             Object* this_obj = array_to_object(ctx);
             if (!this_obj) return Value(this_obj);
 
-            if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                Value len_val = this_obj->get_property("length");
-                uint32_t length = len_val.is_number() ? static_cast<uint32_t>(len_val.as_number()) : 0;
-                for (uint32_t lower = 0; lower < length / 2; lower++) {
-                    uint32_t upper = length - 1 - lower;
-                    std::string lower_key = std::to_string(lower);
-                    std::string upper_key = std::to_string(upper);
-                    bool lower_exists = this_obj->has_property(lower_key);
-                    bool upper_exists = this_obj->has_property(upper_key);
-                    if (lower_exists && upper_exists) {
-                        Value a = this_obj->get_property(lower_key);
-                        Value b = this_obj->get_property(upper_key);
-                        this_obj->set_property(lower_key, b);
-                        this_obj->set_property(upper_key, a);
-                    } else if (lower_exists) {
-                        Value a = this_obj->get_property(lower_key);
-                        this_obj->set_property(upper_key, a);
-                        this_obj->delete_property(lower_key);
-                    } else if (upper_exists) {
-                        Value b = this_obj->get_property(upper_key);
-                        this_obj->set_property(lower_key, b);
-                        this_obj->delete_property(upper_key);
-                    }
+            double length = array_like_length(ctx, this_obj);
+            if (ctx.has_exception()) return Value();
+
+            // Each side's HasProperty/Get must run before the other side's HasProperty --
+            // a getter can mutate the object mid-loop (e.g. array.length = 0).
+            // A present-vs-absent pair sets one side and deletes the other.
+            double middle = std::floor(length / 2.0);
+            for (double lower = 0; lower != middle; lower++) {
+                double upper = length - lower - 1;
+                std::string lower_key = Value(lower).to_string();
+                std::string upper_key = Value(upper).to_string();
+
+                bool lower_exists = this_obj->has_property(lower_key);
+                if (ctx.has_exception()) return Value();
+                Value lower_value;
+                if (lower_exists) {
+                    lower_value = this_obj->get_property(lower_key);
                     if (ctx.has_exception()) return Value();
                 }
-                return Value(this_obj);
-            }
+                bool upper_exists = this_obj->has_property(upper_key);
+                if (ctx.has_exception()) return Value();
+                Value upper_value;
+                if (upper_exists) {
+                    upper_value = this_obj->get_property(upper_key);
+                    if (ctx.has_exception()) return Value();
+                }
 
-            uint32_t length = this_obj->get_length();
-            if (ctx.has_exception()) return Value();
-            for (uint32_t i = 0; i < length / 2; i++) {
-                Value temp = this_obj->get_element(i);
-                this_obj->set_element(i, this_obj->get_element(length - 1 - i));
-                this_obj->set_element(length - 1 - i, temp);
+                if (lower_exists && upper_exists) {
+                    bool ok = this_obj->set_property(lower_key, upper_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + lower_key + "'"); return Value(); }
+                    ok = this_obj->set_property(upper_key, lower_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + upper_key + "'"); return Value(); }
+                } else if (upper_exists) {
+                    bool ok = this_obj->set_property(lower_key, upper_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + lower_key + "'"); return Value(); }
+                    bool deleted = this_obj->delete_property(upper_key);
+                    if (ctx.has_exception()) return Value();
+                    if (!deleted) { ctx.throw_type_error("Cannot delete property '" + upper_key + "'"); return Value(); }
+                } else if (lower_exists) {
+                    bool deleted = this_obj->delete_property(lower_key);
+                    if (ctx.has_exception()) return Value();
+                    if (!deleted) { ctx.throw_type_error("Cannot delete property '" + lower_key + "'"); return Value(); }
+                    bool ok = this_obj->set_property(upper_key, lower_value);
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot set property '" + upper_key + "'"); return Value(); }
+                }
             }
             return Value(this_obj);
         }, 0);

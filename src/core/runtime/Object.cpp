@@ -998,6 +998,13 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    // [[DefineOwnProperty]] on a Proxy is just its "defineProperty" trap.
+    // The generic logic below would call has_own_property() first, firing the
+    // unrelated "has" trap instead.
+    if (header_.type == ObjectType::Proxy) {
+        return static_cast<Proxy*>(this)->define_property_trap(make_prop_key_value(key), desc);
+    }
+
     // Runs before the configurability checks below: an out-of-range length throws
     // RangeError even when the descriptor also conflicts with length's non-configurability.
     if (header_.type == ObjectType::Array && key == "length" && desc.is_data_descriptor() && desc.has_value()) {
