@@ -1795,6 +1795,10 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             auto spread_into = [&](Object* obj) -> bool {
                 double obj_length = array_like_length(ctx, obj);
                 if (ctx.has_exception()) return false;
+                if (n + obj_length > 9007199254740991.0) {
+                    ctx.throw_type_error("Array.prototype.concat: resulting length would exceed 2**53 - 1");
+                    return false;
+                }
                 for (double i = 0; i < obj_length; i++) {
                     std::string key = Value(i).to_string();
                     bool present = obj->has_property(key);
