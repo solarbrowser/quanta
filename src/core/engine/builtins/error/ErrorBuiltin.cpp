@@ -26,7 +26,8 @@ void register_error_builtins(Context& ctx) {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) {
-                return Value(std::string("Error"));
+                ctx.throw_type_error("Error.prototype.toString called on non-object");
+                return Value();
             }
 
             Value name_val = this_obj->get_property("name");
@@ -99,35 +100,49 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (!this_obj) {
-                        return Value(std::string("Error"));
-                    }
 
-                    Value name_val = this_obj->get_property("name");
-                    Value message_val = this_obj->get_property("message");
-
-                    std::string name = name_val.is_string() ? name_val.to_string() : "Error";
-                    std::string message = message_val.is_string() ? message_val.to_string() : "";
-
-                    if (message.empty()) {
-                        return Value(name);
-                    }
-                    if (name.empty()) {
-                        return Value(message);
-                    }
-                    return Value(name + ": " + message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
 
             return Value(error_obj.release());
         });
 
     auto error_isError = ObjectFactory::create_native_function("isError", Error::isError);
-    error_constructor->set_property("isError", Value(error_isError.release()));
+    {
+        PropertyDescriptor isError_desc(Value(error_isError.release()), PropertyAttributes::BuiltinFunction);
+        error_constructor->set_property_descriptor("isError", isError_desc);
+    }
+
+    // Error.prototype.stack accessor: getter returns stack trace for Error instances,
+    // setter stores an own data property on the receiver.
+    {
+        auto stack_get = ObjectFactory::create_native_function("get stack",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                (void)args;
+                Object* self = ctx.get_this_binding();
+                if (!self) { ctx.throw_type_error("Error.prototype.stack getter: this is not an object"); return Value(); }
+                if (self->get_type() != Object::ObjectType::Error) return Value();
+                // If the instance has overridden stack as own data property, return that.
+                if (self->has_own_property("stack")) {
+                    PropertyDescriptor d = self->get_property_descriptor("stack");
+                    if (d.is_data_descriptor()) return d.get_value();
+                }
+                return Value(static_cast<Error*>(self)->get_stack_trace());
+            }, 0);
+        auto stack_set = ObjectFactory::create_native_function("set stack",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* self = ctx.get_this_binding();
+                if (!self) { ctx.throw_type_error("Error.prototype.stack setter: this is not an object"); return Value(); }
+                Value v = args.empty() ? Value() : args[0];
+                PropertyDescriptor d(v, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                self->set_property_descriptor("stack", d);
+                return Value();
+            }, 1);
+        PropertyDescriptor stack_desc;
+        stack_desc.set_getter(stack_get.release());
+        stack_desc.set_setter(stack_set.release());
+        stack_desc.set_enumerable(false);
+        stack_desc.set_configurable(true);
+        error_prototype->set_property_descriptor("stack", stack_desc);
+    }
 
     PropertyDescriptor error_constructor_desc(Value(error_constructor.get()),
         PropertyAttributes::BuiltinFunction);
@@ -166,15 +181,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -223,15 +230,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -279,15 +278,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -335,15 +326,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -392,15 +375,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -441,15 +416,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         });
@@ -521,15 +488,7 @@ void register_error_builtins(Context& ctx) {
                 }
             }
 
-            auto toString_fn = ObjectFactory::create_native_function("toString",
-                [error_name = error_obj->get_name(), error_message = error_obj->get_message()](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)ctx; (void)args;
-                    if (error_message.empty()) {
-                        return Value(error_name);
-                    }
-                    return Value(error_name + ": " + error_message);
-                });
-            error_obj->set_property("toString", Value(toString_fn.release()), PropertyAttributes::BuiltinFunction);
+
 
             return Value(error_obj.release());
         }, 2);
