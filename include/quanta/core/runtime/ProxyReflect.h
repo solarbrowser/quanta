@@ -9,7 +9,6 @@
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
 #include <memory>
-#include <functional>
 
 namespace Quanta {
 
@@ -20,28 +19,10 @@ class Context;
  * ES6 Proxy for intercepting and customizing operations
  */
 class Proxy : public Object {
-public:
-    struct Handler {
-        std::function<Value(const Value&, const Value&)> get;                   // (target, key, receiver), 3rd arg via closure
-        std::function<bool(const Value&, const Value&, const Value&)> set;      // (target, key, value, receiver)
-        std::function<bool(const Value&)> has;                                  // (target, key)
-        std::function<bool(const Value&)> deleteProperty;                       // (target, key)
-        std::function<std::vector<std::string>()> ownKeys;                      // (target)
-        std::function<Value()> getPrototypeOf;                                  // (target)
-        std::function<bool(Object*)> setPrototypeOf;                            // (target, proto)
-        std::function<bool()> isExtensible;                                     // (target)
-        std::function<bool()> preventExtensions;                                // (target)
-        std::function<PropertyDescriptor(const Value&)> getOwnPropertyDescriptor; // (target, key)
-        std::function<bool(const Value&, const PropertyDescriptor&)> defineProperty; // (target, key, desc)
-        std::function<Value(const std::vector<Value>&, const Value&)> apply;    // (target, thisArg, argsList)
-        std::function<Value(const std::vector<Value>&)> construct;              // (target, argsList, newTarget)
-    };
-    
 private:
     Object* target_;
     Object* handler_;
-    Handler parsed_handler_;
-    
+
 public:
     Proxy(Object* target, Object* handler);
     virtual ~Proxy() = default;
@@ -82,7 +63,8 @@ public:
     Object* get_prototype() const override;
     
 private:
-    void parse_handler();
+    // Lazy GetMethod(handler, name); check has_exception() to tell "absent" from "not callable".
+    Function* get_trap_method(const char* name) const;
     void throw_if_revoked(Context& ctx) const;
 };
 

@@ -416,32 +416,28 @@ Value MemberExpression::evaluate(Context& ctx) {
     if ((object_value.is_object() || object_value.is_function()) && computed_) {
         Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
 
-        //  ufp: Constant array index.
-        // Bound is 0xFFFFFFFE (max valid array index); checking std::floor() instead of
-        // casting to uint32_t first avoids UB for out-of-range doubles like 2**32, which
-        // would otherwise truncate to 0 and alias index 0.
+        //  ufp: Constant array index. Bound avoids UB from casting an out-of-range double.
+        // has_property() gating (not "result is undefined") avoids re-invoking a getter below.
         if (__builtin_expect(property_->get_type() == ASTNode::Type::NUMBER_LITERAL, 0)) {
             NumberLiteral* num_lit = static_cast<NumberLiteral*>(property_.get());
             double index_double = num_lit->get_value();
             if (__builtin_expect(index_double >= 0 && index_double <= 4294967294.0 && index_double == std::floor(index_double), 1)) {
                 uint32_t index = static_cast<uint32_t>(index_double);
-                Value element = obj->get_element(index);
-                if (!element.is_undefined()) {
-                    return element;
+                if (obj->get_type() != Object::ObjectType::Proxy && obj->has_property(std::to_string(index))) {
+                    return obj->get_element(index);
                 }
             }
         }
 
         Value prop_value = property_->evaluate(ctx);
         if (ctx.has_exception()) return Value();
-        // fp: Variable array index.
+        // fp: Variable array index, same has_property gating as above.
         if (__builtin_expect(prop_value.is_number(), 1)) {
             double index_double = prop_value.as_number();
             if (__builtin_expect(index_double >= 0 && index_double <= 4294967294.0 && index_double == std::floor(index_double), 1)) {
                 uint32_t index = static_cast<uint32_t>(index_double);
-                Value element = obj->get_element(index);
-                if (!element.is_undefined()) {
-                    return element;
+                if (obj->get_type() != Object::ObjectType::Proxy && obj->has_property(std::to_string(index))) {
+                    return obj->get_element(index);
                 }
             }
         }
