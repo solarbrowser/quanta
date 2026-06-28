@@ -37,8 +37,33 @@ void register_error_builtins(Context& ctx) {
 
             std::string name = name_val.is_undefined() ? "Error" : name_val.to_string();
             if (ctx.has_exception()) return Value();
-            std::string message = message_val.is_undefined() ? "" : message_val.to_string();
-            if (ctx.has_exception()) return Value();
+            std::string message;
+            if (message_val.is_undefined()) {
+                message = "";
+            } else if (message_val.is_object() && message_val.as_object()) {
+                Object* mobj = message_val.as_object();
+                Value mts = mobj->get_property("toString");
+                if (ctx.has_exception()) return Value();
+                if (mts.is_function()) {
+                    Value r = mts.as_function()->call(ctx, {}, message_val);
+                    if (ctx.has_exception()) return Value();
+                    message = r.to_string();
+                } else {
+                    Value mvs = mobj->get_property("valueOf");
+                    if (ctx.has_exception()) return Value();
+                    if (mvs.is_function()) {
+                        Value r = mvs.as_function()->call(ctx, {}, message_val);
+                        if (ctx.has_exception()) return Value();
+                        message = r.to_string();
+                    } else {
+                        ctx.throw_type_error("Cannot convert message to primitive value");
+                        return Value();
+                    }
+                }
+            } else {
+                message = message_val.to_string();
+                if (ctx.has_exception()) return Value();
+            }
 
             if (message.empty()) {
                 return Value(name);
@@ -66,17 +91,23 @@ void register_error_builtins(Context& ctx) {
                     return Value();
                 } else if (args[0].is_object()) {
                     Object* obj = args[0].as_object();
-                    if (obj->has_property("toString")) {
-                        Value toString_val = obj->get_property("toString");
-                        if (toString_val.is_function()) {
-                            Function* toString_fn = toString_val.as_function();
-                            Value result = toString_fn->call(ctx, {}, Value(obj));
-                            message = result.to_string();
-                        } else {
-                            message = args[0].to_string();
-                        }
+                    Value ts = obj->get_property("toString");
+                    if (ctx.has_exception()) return Value();
+                    if (ts.is_function()) {
+                        Value r = ts.as_function()->call(ctx, {}, args[0]);
+                        if (ctx.has_exception()) return Value();
+                        message = r.to_string();
                     } else {
-                        message = args[0].to_string();
+                        Value vs = obj->get_property("valueOf");
+                        if (ctx.has_exception()) return Value();
+                        if (vs.is_function()) {
+                            Value r = vs.as_function()->call(ctx, {}, args[0]);
+                            if (ctx.has_exception()) return Value();
+                            message = r.to_string();
+                        } else {
+                            ctx.throw_type_error("Cannot convert object to primitive value");
+                            return Value();
+                        }
                     }
                 } else {
                     message = args[0].to_string();
