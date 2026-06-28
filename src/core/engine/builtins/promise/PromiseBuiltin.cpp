@@ -520,7 +520,7 @@ void register_promise_builtins(Context& ctx) {
     promise_prototype->set_property("constructor", Value(promise_constructor.get()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
-    promise_constructor->set_property("prototype", Value(promise_prototype.release()));
+    promise_constructor->set_property("prototype", Value(promise_prototype.release()), PropertyAttributes::None);
     
     auto promise_resolve_static = ObjectFactory::create_native_function("resolve",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -1336,7 +1336,7 @@ void register_promise_builtins(Context& ctx) {
 
             return Value(registry_obj.release());
         });
-    finalizationregistry_constructor->set_property("prototype", Value(fr_proto_ptr));
+    finalizationregistry_constructor->set_property("prototype", Value(fr_proto_ptr), PropertyAttributes::None);
     fr_proto_ptr->set_property("constructor", Value(finalizationregistry_constructor.get()), PropertyAttributes::BuiltinFunction);
     ctx.register_built_in_object("FinalizationRegistry", finalizationregistry_constructor.release());
 }

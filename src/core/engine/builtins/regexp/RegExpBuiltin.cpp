@@ -733,7 +733,7 @@ void register_regexp_builtins(Context& ctx) {
             Value(regexp_sym_matchAll.release()), PropertyAttributes::BuiltinFunction);
     }
 
-    regexp_constructor->set_property("prototype", Value(regexp_prototype.release()));
+    regexp_constructor->set_property("prototype", Value(regexp_prototype.release()), PropertyAttributes::None);
 
     {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);

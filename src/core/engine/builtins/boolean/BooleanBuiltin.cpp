@@ -112,7 +112,7 @@ void register_boolean_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     boolean_prototype->set_property_descriptor("constructor", boolean_constructor_desc);
 
-    boolean_constructor->set_property("prototype", Value(boolean_prototype.release()));
+    boolean_constructor->set_property("prototype", Value(boolean_prototype.release()), PropertyAttributes::None);
 
     ctx.register_built_in_object("Boolean", boolean_constructor.release());
 }

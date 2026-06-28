@@ -366,7 +366,7 @@ void register_arraybuffer_builtins(Context& ctx) {
     }
 
     arraybuffer_prototype->set_property("constructor", Value(arraybuffer_constructor.get()), PropertyAttributes::BuiltinFunction);
-    arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()));
+    arraybuffer_constructor->set_property("prototype", Value(arraybuffer_prototype.release()), PropertyAttributes::None);
 
     {
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);

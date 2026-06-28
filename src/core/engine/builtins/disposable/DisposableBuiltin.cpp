@@ -213,7 +213,7 @@ void register_disposable_builtins(Context& ctx) {
         }, 0);
     disposablestack_prototype->set_property("move", Value(ds_move_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    disposablestack_constructor->set_property("prototype", Value(disposablestack_prototype.release()));
+    disposablestack_constructor->set_property("prototype", Value(disposablestack_prototype.release()), PropertyAttributes::None);
 
     ctx.register_built_in_object("DisposableStack", disposablestack_constructor.release());
 
@@ -394,7 +394,7 @@ void register_disposable_builtins(Context& ctx) {
         }, 0);
     asyncdisposablestack_prototype->set_property("move", Value(ads_move_fn.release()), PropertyAttributes::BuiltinFunction);
 
-    asyncdisposablestack_constructor->set_property("prototype", Value(asyncdisposablestack_prototype.release()));
+    asyncdisposablestack_constructor->set_property("prototype", Value(asyncdisposablestack_prototype.release()), PropertyAttributes::None);
 
     ctx.register_built_in_object("AsyncDisposableStack", asyncdisposablestack_constructor.release());
 }

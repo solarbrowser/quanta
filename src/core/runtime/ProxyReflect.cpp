@@ -176,6 +176,7 @@ bool Proxy::has_trap(const Value& key) {
     }
         if (parsed_handler_.has) {
         bool result = parsed_handler_.has(key);
+        if (Object::current_context_ && Object::current_context_->has_exception()) return false;
         if (!result) {
             std::string key_str = key.to_string();
             if (target_->has_own_property(key_str)) {
@@ -922,6 +923,12 @@ Value Proxy::get_property(const std::string& key) const {
     return const_cast<Proxy*>(this)->get_trap(from_prop_key(key));
 }
 
+PropertyDescriptor Proxy::get_property_descriptor(const std::string& key) const {
+    // Route through [[GetOwnProperty]] trap so callers don't accidentally trigger
+    // [[HasProperty]] via the base Object::get_property_descriptor path.
+    return const_cast<Proxy*>(this)->get_own_property_descriptor_trap(Value(key));
+}
+
 
 Value Proxy::proxy_constructor(Context& ctx, const std::vector<Value>& args) {
     if (!ctx.is_in_constructor_call()) {
@@ -1002,10 +1009,25 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     
     std::string key = args.size() > 1 ? to_property_key(args[1]) : "";
     Value receiver = args.size() > 2 ? args[2] : args[0];
-    
-    (void)receiver;
-    
-    return target->get_property(key);
+
+    // Walk the prototype chain of target to find an accessor; if found, call the getter
+    // with `receiver` as `this` (spec OrdinaryGet with explicit receiver).
+    Object* current = target;
+    while (current) {
+        if (current->get_type() == Object::ObjectType::Proxy) {
+            return static_cast<Proxy*>(current)->get_trap(Value(key), receiver);
+        }
+        PropertyDescriptor desc = current->get_property_descriptor(key);
+        if (desc.is_accessor_descriptor()) {
+            if (!desc.has_getter()) return Value();
+            Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
+            if (!getter_fn) return Value();
+            return getter_fn->call(ctx, {}, receiver);
+        }
+        if (desc.has_value()) return desc.get_value();
+        current = current->get_prototype();
+    }
+    return Value();
 }
 
 // ES 9.1.9.1/9.1.9.2 OrdinarySet/OrdinarySetWithOwnDescriptor: when Receiver differs

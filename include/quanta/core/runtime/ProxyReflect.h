@@ -73,6 +73,7 @@ public:
     Object* get_proxy_handler() const { return handler_; }
 
     Value get_property(const std::string& key) const override;
+    PropertyDescriptor get_property_descriptor(const std::string& key) const override;
     bool set_property(const std::string& key, const Value& value, PropertyAttributes attrs = PropertyAttributes::Default) override;
     bool has_property(const std::string& key) const override;
     bool delete_property(const std::string& key) override;

@@ -181,30 +181,27 @@ void register_error_builtins(Context& ctx) {
                     ctx.throw_type_error("Error.prototype.stack setter: value must be a string");
                     return Value();
                 }
-                // Update existing writable data property in place, or create new one.
-                if (self->has_own_property("stack")) {
-                    PropertyDescriptor existing = self->get_property_descriptor("stack");
-                    if (existing.is_data_descriptor()) {
-                        if (!existing.is_writable()) {
-                            ctx.throw_type_error("Error.prototype.stack setter: stack is non-writable");
-                            return Value();
-                        }
-                        // Preserve descriptor attributes, update value only.
-                        PropertyDescriptor updated(v, existing.get_attributes());
-                        self->set_property_descriptor("stack", updated);
-                        return Value();
-                    } else if (existing.is_accessor_descriptor()) {
-                        Object* setter = existing.get_setter();
-                        if (!setter) { ctx.throw_type_error("Error.prototype.stack setter: no setter"); return Value(); }
-                        Function* setter_fn = dynamic_cast<Function*>(setter);
-                        if (setter_fn) setter_fn->call(ctx, {v}, Value(self));
+                // SetterThatIgnoresPrototypeProperties semantics:
+                // 1. [[GetOwnProperty]] to check for own "stack".
+                PropertyDescriptor existing = self->get_property_descriptor("stack");
+                if (ctx.has_exception()) return Value();
+                bool has_own = existing.has_value() || existing.is_accessor_descriptor();
+                if (has_own) {
+                    if (existing.is_data_descriptor() && !existing.is_writable()) {
+                        ctx.throw_type_error("Error.prototype.stack setter: stack is non-writable");
                         return Value();
                     }
+                    // 2. [[Set]] with Throw=true -- triggers set trap on Proxy.
+                    if (!self->set_property("stack", v)) {
+                        ctx.throw_type_error("Error.prototype.stack setter: [[Set]] failed");
+                    }
+                    return Value();
                 }
-                // No own property: create with default stack descriptor.
-                PropertyDescriptor d(v, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                // 3. No own property: [[DefineOwnProperty]] -- triggers defineProperty trap.
+                PropertyDescriptor d(v, static_cast<PropertyAttributes>(
+                    PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
                 if (!self->set_property_descriptor("stack", d)) {
-                    ctx.throw_type_error("Error.prototype.stack setter: cannot define property");
+                    ctx.throw_type_error("Error.prototype.stack setter: [[DefineOwnProperty]] failed");
                 }
                 return Value();
             }, 1);
@@ -262,7 +259,7 @@ void register_error_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     type_error_prototype->set_property_descriptor("constructor", type_error_constructor_desc);
 
-    type_error_constructor->set_property("prototype", Value(type_error_prototype.release()));
+    type_error_constructor->set_property("prototype", Value(type_error_prototype.release()), PropertyAttributes::None);
 
     PropertyDescriptor type_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     type_error_length_desc.set_configurable(true);
@@ -310,7 +307,7 @@ void register_error_builtins(Context& ctx) {
     PropertyDescriptor reference_error_constructor_desc(Value(reference_error_constructor.get()),
         PropertyAttributes::BuiltinFunction);
     reference_error_prototype->set_property_descriptor("constructor", reference_error_constructor_desc);
-    reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()));
+    reference_error_constructor->set_property("prototype", Value(reference_error_prototype.release()), PropertyAttributes::None);
 
     PropertyDescriptor reference_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     reference_error_length_desc.set_configurable(true);
@@ -358,7 +355,7 @@ void register_error_builtins(Context& ctx) {
     PropertyDescriptor syntax_error_constructor_desc(Value(syntax_error_constructor.get()),
         PropertyAttributes::BuiltinFunction);
     syntax_error_prototype->set_property_descriptor("constructor", syntax_error_constructor_desc);
-    syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()));
+    syntax_error_constructor->set_property("prototype", Value(syntax_error_prototype.release()), PropertyAttributes::None);
 
     PropertyDescriptor syntax_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     syntax_error_length_desc.set_configurable(true);
@@ -407,7 +404,7 @@ void register_error_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     range_error_prototype->set_property_descriptor("constructor", range_error_constructor_desc);
 
-    range_error_constructor->set_property("prototype", Value(range_error_prototype.release()));
+    range_error_constructor->set_property("prototype", Value(range_error_prototype.release()), PropertyAttributes::None);
 
     PropertyDescriptor range_error_length_desc(Value(1.0), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
     range_error_length_desc.set_configurable(true);
@@ -456,7 +453,7 @@ void register_error_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     uri_error_prototype->set_property_descriptor("constructor", uri_error_constructor_desc);
 
-    uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()));
+    uri_error_constructor->set_property("prototype", Value(uri_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
         uri_error_constructor->set_prototype(error_ctor);
@@ -497,7 +494,7 @@ void register_error_builtins(Context& ctx) {
         PropertyAttributes::BuiltinFunction);
     eval_error_prototype->set_property_descriptor("constructor", eval_error_constructor_desc);
 
-    eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()));
+    eval_error_constructor->set_property("prototype", Value(eval_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
         eval_error_constructor->set_prototype(error_ctor);
@@ -583,7 +580,7 @@ void register_error_builtins(Context& ctx) {
     length_desc.set_writable(false);
     aggregate_error_constructor->set_property_descriptor("length", length_desc);
 
-    aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()));
+    aggregate_error_constructor->set_property("prototype", Value(aggregate_error_prototype.release()), PropertyAttributes::None);
 
     if (error_ctor) {
         aggregate_error_constructor->set_prototype(error_ctor);
@@ -621,7 +618,7 @@ void register_error_builtins(Context& ctx) {
 
     PropertyDescriptor se_constructor_desc(Value(suppressed_error_constructor.get()), PropertyAttributes::BuiltinFunction);
     suppressed_error_prototype->set_property_descriptor("constructor", se_constructor_desc);
-    suppressed_error_constructor->set_property("prototype", Value(suppressed_error_prototype.release()));
+    suppressed_error_constructor->set_property("prototype", Value(suppressed_error_prototype.release()), PropertyAttributes::None);
 
     Object* error_ctor2 = nullptr;
     {

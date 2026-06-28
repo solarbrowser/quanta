@@ -1872,7 +1872,7 @@ void register_typed_array_builtins(Context& ctx) {
         dataview_prototype->set_property_descriptor("byteOffset", d);
     }
 
-    dataview_constructor->set_property("prototype", Value(dataview_prototype.release()));
+    dataview_constructor->set_property("prototype", Value(dataview_prototype.release()), PropertyAttributes::None);
 
     ctx.register_built_in_object("DataView", dataview_constructor.release());
 
