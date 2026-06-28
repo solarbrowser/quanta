@@ -170,6 +170,8 @@ Value TypedArrayBase::get_property(const std::string& key) const {
     }
 
     if (key == "length") {
+        // defineProperty can shadow "length" with an own property; that wins.
+        if (Object::has_own_property(key)) return Object::get_property(key);
         return Value(static_cast<double>(current_length()));
     }
     if (key == "byteLength") {

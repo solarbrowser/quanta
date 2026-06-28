@@ -58,6 +58,9 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
     }
         if (parsed_handler_.get) {
         Value result = parsed_handler_.get(key, receiver);
+        // The trap may have revoked this proxy itself (target_ now null) -- skip the
+        // invariant checks below, which read target_.
+        if (is_revoked()) return result;
         // Invariant: non-writable, non-configurable data property => result must equal target value
         std::string key_str = to_prop_key(key);
         PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);

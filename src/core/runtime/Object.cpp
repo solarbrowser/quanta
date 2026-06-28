@@ -210,6 +210,9 @@ Value Object::get_property(const std::string& key) const {
         }
         
         if (key == "length") {
+            // defineProperty can shadow "length" with an own property; that wins.
+            if (descriptors_ && descriptors_->count(key)) return get_own_property(key);
+            if (overflow_properties_ && overflow_properties_->count(key)) return get_own_property(key);
             return Value(static_cast<double>(typed_array->length()));
         }
         if (key == "byteLength") {
@@ -418,21 +421,39 @@ Value Object::get_property(const Value& key) const {
     return get_property(key.to_property_key());
 }
 
+// ArraySetLength's ToUint32(value)/ToNumber(value) pair: two separate ToPrimitive
+// conversions of the same value, mismatching (NaN, negative, non-integer, > 2^32-1)
+// iff the length is invalid. Returns false (and leaves an exception set) on throw.
+static bool array_set_length_coerce(Context* ctx, const Value& value, double& out_length) {
+    double number_len = value.to_number();
+    if (ctx && ctx->has_exception()) return false;
+    double uint32_len = value.to_number();
+    if (ctx && ctx->has_exception()) return false;
+    if (std::isfinite(uint32_len)) {
+        uint32_len = std::fmod(std::trunc(uint32_len), 4294967296.0);
+        if (uint32_len < 0) uint32_len += 4294967296.0;
+    } else {
+        uint32_len = 0.0;
+    }
+    if (uint32_len != number_len) {
+        if (ctx) ctx->throw_range_error("Invalid array length");
+        return false;
+    }
+    out_length = uint32_len;
+    return true;
+}
+
 bool Object::set_property(const std::string& key, const Value& value, PropertyAttributes attrs) {
     if (header_.type == ObjectType::Array && key == "length") {
+        // Coerce (can throw/run side effects) before the [[Writable]] check, not after.
+        double length_double;
+        if (!array_set_length_coerce(current_context_, value, length_double)) return false;
+
         if (descriptors_) {
             auto it = descriptors_->find("length");
             if (it != descriptors_->end() && it->second.has_writable() && !it->second.is_writable()) {
                 return false;
             }
-        }
-        double length_double = value.to_number();
-
-        if (length_double < 0 || length_double != std::floor(length_double) || length_double > 4294967295.0) {
-            if (current_context_) {
-                current_context_->throw_range_error("Invalid array length");
-            }
-            return false;
         }
 
         uint32_t new_length = static_cast<uint32_t>(length_double);
@@ -977,6 +998,13 @@ PropertyDescriptor Object::get_property_descriptor(const std::string& key) const
 }
 
 bool Object::set_property_descriptor(const std::string& key, const PropertyDescriptor& desc) {
+    // Runs before the configurability checks below: an out-of-range length throws
+    // RangeError even when the descriptor also conflicts with length's non-configurability.
+    if (header_.type == ObjectType::Array && key == "length" && desc.is_data_descriptor() && desc.has_value()) {
+        double unused;
+        if (!array_set_length_coerce(current_context_, desc.get_value(), unused)) return false;
+    }
+
     // Captured before any placeholder (store_in_overflow) write below can make
     // has_own_property look true for a property that's brand new in this very call.
     bool existed_before_this_call = has_own_property(key);

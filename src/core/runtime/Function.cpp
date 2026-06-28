@@ -25,6 +25,17 @@ namespace Quanta {
 
 namespace Quanta {
 
+// Duplicate parameter names share one binding; only the last occurrence is live-mapped.
+// Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.
+static bool param_gets_mapped_accessor(const std::vector<std::unique_ptr<Parameter>>& params, size_t mi) {
+    const std::string& pname = params[mi]->get_name()->get_name();
+    if (pname.empty() || pname[0] == '_') return false;
+    for (size_t later = mi + 1; later < params.size(); later++) {
+        if (params[later]->get_name()->get_name() == pname) return false;
+    }
+    return true;
+}
+
 Function::Function(const std::string& name,
                    const std::vector<std::string>& params,
                    std::unique_ptr<ASTNode> body,
@@ -160,9 +171,8 @@ void Function::setup_mapped_arguments(Context& fn_ctx, const std::vector<Value>&
 
     size_t map_count = std::min(args.size(), parameter_objects_.size());
     for (size_t mi = 0; mi < map_count; mi++) {
-        const std::string& pname = parameter_objects_[mi]->get_name()->get_name();
-        if (pname.empty() || pname[0] == '_') continue;
-        auto name = std::make_shared<std::string>(pname);
+        if (!param_gets_mapped_accessor(parameter_objects_, mi)) continue;
+        auto name = std::make_shared<std::string>(parameter_objects_[mi]->get_name()->get_name());
         // fn_ctx outlives the accessors, so a raw pointer is safe to capture.
         Context* fc_ptr = &fn_ctx;
         auto getter_fn = ObjectFactory::create_native_function("get",
@@ -575,7 +585,7 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
         size_t map_count_pre = pre_simple ? std::min(args.size(), parameter_objects_.size()) : 0;
         for (size_t i = 0; i < args.size(); i++) {
-            if (i < map_count_pre) continue; // will be set via accessor
+            if (i < map_count_pre && param_gets_mapped_accessor(parameter_objects_, i)) continue; // will be set via accessor
             arguments_obj->set_element(i, args[i]);
         }
         {

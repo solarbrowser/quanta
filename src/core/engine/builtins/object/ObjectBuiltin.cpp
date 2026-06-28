@@ -868,8 +868,11 @@ void register_object_builtins(Context& ctx) {
                     return Value();
                 }
 
-                // Non-configurable property enforcement (ES2022 10.1.6.3 ValidateAndApplyPropertyDescriptor)
-                if (obj->get_type() != Object::ObjectType::Proxy) {
+                // Non-configurable property enforcement (ES2022 10.1.6.3 ValidateAndApplyPropertyDescriptor).
+                // Array "length" defers entirely to set_property_descriptor()'s ArraySetLength, which
+                // needs to run before this generic check (see its RangeError-vs-configurability ordering).
+                bool is_array_length = obj->is_array() && prop_name == "length";
+                if (obj->get_type() != Object::ObjectType::Proxy && !is_array_length) {
                     PropertyDescriptor existing = obj->get_property_descriptor(prop_name);
                     if (obj->has_own_property(prop_name) && !existing.is_configurable()) {
                         if (prop_desc.has_configurable() && prop_desc.is_configurable()) {
