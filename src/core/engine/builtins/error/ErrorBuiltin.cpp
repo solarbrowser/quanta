@@ -25,7 +25,7 @@ void register_error_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj || this_obj->is_primitive_wrapper()) {
+            if (!this_obj || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
                 ctx.throw_type_error("Error.prototype.toString called on non-object");
                 return Value();
             }
@@ -154,7 +154,7 @@ void register_error_builtins(Context& ctx) {
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 Object* self = ctx.get_this_binding();
-                if (!self) {
+                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
                     ctx.throw_type_error("Error.prototype.stack getter: this is not an object");
                     return Value();
                 }
@@ -168,7 +168,7 @@ void register_error_builtins(Context& ctx) {
         auto stack_set = ObjectFactory::create_native_function("set stack",
             [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 Object* self = ctx.get_this_binding();
-                if (!self) {
+                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
                     ctx.throw_type_error("Error.prototype.stack setter: this is not an object");
                     return Value();
                 }
