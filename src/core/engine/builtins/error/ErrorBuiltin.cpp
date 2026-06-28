@@ -25,16 +25,20 @@ void register_error_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
+            if (!this_obj || this_obj->is_primitive_wrapper()) {
                 ctx.throw_type_error("Error.prototype.toString called on non-object");
                 return Value();
             }
 
             Value name_val = this_obj->get_property("name");
+            if (name_val.is_symbol()) { ctx.throw_type_error("Error name cannot be a Symbol"); return Value(); }
             Value message_val = this_obj->get_property("message");
+            if (message_val.is_symbol()) { ctx.throw_type_error("Error message cannot be a Symbol"); return Value(); }
 
             std::string name = name_val.is_undefined() ? "Error" : name_val.to_string();
+            if (ctx.has_exception()) return Value();
             std::string message = message_val.is_undefined() ? "" : message_val.to_string();
+            if (ctx.has_exception()) return Value();
 
             if (message.empty()) {
                 return Value(name);
@@ -57,6 +61,9 @@ void register_error_builtins(Context& ctx) {
             if (!args.empty()) {
                 if (args[0].is_undefined()) {
                     message = "";
+                } else if (args[0].is_symbol()) {
+                    ctx.throw_type_error("Error message cannot be a Symbol");
+                    return Value();
                 } else if (args[0].is_object()) {
                     Object* obj = args[0].as_object();
                     if (obj->has_property("toString")) {
@@ -111,16 +118,16 @@ void register_error_builtins(Context& ctx) {
         error_constructor->set_property_descriptor("isError", isError_desc);
     }
 
-    // Error.prototype.stack accessor: getter returns stack trace for Error instances,
-    // setter stores an own data property on the receiver.
     {
         auto stack_get = ObjectFactory::create_native_function("get stack",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
                 Object* self = ctx.get_this_binding();
-                if (!self) { ctx.throw_type_error("Error.prototype.stack getter: this is not an object"); return Value(); }
+                if (!self) {
+                    ctx.throw_type_error("Error.prototype.stack getter: this is not an object");
+                    return Value();
+                }
                 if (self->get_type() != Object::ObjectType::Error) return Value();
-                // If the instance has overridden stack as own data property, return that.
                 if (self->has_own_property("stack")) {
                     PropertyDescriptor d = self->get_property_descriptor("stack");
                     if (d.is_data_descriptor()) return d.get_value();
@@ -128,12 +135,46 @@ void register_error_builtins(Context& ctx) {
                 return Value(static_cast<Error*>(self)->get_stack_trace());
             }, 0);
         auto stack_set = ObjectFactory::create_native_function("set stack",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [error_prototype_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 Object* self = ctx.get_this_binding();
-                if (!self) { ctx.throw_type_error("Error.prototype.stack setter: this is not an object"); return Value(); }
+                if (!self) {
+                    ctx.throw_type_error("Error.prototype.stack setter: this is not an object");
+                    return Value();
+                }
+                if (self == error_prototype_ptr) {
+                    ctx.throw_type_error("Cannot set stack on Error.prototype");
+                    return Value();
+                }
                 Value v = args.empty() ? Value() : args[0];
+                if (!v.is_string()) {
+                    ctx.throw_type_error("Error.prototype.stack setter: value must be a string");
+                    return Value();
+                }
+                // Update existing writable data property in place, or create new one.
+                if (self->has_own_property("stack")) {
+                    PropertyDescriptor existing = self->get_property_descriptor("stack");
+                    if (existing.is_data_descriptor()) {
+                        if (!existing.is_writable()) {
+                            ctx.throw_type_error("Error.prototype.stack setter: stack is non-writable");
+                            return Value();
+                        }
+                        // Preserve descriptor attributes, update value only.
+                        PropertyDescriptor updated(v, existing.get_attributes());
+                        self->set_property_descriptor("stack", updated);
+                        return Value();
+                    } else if (existing.is_accessor_descriptor()) {
+                        Object* setter = existing.get_setter();
+                        if (!setter) { ctx.throw_type_error("Error.prototype.stack setter: no setter"); return Value(); }
+                        Function* setter_fn = dynamic_cast<Function*>(setter);
+                        if (setter_fn) setter_fn->call(ctx, {v}, Value(self));
+                        return Value();
+                    }
+                }
+                // No own property: create with default stack descriptor.
                 PropertyDescriptor d(v, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                self->set_property_descriptor("stack", d);
+                if (!self->set_property_descriptor("stack", d)) {
+                    ctx.throw_type_error("Error.prototype.stack setter: cannot define property");
+                }
                 return Value();
             }, 1);
         PropertyDescriptor stack_desc;
