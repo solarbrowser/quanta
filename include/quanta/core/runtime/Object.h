@@ -437,6 +437,9 @@ namespace ObjectFactory {
     std::unique_ptr<Object> create_boolean(bool value);
     std::unique_ptr<Object> create_error(const std::string& message);
     std::unique_ptr<Object> create_promise(Context* ctx = nullptr);
+    // ES5 10.4.3, extended to Symbol/BigInt: box a primitive `this` for a sloppy-mode call.
+    // Returns this_value unchanged if it isn't a primitive needing boxing.
+    Value box_primitive_this_sloppy(Context& ctx, const Value& this_value);
 }
 
 }

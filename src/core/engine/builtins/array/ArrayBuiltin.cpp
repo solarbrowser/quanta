@@ -124,6 +124,18 @@ static double to_integer_or_infinity_throwing(Context& ctx, const Value& v) {
 static void fa_request_next(Context& ctx, Promise* result_promise);
 static void fa_request_arraylike_next(Context& ctx, Promise* result_promise);
 
+// CreateDataPropertyOrThrow: just [[DefineOwnProperty]], throwing if it returns false.
+// No has_own_property/is_extensible pre-check -- on a Proxy those fire extra traps.
+static bool create_data_property_or_throw(Context& ctx, Object* target, const std::string& key, const Value& v) {
+    bool ok = target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
+    if (ctx.has_exception()) return false;
+    if (!ok) {
+        ctx.throw_type_error("Cannot define property: " + key);
+        return false;
+    }
+    return true;
+}
+
 static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason) {
     // Close the iterator (if any) before rejecting -- spec requires IteratorClose on
     // abrupt completion so generator finally blocks run (e.g. rejecting thenables).
@@ -139,13 +151,18 @@ static void fa_reject(Context& ctx, Promise* result_promise, const Value& reason
     result_promise->reject(reason);
 }
 
+// Spec step 10: CreateDataPropertyOrThrow(A, ToString(k), mappedValue).
+// "length" isn't touched per-element -- it's set once the loop ends (on_next_settled's done case).
 static void fa_set_and_advance(Context& ctx, Promise* result_promise, const Value& value) {
     Value arr_v = result_promise->get_property("__fa_arr__");
     Value idx_v = result_promise->get_property("__fa_idx__");
     uint32_t idx = static_cast<uint32_t>(idx_v.to_number());
     if (arr_v.is_object()) {
-        arr_v.as_object()->set_element(idx, value);
-        arr_v.as_object()->set_property("length", Value(static_cast<double>(idx + 1)));
+        if (!create_data_property_or_throw(ctx, arr_v.as_object(), std::to_string(idx), value)) {
+            Value e = ctx.get_exception(); ctx.clear_exception();
+            fa_reject(ctx, result_promise, e);
+            return;
+        }
     }
     result_promise->set_property("__fa_idx__", Value(static_cast<double>(idx + 1)));
     fa_request_next(ctx, result_promise);
@@ -178,13 +195,23 @@ static void fa_setup_handlers(Context& ctx, Promise* result_promise) {
         [rp](Context& c, const std::vector<Value>& args) -> Value {
             Value nr = args.empty() ? Value() : args[0];
             if (!nr.is_object()) {
-                fa_reject(c, rp, Value(std::string("TypeError: iterator result is not an object")));
+                c.throw_type_error("iterator result is not an object");
+                Value e = c.get_exception(); c.clear_exception();
+                fa_reject(c, rp, e);
                 return Value();
             }
             Value done = nr.as_object()->get_property("done");
             if (c.has_exception()) { Value e = c.get_exception(); c.clear_exception(); fa_reject(c, rp, e); return Value(); }
             if (done.to_boolean()) {
                 Value arr_v = rp->get_property("__fa_arr__");
+                Value idx_v = rp->get_property("__fa_idx__");
+                // Spec: Set(A, "length", k, true) once the loop ends, not per element.
+                if (arr_v.is_object() && !arr_v.as_object()->set_property("length", idx_v)) {
+                    if (!c.has_exception()) c.throw_type_error("Cannot set property 'length'");
+                    Value e = c.get_exception(); c.clear_exception();
+                    fa_reject(c, rp, e);
+                    return Value();
+                }
                 if (rp->is_pending()) rp->fulfill(arr_v);
                 return Value();
             }
@@ -242,6 +269,13 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
     uint32_t len = static_cast<uint32_t>(len_v.to_number());
     if (idx >= len) {
         Value arr_v = result_promise->get_property("__fa_arr__");
+        // Spec: Set(A, "length", len, true) once the loop ends, not per element.
+        if (arr_v.is_object() && !arr_v.as_object()->set_property("length", idx_v)) {
+            if (!ctx.has_exception()) ctx.throw_type_error("Cannot set property 'length'");
+            Value e = ctx.get_exception(); ctx.clear_exception();
+            fa_reject(ctx, result_promise, e);
+            return;
+        }
         if (result_promise->is_pending()) result_promise->fulfill(arr_v);
         return;
     }
@@ -249,7 +283,9 @@ static void fa_request_arraylike_next(Context& ctx, Promise* result_promise) {
     Object* al_obj = arraylike.is_function()
         ? static_cast<Object*>(arraylike.as_function()) : (arraylike.is_object() ? arraylike.as_object() : nullptr);
     if (!al_obj) {
-        fa_reject(ctx, result_promise, Value(std::string("TypeError: Array.fromAsync: array-like is not an object")));
+        ctx.throw_type_error("Array.fromAsync: array-like is not an object");
+        Value e = ctx.get_exception(); ctx.clear_exception();
+        fa_reject(ctx, result_promise, e);
         return;
     }
     Value element = al_obj->get_property(std::to_string(idx));
@@ -272,7 +308,9 @@ static void fa_request_next(Context& ctx, Promise* result_promise) {
     }
     Value iterator_v = result_promise->get_property("__fa_iter__");
     if (!next_fn_v.is_function()) {
-        fa_reject(ctx, result_promise, Value(std::string("TypeError: iterator has no next method")));
+        ctx.throw_type_error("iterator has no next method");
+        Value e = ctx.get_exception(); ctx.clear_exception();
+        fa_reject(ctx, result_promise, e);
         return;
     }
     Value next_result = next_fn_v.as_function()->call(ctx, {}, iterator_v);
@@ -283,20 +321,6 @@ static void fa_request_next(Context& ctx, Promise* result_promise) {
     }
     Promise* np = Promise::resolve(next_result);
     fa_chain(ctx, result_promise, np, "__fa_on_next_settled__");
-}
-
-// CreateDataPropertyOrThrow: a non-configurable existing property always rejects
-// (the new descriptor always specifies configurable:true); otherwise overwrite freely.
-// CreateDataPropertyOrThrow: just [[DefineOwnProperty]], throwing if it returns false.
-// No has_own_property/is_extensible pre-check -- on a Proxy those fire extra traps.
-static bool create_data_property_or_throw(Context& ctx, Object* target, const std::string& key, const Value& v) {
-    bool ok = target->set_property_descriptor(key, PropertyDescriptor(v, PropertyAttributes::Default));
-    if (ctx.has_exception()) return false;
-    if (!ok) {
-        ctx.throw_type_error("Cannot define property: " + key);
-        return false;
-    }
-    return true;
 }
 
 // GetFunctionRealm-lite: tracks every realm's intrinsic %Array% so a foreign one can be detected.
@@ -765,18 +789,20 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             Object* this_obj2 = ctx.get_this_binding();
             Function* this_ctor = (this_obj2 && this_obj2->is_function())
                 ? static_cast<Function*>(this_obj2) : nullptr;
-            Object* result_arr;
-            if (this_ctor) {
-                Value arr_val = this_ctor->construct(ctx, {});
-                if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
-                result_arr = (arr_val.is_object() || arr_val.is_function())
+
+            auto construct_result = [&](const std::vector<Value>& ctor_args) -> Object* {
+                if (!this_ctor) return ObjectFactory::create_array(0).release();
+                Value arr_val = this_ctor->construct(ctx, ctor_args);
+                if (ctx.has_exception()) return nullptr;
+                return (arr_val.is_object() || arr_val.is_function())
                     ? (arr_val.is_function() ? static_cast<Object*>(arr_val.as_function()) : arr_val.as_object())
                     : ObjectFactory::create_array(0).release();
-            } else {
-                result_arr = ObjectFactory::create_array(0).release();
-            }
+            };
 
             if (next_fn_val.is_function()) {
+                // Iterator path: length isn't known upfront, so Construct(C) takes no args.
+                Object* result_arr = construct_result({});
+                if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
                 result_promise->set_property("__fa_arr__", Value(result_arr));
                 result_promise->set_property("__fa_iter__", iterator_val);
                 result_promise->set_property("__fa_next__", next_fn_val);
@@ -797,10 +823,15 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
             double length_d = al_obj ? array_like_length(ctx, al_obj) : 0.0;
             if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
             if (length_d > 4294967295.0) {
-                result_promise->reject(Value(std::string("RangeError: Invalid array length")));
+                ctx.throw_range_error("Invalid array length");
+                Value e = ctx.get_exception(); ctx.clear_exception();
+                result_promise->reject(e);
                 return Value(result_promise_obj.release());
             }
             uint32_t length = static_cast<uint32_t>(length_d < 0 ? 0 : length_d);
+            // Array-like path: Construct(C, [len]) per spec, unlike the iterator path above.
+            Object* result_arr = construct_result({ Value(length_d) });
+            if (ctx.has_exception()) { Value e = ctx.get_exception(); ctx.clear_exception(); result_promise->reject(e); return Value(result_promise_obj.release()); }
             result_promise->set_property("__fa_arr__", Value(result_arr));
             result_promise->set_property("__fa_arraylike__", items_boxed);
             result_promise->set_property("__fa_len__", Value(static_cast<double>(length)));

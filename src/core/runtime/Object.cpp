@@ -2382,6 +2382,33 @@ Object* get_function_prototype() {
     return function_prototype_object;
 }
 
+Value box_primitive_this_sloppy(Context& ctx, const Value& this_value) {
+    if (!this_value.is_number() && !this_value.is_string() && !this_value.is_boolean() &&
+        !this_value.is_symbol() && !this_value.is_bigint()) {
+        return this_value;
+    }
+    const char* ctor_name = this_value.is_number() ? "Number"
+                          : this_value.is_string() ? "String"
+                          : this_value.is_boolean() ? "Boolean"
+                          : this_value.is_symbol() ? "Symbol" : "BigInt";
+    Object::ObjectType obj_type = this_value.is_number() ? Object::ObjectType::Number
+                                : this_value.is_string() ? Object::ObjectType::String
+                                : this_value.is_boolean() ? Object::ObjectType::Boolean
+                                : this_value.is_symbol() ? Object::ObjectType::Symbol
+                                : Object::ObjectType::BigInt;
+    auto wrapper = std::make_unique<Object>(obj_type);
+    wrapper->set_property("[[PrimitiveValue]]", this_value);
+    Object* global = ctx.get_global_object();
+    if (global) {
+        Value ctor_val = global->get_property(ctor_name);
+        if (ctor_val.is_function()) {
+            Value proto = ctor_val.as_function()->get_property("prototype");
+            if (proto.is_object()) wrapper->set_prototype(proto.as_object());
+        }
+    }
+    return Value(wrapper.release());
+}
+
 std::unique_ptr<Object> create_object(Object* prototype) {
     try {
         if (!prototype) {

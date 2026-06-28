@@ -203,6 +203,17 @@ void register_function_builtins(Context& ctx) {
             }
         }
     }
+    // register_array_builtins() ran above, before function_proto_ptr existed -- same patch-up.
+    patch_null_function_protos(ObjectFactory::get_array_prototype());
+    if (ctx.has_binding("Array")) {
+        Value array_ctor = ctx.get_binding("Array");
+        if (array_ctor.is_function()) {
+            patch_null_function_protos(static_cast<Object*>(array_ctor.as_function()));
+            if (array_ctor.as_function()->get_prototype() == nullptr) {
+                array_ctor.as_function()->set_prototype(function_proto_ptr);
+            }
+        }
+    }
 
     auto call_fn = ObjectFactory::create_native_function("call",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
