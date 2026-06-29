@@ -22,10 +22,14 @@ class Proxy : public Object {
 private:
     Object* target_;
     Object* handler_;
+    // [[Call]] is a static internal slot fixed at construction, surviving revocation.
+    bool target_was_callable_;
 
 public:
     Proxy(Object* target, Object* handler);
     virtual ~Proxy() = default;
+
+    bool target_was_callable() const { return target_was_callable_; }
     
     Value get_trap(const Value& key);
     Value get_trap(const Value& key, const Value& receiver);

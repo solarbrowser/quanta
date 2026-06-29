@@ -866,8 +866,13 @@ bool Object::delete_element(uint32_t index) {
     return false;
 }
 
+// Symbol keys are stored as "Symbol.xxx" or "@@sym:N" -- see Symbol::to_property_key().
+static bool is_symbol_key(const std::string& key) {
+    return key.find("Symbol.") == 0 || key.find("@@sym:") == 0;
+}
+
 std::vector<std::string> Object::get_own_property_keys() const {
-    // ES6 [[OwnPropertyKeys]]: integer indices ascending, then string keys in creation order
+    // ES6 [[OwnPropertyKeys]]: indices ascending, then strings, then symbols, each in creation order.
     // Step 1: Collect ALL keys in their original storage order (preserves insertion order)
     std::vector<std::string> raw_keys;
 
@@ -900,14 +905,17 @@ std::vector<std::string> Object::get_own_property_keys() const {
         }
     }
 
-    // Step 2: Partition into integer indices vs string keys
+    // Step 2: Partition into integer indices, string keys, and symbol keys
     std::vector<std::pair<uint32_t, std::string>> index_keys;
     std::vector<std::string> string_keys;
+    std::vector<std::string> symbol_keys;
 
     for (const auto& key : raw_keys) {
         uint32_t idx;
         if (is_array_index(key, &idx)) {
             index_keys.push_back({idx, key});
+        } else if (is_symbol_key(key)) {
+            symbol_keys.push_back(key);
         } else {
             string_keys.push_back(key);
         }
@@ -917,9 +925,9 @@ std::vector<std::string> Object::get_own_property_keys() const {
     std::sort(index_keys.begin(), index_keys.end(),
         [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    // Step 4: Build result - integer indices first, then string keys in insertion order
+    // Step 4: Build result - indices, then strings, then symbols, each in their own order
     std::vector<std::string> keys;
-    keys.reserve(index_keys.size() + string_keys.size());
+    keys.reserve(index_keys.size() + string_keys.size() + symbol_keys.size());
     for (const auto& ik : index_keys) {
         keys.push_back(ik.second);
     }
@@ -928,6 +936,9 @@ std::vector<std::string> Object::get_own_property_keys() const {
         // (see box_primitive) -- it must never surface as an observable own key.
         if (sk == "[[PrimitiveValue]]") continue;
         keys.push_back(sk);
+    }
+    for (const auto& sym_key : symbol_keys) {
+        keys.push_back(sym_key);
     }
 
     return keys;
