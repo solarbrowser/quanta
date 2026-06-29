@@ -994,24 +994,32 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("union", Value(union_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto intersection_fn = ObjectFactory::create_native_function("intersection",
-        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.intersection"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.intersection requires a set-like"); return Value(); }
             if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
-            Value has_fn = other->get_property("has");
+            Value other_size_val = other->get_property("size");
+            if (ctx.has_exception()) return Value();
+            double other_size = other_size_val.to_number();
             auto result = std::make_unique<Set>();
-            if (other->get_type() == Object::ObjectType::Set) {
-                Set* os = static_cast<Set*>(other);
-                for (const auto& v : self->values()) if (os->has(v)) result->add(v);
+            if ((double)self->size() <= other_size) {
+                // Iterate this, call other.has() for each element.
+                Value has_fn = other->get_property("has");
+                if (ctx.has_exception()) return Value();
+                for (const auto& v : self->values()) {
+                    if (call_has(ctx, other, has_fn, v)) result->add(v);
+                    if (ctx.has_exception()) return Value();
+                }
             } else {
-                for (const auto& v : self->values()) if (call_has(ctx, other, has_fn, v)) result->add(v);
+                // this.size > other.size: iterate other.keys(); normalize -0→+0 (spec step 8.b.i), add if in this.
+                for (auto k : iterate_keys(ctx, other)) {
+                    if (ctx.has_exception()) return Value();
+                    if (k.is_number() && k.as_number() == 0.0 && std::signbit(k.as_number())) k = Value(0.0);
+                    if (self->has(k)) result->add(k);
+                }
             }
             if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);

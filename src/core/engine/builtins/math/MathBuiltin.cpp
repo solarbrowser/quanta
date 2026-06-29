@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/Object.h"
 #include <cmath>
 #include <limits>
+#include <cstring>
 #include <memory>
 #include <vector>
 #include "quanta/parser/AST.h"
@@ -45,10 +46,15 @@ void register_math_builtins(Context& ctx) {
                 if (std::isnan(value)) {
                     return Value(std::numeric_limits<double>::quiet_NaN());
                 }
-                result = std::max(result, value);
+                // Handle +0/-0: +0 > -0 per spec
+                if (value == 0.0 && result == 0.0) {
+                    if (std::signbit(result) && !std::signbit(value)) result = value;
+                } else {
+                    result = std::max(result, value);
+                }
             }
             return Value(result);
-        }, 0);
+        }, 2);
     math_object->set_property("max", Value(store_fn(std::move(math_max_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_min_fn = ObjectFactory::create_native_function("min",
@@ -66,10 +72,15 @@ void register_math_builtins(Context& ctx) {
                 if (std::isnan(value)) {
                     return Value(std::numeric_limits<double>::quiet_NaN());
                 }
-                result = std::min(result, value);
+                // Handle +0/-0: -0 < +0 per spec
+                if (value == 0.0 && result == 0.0) {
+                    if (!std::signbit(result) && std::signbit(value)) result = value;
+                } else {
+                    result = std::min(result, value);
+                }
             }
             return Value(result);
-        }, 0);
+        }, 2);
     math_object->set_property("min", Value(store_fn(std::move(math_min_fn))), PropertyAttributes::BuiltinFunction);
 
     auto math_round_fn = ObjectFactory::create_native_function("round",
@@ -311,12 +322,21 @@ void register_math_builtins(Context& ctx) {
 
     auto math_hypot_fn = ObjectFactory::create_native_function("hypot",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
-            double sum = 0;
+            // Coerce all args first (propagating exceptions), then check Infinity/NaN.
+            std::vector<double> nums;
             for (const auto& arg : args) {
                 double val = arg.to_number();
-                sum += val * val;
+                if (ctx.has_exception()) return Value();
+                nums.push_back(val);
             }
+            bool has_nan = false;
+            for (double v : nums) {
+                if (std::isinf(v)) return Value(std::numeric_limits<double>::infinity());
+                if (std::isnan(v)) has_nan = true;
+            }
+            if (has_nan) return Value(std::numeric_limits<double>::quiet_NaN());
+            double sum = 0;
+            for (double v : nums) sum += v * v;
             return Value(std::sqrt(sum));
         }, 2);
     math_object->set_property("hypot", Value(store_fn(std::move(math_hypot_fn))), PropertyAttributes::BuiltinFunction);
@@ -325,9 +345,14 @@ void register_math_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             if (args.size() < 2) return Value(0.0);
-            int32_t a = static_cast<int32_t>(args[0].to_number());
-            int32_t b = static_cast<int32_t>(args[1].to_number());
-            return Value(static_cast<double>(a * b));
+            // ToUint32 via truncation mod 2^32, then treat as signed for multiply.
+            auto toU32 = [](double d) -> uint32_t {
+                if (!std::isfinite(d) || d == 0.0) return 0;
+                return static_cast<uint32_t>(static_cast<int64_t>(d) & 0xFFFFFFFFLL);
+            };
+            uint32_t a = toU32(args[0].to_number());
+            uint32_t b = toU32(args[1].to_number());
+            return Value(static_cast<double>(static_cast<int32_t>(a * b)));
         }, 2);
     math_object->set_property("imul", Value(store_fn(std::move(math_imul_fn))), PropertyAttributes::BuiltinFunction);
 
@@ -378,6 +403,34 @@ void register_math_builtins(Context& ctx) {
 
     PropertyDescriptor math_tag_desc(Value(std::string("Math")), PropertyAttributes::Configurable);
     math_object->set_property_descriptor("Symbol.toStringTag", math_tag_desc);
+
+    // ES2024: Math.f16round -- round to nearest IEEE 754 float16 representation.
+    auto math_f16round_fn = ObjectFactory::create_native_function("f16round",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)ctx;
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
+            double x = args[0].to_number();
+            if (std::isnan(x)) return Value(std::numeric_limits<double>::quiet_NaN());
+            if (std::isinf(x) || x == 0.0) return Value(x);
+            // Convert to float16 bit pattern and back (sign=1b, exp=5b bias-15, mantissa=10b).
+            uint64_t bits; memcpy(&bits, &x, 8);
+            int sign = (bits >> 63) & 1;
+            int exp64 = (bits >> 52) & 0x7FF;
+            uint64_t mant64 = bits & 0x000FFFFFFFFFFFFFULL;
+            int exp16 = exp64 - 1023 + 15;
+            if (exp16 >= 31) return Value(sign ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity());
+            if (exp16 <= 0) { return Value(sign ? -0.0 : 0.0); }
+            uint16_t mant16 = static_cast<uint16_t>(mant64 >> 42);
+            uint16_t h = (sign << 15) | (exp16 << 10) | mant16;
+            int s16 = (h >> 15) & 1;
+            int e16 = (h >> 10) & 0x1F;
+            int m16 = h & 0x3FF;
+            double result;
+            if (e16 == 0) result = (m16 / 1024.0) * std::pow(2.0, -14);
+            else result = (1.0 + m16 / 1024.0) * std::pow(2.0, e16 - 15);
+            return Value(s16 ? -result : result);
+        }, 1);
+    math_object->set_property("f16round", Value(math_f16round_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.register_built_in_object("Math", math_object.release());
 }

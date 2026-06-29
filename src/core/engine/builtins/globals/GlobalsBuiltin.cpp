@@ -36,34 +36,67 @@ namespace Quanta {
 void register_global_builtins(Context& ctx) {
     if (!ctx.get_lexical_environment()) return;
     
-    auto parseInt_fn = ObjectFactory::create_native_function("parseInt",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) return Value::nan();
-            
-            std::string str = args[0].to_string();
-            
-            size_t start = 0;
-            while (start < str.length() && std::isspace(str[start])) {
-                start++;
+    // js_ws_trim: trim all JS whitespace including Unicode, returns trimmed string.
+    auto js_trim = [](const std::string& s) -> std::string {
+        auto is_ws = [](const std::string& str, size_t i) -> size_t {
+            unsigned char c = static_cast<unsigned char>(str[i]);
+            if (std::isspace(c)) return 1;
+            if (c == 0xC2 && i+1 < str.size() && (unsigned char)str[i+1] == 0xA0) return 2;
+            if (i+2 < str.size()) {
+                unsigned char c2 = (unsigned char)str[i+1], c3 = (unsigned char)str[i+2];
+                if (c==0xEF && c2==0xBB && c3==0xBF) return 3;
+                if (c==0xE1 && c2==0x9A && c3==0x80) return 3;
+                if (c==0xE3 && c2==0x80 && c3==0x80) return 3;
+                if (c==0xE2 && c2==0x80 && (c3>=0x80&&c3<=0x8A||c3==0xA8||c3==0xA9||c3==0xAF)) return 3;
+                if (c==0xE2 && c2==0x81 && c3==0x9F) return 3;
             }
-            
-            if (start >= str.length()) {
-                return Value::nan();
-            }
+            return 0;
+        };
+        size_t start = 0, end = s.size();
+        while (start < end) { size_t n = is_ws(s, start); if (!n) break; start += n; }
+        while (end > start) {
+            size_t n = 0;
+            if (end>=3) n = is_ws(s, end-3); if (n==3) { end-=3; continue; }
+            if (end>=2) n = is_ws(s, end-2); if (n==2) { end-=2; continue; }
+            n = is_ws(s, end-1); if (n==1) { end-=1; continue; }
+            break;
+        }
+        return s.substr(start, end-start);
+    };
 
+    auto parseInt_fn = ObjectFactory::create_native_function("parseInt",
+        [js_trim](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (args.empty()) return Value::nan();
+
+            std::string str = js_trim(args[0].to_property_key());
+            if (ctx.has_exception()) return Value::nan();
+
+            size_t start = 0;
+            if (start >= str.length()) return Value::nan();
+
+            // Per spec: ToInt32(radix) then validate range
             int radix = 10;
-            if (args.size() > 1 && args[1].is_number()) {
+            bool radix_provided = args.size() > 1 && !args[1].is_undefined();
+            if (radix_provided) {
                 double r = args[1].to_number();
-                if (r >= 2 && r <= 36) {
-                    radix = static_cast<int>(r);
+                if (ctx.has_exception()) return Value::nan();
+                // ToInt32 wrapping per spec: handles overflow like 4294967298 → 2
+                if (std::isnan(r) || r == 0.0 || std::isinf(r)) radix = 10;
+                else {
+                    int32_t ri = static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(r) & 0xFFFFFFFF));
+                    if (ri == 0) radix = 10;
+                    else if (ri < 2 || ri > 36) return Value::nan();
+                    else radix = ri;
                 }
             }
 
-            // If radix not specified and string starts with "0x" or "0X", use radix 16
-            if (args.size() <= 1 && start + 1 < str.length() &&
-                str[start] == '0' && (str[start + 1] == 'x' || str[start + 1] == 'X')) {
-                radix = 16;
-                start += 2; 
+            // Hex prefix: if radix is 16 or radix is unspecified/0 and string starts with 0x.
+            if (start + 1 < str.length() && str[start] == '0' &&
+                (str[start + 1] == 'x' || str[start + 1] == 'X')) {
+                if (radix == 16 || !radix_provided || radix == 10) {
+                    radix = 16;
+                    start += 2;
+                }
             }
 
             if (start >= str.length()) {
@@ -87,45 +120,56 @@ void register_global_builtins(Context& ctx) {
                 return Value::nan();
             }
             
-            try {
-                size_t pos;
-                long result = std::stol(str.substr(start), &pos, radix);
-                if (pos == 0) {
-                    return Value::nan();
+            // Use strtod/strtoull to handle large values without long overflow.
+            {
+                const char* s = str.c_str() + start;
+                char* endptr = nullptr;
+                double result;
+                if (radix == 10) {
+                    result = std::strtod(s, &endptr);
+                } else {
+                    bool neg = (*s == '-');
+                    const char* digits = s + ((*s == '-' || *s == '+') ? 1 : 0);
+                    unsigned long long ull = std::strtoull(digits, &endptr, radix);
+                    result = neg ? -static_cast<double>(ull) : static_cast<double>(ull);
                 }
-                return Value(static_cast<double>(result));
-            } catch (...) {
-                return Value::nan();
+                if (!endptr || endptr == s) return Value::nan();
+                return Value(result);
             }
         }, 2);
     Function* parseInt_raw = parseInt_fn.get();
     ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), true, true, false);
 
     auto parseFloat_fn = ObjectFactory::create_native_function("parseFloat",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [js_trim](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value::nan();
-            
-            std::string str = args[0].to_string();
-            
-            size_t start = 0;
-            while (start < str.length() && std::isspace(str[start])) {
-                start++;
+
+            std::string str = js_trim(args[0].to_string());
+            if (ctx.has_exception()) return Value::nan();
+
+            if (str.empty()) return Value::nan();
+
+            // Explicit case-sensitive check for "Infinity"/"+Infinity"/"-Infinity"
+            if (str == "Infinity" || str == "+Infinity") return Value(std::numeric_limits<double>::infinity());
+            if (str == "-Infinity") return Value(-std::numeric_limits<double>::infinity());
+            // Prefix match for "Infinity" at start
+            size_t off = (str[0]=='+' || str[0]=='-') ? 1 : 0;
+            if (str.substr(off, 8) == "Infinity") {
+                return Value(str[0]=='-' ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity());
             }
-            
-            if (start >= str.length()) {
-                return Value::nan();
-            }
-            
-            char first_char = str[start];
-            if (!std::isdigit(first_char) && first_char != '.' && 
+
+            char first_char = str[0];
+            if (!std::isdigit(static_cast<unsigned char>(first_char)) && first_char != '.' &&
                 first_char != '+' && first_char != '-') {
                 return Value::nan();
             }
-            
+
             try {
                 size_t pos;
-                double result = std::stod(str.substr(start), &pos);
-                if (pos == 0) {
+                double result = std::stod(str, &pos);
+                if (pos == 0) return Value::nan();
+                if (std::isinf(result) && str.substr(0, pos) != "Infinity" &&
+                    str.substr(0, pos) != "+Infinity" && str.substr(0, pos) != "-Infinity") {
                     return Value::nan();
                 }
                 return Value(result);
