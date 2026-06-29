@@ -119,6 +119,7 @@ bool Object::has_own_property(const std::string& key) const {
     if (!key.empty() && key[0] == '#') return false;
 
     if (this->get_type() == ObjectType::Proxy) {
+        // with-statement scope lookups deliberately rely on this calling the "has" trap, not getOwnPropertyDescriptor.
         return const_cast<Proxy*>(static_cast<const Proxy*>(this))->has_trap(make_prop_key_value(key));
     }
 

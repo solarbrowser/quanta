@@ -12,6 +12,7 @@
 #include <iostream>
 #include <algorithm>
 #include <unordered_set>
+#include <cstdlib>
 
 namespace Quanta {
 
@@ -20,6 +21,9 @@ static std::string to_prop_key(const Value& key) {
     if (key.is_symbol()) return key.as_symbol()->to_property_key();
     return key.to_string();
 }
+
+// OrdinarySet(O, P, V, Receiver), defined further below -- forward declared for set_trap's use.
+static bool ordinary_set_with_receiver(Object* O, const std::string& key, const Value& value, Object* receiver, Context& ctx);
 
 // Helper: create Value from internal property key string, restoring actual Symbol objects.
 static Value from_prop_key(const std::string& key) {
@@ -34,9 +38,16 @@ static Value from_prop_key(const std::string& key) {
     return Value(key);
 }
 
+// IsCallable(target): recurses through nested Proxy targets, since [[Call]] existence is static.
+static bool target_callable(Object* target) {
+    if (!target) return false;
+    if (target->get_type() == Object::ObjectType::Proxy) return static_cast<Proxy*>(target)->target_was_callable();
+    return target->is_function();
+}
+
 Proxy::Proxy(Object* target, Object* handler)
     : Object(ObjectType::Proxy), target_(target), handler_(handler),
-      target_was_callable_(target && target->is_function()) {
+      target_was_callable_(target_callable(target)) {
 }
 
 Function* Proxy::get_trap_method(const char* name) const {
@@ -89,8 +100,8 @@ Value Proxy::get_trap(const Value& key, const Value& receiver) {
                 throw std::runtime_error("TypeError: 'get' proxy invariant violated: non-writable non-configurable property");
             }
         }
-        // Invariant: non-configurable accessor without getter => result must be undefined
-        if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.has_getter()) {
+        // Invariant: non-configurable accessor without an actual getter function => result must be undefined.
+        if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.get_getter()) {
             if (!result.is_undefined()) {
                 if (Object::current_context_) Object::current_context_->throw_type_error("'get' proxy invariant violated: non-configurable accessor without getter");
                 throw std::runtime_error("TypeError: 'get' proxy invariant violated: non-configurable accessor without getter");
@@ -137,8 +148,8 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
                     throw std::runtime_error("TypeError: 'set' proxy invariant violated: non-writable non-configurable property");
                 }
             }
-            // Invariant: non-configurable accessor without setter => cannot set
-            if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.has_setter()) {
+            // Invariant: non-configurable accessor without an actual setter function => cannot set.
+            if (target_desc.is_accessor_descriptor() && !target_desc.is_configurable() && !target_desc.get_setter()) {
                 if (Object::current_context_) Object::current_context_->throw_type_error("'set' proxy invariant violated: non-configurable accessor without setter");
                 throw std::runtime_error("TypeError: 'set' proxy invariant violated: non-configurable accessor without setter");
             }
@@ -146,26 +157,13 @@ bool Proxy::set_trap(const Value& key, const Value& value, const Value& receiver
         return result;
     }
 
-    // No set trap: target.[[Set]] runs Receiver.[[GetOwnProperty]] then [[DefineOwnProperty]].
+    // No set trap: delegate to target.[[Set]](P, V, Receiver) -- OrdinarySet against the real receiver.
     std::string key_str = to_prop_key(key);
-    PropertyDescriptor own_desc = target_->get_property_descriptor(key_str);
-    bool is_writable_data = !own_desc.is_accessor_descriptor() &&
-                            (!own_desc.is_data_descriptor() || own_desc.is_writable());
-    if (is_writable_data) {
-        PropertyDescriptor existing_desc = get_own_property_descriptor_trap(Value(key_str));
-        if (Object::current_context_ && Object::current_context_->has_exception()) return false;
-        // Existing property: update value only. New property: CreateDataProperty semantics (all attrs true).
-        PropertyDescriptor new_desc;
-        new_desc.set_value(value);
-        bool existing_exists = existing_desc.is_data_descriptor() || existing_desc.is_accessor_descriptor();
-        if (!existing_exists) {
-            new_desc.set_writable(true);
-            new_desc.set_enumerable(true);
-            new_desc.set_configurable(true);
-        }
-        return define_property_trap(Value(key_str), new_desc);
-    }
-    return target_->set_property(key_str, value);
+    Context* ctx = Object::current_context_;
+    if (!ctx) { target_->set_property(key_str, value); return true; }
+    Object* receiver_obj = receiver.is_function() ? static_cast<Object*>(receiver.as_function())
+                          : receiver.is_object() ? receiver.as_object() : nullptr;
+    return ordinary_set_with_receiver(target_, key_str, value, receiver_obj, *ctx);
 }
 
 bool Proxy::has_trap(const Value& key) {
@@ -259,17 +257,20 @@ std::vector<std::string> Proxy::own_keys_trap() {
             result = target_->get_own_property_keys();
         } else {
             Value trap_result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_));
-            if (trap_result.is_object()) {
-                Object* arr = trap_result.as_object();
-                uint32_t len = arr->get_length();
-                for (uint32_t i = 0; i < len; ++i) {
-                    Value elem = arr->get_element(i);
-                    if (!elem.is_string() && !elem.is_symbol()) {
-                        ctx->throw_type_error("'ownKeys' trap must return a list of strings and symbols");
-                        return {};
-                    }
-                    result.push_back(elem.is_symbol() ? elem.as_symbol()->to_property_key() : elem.to_string());
+            if (ctx->has_exception()) return {};
+            if (!trap_result.is_object() && !trap_result.is_function()) {
+                ctx->throw_type_error("'ownKeys' trap must return an object");
+                return {};
+            }
+            Object* arr = trap_result.is_function() ? static_cast<Object*>(trap_result.as_function()) : trap_result.as_object();
+            uint32_t len = arr->get_length();
+            for (uint32_t i = 0; i < len; ++i) {
+                Value elem = arr->get_element(i);
+                if (!elem.is_string() && !elem.is_symbol()) {
+                    ctx->throw_type_error("'ownKeys' trap must return a list of strings and symbols");
+                    return {};
                 }
+                result.push_back(elem.is_symbol() ? elem.as_symbol()->to_property_key() : elem.to_string());
             }
         }
         // Invariant: no duplicate keys (spec step 22)
@@ -283,7 +284,8 @@ std::vector<std::string> Proxy::own_keys_trap() {
             }
         }
         // Invariant: must include all non-configurable own properties (string or symbol keys)
-        std::vector<std::string> target_keys = target_->get_own_property_keys();
+        std::vector<std::string> target_keys = target_->get_type() == ObjectType::Proxy
+            ? static_cast<Proxy*>(target_)->own_keys_trap() : target_->get_own_property_keys();
         for (const auto& tkey : target_keys) {
             PropertyDescriptor td = target_->get_property_descriptor(tkey);
             if (!td.is_configurable()) {
@@ -314,6 +316,9 @@ std::vector<std::string> Proxy::own_keys_trap() {
         return result;
     }
 
+    if (target_->get_type() == ObjectType::Proxy) {
+        return static_cast<Proxy*>(target_)->own_keys_trap();
+    }
     return target_->get_own_property_keys();
 }
 
@@ -334,6 +339,11 @@ Value Proxy::get_prototype_of_trap() {
             result = p ? Value(p) : Value::null();
         } else {
             result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_));
+            if (ctx->has_exception()) return Value();
+            if (!result.is_null() && !result.is_object() && !result.is_function()) {
+                ctx->throw_type_error("'getPrototypeOf' trap must return an object or null");
+                return Value();
+            }
         }
         // Invariant: if target is non-extensible, returned prototype must match target's prototype
         if (!target_->is_extensible()) {
@@ -362,23 +372,38 @@ bool Proxy::set_prototype_of_trap(Object* proto) {
     Function* trap_fn = get_trap_method("setPrototypeOf");
     if (Object::current_context_ && Object::current_context_->has_exception()) return false;
 
-    if (trap_fn) {
-        Context* ctx = Object::current_context_;
-        Value proto_val = proto ? Value(proto) : Value::null();
-        bool result = ctx ? trap_fn->call(*ctx, {Value(target_), proto_val}, Value(handler_)).to_boolean()
-                           : (target_->set_prototype(proto), true);
-        // Invariant: if target is non-extensible, new proto must match target's current proto
-        if (!target_->is_extensible()) {
-            Object* target_proto = target_->get_prototype();
-            if (proto != target_proto) {
-                if (Object::current_context_) Object::current_context_->throw_type_error("'setPrototypeOf' proxy invariant violated: cannot change prototype of non-extensible target");
-                throw std::runtime_error("TypeError: 'setPrototypeOf' proxy invariant violated: cannot change prototype of non-extensible target");
-            }
-        }
-        return result;
+    bool target_is_proxy = target_->get_type() == ObjectType::Proxy;
+    if (!trap_fn) {
+        if (target_is_proxy) return static_cast<Proxy*>(target_)->set_prototype_of_trap(proto);
+        target_->set_prototype(proto);
+        return true;
     }
 
-    target_->set_prototype(proto);
+    Context* ctx = Object::current_context_;
+    if (!ctx) { target_->set_prototype(proto); return true; }
+
+    Value proto_val = proto ? Value(proto) : Value::null();
+    bool boolean_trap_result = trap_fn->call(*ctx, {Value(target_), proto_val}, Value(handler_)).to_boolean();
+    if (ctx->has_exception()) return false;
+    if (!boolean_trap_result) return false;
+
+    // IsExtensible(target) and target.[[GetPrototypeOf]]() must go through target's own trap if it's a Proxy.
+    bool extensible_target = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+    if (ctx->has_exception()) return false;
+    if (extensible_target) return true;
+
+    Object* target_proto;
+    if (target_is_proxy) {
+        Value tp = static_cast<Proxy*>(target_)->get_prototype_of_trap();
+        if (ctx->has_exception()) return false;
+        target_proto = tp.is_null() ? nullptr : (tp.is_function() ? static_cast<Object*>(tp.as_function()) : tp.as_object());
+    } else {
+        target_proto = target_->get_prototype();
+    }
+    if (proto != target_proto) {
+        ctx->throw_type_error("'setPrototypeOf' proxy invariant violated: cannot change prototype of non-extensible target");
+        return false;
+    }
     return true;
 }
 
@@ -388,23 +413,26 @@ bool Proxy::is_extensible_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
+    bool target_is_proxy = target_->get_type() == ObjectType::Proxy;
     Function* trap_fn = get_trap_method("isExtensible");
-    if (Object::current_context_ && Object::current_context_->has_exception()) return target_->is_extensible();
+    if (Object::current_context_ && Object::current_context_->has_exception()) return false;
 
     if (trap_fn) {
         Context* ctx = Object::current_context_;
-        bool result = ctx ? trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean()
-                           : target_->is_extensible();
+        if (!ctx) return target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        bool result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean();
+        if (ctx->has_exception()) return false;
         // Invariant: must return same value as Object.isExtensible(target)
-        bool target_result = target_->is_extensible();
+        bool target_result = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        if (ctx->has_exception()) return false;
         if (result != target_result) {
-            if (Object::current_context_) Object::current_context_->throw_type_error("'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
-            throw std::runtime_error("TypeError: 'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
+            ctx->throw_type_error("'isExtensible' proxy invariant violated: must return same as target.isExtensible()");
+            return false;
         }
         return result;
     }
 
-    return target_->is_extensible();
+    return target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
 }
 
 bool Proxy::prevent_extensions_trap() {
@@ -413,21 +441,26 @@ bool Proxy::prevent_extensions_trap() {
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
+    bool target_is_proxy = target_->get_type() == ObjectType::Proxy;
     Function* trap_fn = get_trap_method("preventExtensions");
     if (Object::current_context_ && Object::current_context_->has_exception()) return false;
 
     if (trap_fn) {
         Context* ctx = Object::current_context_;
-        bool result = ctx ? trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean()
-                           : (target_->prevent_extensions(), true);
+        if (!ctx) { target_->prevent_extensions(); return true; }
+        bool result = trap_fn->call(*ctx, {Value(target_)}, Value(handler_)).to_boolean();
+        if (ctx->has_exception()) return false;
         // Invariant: if result is true, target must be non-extensible
-        if (result && target_->is_extensible()) {
-            if (Object::current_context_) Object::current_context_->throw_type_error("'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
-            throw std::runtime_error("TypeError: 'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
+        bool target_extensible = target_is_proxy ? static_cast<Proxy*>(target_)->is_extensible_trap() : target_->is_extensible();
+        if (ctx->has_exception()) return false;
+        if (result && target_extensible) {
+            ctx->throw_type_error("'preventExtensions' proxy invariant violated: trap returned true but target is still extensible");
+            return false;
         }
         return result;
     }
 
+    if (target_is_proxy) return static_cast<Proxy*>(target_)->prevent_extensions_trap();
     target_->prevent_extensions();
     return true;
 }
@@ -451,7 +484,7 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
         } else {
             Value trap_result = trap_fn->call(*ctx, {Value(target_), key}, Value(handler_));
             if (ctx->has_exception()) return PropertyDescriptor();
-            if (!trap_result.is_undefined() && !trap_result.is_null()) {
+            if (!trap_result.is_undefined()) {
                 if (!trap_result.is_object() && !trap_result.is_function()) {
                     ctx->throw_type_error("'getOwnPropertyDescriptor' trap result must be an object or undefined");
                     return PropertyDescriptor();
@@ -507,6 +540,12 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
                     throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: cannot report non-configurable for configurable property");
                 }
+                // Invariant: a non-configurable, non-writable result needs a non-writable target too
+                if (result.is_data_descriptor() && result.has_writable() && !result.is_writable() &&
+                    target_desc.is_data_descriptor() && target_desc.is_writable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error("'getOwnPropertyDescriptor' proxy invariant violated: non-configurable non-writable result requires non-writable target");
+                    throw std::runtime_error("TypeError: 'getOwnPropertyDescriptor' proxy invariant violated: non-configurable non-writable result requires non-writable target");
+                }
             }
         }
         return result;
@@ -533,11 +572,12 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
         if (!ctx) {
             result = target_->set_property_descriptor(key.to_string(), desc);
         } else {
+            // FromPropertyDescriptor: only include keys actually present on this (possibly partial) descriptor.
             auto desc_obj = ObjectFactory::create_object();
             if (desc.has_value()) desc_obj->set_property("value", desc.get_value());
-            desc_obj->set_property("writable", Value(desc.is_writable()));
-            desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
-            desc_obj->set_property("configurable", Value(desc.is_configurable()));
+            if (desc.has_writable()) desc_obj->set_property("writable", Value(desc.is_writable()));
+            if (desc.has_enumerable()) desc_obj->set_property("enumerable", Value(desc.is_enumerable()));
+            if (desc.has_configurable()) desc_obj->set_property("configurable", Value(desc.is_configurable()));
             std::vector<Value> args = {Value(target_), key, Value(desc_obj.release())};
             result = trap_fn->call(*ctx, args, Value(handler_)).to_boolean();
         }
@@ -561,13 +601,47 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
                 throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot define non-configurable property absent from target");
             }
         } else {
-            // If setting configurable=false but target property is configurable → TypeError
-            if (setting_config_false) {
-                PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
-                if (target_desc.is_configurable()) {
-                    if (Object::current_context_) Object::current_context_->throw_type_error("'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
-                    throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
+            PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
+            if (!target_desc.is_configurable()) {
+                // IsCompatiblePropertyDescriptor against a non-configurable target property.
+                const char* msg = "'defineProperty' proxy invariant violated: descriptor not compatible with non-configurable target property";
+                if (desc.has_configurable() && desc.is_configurable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                    throw std::runtime_error(std::string("TypeError: ") + msg);
                 }
+                if (desc.has_enumerable() && desc.is_enumerable() != target_desc.is_enumerable()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                    throw std::runtime_error(std::string("TypeError: ") + msg);
+                }
+                bool desc_is_generic = !desc.is_data_descriptor() && !desc.is_accessor_descriptor();
+                if (!desc_is_generic && desc.is_accessor_descriptor() != target_desc.is_accessor_descriptor()) {
+                    if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                    throw std::runtime_error(std::string("TypeError: ") + msg);
+                }
+                if (target_desc.is_accessor_descriptor()) {
+                    if (desc.has_getter() && desc.get_getter() != target_desc.get_getter()) {
+                        if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                        throw std::runtime_error(std::string("TypeError: ") + msg);
+                    }
+                    if (desc.has_setter() && desc.get_setter() != target_desc.get_setter()) {
+                        if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                        throw std::runtime_error(std::string("TypeError: ") + msg);
+                    }
+                } else if (!target_desc.is_writable()) {
+                    if (desc.has_writable() && desc.is_writable()) {
+                        if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                        throw std::runtime_error(std::string("TypeError: ") + msg);
+                    }
+                    if (desc.has_value() && !desc.get_value().same_value(target_desc.get_value())) {
+                        if (Object::current_context_) Object::current_context_->throw_type_error(msg);
+                        throw std::runtime_error(std::string("TypeError: ") + msg);
+                    }
+                }
+            }
+            // Separate from the above: configurable target rejects settingConfigFalse outright.
+            if (setting_config_false && target_desc.is_configurable()) {
+                if (Object::current_context_) Object::current_context_->throw_type_error("'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
+                throw std::runtime_error("TypeError: 'defineProperty' proxy invariant violated: cannot set configurable:false when target property is configurable");
             }
         }
         return true;
@@ -582,8 +656,8 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    // Invariant: proxy is only callable if target is callable
-    if (!target_->is_function()) {
+    // Invariant: proxy is only callable if target is callable (target may itself be a callable Proxy).
+    if (!target_->is_function() && !(target_->get_type() == ObjectType::Proxy && static_cast<Proxy*>(target_)->target_was_callable())) {
         if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not callable");
         throw std::runtime_error("TypeError: proxy target is not callable");
     }
@@ -601,28 +675,40 @@ Value Proxy::apply_trap(const std::vector<Value>& args, const Value& this_value)
         return trap_fn->call(*ctx, call_args, Value(handler_));
     }
 
+    if (!ctx) return Value();
+    if (target_->get_type() == ObjectType::Proxy) {
+        return static_cast<Proxy*>(target_)->apply_trap(args, this_value);
+    }
     Function* func = static_cast<Function*>(target_);
-    if (ctx) return func->call(*ctx, args, this_value);
-
-    return Value();
+    return func->call(*ctx, args, this_value);
 }
 
-Value Proxy::construct_trap(const std::vector<Value>& args) {
+// IsConstructor(obj): recurses through nested Proxy targets to the underlying Function.
+static bool object_is_constructor(Object* obj) {
+    if (obj->get_type() == Object::ObjectType::Proxy) {
+        return object_is_constructor(static_cast<Proxy*>(obj)->get_proxy_target());
+    }
+    return obj->is_function() && static_cast<Function*>(obj)->is_constructor();
+}
+
+Value Proxy::construct_trap(const std::vector<Value>& args, Object* new_target) {
     if (is_revoked()) {
         if (Object::current_context_) Object::current_context_->throw_type_error("Cannot perform 'construct' on a proxy that has been revoked");
         throw std::runtime_error("TypeError: Proxy has been revoked");
     }
 
-    // Invariant: proxy is only constructable if target is constructable
-    if (!target_->is_function()) {
+    // Invariant: proxy is only constructable if target is constructable (target may itself be a Proxy).
+    bool target_is_proxy = target_->get_type() == ObjectType::Proxy;
+    bool target_constructible = target_is_proxy
+        ? object_is_constructor(target_)
+        : (target_->is_function() && static_cast<Function*>(target_)->is_constructor());
+    if (!target_constructible) {
         if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not a constructor");
         throw std::runtime_error("TypeError: proxy target is not a constructor");
     }
-    Function* target_fn = static_cast<Function*>(target_);
-    if (!target_fn->is_constructor()) {
-        if (Object::current_context_) Object::current_context_->throw_type_error("proxy target is not a constructor");
-        throw std::runtime_error("TypeError: proxy target is not a constructor");
-    }
+
+    Object* nt = new_target ? new_target : static_cast<Object*>(this);
+    Value nt_value(nt);
 
     Function* trap_fn = get_trap_method("construct");
     if (Object::current_context_ && Object::current_context_->has_exception()) return Value();
@@ -636,9 +722,10 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
             auto args_array = ObjectFactory::create_array(static_cast<uint32_t>(args.size()));
             for (size_t i = 0; i < args.size(); ++i)
                 args_array->set_element(static_cast<uint32_t>(i), args[i]);
-            std::vector<Value> call_args = {Value(target_), Value(args_array.release()), Value(target_)};
+            std::vector<Value> call_args = {Value(target_), Value(args_array.release()), nt_value};
             result = trap_fn->call(*trap_ctx, call_args, Value(handler_));
         }
+        if (trap_ctx && trap_ctx->has_exception()) return Value();
         // Invariant: construct trap must return an object
         if (!result.is_object() && !result.is_function()) {
             if (Object::current_context_) Object::current_context_->throw_type_error("proxy construct trap must return an object");
@@ -650,15 +737,21 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     Context* ctx = Object::current_context_;
     if (!ctx) return Value();
 
-    // GetPrototypeFromConstructor(newTarget=this proxy) fires the proxy's get trap, which may revoke it.
+    // No construct trap: propagate to target's own [[Construct]] (target may be a Proxy too).
+    if (target_is_proxy) {
+        return static_cast<Proxy*>(target_)->construct_trap(args, nt);
+    }
+    Function* target_fn = static_cast<Function*>(target_);
+
+    // GetPrototypeFromConstructor(newTarget): may fire the proxy's get trap and revoke it.
     auto new_object = ObjectFactory::create_object();
-    Value target_proto = get_property("prototype");
+    Value target_proto = nt->get_property("prototype");
     if (ctx->has_exception()) return Value();
     if (target_proto.is_object()) {
         new_object->set_prototype(target_proto.as_object());
     } else if (target_proto.is_function()) {
         new_object->set_prototype(static_cast<Object*>(target_proto.as_function()));
-    } else if (is_revoked()) {
+    } else if (nt == this && is_revoked()) {
         // GetFunctionRealm(constructor): a revoked proxy has no [[ProxyHandler]] to find a realm through.
         ctx->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
         return Value();
@@ -673,7 +766,7 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
 
     ctx->set_in_constructor_call(true);
     ctx->set_super_called(false);
-    ctx->set_new_target(Value(static_cast<Object*>(this)));
+    ctx->set_new_target(nt_value);
     Value result = target_fn->call(*ctx, args, this_value);
     bool super_was_called = ctx->was_super_called();
     ctx->set_in_constructor_call(false);
@@ -683,7 +776,7 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     if (!super_was_called && !super_constructor_prop.is_undefined() && super_constructor_prop.is_function()) {
         Function* super_ctor = super_constructor_prop.as_function();
         ctx->set_in_constructor_call(true);
-        ctx->set_new_target(Value(static_cast<Object*>(this)));
+        ctx->set_new_target(nt_value);
         Value super_result = super_ctor->call(*ctx, args, this_value);
         ctx->set_in_constructor_call(false);
         ctx->set_new_target(Value());
@@ -797,18 +890,19 @@ Value Proxy::proxy_revocable(Context& ctx, const std::vector<Value>& args) {
     auto proxy = std::make_unique<Proxy>(target, handler);
     Proxy* proxy_ptr = proxy.get();
     
-    auto revoke_fn = ObjectFactory::create_native_function("revoke", 
+    // Proxy revocation functions are anonymous (name: "").
+    auto revoke_fn = ObjectFactory::create_native_function("",
         [proxy_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
             (void)args;
             proxy_ptr->revoke();
             return Value();
-        });
-    
+        }, 0);
+
     auto result_obj = ObjectFactory::create_object();
     result_obj->set_property("proxy", Value(proxy.release()));
     result_obj->set_property("revoke", Value(revoke_fn.release()));
-    
+
     return Value(result_obj.release());
 }
 
@@ -817,8 +911,8 @@ void Proxy::setup_proxy(Context& ctx) {
     // Per spec, Proxy constructor does not have a 'prototype' property
     proxy_constructor_fn->remove_own_property("prototype");
 
-    auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable);
-    proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()));
+    auto revocable_fn = ObjectFactory::create_native_function("revocable", proxy_revocable, 2);
+    proxy_constructor_fn->set_property("revocable", Value(revocable_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.register_built_in_object("Proxy", proxy_constructor_fn.release());
 }
@@ -836,6 +930,7 @@ Value Reflect::reflect_get(Context& ctx, const std::vector<Value>& args) {
     }
     
     std::string key = args.size() > 1 ? to_property_key(args[1]) : "";
+    if (ctx.has_exception()) return Value();
     Value receiver = args.size() > 2 ? args[2] : args[0];
 
     // Walk the prototype chain of target to find an accessor; if found, call the getter
@@ -976,19 +1071,16 @@ Value Reflect::reflect_set(Context& ctx, const std::vector<Value>& args) {
     }
 
     std::string key = to_property_key(args[1]);
+    if (ctx.has_exception()) return Value();
     Value value = args.size() > 2 ? args[2] : Value();
-    Object* receiver = target;
-    if (args.size() > 3) {
-        receiver = args[3].is_function() ? static_cast<Object*>(args[3].as_function()) : args[3].as_object();
-        if (!receiver) {
-            ctx.throw_type_error("Reflect.set receiver must be an object");
-            return Value();
-        }
-    }
+    // Receiver need not be an Object -- a non-object receiver just makes [[Set]] return false.
+    Value receiver_value = args.size() > 3 ? args[3] : Value(static_cast<Object*>(target));
+    Object* receiver = receiver_value.is_function() ? static_cast<Object*>(receiver_value.as_function())
+                      : receiver_value.is_object() ? receiver_value.as_object() : nullptr;
 
     bool result;
     if (target->get_type() == Object::ObjectType::Proxy) {
-        result = static_cast<Proxy*>(target)->set_trap(Value(key), value, Value(static_cast<Object*>(receiver)));
+        result = static_cast<Proxy*>(target)->set_trap(Value(key), value, receiver_value);
         if (ctx.has_exception()) return Value();
     } else {
         result = ordinary_set_with_receiver(target, key, value, receiver, ctx);
@@ -1009,6 +1101,7 @@ Value Reflect::reflect_has(Context& ctx, const std::vector<Value>& args) {
     }
     
     std::string key = to_property_key(args[1]);
+    if (ctx.has_exception()) return Value();
     return Value(target->has_property(key));
 }
 
@@ -1024,7 +1117,19 @@ Value Reflect::reflect_delete_property(Context& ctx, const std::vector<Value>& a
     }
     
     std::string key = to_property_key(args[1]);
+    if (ctx.has_exception()) return Value();
     return Value(target->delete_property(key));
+}
+
+// Array index per spec: digits only, no leading zero (except "0"), value <= 2^32-2.
+static bool is_array_index_key(const std::string& key, uint32_t* index) {
+    if (key.empty() || key[0] < '0' || key[0] > '9') return false;
+    if (key[0] == '0' && key.length() > 1) return false;
+    char* end;
+    unsigned long val = std::strtoul(key.c_str(), &end, 10);
+    if (end != key.c_str() + key.length() || val > 0xFFFFFFFEUL) return false;
+    *index = static_cast<uint32_t>(val);
+    return true;
 }
 
 Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
@@ -1038,33 +1143,41 @@ Value Reflect::reflect_own_keys(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
     
-    auto keys = target->get_own_property_keys();
+    std::vector<std::string> keys;
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        try {
+            keys = static_cast<Proxy*>(target)->own_keys_trap();
+        } catch (const std::runtime_error&) {
+            if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
+            return Value();
+        }
+        if (ctx.has_exception()) return Value();
+    } else {
+        keys = target->get_own_property_keys();
+    }
 
     // ES6 [[OwnPropertyKeys]] order: integer indices (ascending), then string keys (insertion), then symbols (insertion)
-    std::vector<std::string> index_keys, string_keys, symbol_keys;
+    std::vector<std::pair<uint32_t, std::string>> index_keys;
+    std::vector<std::string> string_keys, symbol_keys;
     for (const auto& key : keys) {
         if (key.find("@@sym:") == 0) {
             symbol_keys.push_back(key);
+            continue;
+        }
+        uint32_t idx;
+        if (is_array_index_key(key, &idx)) {
+            index_keys.push_back({idx, key});
         } else {
-            bool is_index = !key.empty();
-            for (char c : key) {
-                if (c < '0' || c > '9') { is_index = false; break; }
-            }
-            if (is_index && key.length() <= 10) {
-                index_keys.push_back(key);
-            } else {
-                string_keys.push_back(key);
-            }
+            string_keys.push_back(key);
         }
     }
-    std::sort(index_keys.begin(), index_keys.end(), [](const std::string& a, const std::string& b) {
-        return std::stoul(a) < std::stoul(b);
-    });
+    std::sort(index_keys.begin(), index_keys.end(),
+        [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    auto result_array = ObjectFactory::create_array(keys.size());
+    auto result_array = ObjectFactory::create_array(static_cast<uint32_t>(keys.size()));
     uint32_t idx = 0;
-    for (const auto& key : index_keys) {
-        result_array->set_element(idx++, Value(key));
+    for (const auto& ik : index_keys) {
+        result_array->set_element(idx++, Value(ik.second));
     }
     for (const auto& key : string_keys) {
         result_array->set_element(idx++, Value(key));
@@ -1101,17 +1214,31 @@ Value Reflect::reflect_set_prototype_of(Context& ctx, const std::vector<Value>& 
         ctx.throw_type_error("Reflect.setPrototypeOf requires two arguments");
         return Value();
     }
-    
+
     Object* target = to_object(args[0], ctx);
-    if (!target) {
-        return Value(false);
+    if (!target) return Value();
+
+    if (!args[1].is_null() && !args[1].is_object() && !args[1].is_function()) {
+        ctx.throw_type_error("Reflect.setPrototypeOf proto must be an Object or null");
+        return Value();
     }
-    
     Object* proto = args[1].is_null() ? nullptr :
-                   (args[1].is_object() ? args[1].as_object() : nullptr);
-    // Non-extensible: only allow if new prototype === current prototype
-    if (!target->is_extensible()) {
-        return Value(proto == target->get_prototype());
+                   (args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object());
+
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        bool status = static_cast<Proxy*>(target)->set_prototype_of_trap(proto);
+        if (ctx.has_exception()) return Value();
+        return Value(status);
+    }
+
+    // OrdinarySetPrototypeOf: same-value short-circuit, then extensibility, then cycle check.
+    if (proto == target->get_prototype()) return Value(true);
+    if (!target->is_extensible()) return Value(false);
+    Object* p = proto;
+    while (p) {
+        if (p == target) return Value(false);
+        if (p->get_type() == Object::ObjectType::Proxy) break;
+        p = p->get_prototype();
     }
 
     target->set_prototype(proto);
@@ -1128,7 +1255,12 @@ Value Reflect::reflect_is_extensible(Context& ctx, const std::vector<Value>& arg
     if (!target) {
         return Value(false);
     }
-    
+
+    if (target->get_type() == Object::ObjectType::Proxy) {
+        bool result = static_cast<Proxy*>(target)->is_extensible_trap();
+        if (ctx.has_exception()) return Value();
+        return Value(result);
+    }
     return Value(target->is_extensible());
 }
 
@@ -1152,32 +1284,52 @@ Value Reflect::reflect_prevent_extensions(Context& ctx, const std::vector<Value>
     return Value(true);
 }
 
+// IsCallable(value): true for a Function, or a Proxy wrapping a callable target.
+static bool is_callable_value(const Value& value) {
+    if (value.is_function()) return true;
+    return value.is_object() && value.as_object()->get_type() == Object::ObjectType::Proxy &&
+           static_cast<Proxy*>(value.as_object())->target_was_callable();
+}
+
 Value Reflect::reflect_apply(Context& ctx, const std::vector<Value>& args) {
     if (args.size() < 3) {
         ctx.throw_type_error("Reflect.apply requires three arguments");
         return Value();
     }
-    
-    if (!args[0].is_function()) {
+
+    if (!is_callable_value(args[0])) {
         ctx.throw_type_error("Reflect.apply first argument must be a function");
         return Value();
     }
-    
-    Function* target = args[0].as_function();
+
     Value this_value = args[1];
-    
-    std::vector<Value> apply_args;
-    if (args[2].is_object()) {
-        Object* args_obj = args[2].as_object();
-        if (args_obj->is_array()) {
-            uint32_t length = args_obj->get_length();
-            for (uint32_t i = 0; i < length; ++i) {
-                apply_args.push_back(args_obj->get_element(i));
-            }
-        }
+
+    // CreateListFromArrayLike(argumentsList): any object with a "length" property, not just arrays.
+    if (!args[2].is_object() && !args[2].is_function()) {
+        ctx.throw_type_error("CreateListFromArrayLike: argumentsList must be an object");
+        return Value();
     }
-    
-    return target->call(ctx, apply_args, this_value);
+    Object* args_obj = args[2].is_function() ? static_cast<Object*>(args[2].as_function()) : args[2].as_object();
+    Value length_val = args_obj->get_property("length");
+    if (ctx.has_exception()) return Value();
+    uint32_t length = static_cast<uint32_t>(length_val.to_number());
+    std::vector<Value> apply_args;
+    for (uint32_t i = 0; i < length; ++i) {
+        apply_args.push_back(args_obj->get_property(std::to_string(i)));
+        if (ctx.has_exception()) return Value();
+    }
+
+    if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::Proxy) {
+        return static_cast<Proxy*>(args[0].as_object())->apply_trap(apply_args, this_value);
+    }
+    return args[0].as_function()->call(ctx, apply_args, this_value);
+}
+
+// IsConstructor(value): true for a constructor Function, or a Proxy whose target chain is one.
+static bool is_constructor_value(const Value& value) {
+    if (value.is_function()) return value.as_function()->is_constructor();
+    return value.is_object() && value.as_object()->get_type() == Object::ObjectType::Proxy &&
+           object_is_constructor(value.as_object());
 }
 
 Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
@@ -1186,45 +1338,48 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
         return Value();
     }
 
-    if (!args[0].is_function()) {
+    if (!is_constructor_value(args[0])) {
         ctx.throw_type_error("Reflect.construct first argument must be a function");
         return Value();
     }
 
-    Function* target = args[0].as_function();
-
     // Get newTarget (3rd argument), default to target if not provided
-    Function* newTarget = target;
-    if (args.size() >= 3) {
-        if (!args[2].is_function()) {
-            ctx.throw_type_error("Reflect.construct newTarget must be a constructor");
-            return Value();
-        }
-        newTarget = args[2].as_function();
-    }
-
-    // Check if newTarget is a constructor
-    if (!newTarget->is_constructor()) {
-        ctx.throw_type_error("newTarget is not a constructor");
+    Value new_target_value = args.size() >= 3 ? args[2] : args[0];
+    if (!is_constructor_value(new_target_value)) {
+        ctx.throw_type_error("Reflect.construct newTarget must be a constructor");
         return Value();
     }
 
-    std::vector<Value> construct_args;
-    if (args[1].is_object()) {
-        Object* args_obj = args[1].as_object();
-        if (args_obj->is_array()) {
-            uint32_t length = args_obj->get_length();
-            for (uint32_t i = 0; i < length; ++i) {
-                construct_args.push_back(args_obj->get_element(i));
-            }
-        }
+    // CreateListFromArrayLike(argumentsList): any object with a "length" property, not just arrays.
+    if (!args[1].is_object() && !args[1].is_function()) {
+        ctx.throw_type_error("Reflect.construct argumentsList must be an object");
+        return Value();
     }
+    Object* args_obj = args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
+    Value args_length_val = args_obj->get_property("length");
+    if (ctx.has_exception()) return Value();
+    uint32_t args_length = static_cast<uint32_t>(args_length_val.to_number());
+    std::vector<Value> construct_args;
+    for (uint32_t i = 0; i < args_length; ++i) {
+        construct_args.push_back(args_obj->get_property(std::to_string(i)));
+        if (ctx.has_exception()) return Value();
+    }
+
+    Object* new_target_obj = new_target_value.is_function()
+        ? static_cast<Object*>(new_target_value.as_function()) : new_target_value.as_object();
+
+    // Proxy target: dispatch straight to its [[Construct]], passing newTarget through.
+    if (args[0].is_object() && args[0].as_object()->get_type() == Object::ObjectType::Proxy) {
+        return static_cast<Proxy*>(args[0].as_object())->construct_trap(construct_args, new_target_obj);
+    }
+
+    Function* target = args[0].as_function();
 
     // If newTarget == target, use normal construct. Explicitly set new.target rather than
     // relying on Function::construct's own fallback (which only fires when new.target was
     // undefined) -- this call may itself be nested inside another constructor's body, which
     // would otherwise leak that enclosing new.target into this independent construction.
-    if (newTarget == target) {
+    if (new_target_obj == static_cast<Object*>(target)) {
         Value old_new_target = ctx.get_new_target();
         ctx.set_new_target(Value(static_cast<Object*>(target)));
         Value result = target->construct(ctx, construct_args);
@@ -1235,7 +1390,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     // Reflect.construct(target, args, newTarget): call target with new.target = newTarget
     // Create new object using newTarget's prototype
     auto new_object = ObjectFactory::create_object();
-    Value nt_proto = newTarget->get_property("prototype");
+    Value nt_proto = new_target_obj->get_property("prototype");
     // Spec fallback: if newTarget.prototype isn't an object, use target's own
     // intrinsic default prototype rather than leaving the bare Object.prototype.
     if (!nt_proto.is_object()) nt_proto = target->get_property("prototype");
@@ -1245,7 +1400,7 @@ Value Reflect::reflect_construct(Context& ctx, const std::vector<Value>& args) {
     Value old_new_target = ctx.get_new_target();
 
     ctx.set_in_constructor_call(true);
-    ctx.set_new_target(Value(static_cast<Object*>(newTarget)));
+    ctx.set_new_target(new_target_value);
     Value result = target->call(ctx, construct_args, Value(new_object.get()));
     ctx.set_in_constructor_call(was_in_constructor);
     ctx.set_new_target(old_new_target);
@@ -1297,12 +1452,13 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
     }
     
     std::string key = to_property_key(args[1]);
-    
+    if (ctx.has_exception()) return Value();
+
     if (!args[2].is_object()) {
         ctx.throw_type_error("Property descriptor must be an object");
         return Value(false);
     }
-    
+
     Object* desc_obj = args[2].as_object();
     PropertyDescriptor prop_desc;
     
@@ -1344,34 +1500,38 @@ Value Reflect::reflect_define_property(Context& ctx, const std::vector<Value>& a
 void Reflect::setup_reflect(Context& ctx) {
     auto reflect_obj = ObjectFactory::create_object();
     
-    auto get_fn = ObjectFactory::create_native_function("get", reflect_get);
-    auto set_fn = ObjectFactory::create_native_function("set", reflect_set);
-    auto has_fn = ObjectFactory::create_native_function("has", reflect_has);
-    auto delete_property_fn = ObjectFactory::create_native_function("deleteProperty", reflect_delete_property);
+    auto get_fn = ObjectFactory::create_native_function("get", reflect_get, 2);
+    auto set_fn = ObjectFactory::create_native_function("set", reflect_set, 3);
+    auto has_fn = ObjectFactory::create_native_function("has", reflect_has, 2);
+    auto delete_property_fn = ObjectFactory::create_native_function("deleteProperty", reflect_delete_property, 2);
     auto own_keys_fn = ObjectFactory::create_native_function("ownKeys", reflect_own_keys, 1);
     auto get_prototype_of_fn = ObjectFactory::create_native_function("getPrototypeOf", reflect_get_prototype_of, 1);
-    auto set_prototype_of_fn = ObjectFactory::create_native_function("setPrototypeOf", reflect_set_prototype_of);
+    auto set_prototype_of_fn = ObjectFactory::create_native_function("setPrototypeOf", reflect_set_prototype_of, 2);
     auto is_extensible_fn = ObjectFactory::create_native_function("isExtensible", reflect_is_extensible, 1);
     auto prevent_extensions_fn = ObjectFactory::create_native_function("preventExtensions", reflect_prevent_extensions, 1);
-    auto apply_fn = ObjectFactory::create_native_function("apply", reflect_apply);
-    auto construct_fn = ObjectFactory::create_native_function("construct", reflect_construct);
+    auto apply_fn = ObjectFactory::create_native_function("apply", reflect_apply, 3);
+    auto construct_fn = ObjectFactory::create_native_function("construct", reflect_construct, 2);
     auto get_own_property_descriptor_fn = ObjectFactory::create_native_function("getOwnPropertyDescriptor", reflect_get_own_property_descriptor, 2);
     auto define_property_fn = ObjectFactory::create_native_function("defineProperty", reflect_define_property, 3);
-    
-    reflect_obj->set_property("get", Value(get_fn.release()));
-    reflect_obj->set_property("set", Value(set_fn.release()));
-    reflect_obj->set_property("has", Value(has_fn.release()));
-    reflect_obj->set_property("deleteProperty", Value(delete_property_fn.release()));
-    reflect_obj->set_property("ownKeys", Value(own_keys_fn.release()));
-    reflect_obj->set_property("getPrototypeOf", Value(get_prototype_of_fn.release()));
-    reflect_obj->set_property("setPrototypeOf", Value(set_prototype_of_fn.release()));
-    reflect_obj->set_property("isExtensible", Value(is_extensible_fn.release()));
-    reflect_obj->set_property("preventExtensions", Value(prevent_extensions_fn.release()));
-    reflect_obj->set_property("apply", Value(apply_fn.release()));
-    reflect_obj->set_property("construct", Value(construct_fn.release()));
-    reflect_obj->set_property("getOwnPropertyDescriptor", Value(get_own_property_descriptor_fn.release()));
-    reflect_obj->set_property("defineProperty", Value(define_property_fn.release()));
-    
+
+    // Reflect.* methods are writable, configurable, non-enumerable per spec (BuiltinFunction attrs).
+    reflect_obj->set_property("get", Value(get_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("set", Value(set_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("has", Value(has_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("deleteProperty", Value(delete_property_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("ownKeys", Value(own_keys_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("getPrototypeOf", Value(get_prototype_of_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("setPrototypeOf", Value(set_prototype_of_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("isExtensible", Value(is_extensible_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("preventExtensions", Value(prevent_extensions_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("apply", Value(apply_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("construct", Value(construct_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("getOwnPropertyDescriptor", Value(get_own_property_descriptor_fn.release()), PropertyAttributes::BuiltinFunction);
+    reflect_obj->set_property("defineProperty", Value(define_property_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    PropertyDescriptor reflect_tag_desc(Value(std::string("Reflect")), PropertyAttributes::Configurable);
+    reflect_obj->set_property_descriptor("Symbol.toStringTag", reflect_tag_desc);
+
     ctx.register_built_in_object("Reflect", reflect_obj.release());
 }
 
