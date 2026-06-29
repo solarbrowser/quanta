@@ -907,12 +907,23 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
 
     auto new_object = ObjectFactory::create_object();
     Value this_value(new_object.get());
-    
+
     Value constructor_prototype = get_property("prototype");
-    if (constructor_prototype.is_object() || constructor_prototype.is_function()) {
-        Object* proto_obj = constructor_prototype.is_function()
-            ? static_cast<Object*>(constructor_prototype.as_function())
-            : constructor_prototype.as_object();
+    // GetPrototypeFromConstructor: initial prototype comes from new.target, which may already differ from `this`.
+    Value initial_proto = constructor_prototype;
+    Value existing_new_target = ctx.get_new_target();
+    if (!existing_new_target.is_undefined()) {
+        Object* nt_obj = existing_new_target.is_function() ? static_cast<Object*>(existing_new_target.as_function())
+                        : existing_new_target.is_object() ? existing_new_target.as_object() : nullptr;
+        if (nt_obj && nt_obj != static_cast<Object*>(this)) {
+            Value nt_proto = nt_obj->get_property("prototype");
+            if (nt_proto.is_object() || nt_proto.is_function()) initial_proto = nt_proto;
+        }
+    }
+    if (initial_proto.is_object() || initial_proto.is_function()) {
+        Object* proto_obj = initial_proto.is_function()
+            ? static_cast<Object*>(initial_proto.as_function())
+            : initial_proto.as_object();
         new_object->set_prototype(proto_obj);
     }
     

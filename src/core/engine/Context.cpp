@@ -166,7 +166,7 @@ bool Context::is_lexical_const(const std::string& name) const {
     while (env) {
         if (env->get_type() == Environment::Type::Object) {
             if (env->is_const_binding(name)) return true;
-            if (env->get_binding_object() && env->get_binding_object()->has_own_property(name)) return false;
+            if (env->get_binding_object() && env->get_binding_object()->has_property(name)) return false;
         } else if (env->has_mutable_flag(name)) {
             return !env->is_mutable_binding(name);
         }
@@ -181,7 +181,7 @@ bool Context::is_strict_const(const std::string& name) const {
     while (env) {
         if (env->get_type() == Environment::Type::Object) {
             if (env->is_const_binding(name)) return true;
-            if (env->get_binding_object() && env->get_binding_object()->has_own_property(name)) return false;
+            if (env->get_binding_object() && env->get_binding_object()->has_property(name)) return false;
         } else if (env->has_mutable_flag(name)) {
             return !env->is_mutable_binding(name) && env->is_const_binding(name);
         }
@@ -852,7 +852,7 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
         // GetBindingValue step 2: its own HasProperty check, independent of (and without re-checking @@unscopables like) the HasBinding call that already resolved this environment.
         // A side effect of that earlier @@unscopables  getter (or other code) may have deleted the property in the meantime
         // step 3a: strict mode throws ReferenceError, otherwise return undefined.
-        if (!binding_object_->has_own_property(name)) {
+        if (!binding_object_->has_property(name)) {
             if (ctx && ctx->is_strict_mode()) {
                 ctx->throw_reference_error("'" + name + "' is not defined");
             }
@@ -868,7 +868,7 @@ Value Environment::get_binding_direct(const std::string& name, Context* ctx) con
 bool Environment::set_binding_direct(const std::string& name, const Value& value, Context* ctx) {
     if (type_ == Type::Object && binding_object_) {
         // SetMutableBinding step 2-3: strict mode throws if the binding vanished (e.g. a `with` getter deleted it mid-update).
-        bool still_exists = binding_object_->has_own_property(name);
+        bool still_exists = binding_object_->has_property(name);
         if (!still_exists && ctx && ctx->is_strict_mode()) {
             ctx->throw_reference_error("'" + name + "' is not defined");
             return false;
@@ -1016,7 +1016,7 @@ static bool is_internal_binding_name(const std::string& name) {
 bool Environment::has_own_binding(const std::string& name) const {
     if (type_ == Type::Object && binding_object_) {
         if (is_with_environment_ && is_internal_binding_name(name)) return false;
-        if (!binding_object_->has_own_property(name)) return false;
+        if (!binding_object_->has_property(name)) return false;
         // ES6 8.1.1.2.1 HasBinding: @@unscopables is only consulted when the
         // withEnvironment flag is set -- i.e. for `with` statement object
         // environments, not ordinary object environments (global object, etc).

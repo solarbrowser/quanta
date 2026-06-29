@@ -866,23 +866,26 @@ bool Value::instanceof_check(const Value& constructor) const {
             Object* current = fn->get_prototype();
             while (current) {
                 if (current == ctor_prototype) return true;
+                if (Object::current_context_ && Object::current_context_->has_exception()) return false;
                 current = current->get_prototype();
             }
         }
         return false;
     }
-    
+
     Object* obj = as_object();
-    
+
     Value prototype_prop = ctor->get_property("prototype");
     if (!prototype_prop.is_object()) {
         return false;
     }
     Object* ctor_prototype = prototype_prop.as_object();
-    
+
     Object* current = obj;
     while (current != nullptr) {
         Object* current_proto = current->get_prototype();
+        // A Proxy's getPrototypeOf trap may have thrown; don't fall through to the ctor_name checks below.
+        if (Object::current_context_ && Object::current_context_->has_exception()) return false;
         if (current_proto == nullptr) {
             break;
         }
@@ -893,7 +896,7 @@ bool Value::instanceof_check(const Value& constructor) const {
 
         current = current_proto;
     }
-    
+
     if (ctor_name == "Array") {
         return obj->is_array();
     }
