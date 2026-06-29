@@ -579,6 +579,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             if (ctx.has_exception()) return Value();
                             return right_value;
                         }
+                    } else {
+                        // Property is owned -- use set_property to respect any own accessor descriptor.
+                        bool ok = obj->set_property(std::to_string(index), right_value);
+                        if (!ok && ctx.is_strict_mode()) {
+                            ctx.throw_type_error("Cannot assign to read only property '" + std::to_string(index) + "'");
+                            return Value();
+                        }
+                        if (ctx.has_exception()) return Value();
+                        return right_value;
                     }
                     obj->set_element(index, right_value);
                     return right_value;

@@ -69,6 +69,7 @@ static bool target_callable(Object* target) {
 // OrdinarySetPrototypeOf: same-value short-circuit, extensibility check, then cycle detection.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
     if (new_proto == obj->get_prototype()) return true;
+    if (obj->has_own_property("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
     Object* p = new_proto;
     while (p) {
@@ -626,6 +627,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
             if (desc.has_configurable()) desc_obj->set_property("configurable", Value(desc.is_configurable()));
             std::vector<Value> args = {Value(target_), key, Value(desc_obj.release())};
             result = trap_fn->call(*ctx, args, Value(handler_)).to_boolean();
+            if (ctx->has_exception()) return false;
         }
         if (!result) return false;
 

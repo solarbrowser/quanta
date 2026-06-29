@@ -104,6 +104,7 @@ private:
         std::set<const Object*> visited_;
         Context* context_;
         std::string current_key_;
+        bool skip_bigint_toJSON_ = false;
 
     public:
         Stringifier(const StringifyOptions& options, Context* ctx = nullptr);
@@ -112,6 +113,7 @@ private:
         
     private:
         std::string stringify_value(const Value& value);
+        Function* get_to_json(const Value& v);
         std::string stringify_object(const Object* obj);
         std::string stringify_array(const Object* arr);
         std::string stringify_string(const std::string& str);
