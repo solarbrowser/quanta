@@ -45,7 +45,8 @@ public:
     PropertyDescriptor get_own_property_descriptor_trap(const Value& key);
     bool define_property_trap(const Value& key, const PropertyDescriptor& desc);
     Value apply_trap(const std::vector<Value>& args, const Value& this_value);
-    Value construct_trap(const std::vector<Value>& args);
+    // new_target defaults to this proxy; Reflect.construct may pass a different one.
+    Value construct_trap(const std::vector<Value>& args, Object* new_target = nullptr);
     
     static Value proxy_constructor(Context& ctx, const std::vector<Value>& args);
     static Value proxy_revocable(Context& ctx, const std::vector<Value>& args);

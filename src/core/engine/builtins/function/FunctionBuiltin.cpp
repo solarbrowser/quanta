@@ -218,19 +218,21 @@ void register_function_builtins(Context& ctx) {
     auto call_fn = ObjectFactory::create_native_function("call",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
-            if (!function_obj || !function_obj->is_function()) {
-                ctx.throw_type_error("Function.prototype.call called on non-function");
-                return Value();
-            }
-            
-            Function* func = static_cast<Function*>(function_obj);
             Value this_arg = args.size() > 0 ? args[0] : Value();
-            
             std::vector<Value> call_args;
             for (size_t i = 1; i < args.size(); i++) {
                 call_args.push_back(args[i]);
             }
-            
+
+            if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
+                return static_cast<Proxy*>(function_obj)->apply_trap(call_args, this_arg);
+            }
+            if (!function_obj || !function_obj->is_function()) {
+                ctx.throw_type_error("Function.prototype.call called on non-function");
+                return Value();
+            }
+
+            Function* func = static_cast<Function*>(function_obj);
             return func->call(ctx, call_args, this_arg);
         });
 
@@ -246,17 +248,9 @@ void register_function_builtins(Context& ctx) {
     auto apply_fn = ObjectFactory::create_native_function("apply",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* function_obj = ctx.get_this_binding();
-            Function* func = nullptr;
-            if (function_obj && function_obj->is_function()) {
-                func = static_cast<Function*>(function_obj);
-            } else if (function_obj && function_obj->get_type() == Object::ObjectType::Proxy) {
-                Proxy* proxy_obj = static_cast<Proxy*>(function_obj);
-                Object* proxy_target = proxy_obj->get_proxy_target();
-                if (proxy_target && proxy_target->is_function()) {
-                    func = static_cast<Function*>(proxy_target);
-                }
-            }
-            if (!func) {
+            bool is_proxy = function_obj && function_obj->get_type() == Object::ObjectType::Proxy;
+            Function* func = (function_obj && function_obj->is_function()) ? static_cast<Function*>(function_obj) : nullptr;
+            if (!func && !is_proxy) {
                 ctx.throw_type_error("Function.prototype.apply called on non-function");
                 return Value();
             }
@@ -282,7 +276,8 @@ void register_function_builtins(Context& ctx) {
                     }
                 }
             }
-            
+
+            if (is_proxy) return static_cast<Proxy*>(function_obj)->apply_trap(call_args, this_arg);
             return func->call(ctx, call_args, this_arg);
         });
 

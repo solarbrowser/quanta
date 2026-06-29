@@ -689,7 +689,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
         // Descriptor lookup starts at the super base / private_owner, but the write target is always 'this'/obj.
         Object* read_base = is_super_assignment ? super_lookup_proto : (private_owner ? private_owner : obj);
 
-        if (read_base && !is_string_object) {
+        // For a Proxy, [[Set]] must go straight to set_trap; this descriptor pre-check would fire an extra getOwnPropertyDescriptor trap call.
+        if (read_base && !is_string_object && read_base->get_type() != Object::ObjectType::Proxy) {
             // Check own descriptor first, then prototype chain for setter
             PropertyDescriptor desc = read_base->get_property_descriptor(prop_name);
             bool found_inherited = false;

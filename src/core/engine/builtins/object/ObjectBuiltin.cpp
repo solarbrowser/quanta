@@ -48,6 +48,20 @@ static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, cons
     return Value();
 }
 
+// OrdinarySetPrototypeOf: same-value short-circuit, then extensibility check, then cycle check.
+static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
+    if (new_proto == obj->get_prototype()) return true;
+    if (!obj->is_extensible()) return false;
+    Object* p = new_proto;
+    while (p) {
+        if (p == obj) return false;
+        if (p->get_type() == Object::ObjectType::Proxy) break;
+        p = p->get_prototype();
+    }
+    obj->set_prototype(new_proto);
+    return true;
+}
+
 // Recovers the actual `this` value passed to a native call, including null/undefined
 // (ctx.get_this_binding() only reflects object/function `this`).
 static Value get_actual_this(Context& ctx) {
@@ -815,8 +829,16 @@ void register_object_builtins(Context& ctx) {
                 return Value();
             }
 
+            // proto must be Object or Null
+            if (!proto_val.is_null() && !proto_val.is_object() && !proto_val.is_function()) {
+                ctx.throw_type_error("Object prototype may only be an Object or null");
+                return Value();
+            }
+            Object* new_proto = proto_val.is_null() ? nullptr :
+                proto_val.is_function() ? static_cast<Object*>(proto_val.as_function()) : proto_val.as_object();
+
             // Primitives: RequireObjectCoercible succeeds, but [[SetPrototypeOf]] only
-            // applies to real Objects -- return the primitive as-is per spec step 2b.
+            // applies to real Objects -- return the primitive as-is per spec step 4.
             if (!obj_val.is_object() && !obj_val.is_function()) {
                 return obj_val;
             }
@@ -825,37 +847,19 @@ void register_object_builtins(Context& ctx) {
 
             // For Proxy, call setPrototypeOf trap
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                Object* new_proto = proto_val.is_null() ? nullptr :
-                    proto_val.is_object() ? proto_val.as_object() :
-                    proto_val.is_function() ? static_cast<Object*>(proto_val.as_function()) : nullptr;
-                static_cast<Proxy*>(obj)->set_prototype_of_trap(new_proto);
-                return obj_val;
-            }
-
-            // Non-extensible: only allow if new prototype === current prototype
-            if (!obj->is_extensible()) {
-                Object* current_proto = obj->get_prototype();
-                Object* new_proto = proto_val.is_null() ? nullptr :
-                    proto_val.is_object() ? proto_val.as_object() :
-                    proto_val.is_function() ? static_cast<Object*>(proto_val.as_function()) : nullptr;
-                if (new_proto != current_proto) {
-                    ctx.throw_type_error("Object is not extensible");
+                bool status = static_cast<Proxy*>(obj)->set_prototype_of_trap(new_proto);
+                if (ctx.has_exception()) return Value();
+                if (!status) {
+                    ctx.throw_type_error("setPrototypeOf trap returned false");
                     return Value();
                 }
                 return obj_val;
             }
 
-            if (proto_val.is_null()) {
-                obj->set_prototype(nullptr);
-            } else if (proto_val.is_object()) {
-                obj->set_prototype(proto_val.as_object());
-            } else if (proto_val.is_function()) {
-                obj->set_prototype(proto_val.as_function());
-            } else {
-                ctx.throw_type_error("Object prototype may only be an Object or null");
+            if (!ordinary_set_prototype_of(obj, new_proto)) {
+                ctx.throw_type_error("Cannot set prototype: not extensible or cyclic");
                 return Value();
             }
-
             return obj_val;
         }, 2);
     object_constructor->set_property("setPrototypeOf", Value(setPrototypeOf_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -881,6 +885,10 @@ void register_object_builtins(Context& ctx) {
             }
 
             if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) {
+                // For Proxy, has_own_property would re-check via the unrelated "has" trap.
+                if (obj->get_type() == Object::ObjectType::Proxy) {
+                    return Value();
+                }
                 if (!obj->has_own_property(prop_name)) {
                     return Value();
                 }
@@ -1079,7 +1087,8 @@ void register_object_builtins(Context& ctx) {
 
                 // Brand-new property (not existing): fill spec-default false for any
                 // unspecified attribute so subsequent SameValue/writable checks work.
-                if (!obj->has_own_property(prop_name)) {
+                // Skipped for Proxy: has_own_property would check the unrelated "has" trap instead.
+                if (obj->get_type() != Object::ObjectType::Proxy && !obj->has_own_property(prop_name)) {
                     if (!prop_desc.has_configurable()) prop_desc.set_configurable(false);
                     if (!prop_desc.has_enumerable())   prop_desc.set_enumerable(false);
                     if (prop_desc.is_data_descriptor() && !prop_desc.has_writable())
@@ -1492,6 +1501,12 @@ void register_object_builtins(Context& ctx) {
             std::string prop_name = (args.size() < 2 ? Value() : args[1]).to_property_key();
             if (ctx.has_exception()) return Value();
 
+            // HasOwnProperty uses [[GetOwnProperty]] -- the getOwnPropertyDescriptor trap, not "has".
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                PropertyDescriptor desc = static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(from_prop_key(prop_name));
+                if (ctx.has_exception()) return Value();
+                return Value(desc.is_data_descriptor() || desc.is_accessor_descriptor());
+            }
             return Value(obj->has_own_property(prop_name));
         }, 2);
     object_constructor->set_property("hasOwn", Value(hasOwn_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1695,6 +1710,12 @@ void register_object_builtins(Context& ctx) {
             std::string prop_name = args[0].to_property_key();
             if (ctx.has_exception()) return Value(false);
 
+            // this_obj->has_own_property would call the unrelated "has" trap for a Proxy.
+            if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(from_prop_key(prop_name));
+                if (ctx.has_exception()) return Value(false);
+                return Value((desc.is_data_descriptor() || desc.is_accessor_descriptor()) && desc.is_enumerable());
+            }
             if (!this_obj->has_own_property(prop_name)) {
                 return Value(false);
             }
@@ -1776,31 +1797,14 @@ void register_object_builtins(Context& ctx) {
                 return Value(); // non-object, non-null: no-op per spec
             Object* new_proto = args[0].is_null() ? nullptr
                 : (args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object());
-            // If new proto == current proto, it's a no-op (allowed even on non-extensible).
-            Object* current_proto = this_obj->get_prototype();
-            if (new_proto == current_proto) return Value();
-            // Non-extensible: throw TypeError when changing prototype
-            if (!this_obj->is_extensible()) {
-                ctx.throw_type_error("Cannot set __proto__ of non-extensible object");
-                return Value();
-            }
+
             bool ok;
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
+                // [[SetPrototypeOf]] dispatches entirely to the trap -- no separate extensibility/cycle check here.
                 ok = static_cast<Proxy*>(this_obj)->set_prototype_of_trap(new_proto);
                 if (ctx.has_exception()) return Value();
             } else {
-                // Cycle detection
-                Object* p = new_proto;
-                while (p) {
-                    if (p == this_obj) {
-                        ctx.throw_type_error("Cyclic __proto__ value");
-                        return Value();
-                    }
-                    if (p->get_type() == Object::ObjectType::Proxy) break;
-                    p = p->get_prototype();
-                }
-                this_obj->set_prototype(new_proto);
-                ok = true;
+                ok = ordinary_set_prototype_of(this_obj, new_proto);
             }
             if (!ok) { ctx.throw_type_error("Cannot set __proto__"); return Value(); }
             return Value();
