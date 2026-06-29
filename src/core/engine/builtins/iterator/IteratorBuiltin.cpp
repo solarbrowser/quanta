@@ -1151,8 +1151,32 @@ void register_iterator_constructor(Context& ctx) {
                     inner_next = ii->get_property("next");
                     if (ctx.has_exception()) return Value();
                 }
+            } else if (O.is_string()) {
+                // String primitive: look up String.prototype[Symbol.iterator] and call it.
+                Value str_ctor = ctx.get_binding("String");
+                if (str_ctor.is_function()) {
+                    Value str_proto = str_ctor.as_function()->get_property("prototype");
+                    if (str_proto.is_object()) {
+                        Symbol* iter_sym2 = Symbol::get_well_known(Symbol::ITERATOR);
+                        if (iter_sym2) {
+                            Value iter_method2 = str_proto.as_object()->get_property(iter_sym2->to_property_key());
+                            if (iter_method2.is_function()) {
+                                inner_iter = iter_method2.as_function()->call(ctx, {}, O);
+                                if (ctx.has_exception()) return Value();
+                                if (inner_iter.is_object()) {
+                                    inner_next = inner_iter.as_object()->get_property("next");
+                                    if (ctx.has_exception()) return Value();
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!inner_iter.is_object()) {
+                    ctx.throw_type_error("Iterator.from: could not get string iterator");
+                    return Value();
+                }
             } else {
-                ctx.throw_type_error("Iterator.from: string primitive not yet supported");
+                ctx.throw_type_error("Iterator.from: unsupported argument type");
                 return Value();
             }
 

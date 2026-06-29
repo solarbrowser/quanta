@@ -33,6 +33,7 @@ void Error::set_error_name() {
 }
 
 void Error::initialize_properties() {
+    set_property("_isError", Value(true), PropertyAttributes::None);
     set_property("name", Value(name_), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     // Only set message as own property when non-empty; when message is "" it means

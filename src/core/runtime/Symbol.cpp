@@ -136,19 +136,16 @@ Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
 }
 
 Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
-    if (args.empty()) {
-        ctx.throw_exception(Value(std::string("Symbol.for requires a key argument")));
-        return Value();
-    }
-    
-    std::string key = args[0].to_string();
+    Value key_val = args.empty() ? Value() : args[0];
+    std::string key = key_val.to_property_key();
+    if (ctx.has_exception()) return Value();
     Symbol* symbol = for_key(key);
     return Value(symbol);
 }
 
 Value Symbol::symbol_key_for(Context& ctx, const std::vector<Value>& args) {
     if (args.empty() || !args[0].is_symbol()) {
-        ctx.throw_exception(Value(std::string("Symbol.keyFor requires a symbol argument")));
+        ctx.throw_type_error("Symbol.keyFor requires a symbol argument");
         return Value();
     }
     

@@ -163,22 +163,24 @@ void register_number_builtins(Context& ctx) {
                     return Value();
                 }
 
-                if (std::isnan(num)) return Value(std::string("NaN"));
-                if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
-
+                // Validate radix BEFORE handling NaN/Infinity (spec step 4 before step 3).
                 int radix = 10;
                 if (!args.empty() && !args[0].is_undefined()) {
                     if (args[0].is_symbol() || args[0].is_bigint()) {
                         ctx.throw_type_error("Cannot convert Symbol/BigInt to number");
                         return Value();
                     }
-                    radix = static_cast<int>(args[0].to_number());
+                    double r = args[0].to_number();
                     if (ctx.has_exception()) return Value();
+                    radix = std::isnan(r) ? 10 : static_cast<int>(r);
                     if (radix < 2 || radix > 36) {
                         ctx.throw_range_error("radix must be between 2 and 36");
                         return Value();
                     }
                 }
+
+                if (std::isnan(num)) return Value(std::string("NaN"));
+                if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
 
                 if (radix == 10) {
                     // Check if number is an integer
@@ -269,11 +271,12 @@ void register_number_builtins(Context& ctx) {
                 if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
                 double frac_d = args[0].to_number();
                 if (ctx.has_exception()) return Value();
-                if (frac_d < 0 || frac_d > 100 || std::isnan(frac_d)) {
+                double frac_int = std::isnan(frac_d) ? 0.0 : std::trunc(frac_d);
+                if (frac_int < 0 || frac_int > 100) {
                     ctx.throw_range_error("toExponential() precision out of range");
                     return Value();
                 }
-                frac = static_cast<int>(frac_d);
+                frac = static_cast<int>(frac_int);
             }
 
             bool negative = num < 0;
@@ -346,11 +349,13 @@ void register_number_builtins(Context& ctx) {
                 }
                 double frac = args[0].to_number();
                 if (ctx.has_exception()) return Value();
-                if (std::isnan(frac) || frac < 0 || frac > 100) {
+                // ToIntegerOrInfinity: NaN->0, then check [0,100]
+                double int_frac = std::isnan(frac) ? 0.0 : std::trunc(frac);
+                if (int_frac < 0 || int_frac > 100) {
                     ctx.throw_range_error("toFixed() precision out of range");
                     return Value();
                 }
-                precision = static_cast<int>(frac);
+                precision = static_cast<int>(int_frac);
             }
 
             if (std::isnan(num)) return Value(std::string("NaN"));
@@ -386,16 +391,18 @@ void register_number_builtins(Context& ctx) {
             } else { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
 
             if (args.empty() || args[0].is_undefined()) {
-                if (std::isnan(num)) return Value(std::string("NaN"));
-                if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
+                if (!std::isfinite(num)) return Value(std::isnan(num) ? std::string("NaN") : (num > 0 ? std::string("Infinity") : std::string("-Infinity")));
                 return Value(Value(num).to_string());
             }
 
             if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
             double prec_d = args[0].to_number();
             if (ctx.has_exception()) return Value();
-            int precision = static_cast<int>(prec_d);
-            if (prec_d < 1 || prec_d > 100 || std::isnan(prec_d)) {
+            double prec_int = std::isnan(prec_d) ? 0.0 : std::trunc(prec_d);
+            // Spec step 4: handle NaN/Infinity BEFORE range check (step 5).
+            if (!std::isfinite(num)) return Value(std::isnan(num) ? std::string("NaN") : (num > 0 ? std::string("Infinity") : std::string("-Infinity")));
+            int precision = static_cast<int>(prec_int);
+            if (prec_int < 1 || prec_int > 100) {
                 ctx.throw_range_error("toPrecision() precision out of range");
                 return Value();
             }

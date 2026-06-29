@@ -234,40 +234,98 @@ double Value::to_number() const {
         const std::string& str = as_string()->str();
         if (str.empty()) return 0.0;
 
-        // Trim whitespace
-        size_t start = 0;
-        size_t end = str.length();
-        while (start < end && std::isspace(static_cast<unsigned char>(str[start]))) start++;
-        while (end > start && std::isspace(static_cast<unsigned char>(str[end - 1]))) end--;
+        // Trim all JS WhiteSpace / LineTerminator including the full Unicode set.
+        auto js_ws_len = [](const std::string& s, size_t i) -> size_t {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            if (std::isspace(c)) return 1;
+            if (c == 0xC2 && i+1 < s.size() && static_cast<unsigned char>(s[i+1]) == 0xA0) return 2; // U+00A0
+            if (i+2 < s.size()) {
+                unsigned char c2 = static_cast<unsigned char>(s[i+1]), c3 = static_cast<unsigned char>(s[i+2]);
+                if (c == 0xEF && c2 == 0xBB && c3 == 0xBF) return 3; // U+FEFF
+                if (c == 0xE1 && c2 == 0x9A && c3 == 0x80) return 3; // U+1680
+                if (c == 0xE3 && c2 == 0x80 && c3 == 0x80) return 3; // U+3000
+                if (c == 0xE2 && c2 == 0x80) {
+                    // U+2000-U+200A, U+2028, U+2029, U+202F
+                    if (c3 >= 0x80 && c3 <= 0x8A) return 3;
+                    if (c3 == 0xA8 || c3 == 0xA9 || c3 == 0xAF) return 3;
+                }
+                if (c == 0xE2 && c2 == 0x81 && c3 == 0x9F) return 3; // U+205F
+            }
+            return 0;
+        };
+        size_t start = 0, end = str.length();
+        while (start < end) { size_t n = js_ws_len(str, start); if (!n) break; start += n; }
+        // Trim end: scan backward by trying 3-byte, 2-byte, 1-byte sequences.
+        while (end > start) {
+            size_t n = 0;
+            if (end >= 3) n = js_ws_len(str, end-3); if (n == 3) { end -= 3; continue; }
+            if (end >= 2) n = js_ws_len(str, end-2); if (n == 2) { end -= 2; continue; }
+            n = js_ws_len(str, end-1); if (n == 1) { end -= 1; continue; }
+            break;
+        }
 
         // If only whitespace, return 0
         if (start >= end) return 0.0;
 
         std::string trimmed = str.substr(start, end - start);
 
-        // ES6: Handle binary (0b/0B) and octal (0o/0O) string literals
+        // ES6: Handle binary (0b/0B) and octal (0o/0O) string literals (no underscores allowed per ToNumber).
         if (trimmed.length() >= 3 && trimmed[0] == '0') {
             if (trimmed[1] == 'b' || trimmed[1] == 'B') {
+                std::string digits = trimmed.substr(2);
+                if (digits.find('_') != std::string::npos) return std::numeric_limits<double>::quiet_NaN();
                 try {
-                    return static_cast<double>(std::stoull(trimmed.substr(2), nullptr, 2));
-                } catch (...) {
-                    return std::numeric_limits<double>::quiet_NaN();
-                }
+                    size_t consumed = 0;
+                    unsigned long long v = std::stoull(digits, &consumed, 2);
+                    if (consumed != digits.size()) return std::numeric_limits<double>::quiet_NaN();
+                    return static_cast<double>(v);
+                } catch (...) { return std::numeric_limits<double>::quiet_NaN(); }
             }
             if (trimmed[1] == 'o' || trimmed[1] == 'O') {
+                std::string digits = trimmed.substr(2);
+                if (digits.find('_') != std::string::npos) return std::numeric_limits<double>::quiet_NaN();
                 try {
-                    return static_cast<double>(std::stoull(trimmed.substr(2), nullptr, 8));
-                } catch (...) {
-                    return std::numeric_limits<double>::quiet_NaN();
+                    size_t consumed = 0;
+                    unsigned long long v = std::stoull(digits, &consumed, 8);
+                    if (consumed != digits.size()) return std::numeric_limits<double>::quiet_NaN();
+                    return static_cast<double>(v);
+                } catch (...) { return std::numeric_limits<double>::quiet_NaN(); }
+            }
+            if (trimmed[1] == 'x' || trimmed[1] == 'X') {
+                std::string digits = trimmed.substr(2);
+                if (digits.empty() || digits.find('_') != std::string::npos) return std::numeric_limits<double>::quiet_NaN();
+                // Validate: only hex digits allowed (no sign, no decimal, no exponent).
+                for (char c : digits) {
+                    if (!std::isxdigit(static_cast<unsigned char>(c))) return std::numeric_limits<double>::quiet_NaN();
                 }
+                try {
+                    size_t consumed = 0;
+                    unsigned long long v = std::stoull(digits, &consumed, 16);
+                    if (consumed != digits.size()) return std::numeric_limits<double>::quiet_NaN();
+                    return static_cast<double>(v);
+                } catch (...) { return std::numeric_limits<double>::quiet_NaN(); }
             }
         }
+        // Reject "+0x..." / "-0x..." -- hex prefix requires exact "0x" start, no sign allowed.
+        if (trimmed.length() >= 4 && (trimmed[0] == '+' || trimmed[0] == '-') &&
+            trimmed[1] == '0' && (trimmed[2] == 'x' || trimmed[2] == 'X')) {
+            return std::numeric_limits<double>::quiet_NaN();
+        }
+        // Only "Infinity"/"+Infinity"/"-Infinity" are valid (case-sensitive); reject "INFINITY" etc.
+        if (trimmed == "Infinity" || trimmed == "+Infinity") return std::numeric_limits<double>::infinity();
+        if (trimmed == "-Infinity") return -std::numeric_limits<double>::infinity();
+        // Reject numeric separator underscores in decimal strings.
+        if (trimmed.find('_') != std::string::npos) return std::numeric_limits<double>::quiet_NaN();
 
         try {
             size_t consumed = 0;
             double result = std::stod(trimmed, &consumed);
             // JS ToNumber requires the *entire* trimmed string to be numeric
             if (consumed != trimmed.length()) {
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            // stod accepts "INFINITY"/"INF" case-insensitively; only "Infinity" is valid in JS.
+            if (std::isinf(result) && trimmed != "Infinity" && trimmed != "+Infinity" && trimmed != "-Infinity") {
                 return std::numeric_limits<double>::quiet_NaN();
             }
             return result;

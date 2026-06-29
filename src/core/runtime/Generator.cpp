@@ -315,12 +315,12 @@ void Generator::complete_generator(const Value& value) {
 Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
     Object* this_obj = ctx.get_this_binding();
     if (!this_obj) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.next called without proper this binding")));
+        ctx.throw_type_error("Generator.prototype.next requires a generator this");
         return Value();
     }
 
     if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.next called on non-generator")));
+        ctx.throw_type_error("Generator.prototype.next called on non-generator");
         return Value();
     }
 
@@ -347,13 +347,13 @@ Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
 Value Generator::generator_return(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.return called on non-object")));
+        ctx.throw_type_error("Generator.prototype.return called on non-object");
         return Value();
     }
 
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.return called on non-generator")));
+        ctx.throw_type_error("Generator.prototype.return called on non-generator");
         return Value();
     }
 
@@ -377,13 +377,13 @@ Value Generator::generator_return(Context& ctx, const std::vector<Value>& args) 
 Value Generator::generator_throw(Context& ctx, const std::vector<Value>& args) {
     Value this_value = ctx.get_binding("this");
     if (!this_value.is_object()) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.throw called on non-object")));
+        ctx.throw_type_error("Generator.prototype.throw called on non-object");
         return Value();
     }
 
     Object* obj = this_value.as_object();
     if (obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_exception(Value(std::string("Generator.prototype.throw called on non-generator")));
+        ctx.throw_type_error("Generator.prototype.throw called on non-generator");
         return Value();
     }
 
@@ -420,13 +420,13 @@ void Generator::setup_generator_prototype(Context& ctx) {
     }
 
     auto next_fn = ObjectFactory::create_native_function("next", generator_next, 1);
-    gen_prototype->set_property("next", Value(next_fn.release()));
+    gen_prototype->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto return_fn = ObjectFactory::create_native_function("return", generator_return, 1);
-    gen_prototype->set_property("return", Value(return_fn.release()));
+    gen_prototype->set_property("return", Value(return_fn.release()), PropertyAttributes::BuiltinFunction);
 
     auto throw_fn = ObjectFactory::create_native_function("throw", generator_throw, 1);
-    gen_prototype->set_property("throw", Value(throw_fn.release()));
+    gen_prototype->set_property("throw", Value(throw_fn.release()), PropertyAttributes::BuiltinFunction);
 
     // Generators are both iterators and iterables: [Symbol.iterator]() returns this
     Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
