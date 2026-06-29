@@ -1597,8 +1597,17 @@ void register_object_builtins(Context& ctx) {
                 }
                 if (!used_iterator && items.is_string()) {
                     std::string s = items.to_string();
-                    for (size_t i = 0; i < s.size(); i++) {
-                        if (!add_to_group(Value(std::string(1, s[i])), (double)i)) return Value();
+                    double idx = 0;
+                    size_t i = 0;
+                    while (i < s.size()) {
+                        unsigned char ch = static_cast<unsigned char>(s[i]);
+                        size_t char_len = 1;
+                        if (ch >= 0xF0) char_len = 4;
+                        else if (ch >= 0xE0) char_len = 3;
+                        else if (ch >= 0xC0) char_len = 2;
+                        if (i + char_len > s.size()) char_len = 1;
+                        if (!add_to_group(Value(s.substr(i, char_len)), idx++)) return Value();
+                        i += char_len;
                     }
                     used_iterator = true;
                 }
