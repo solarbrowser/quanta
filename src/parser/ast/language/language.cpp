@@ -287,7 +287,7 @@ Value FunctionDeclaration::evaluate(Context& ctx) {
     if (function_obj) {
         const char* intrinsic_name = (is_async_ && is_generator_) ? "AsyncGeneratorFunction"
                                     : is_generator_ ? "GeneratorFunction"
-                                    : is_async_ ? "AsyncFunction" : nullptr;
+                                    : is_async_ ? "@@AsyncFunction" : nullptr;
         if (intrinsic_name && ctx.has_binding(intrinsic_name)) {
             Value ctor = ctx.get_binding(intrinsic_name);
             if (ctor.is_function()) {
@@ -1347,8 +1347,8 @@ Value ArrowFunctionExpression::evaluate(Context& ctx) {
             async_fn->set_property("__arrow_this__", ctx.get_binding("this"));
         }
 
-        if (ctx.has_binding("AsyncFunction")) {
-            Value async_ctor = ctx.get_binding("AsyncFunction");
+        if (ctx.has_binding("@@AsyncFunction")) {
+            Value async_ctor = ctx.get_binding("@@AsyncFunction");
             if (async_ctor.is_function()) {
                 Value proto = async_ctor.as_function()->get_property("prototype");
                 if (proto.is_object()) {
@@ -2697,8 +2697,8 @@ Value AsyncFunctionExpression::evaluate(Context& ctx) {
         if (is_strict) fn->set_is_strict(true);
     }
 
-    if (ctx.has_binding("AsyncFunction")) {
-        Value async_ctor = ctx.get_binding("AsyncFunction");
+    if (ctx.has_binding("@@AsyncFunction")) {
+        Value async_ctor = ctx.get_binding("@@AsyncFunction");
         if (async_ctor.is_function()) {
             Value proto = async_ctor.as_function()->get_property("prototype");
             if (proto.is_object()) {

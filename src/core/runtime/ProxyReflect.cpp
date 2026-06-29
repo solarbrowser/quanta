@@ -222,7 +222,7 @@ bool Proxy::has_trap(const Value& key) {
                            : target_->has_property(key.to_string());
         if (Object::current_context_ && Object::current_context_->has_exception()) return false;
         if (!result) {
-            std::string key_str = key.to_string();
+            std::string key_str = to_prop_key(key);
             if (target_->has_own_property(key_str)) {
                 PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
                 // Invariant: cannot hide non-configurable own property
@@ -266,7 +266,7 @@ bool Proxy::delete_trap(const Value& key) {
         bool result = ctx ? trap_fn->call(*ctx, {Value(target_), key}, Value(handler_)).to_boolean()
                            : target_->delete_property(key.to_string());
         if (result) {
-            std::string key_str = key.to_string();
+            std::string key_str = to_prop_key(key);
             PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
             if (target_desc.is_data_descriptor() || target_desc.is_accessor_descriptor()) {
                 if (!target_desc.is_configurable()) {
@@ -551,7 +551,7 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
                 }
             }
         }
-        std::string key_str = key.to_string();
+        std::string key_str = to_prop_key(key);
         bool result_exists = result.is_data_descriptor() || result.is_accessor_descriptor();
         PropertyDescriptor target_desc = target_->get_property_descriptor(key_str);
         bool target_has_own = target_->has_own_property(key_str);
@@ -630,7 +630,7 @@ bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& des
         if (!result) return false;
 
         // Invariant checks after trap returns true
-        std::string key_str = key.to_string();
+        std::string key_str = to_prop_key(key);
         bool target_extensible = target_->is_extensible();
         bool target_has_own = target_->has_own_property(key_str);
         bool setting_config_false = desc.has_configurable() && !desc.is_configurable();

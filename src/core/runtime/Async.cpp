@@ -1157,8 +1157,8 @@ void setup_async_functions(Context& ctx) {
                     auto body_clone = body_node ? body_node->clone() : nullptr;
                     auto async_fn = std::make_unique<AsyncFunction>("anonymous", std::move(param_clones), std::move(body_clone), &ctx);
                     async_fn->set_source_text(toString_src);
-                    if (ctx.has_binding("AsyncFunction")) {
-                        Value async_ctor = ctx.get_binding("AsyncFunction");
+                    if (ctx.has_binding("@@AsyncFunction")) {
+                        Value async_ctor = ctx.get_binding("@@AsyncFunction");
                         if (async_ctor.is_function()) {
                             Value proto = async_ctor.as_function()->get_property("prototype");
                             if (proto.is_object()) async_fn->set_prototype(proto.as_object());
@@ -1202,7 +1202,11 @@ void setup_async_functions(Context& ctx) {
     async_function_constructor->set_property("__asyncProtoPtr__",
         Value(async_fn_proto_ptr), PropertyAttributes::None);
 
-    ctx.create_binding("AsyncFunction", Value(async_function_constructor.release()));
+    // Per spec, AsyncFunction's [[Prototype]] is the Function constructor itself, not Function.prototype.
+    Object* fn_ctor = ctx.get_built_in_object("Function");
+    if (fn_ctor) async_function_constructor->set_prototype(fn_ctor);
+
+    ctx.create_binding("@@AsyncFunction", Value(async_function_constructor.release()));
 
 }
 

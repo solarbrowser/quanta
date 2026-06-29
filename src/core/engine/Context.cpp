@@ -672,7 +672,7 @@ void Context::setup_global_bindings() {
                     "URIError","EvalError","AggregateError","SuppressedError",
                     "Promise","Map","Set","WeakMap","WeakSet","Symbol","BigInt",
                     "ArrayBuffer","SharedArrayBuffer","DataView","Proxy","Reflect",
-                    "Math","JSON","Iterator","Generator","AsyncFunction",
+                    "Math","JSON","Iterator","Generator",
                     nullptr
                 };
                 for (int ci = 0; ctors[ci]; ++ci) {

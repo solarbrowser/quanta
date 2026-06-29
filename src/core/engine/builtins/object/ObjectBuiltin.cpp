@@ -51,6 +51,7 @@ static Value get_v(Context& ctx, Object* lookup_obj, const Value& receiver, cons
 // OrdinarySetPrototypeOf: same-value short-circuit, then extensibility check, then cycle check.
 static bool ordinary_set_prototype_of(Object* obj, Object* new_proto) {
     if (new_proto == obj->get_prototype()) return true;
+    if (obj->has_own_property("__immutableProto__")) return false;
     if (!obj->is_extensible()) return false;
     Object* p = new_proto;
     while (p) {
@@ -1388,20 +1389,14 @@ void register_object_builtins(Context& ctx) {
                 if (!ok) { ctx.throw_type_error("Object.freeze: preventExtensions returned false"); return Value(); }
                 std::vector<std::string> keys = proxy->own_keys_trap();
                 if (ctx.has_exception()) return Value();
-                Object* target = proxy->get_proxy_target();
                 for (const auto& key : keys) {
+                    Value key_val = from_prop_key(key);
+                    PropertyDescriptor current_desc = proxy->get_own_property_descriptor_trap(key_val);
+                    if (ctx.has_exception()) return Value();
                     PropertyDescriptor desc;
                     desc.set_configurable(false);
-                    // For data properties also set writable:false; for accessors only configurable:false
-                    if (target) {
-                        PropertyDescriptor td = target->get_property_descriptor(key);
-                        if (!td.is_accessor_descriptor()) {
-                            desc.set_writable(false);
-                        }
-                    } else {
-                        desc.set_writable(false);
-                    }
-                    proxy->define_property_trap(from_prop_key(key), desc);
+                    if (current_desc.is_data_descriptor()) desc.set_writable(false);
+                    proxy->define_property_trap(key_val, desc);
                     if (ctx.has_exception()) return Value();
                 }
             } else {
@@ -1926,6 +1921,8 @@ void register_object_builtins(Context& ctx) {
     object_proto_ptr->set_property_descriptor("__lookupSetter__",
         PropertyDescriptor(Value(lookup_setter_fn.release()), define_getter_setter_attrs));
 
+    // Mark Object.prototype as an immutable-prototype exotic object (ES 10.4.7).
+    object_proto_ptr->set_property("__immutableProto__", Value(true), PropertyAttributes::None);
     object_constructor->set_property("prototype", Value(object_prototype.release()), PropertyAttributes::None);
 
     ctx.get_global_object()->set_property("__addHasOwnProperty", Value(ObjectFactory::create_native_function("__addHasOwnProperty",
