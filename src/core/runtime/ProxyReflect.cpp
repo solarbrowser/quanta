@@ -35,7 +35,8 @@ static Value from_prop_key(const std::string& key) {
 }
 
 Proxy::Proxy(Object* target, Object* handler)
-    : Object(ObjectType::Proxy), target_(target), handler_(handler) {
+    : Object(ObjectType::Proxy), target_(target), handler_(handler),
+      target_was_callable_(target && target->is_function()) {
 }
 
 Function* Proxy::get_trap_method(const char* name) const {
@@ -281,11 +282,9 @@ std::vector<std::string> Proxy::own_keys_trap() {
                 }
             }
         }
-        // Invariant: must include all non-configurable own properties
+        // Invariant: must include all non-configurable own properties (string or symbol keys)
         std::vector<std::string> target_keys = target_->get_own_property_keys();
         for (const auto& tkey : target_keys) {
-            // Skip symbol-keyed properties (stored as "@@sym:..." strings internally)
-            if (tkey.find("@@sym:") == 0) continue;
             PropertyDescriptor td = target_->get_property_descriptor(tkey);
             if (!td.is_configurable()) {
                 bool found = std::find(result.begin(), result.end(), tkey) != result.end();
@@ -298,7 +297,6 @@ std::vector<std::string> Proxy::own_keys_trap() {
         // Invariant: if target non-extensible, result must match exactly the target's own keys
         if (!target_->is_extensible()) {
             for (const auto& rkey : result) {
-                if (rkey.find("@@sym:") == 0) continue;
                 bool found = std::find(target_keys.begin(), target_keys.end(), rkey) != target_keys.end();
                 if (!found) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy invariant violated: non-extensible target, key not in target");
@@ -306,7 +304,6 @@ std::vector<std::string> Proxy::own_keys_trap() {
                 }
             }
             for (const auto& tkey : target_keys) {
-                if (tkey.find("@@sym:") == 0) continue;
                 bool found = std::find(result.begin(), result.end(), tkey) != result.end();
                 if (!found) {
                     if (Object::current_context_) Object::current_context_->throw_type_error("'ownKeys' proxy invariant violated: non-extensible target, missing target key");
@@ -653,14 +650,18 @@ Value Proxy::construct_trap(const std::vector<Value>& args) {
     Context* ctx = Object::current_context_;
     if (!ctx) return Value();
 
-    // GetPrototypeFromConstructor: the Function constructor body will call new_target->get_property("prototype")
-    // which fires the Proxy get trap once (via Object::get_property dispatch). Don't call get_trap here.
+    // GetPrototypeFromConstructor(newTarget=this proxy) fires the proxy's get trap, which may revoke it.
     auto new_object = ObjectFactory::create_object();
-    Value target_proto = target_fn->get_property("prototype");
+    Value target_proto = get_property("prototype");
+    if (ctx->has_exception()) return Value();
     if (target_proto.is_object()) {
         new_object->set_prototype(target_proto.as_object());
     } else if (target_proto.is_function()) {
-        new_object->set_prototype(target_proto.as_object());
+        new_object->set_prototype(static_cast<Object*>(target_proto.as_function()));
+    } else if (is_revoked()) {
+        // GetFunctionRealm(constructor): a revoked proxy has no [[ProxyHandler]] to find a realm through.
+        ctx->throw_type_error("Cannot perform 'get' on a proxy that has been revoked");
+        return Value();
     }
 
     Value this_value(new_object.get());

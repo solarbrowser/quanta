@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/BigInt.h"
@@ -374,7 +375,12 @@ Value Value::typeof_op() const {
     if (is_string()) return Value(std::string("string"));
     if (is_symbol()) return Value(std::string("symbol"));
     if (is_bigint()) return Value(std::string("bigint"));
-    
+    // A Proxy is tagged TAG_OBJECT regardless of target, so check target_was_callable() instead.
+    if (is_object() && as_object()->get_type() == Object::ObjectType::Proxy &&
+        static_cast<Proxy*>(as_object())->target_was_callable()) {
+        return Value(std::string("function"));
+    }
+
     return Value(std::string("object"));
 }
 

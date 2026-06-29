@@ -957,6 +957,15 @@ void AssignmentExpression::destructuring_assign(Context& ctx, ASTNode* pattern, 
             // Symbols are object-coercible; ToObject(symbol) succeeds
             auto sym_wrapper = ObjectFactory::create_object();
             source_obj = sym_wrapper.release();
+        } else if (source_value.is_bigint()) {
+            // BigInts are object-coercible; ToObject(bigint) succeeds
+            auto bigint_wrapper = ObjectFactory::create_object();
+            Value ctor = ctx.get_binding("BigInt");
+            if (ctor.is_function()) {
+                Value proto_val = ctor.as_function()->get_property("prototype");
+                if (proto_val.is_object()) bigint_wrapper->set_prototype(proto_val.as_object());
+            }
+            source_obj = bigint_wrapper.release();
         }
         if (!source_obj) {
             ctx.throw_type_error("Cannot destructure non-object value");
@@ -1982,10 +1991,12 @@ Value DestructuringAssignment::evaluate_with_value(Context& ctx, const Value& so
             if (!handle_complex_object_destructuring(sym_wrapper.get(), ctx)) {
                 return Value();
             }
-        } else if (source_value.is_number() || source_value.is_string() || source_value.is_boolean()) {
+        } else if (source_value.is_number() || source_value.is_string() || source_value.is_boolean() ||
+                   source_value.is_bigint()) {
             // ES6: Primitive boxing for object destructuring
             std::string ctor_name = source_value.is_string() ? "String"
-                                  : source_value.is_number() ? "Number" : "Boolean";
+                                  : source_value.is_number() ? "Number"
+                                  : source_value.is_bigint() ? "BigInt" : "Boolean";
             Value ctor = ctx.get_binding(ctor_name);
             if (ctor.is_function()) {
                 Value proto_val = ctor.as_function()->get_property("prototype");

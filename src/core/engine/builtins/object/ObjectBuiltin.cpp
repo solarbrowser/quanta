@@ -308,10 +308,12 @@ void register_object_builtins(Context& ctx) {
                 static_cast<Object*>(args[0].as_function()) :
                 args[0].as_object();
 
-            std::vector<std::string> raw_keys;
+            std::vector<std::string> filtered;
             if (obj->get_type() == Object::ObjectType::Proxy) {
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                std::vector<std::string> raw_keys;
                 try {
-                    raw_keys = static_cast<Proxy*>(obj)->own_keys_trap();
+                    raw_keys = proxy->own_keys_trap();
                 } catch (const std::runtime_error&) {
                     if (!ctx.has_exception()) {
                         ctx.throw_type_error("'ownKeys' proxy invariant violated");
@@ -319,15 +321,21 @@ void register_object_builtins(Context& ctx) {
                     return Value();
                 }
                 if (ctx.has_exception()) return Value();
+                // EnumerableOwnPropertyNames: for each String key, GetOwnProperty checks enumerability.
+                for (const auto& k : raw_keys) {
+                    if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) continue;
+                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(from_prop_key(k));
+                    if (ctx.has_exception()) return Value();
+                    if ((desc.is_data_descriptor() || desc.is_accessor_descriptor()) && desc.is_enumerable()) {
+                        filtered.push_back(k);
+                    }
+                }
             } else {
-                raw_keys = obj->get_enumerable_keys();
-            }
-
-            // Filter out symbol-keyed properties
-            std::vector<std::string> filtered;
-            for (const auto& k : raw_keys) {
-                if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) {
-                    filtered.push_back(k);
+                // Filter out symbol-keyed properties
+                for (const auto& k : obj->get_enumerable_keys()) {
+                    if (k.find("@@sym:") != 0 && k.find("Symbol.") != 0) {
+                        filtered.push_back(k);
+                    }
                 }
             }
 
@@ -867,7 +875,7 @@ void register_object_builtins(Context& ctx) {
 
             PropertyDescriptor desc;
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                desc = static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(Value(prop_name));
+                desc = static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(from_prop_key(prop_name));
             } else {
                 desc = obj->get_property_descriptor(prop_name);
             }
@@ -1080,7 +1088,7 @@ void register_object_builtins(Context& ctx) {
 
                 bool success;
                 if (obj->get_type() == Object::ObjectType::Proxy) {
-                    success = static_cast<Proxy*>(obj)->define_property_trap(Value(prop_name), prop_desc);
+                    success = static_cast<Proxy*>(obj)->define_property_trap(from_prop_key(prop_name), prop_desc);
                 } else {
                     success = obj->set_property_descriptor(prop_name, prop_desc);
                 }
@@ -1102,7 +1110,13 @@ void register_object_builtins(Context& ctx) {
 
             std::vector<std::string> props;
             if (obj->get_type() == Object::ObjectType::Proxy) {
-                props = static_cast<Proxy*>(obj)->own_keys_trap();
+                try {
+                    props = static_cast<Proxy*>(obj)->own_keys_trap();
+                } catch (const std::runtime_error&) {
+                    if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
+                    return Value();
+                }
+                if (ctx.has_exception()) return Value();
             } else {
                 props = obj->get_own_property_keys();
             }
@@ -1288,7 +1302,7 @@ void register_object_builtins(Context& ctx) {
                     prop_name == "unicodeSets" || prop_name == "sticky" || prop_name == "flags" ||
                     prop_name == "__pattern__" || prop_name == "__flags__")) continue;
                 PropertyDescriptor desc = is_proxy
-                    ? static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(Value(prop_name))
+                    ? static_cast<Proxy*>(obj)->get_own_property_descriptor_trap(from_prop_key(prop_name))
                     : obj->get_property_descriptor(prop_name);
                 if (ctx.has_exception()) return Value();
                 if (!desc.is_data_descriptor() && !desc.is_accessor_descriptor()) continue;
@@ -1337,6 +1351,15 @@ void register_object_builtins(Context& ctx) {
                 bool ok = proxy->prevent_extensions_trap();
                 if (ctx.has_exception()) return Value();
                 if (!ok) { ctx.throw_type_error("Object.seal: preventExtensions returned false"); return Value(); }
+                // SetIntegrityLevel(O, "sealed"): configurable:false on every own key (no writable change).
+                std::vector<std::string> keys = proxy->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+                for (const auto& key : keys) {
+                    PropertyDescriptor desc;
+                    desc.set_configurable(false);
+                    proxy->define_property_trap(from_prop_key(key), desc);
+                    if (ctx.has_exception()) return Value();
+                }
             } else {
                 obj->seal();
             }
@@ -1369,7 +1392,7 @@ void register_object_builtins(Context& ctx) {
                     } else {
                         desc.set_writable(false);
                     }
-                    proxy->define_property_trap(Value(key), desc);
+                    proxy->define_property_trap(from_prop_key(key), desc);
                     if (ctx.has_exception()) return Value();
                 }
             } else {
@@ -1401,10 +1424,23 @@ void register_object_builtins(Context& ctx) {
 
     auto isSealed_fn = ObjectFactory::create_native_function("isSealed",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
             if (args.empty()) return Value(true);
             if (!args[0].is_object() && !args[0].is_function()) return Value(true);
             Object* obj = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                // TestIntegrityLevel("sealed") via proxy traps
+                Proxy* proxy = static_cast<Proxy*>(obj);
+                if (proxy->is_extensible_trap()) return Value(false);
+                if (ctx.has_exception()) return Value();
+                std::vector<std::string> keys = proxy->own_keys_trap();
+                if (ctx.has_exception()) return Value();
+                for (const auto& key : keys) {
+                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(from_prop_key(key));
+                    if (ctx.has_exception()) return Value();
+                    if (desc.is_configurable()) return Value(false);
+                }
+                return Value(true);
+            }
             return Value(obj->is_sealed());
         }, 1);
     object_constructor->set_property("isSealed", Value(isSealed_fn.release()), PropertyAttributes::BuiltinFunction);
@@ -1422,7 +1458,7 @@ void register_object_builtins(Context& ctx) {
                 std::vector<std::string> keys = proxy->own_keys_trap();
                 if (ctx.has_exception()) return Value();
                 for (const auto& key : keys) {
-                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(Value(key));
+                    PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(from_prop_key(key));
                     if (ctx.has_exception()) return Value();
                     if (desc.is_configurable()) return Value(false);
                     if (desc.is_data_descriptor() && desc.is_writable()) return Value(false);
@@ -1590,7 +1626,7 @@ void register_object_builtins(Context& ctx) {
             Object* this_obj = to_object_or_throw(ctx, get_actual_this(ctx));
             if (!this_obj) return Value();
             if (this_obj->get_type() == Object::ObjectType::Proxy) {
-                PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(Value(prop_name));
+                PropertyDescriptor desc = static_cast<Proxy*>(this_obj)->get_own_property_descriptor_trap(from_prop_key(prop_name));
                 if (ctx.has_exception()) return Value();
                 return Value(desc.is_data_descriptor() || desc.is_accessor_descriptor());
             }
@@ -1795,7 +1831,7 @@ void register_object_builtins(Context& ctx) {
             desc.set_enumerable(true);
             desc.set_configurable(true);
             bool ok = (this_obj->get_type() == Object::ObjectType::Proxy)
-                ? static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc)
+                ? static_cast<Proxy*>(this_obj)->define_property_trap(from_prop_key(key), desc)
                 : this_obj->set_property_descriptor(key, desc);
             if (!ok && !ctx.has_exception()) ctx.throw_type_error("Cannot define getter");
             if (ctx.has_exception()) return Value();
@@ -1820,7 +1856,7 @@ void register_object_builtins(Context& ctx) {
             desc.set_enumerable(true);
             desc.set_configurable(true);
             bool ok = (this_obj->get_type() == Object::ObjectType::Proxy)
-                ? static_cast<Proxy*>(this_obj)->define_property_trap(Value(key), desc)
+                ? static_cast<Proxy*>(this_obj)->define_property_trap(from_prop_key(key), desc)
                 : this_obj->set_property_descriptor(key, desc);
             if (!ok && !ctx.has_exception()) ctx.throw_type_error("Cannot define setter");
             if (ctx.has_exception()) return Value();
@@ -1845,7 +1881,7 @@ void register_object_builtins(Context& ctx) {
             Object* cur = obj;
             while (cur) {
                 PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)
-                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(Value(key))
+                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(from_prop_key(key))
                     : cur->get_property_descriptor(key);
                 if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_getter())
@@ -1868,7 +1904,7 @@ void register_object_builtins(Context& ctx) {
             Object* cur = obj;
             while (cur) {
                 PropertyDescriptor d = (cur->get_type() == Object::ObjectType::Proxy)
-                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(Value(key))
+                    ? static_cast<Proxy*>(cur)->get_own_property_descriptor_trap(from_prop_key(key))
                     : cur->get_property_descriptor(key);
                 if (ctx.has_exception()) return Value();
                 if (d.is_accessor_descriptor() && d.has_setter())
