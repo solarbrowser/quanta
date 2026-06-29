@@ -132,6 +132,15 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         auto self_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
+                // Spec: return the this value (primitives included, same as Symbol.prototype.valueOf).
+                Value prim = ctx.get_binding("__primitive_this__");
+                if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
+                    prim.is_bigint() || prim.is_symbol()) return prim;
+                if (ctx.original_this_was_nullish()) {
+                    try { Value v = ctx.get_binding("this"); if (v.is_null()) return Value::null(); } catch(...) {}
+                    return Value();
+                }
+                try { return ctx.get_binding("this"); } catch (...) {}
                 Object* self = ctx.get_this_binding();
                 return self ? Value(self) : Value();
             });
@@ -141,14 +150,32 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
 
     Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (tag_sym) {
-        // %Iterator.prototype%[Symbol.toStringTag] getter ("Iterator"): the fallback every
-        // per-type iterator prototype below inherits when its own tag is deleted/overridden.
         auto tag_getter = ObjectFactory::create_native_function("get [Symbol.toStringTag]",
             [](Context&, const std::vector<Value>&) -> Value {
                 return Value(std::string("Iterator"));
             }, 0);
-        PropertyDescriptor tag_desc(tag_getter.release(), nullptr,
-            static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+        Object* iter_proto_raw = iter_proto.get();
+        auto tag_setter = ObjectFactory::create_native_function("set [Symbol.toStringTag]",
+            [iter_proto_raw](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* self = ctx.get_this_binding();
+                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+                    ctx.throw_type_error("Iterator.prototype[Symbol.toStringTag] setter: this is not an object");
+                    return Value();
+                }
+                if (self == iter_proto_raw || self == Iterator::s_iterator_prototype_) {
+                    ctx.throw_type_error("Cannot set Iterator.prototype[Symbol.toStringTag]");
+                    return Value();
+                }
+                PropertyDescriptor d(args.empty() ? Value() : args[0],
+                    static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                self->set_property_descriptor("Symbol.toStringTag", d);
+                return Value();
+            }, 1);
+        PropertyDescriptor tag_desc;
+        tag_desc.set_getter(tag_getter.release());
+        tag_desc.set_setter(tag_setter.release());
+        tag_desc.set_enumerable(false);
+        tag_desc.set_configurable(true);
         iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
 

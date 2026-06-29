@@ -113,10 +113,11 @@ static void set_guarded_next(Object* helper, std::unique_ptr<Object> actual_next
     helper->set_property("next", Value(guarded.release()));
 }
 
-// Closes all alive columns except `skip`, for early abandonment (one column threw, or the zip ended).
-static void iterator_zip_close_others(Context& ctx, Object* iters_arr, Object* alive_arr, uint32_t count, uint32_t skip) {
+// Closes alive columns; skip_before=true means don't close j<skip (iterator at skip threw, j<skip already stepped).
+static void iterator_zip_close_others(Context& ctx, Object* iters_arr, Object* alive_arr, uint32_t count, uint32_t skip, bool skip_before = false) {
     for (uint32_t j = count; j-- > 0;) {
         if (j == skip) continue;
+        if (skip_before && j < skip) continue;
         if (alive_arr->get_property(std::to_string(j)).to_boolean())
             iterator_helper_close(ctx, iters_arr->get_property(std::to_string(j)));
     }
@@ -161,7 +162,7 @@ static Value iterator_zip_step(Context& ctx, const std::vector<Value>&) {
         auto [val, done] = iterator_helper_step(ctx, iter_val, next_method);
         if (ctx.has_exception()) {
             self->set_property("__iz_done__", Value(true));
-            iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i);
+            iterator_zip_close_others(ctx, iters_arr, alive_arr, count, i, true); // skip j<i: already stepped
             return Value();
         }
         if (done) {
@@ -987,6 +988,12 @@ void register_iterator_constructor(Context& ctx) {
             auto self_iter = ObjectFactory::create_native_function("[Symbol.iterator]",
                 [](Context& ctx, const std::vector<Value>& args) -> Value {
                     (void)args;
+                    // Spec: return the raw this value.
+                    Value prim = ctx.get_binding("__primitive_this__");
+                    if (prim.is_number() || prim.is_string() || prim.is_boolean() ||
+                        prim.is_bigint() || prim.is_symbol()) return prim;
+                    if (ctx.original_this_was_nullish()) return Value();
+                    try { return ctx.get_binding("this"); } catch (...) {}
                     Object* self = ctx.get_this_binding();
                     return self ? Value(self) : Value();
                 });
@@ -1006,7 +1013,9 @@ void register_iterator_constructor(Context& ctx) {
             auto tag_set = ObjectFactory::create_native_function("set [Symbol.toStringTag]",
                 [iter_proto_home, tag_key](Context& ctx, const std::vector<Value>& args) -> Value {
                     Object* self = ctx.get_this_binding();
-                    if (!self) { ctx.throw_type_error("[Symbol.toStringTag] setter: this is not an object"); return Value(); }
+                    if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+                        ctx.throw_type_error("[Symbol.toStringTag] setter: this is not an object"); return Value();
+                    }
                     if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
                         ctx.throw_type_error("Cannot assign to read only property");
                         return Value();
@@ -1038,13 +1047,23 @@ void register_iterator_constructor(Context& ctx) {
         auto ctor_set = ObjectFactory::create_native_function("set constructor",
             [iter_proto_home](Context& ctx, const std::vector<Value>& args) -> Value {
                 Object* self = ctx.get_this_binding();
-                if (!self) { ctx.throw_type_error("constructor setter: this is not an object"); return Value(); }
+                if (!self || ctx.original_this_was_nullish() || ctx.original_this_was_primitive()) {
+                    ctx.throw_type_error("constructor setter: this is not an object"); return Value();
+                }
                 if (self == iter_proto_home || self == Iterator::s_iterator_prototype_) {
                     ctx.throw_type_error("Cannot assign to read only property 'constructor'");
                     return Value();
                 }
                 Value v = args.empty() ? Value() : args[0];
-                self->set_property("constructor", v);
+                // If this has an own descriptor for "constructor", use Set; else CreateDataPropertyOrThrow.
+                PropertyDescriptor existing = self->get_property_descriptor("constructor");
+                if (existing.is_data_descriptor() || existing.is_accessor_descriptor()) {
+                    self->set_property("constructor", v);
+                } else {
+                    PropertyDescriptor new_desc(v, static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+                    self->set_property_descriptor("constructor", new_desc);
+                }
+                if (ctx.has_exception()) return Value();
                 return Value();
             }, 1);
         PropertyDescriptor ctor_desc;
@@ -1152,14 +1171,24 @@ void register_iterator_constructor(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                 }
             } else if (O.is_string()) {
-                // String primitive: look up String.prototype[Symbol.iterator] and call it.
+                // String primitive: GetV(O, Symbol.iterator) with O (the primitive) as receiver for getters.
                 Value str_ctor = ctx.get_binding("String");
                 if (str_ctor.is_function()) {
                     Value str_proto = str_ctor.as_function()->get_property("prototype");
                     if (str_proto.is_object()) {
                         Symbol* iter_sym2 = Symbol::get_well_known(Symbol::ITERATOR);
                         if (iter_sym2) {
-                            Value iter_method2 = str_proto.as_object()->get_property(iter_sym2->to_property_key());
+                            // GetV: get the property descriptor, call getter with O (primitive) as this.
+                            PropertyDescriptor d = str_proto.as_object()->get_property_descriptor(iter_sym2->to_property_key());
+                            Value iter_method2;
+                            if (d.is_accessor_descriptor() && d.get_getter()) {
+                                Function* getter = dynamic_cast<Function*>(d.get_getter());
+                                if (getter) { iter_method2 = getter->call(ctx, {}, O); if (ctx.has_exception()) return Value(); }
+                            } else if (d.is_data_descriptor()) {
+                                iter_method2 = d.get_value();
+                            } else {
+                                iter_method2 = str_proto.as_object()->get_property(iter_sym2->to_property_key());
+                            }
                             if (iter_method2.is_function()) {
                                 inner_iter = iter_method2.as_function()->call(ctx, {}, O);
                                 if (ctx.has_exception()) return Value();
@@ -1368,28 +1397,30 @@ void register_iterator_constructor(Context& ctx) {
                 Object* item_obj = item.is_function() ? static_cast<Object*>(item.as_function()) : item.as_object();
                 Value method = iter_sym ? item_obj->get_property(iter_sym->to_property_key()) : Value();
                 Value inner_iter = item;
-                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                // GetIteratorFlattenable errors below should also close the outer iter.
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); iterator_helper_close(ctx, outer_iter); return Value(); }
                 if (!method.is_undefined() && !method.is_null()) {
                     if (!method.is_function()) {
                         ctx.throw_type_error("[Symbol.iterator] is not a function");
                         for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        iterator_helper_close(ctx, outer_iter);
                         return Value();
                     }
                     inner_iter = method.as_function()->call(ctx, {}, item);
-                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                    if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); iterator_helper_close(ctx, outer_iter); return Value(); }
                     if (!inner_iter.is_object() && !inner_iter.is_function()) {
                         ctx.throw_type_error("Result of [Symbol.iterator] is not an object");
                         for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it);
+                        iterator_helper_close(ctx, outer_iter);
                         return Value();
                     }
                 }
                 Object* inner_obj = inner_iter.is_function() ? static_cast<Object*>(inner_iter.as_function()) : inner_iter.as_object();
                 Value inner_next = inner_obj->get_property("next");
-                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); return Value(); }
+                if (ctx.has_exception()) { for (auto it = iters.rbegin(); it != iters.rend(); ++it) iterator_helper_close(ctx, *it); iterator_helper_close(ctx, outer_iter); return Value(); }
                 iters.push_back(inner_iter);
                 iter_nexts.push_back(inner_next);
             }
-
             uint32_t iter_count = (uint32_t)iters.size();
             std::vector<Value> padding(iter_count, Value());
             if (mode == "longest" && !padding_option.is_undefined()) {

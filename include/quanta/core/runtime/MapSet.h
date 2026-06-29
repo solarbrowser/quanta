@@ -140,15 +140,20 @@ private:
 class WeakMap : public Object {
 private:
     std::unordered_map<Object*, Value> entries_;
-    
+    std::unordered_map<int, Value> symbol_entries_; // Symbol ID -> Value (ES2023 symbol key support)
+
 public:
     WeakMap();
     virtual ~WeakMap() = default;
-    
+
     bool has(Object* key) const;
     Value get(Object* key) const;
     void set(Object* key, const Value& value);
     bool delete_key(Object* key);
+    bool has_symbol(class Symbol* sym) const;
+    Value get_symbol(class Symbol* sym) const;
+    void set_symbol(class Symbol* sym, const Value& value);
+    bool delete_symbol(class Symbol* sym);
     
     static Value weakmap_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakmap_set(Context& ctx, const std::vector<Value>& args);
@@ -168,14 +173,18 @@ public:
 class WeakSet : public Object {
 private:
     std::unordered_set<Object*> values_;
-    
+    std::unordered_set<int> symbol_values_; // Symbol IDs (ES2023 symbol value support)
+
 public:
     WeakSet();
     virtual ~WeakSet() = default;
-    
+
     bool has(Object* value) const;
     void add(Object* value);
     bool delete_value(Object* value);
+    bool has_symbol(class Symbol* sym) const;
+    void add_symbol(class Symbol* sym);
+    bool delete_symbol(class Symbol* sym);
     
     static Value weakset_constructor(Context& ctx, const std::vector<Value>& args);
     static Value weakset_add(Context& ctx, const std::vector<Value>& args);

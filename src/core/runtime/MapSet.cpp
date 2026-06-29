@@ -1218,6 +1218,18 @@ bool WeakMap::delete_key(Object* key) {
     return false;
 }
 
+bool WeakMap::has_symbol(Symbol* sym) const { return symbol_entries_.count(sym->get_id()) > 0; }
+Value WeakMap::get_symbol(Symbol* sym) const {
+    auto it = symbol_entries_.find(sym->get_id());
+    return it != symbol_entries_.end() ? it->second : Value();
+}
+void WeakMap::set_symbol(Symbol* sym, const Value& value) { symbol_entries_[sym->get_id()] = value; }
+bool WeakMap::delete_symbol(Symbol* sym) {
+    auto it = symbol_entries_.find(sym->get_id());
+    if (it != symbol_entries_.end()) { symbol_entries_.erase(it); return true; }
+    return false;
+}
+
 void WeakMap::setup_weakmap_prototype(Context& ctx) {
     auto weakmap_constructor_fn = ObjectFactory::create_native_constructor("WeakMap", weakmap_constructor, 0);
     
@@ -1293,6 +1305,14 @@ bool WeakSet::delete_value(Object* value) {
         values_.erase(it);
         return true;
     }
+    return false;
+}
+
+bool WeakSet::has_symbol(Symbol* sym) const { return symbol_values_.count(sym->get_id()) > 0; }
+void WeakSet::add_symbol(Symbol* sym) { symbol_values_.insert(sym->get_id()); }
+bool WeakSet::delete_symbol(Symbol* sym) {
+    auto it = symbol_values_.find(sym->get_id());
+    if (it != symbol_values_.end()) { symbol_values_.erase(it); return true; }
     return false;
 }
 
@@ -1396,12 +1416,15 @@ Value WeakMap::weakmap_set(Context& ctx, const std::vector<Value>& args) {
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* key = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* key = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         weakmap->set(key, args[1]);
         return Value(this_obj);
+    } else if (args[0].is_symbol() && Symbol::key_for(args[0].as_symbol()).empty()) {
+        weakmap->set_symbol(args[0].as_symbol(), args[1]);
+        return Value(this_obj);
     } else {
-        ctx.throw_type_error("WeakMap key must be an object");
+        ctx.throw_type_error("WeakMap key must be an object or unregistered Symbol");
         return Value();
     }
 }
@@ -1424,11 +1447,11 @@ Value WeakMap::weakmap_get(Context& ctx, const std::vector<Value>& args) {
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* key = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* key = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         return weakmap->get(key);
     }
-    
+    if (args[0].is_symbol()) return weakmap->get_symbol(args[0].as_symbol());
     return Value();
 }
 
@@ -1450,11 +1473,11 @@ Value WeakMap::weakmap_has(Context& ctx, const std::vector<Value>& args) {
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* key = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* key = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         return Value(weakmap->has(key));
     }
-    
+    if (args[0].is_symbol()) return Value(weakmap->has_symbol(args[0].as_symbol()));
     return Value(false);
 }
 
@@ -1476,11 +1499,11 @@ Value WeakMap::weakmap_delete(Context& ctx, const std::vector<Value>& args) {
     
     WeakMap* weakmap = static_cast<WeakMap*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* key = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* key = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         return Value(weakmap->delete_key(key));
     }
-    
+    if (args[0].is_symbol()) return Value(weakmap->delete_symbol(args[0].as_symbol()));
     return Value(false);
 }
 
@@ -1545,12 +1568,15 @@ Value WeakSet::weakset_add(Context& ctx, const std::vector<Value>& args) {
     
     WeakSet* weakset = static_cast<WeakSet*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* value = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* value = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         weakset->add(value);
         return Value(this_obj);
+    } else if (args[0].is_symbol() && Symbol::key_for(args[0].as_symbol()).empty()) {
+        weakset->add_symbol(args[0].as_symbol());
+        return Value(this_obj);
     } else {
-        ctx.throw_type_error("WeakSet value must be an object");
+        ctx.throw_type_error("WeakSet value must be an object or unregistered Symbol");
         return Value();
     }
 }
@@ -1573,11 +1599,11 @@ Value WeakSet::weakset_has(Context& ctx, const std::vector<Value>& args) {
     
     WeakSet* weakset = static_cast<WeakSet*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* value = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* value = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         return Value(weakset->has(value));
     }
-    
+    if (args[0].is_symbol()) return Value(weakset->has_symbol(args[0].as_symbol()));
     return Value(false);
 }
 
@@ -1599,10 +1625,11 @@ Value WeakSet::weakset_delete(Context& ctx, const std::vector<Value>& args) {
     
     WeakSet* weakset = static_cast<WeakSet*>(this_obj);
     
-    if (args[0].is_object()) {
-        Object* value = args[0].as_object();
+    if (args[0].is_object() || args[0].is_function()) {
+        Object* value = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
         return Value(weakset->delete_value(value));
     }
+    if (args[0].is_symbol()) return Value(weakset->delete_symbol(args[0].as_symbol()));
     
     return Value(false);
 }

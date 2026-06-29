@@ -738,6 +738,9 @@ Value Value::power(const Value& other) const {
     if (is_number() && other.is_number()) {
         double base = as_number();
         double exp = other.as_number();
+        // Per spec: if exp is NaN, return NaN (overrides C's pow(1,NaN)=1).
+        if (std::isnan(exp)) return Value::nan();
+        if (std::isnan(base)) return Value::nan();
         // Per spec: if |base| == 1 and exp is ±Infinity, result is NaN
         if ((base == 1.0 || base == -1.0) && std::isinf(exp)) {
             return Value::nan();
