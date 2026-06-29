@@ -13,6 +13,7 @@
 #include "quanta/core/runtime/Symbol.h"
 #include "quanta/core/runtime/Generator.h"
 #include "quanta/core/runtime/Iterator.h"
+#include "quanta/core/runtime/ProxyReflect.h"
 #include "../ast_internal.h"
 #include "quanta/core/engine/CallStack.h"
 #include <algorithm>
@@ -1177,7 +1178,20 @@ Value ForInStatement::evaluate(Context& ctx) {
         std::unordered_set<std::string> blocked; // seen at any closer level (blocks inherited)
         Object* cur = obj;
         while (cur) {
-            auto all_own = cur->get_own_property_keys();
+            std::vector<std::string> all_own;
+            if (cur->get_type() == Object::ObjectType::Proxy) {
+                try {
+                    all_own = static_cast<Proxy*>(cur)->own_keys_trap();
+                } catch (const std::runtime_error&) {
+                    if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
+                }
+                if (ctx.has_exception()) {
+                    ctx.set_current_loop_label(prev_loop_label);
+                    return Value();
+                }
+            } else {
+                all_own = cur->get_own_property_keys();
+            }
             // Yield enumerable own keys not already blocked by a closer object
             for (const auto& k : all_own) {
                 if (k.size() >= 2 && k[0] == '_' && k[1] == '_') continue;

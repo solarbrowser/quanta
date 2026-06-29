@@ -571,6 +571,15 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 double idx_double = prop_value.as_number();
                 if (__builtin_expect(idx_double >= 0 && idx_double <= 4294967294.0 && idx_double == std::floor(idx_double), 1)) {
                     uint32_t index = static_cast<uint32_t>(idx_double);
+                    // If index is unowned and a Proxy is the prototype, delegate so the "set" trap fires with the right receiver.
+                    if (!obj->has_own_property(std::to_string(index))) {
+                        Object* proto = obj->get_prototype();
+                        if (proto && proto->get_type() == Object::ObjectType::Proxy) {
+                            static_cast<Proxy*>(proto)->set_trap(Value(std::to_string(index)), right_value, Value(obj));
+                            if (ctx.has_exception()) return Value();
+                            return right_value;
+                        }
+                    }
                     obj->set_element(index, right_value);
                     return right_value;
                 }
@@ -698,6 +707,8 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 // Walk prototype chain for accessor or non-writable data descriptor
                 Object* proto = read_base->get_prototype();
                 while (proto) {
+                    // Stop at a Proxy -- its [[Set]] handles everything; we'd fire an unexpected trap here.
+                    if (proto->get_type() == Object::ObjectType::Proxy) break;
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
                     if (proto_desc.is_accessor_descriptor()) {
                         desc = proto_desc;

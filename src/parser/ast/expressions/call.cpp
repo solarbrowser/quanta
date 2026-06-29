@@ -241,6 +241,7 @@ Value CallExpression::evaluate(Context& ctx) {
                         ctx.set_new_target(Value(static_cast<Object*>(parent_func)));
                     }
 
+                    ctx.set_pending_construct_call(true);
                     Value result;
                     if (this_obj) {
                         Value this_value(this_obj);
@@ -453,6 +454,7 @@ Value CallExpression::evaluate(Context& ctx) {
                     if (old_new_target.is_undefined()) {
                         ctx.set_new_target(Value(static_cast<Object*>(func)));
                     }
+                    ctx.set_pending_construct_call(true);
                     try {
                         Value result = func->call(ctx, arg_values, this_value);
                         super_call_depth--;

@@ -29,6 +29,10 @@ static Value make_prop_key_value(const std::string& key) {
         Symbol* sym = Symbol::get_well_known(key);
         if (sym) return Value(sym);
     }
+    if (key.find("@@sym:") == 0) {
+        Symbol* sym = Symbol::find_by_property_key(key);
+        if (sym) return Value(sym);
+    }
     return Value(key);
 }
 
@@ -500,6 +504,9 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         if (header_.type == ObjectType::Array && !has_own_property(key) && header_.prototype) {
             Object* proto = header_.prototype;
             while (proto) {
+                if (proto->get_type() == ObjectType::Proxy) {
+                    return static_cast<Proxy*>(proto)->set_trap(Value(key), Value(value), Value(this));
+                }
                 if (proto->has_own_property(key)) {
                     PropertyDescriptor pd = proto->get_property_descriptor(key);
                     if (pd.is_accessor_descriptor()) {
@@ -621,6 +628,10 @@ bool Object::ordinary_set(const std::string& key, const Value& value) {
     if (!has_own_property(key)) {
         Object* cur = header_.prototype;
         while (cur) {
+            // A Proxy prototype means target.[[Set]](P, V, receiver=this) -- dispatch directly.
+            if (cur->get_type() == ObjectType::Proxy) {
+                return static_cast<Proxy*>(cur)->set_trap(Value(key), Value(value), Value(this));
+            }
             if (cur->has_own_property(key)) {
                 PropertyDescriptor desc = cur->get_property_descriptor(key);
                 if (desc.is_data_descriptor() && !desc.is_writable()) {

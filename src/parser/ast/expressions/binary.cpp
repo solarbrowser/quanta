@@ -711,7 +711,10 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     if (proxy_target && proxy_target->is_function()) {
                         // Use the proxy's prototype (via get trap) for the check
                         Value proto_val = right_value.as_object()->get_property("prototype");
-                        return Value(left_value.instanceof_check(Value(static_cast<Function*>(proxy_target))));
+                        if (ctx.has_exception()) return Value();
+                        bool result = left_value.instanceof_check(Value(static_cast<Function*>(proxy_target)));
+                        if (ctx.has_exception()) return Value();
+                        return Value(result);
                     }
                 }
                 ctx.throw_type_error("Right-hand side of instanceof is not callable");
@@ -729,7 +732,11 @@ Value BinaryExpression::evaluate(Context& ctx) {
                     return Value(false);
                 }
             }
-            return Value(left_value.instanceof_check(right_value));
+            {
+                bool result = left_value.instanceof_check(right_value);
+                if (ctx.has_exception()) return Value();
+                return Value(result);
+            }
         }
 
         case Operator::IN: {
