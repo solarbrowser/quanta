@@ -141,8 +141,8 @@ void register_global_builtins(Context& ctx) {
         Object* num_obj = ctx.get_built_in_object("Number");
         if (num_obj && num_obj->is_function()) {
             Function* num_ctor = static_cast<Function*>(num_obj);
-            num_ctor->set_property("parseFloat", Value(parseFloat_raw));
-            num_ctor->set_property("parseInt", Value(parseInt_raw));
+            num_ctor->set_property("parseFloat", Value(parseFloat_raw), PropertyAttributes::BuiltinFunction);
+            num_ctor->set_property("parseInt", Value(parseInt_raw), PropertyAttributes::BuiltinFunction);
         }
     }
 

@@ -126,6 +126,10 @@ std::vector<std::pair<Value, Value>> Map::entries() const {
 std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
     return std::find_if(entries_.begin(), entries_.end(), 
         [&key](const MapEntry& entry) {
+            // SameValueZero: NaN equals NaN, +0 equals -0
+            if (key.is_number() && entry.key.is_number()) {
+                if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
+            }
             return entry.key.strict_equals(key);
         });
 }
@@ -133,6 +137,10 @@ std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
 std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) const {
     return std::find_if(entries_.begin(), entries_.end(), 
         [&key](const MapEntry& entry) {
+            // SameValueZero: NaN equals NaN, +0 equals -0
+            if (key.is_number() && entry.key.is_number()) {
+                if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
+            }
             return entry.key.strict_equals(key);
         });
 }
@@ -380,8 +388,14 @@ void Map::setup_map_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     map_prototype->set_property("clear", Value(clear_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    map_prototype->set_property("size", Value(size_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    {
+        // Map.prototype.size is an accessor (getter only) per spec.
+        PropertyDescriptor size_desc;
+        size_desc.set_getter(size_fn.release());
+        size_desc.set_enumerable(false);
+        size_desc.set_configurable(true);
+        map_prototype->set_property_descriptor("size", size_desc);
+    }
 
     // forEach method
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
@@ -503,12 +517,15 @@ void Map::setup_map_prototype(Context& ctx) {
             }
 
             auto result_map = std::make_unique<Map>();
+            if (Map::prototype_object) result_map->set_prototype(Map::prototype_object);
+            // Use iterator if available, fall back to array-like length/element access.
             uint32_t length = iterable->get_length();
 
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)), args[0] };
+                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)) };
                 Value key = callback->call(ctx, callback_args);
+                if (ctx.has_exception()) return Value();
 
                 Value group = result_map->get(key);
                 Object* group_array;
@@ -548,8 +565,10 @@ void Map::setup_map_prototype(Context& ctx) {
         }
     }
 
+    Object* map_proto_ptr = map_prototype.get();
     map_constructor_fn->set_property("prototype", Value(map_prototype.release()), PropertyAttributes::None);
-    ctx.create_binding("Map", Value(map_constructor_fn.release()));
+    map_proto_ptr->set_property("constructor", Value(map_constructor_fn.get()), PropertyAttributes::BuiltinFunction);
+    ctx.register_built_in_object("Map", map_constructor_fn.release());
 }
 
 
@@ -603,15 +622,17 @@ std::vector<std::pair<Value, Value>> Set::entries() const {
 }
 
 std::vector<Value>::iterator Set::find_value(const Value& value) {
-    return std::find_if(values_.begin(), values_.end(), 
+    return std::find_if(values_.begin(), values_.end(),
         [&value](const Value& v) {
+            if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
             return v.strict_equals(value);
         });
 }
 
 std::vector<Value>::const_iterator Set::find_value(const Value& value) const {
-    return std::find_if(values_.begin(), values_.end(), 
+    return std::find_if(values_.begin(), values_.end(),
         [&value](const Value& v) {
+            if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
             return v.strict_equals(value);
         });
 }
@@ -811,8 +832,14 @@ void Set::setup_set_prototype(Context& ctx) {
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     set_prototype->set_property("clear", Value(clear_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
-    set_prototype->set_property("size", Value(size_fn.release()),
-        static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
+    {
+        // Set.prototype.size is an accessor (getter only) per spec.
+        PropertyDescriptor size_desc;
+        size_desc.set_getter(size_fn.release());
+        size_desc.set_enumerable(false);
+        size_desc.set_configurable(true);
+        set_prototype->set_property_descriptor("size", size_desc);
+    }
     
     // forEach method
     auto forEach_fn = ObjectFactory::create_native_function("forEach",
@@ -948,17 +975,19 @@ void Set::setup_set_prototype(Context& ctx) {
     };
 
     auto union_fn = ObjectFactory::create_native_function("union",
-        [validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [validate_set_like, iterate_keys](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.union"); return Value(); }
             Set* self = static_cast<Set*>(obj);
-            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.union requires a Set"); return Value(); }
+            if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.union requires a set-like"); return Value(); }
             if (!validate_set_like(ctx, args[0].as_object())) return Value();
             auto result = std::make_unique<Set>();
             for (const auto& v : self->values()) result->add(v);
-            if (args[0].as_object()->get_type() == Object::ObjectType::Set) {
-                for (const auto& v : static_cast<Set*>(args[0].as_object())->values()) result->add(v);
+            for (const auto& v : iterate_keys(ctx, args[0].as_object())) {
+                if (ctx.has_exception()) return Value();
+                result->add(v);
             }
+            if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);
             return Value(result.release());
         }, 1);
@@ -991,24 +1020,32 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("intersection", Value(intersection_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto difference_fn = ObjectFactory::create_native_function("difference",
-        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.difference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.difference requires a set-like"); return Value(); }
             if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
-            Value has_fn = other->get_property("has");
+            Value other_size_val = other->get_property("size");
+            if (ctx.has_exception()) return Value();
+            double other_size = other_size_val.to_number();
             auto result = std::make_unique<Set>();
-            if (other->get_type() == Object::ObjectType::Set) {
-                Set* os = static_cast<Set*>(other);
-                for (const auto& v : self->values()) if (!os->has(v)) result->add(v);
+            if ((double)self->size() <= other_size) {
+                // this.size <= other.size: iterate this, call other.has() for each element.
+                Value has_fn = other->get_property("has");
+                if (ctx.has_exception()) return Value();
+                for (const auto& v : self->values()) {
+                    if (!call_has(ctx, other, has_fn, v)) result->add(v);
+                    if (ctx.has_exception()) return Value();
+                }
             } else {
-                for (const auto& v : self->values()) if (!call_has(ctx, other, has_fn, v)) result->add(v);
+                // this.size > other.size: copy this, remove elements from other.keys().
+                for (const auto& v : self->values()) result->add(v);
+                for (const auto& v : iterate_keys(ctx, other)) {
+                    if (ctx.has_exception()) return Value();
+                    result->delete_value(v);
+                }
             }
             if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);
@@ -1017,29 +1054,20 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto symmetricDifference_fn = ObjectFactory::create_native_function("symmetricDifference",
-        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.symmetricDifference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.symmetricDifference requires a set-like"); return Value(); }
             if (!validate_set_like(ctx, args[0].as_object())) return Value();
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
-            Value has_fn = other->get_property("has");
+            // Spec: start with copy of this, then for each key in other: toggle membership (no other.has() calls).
             auto result = std::make_unique<Set>();
-            if (other->get_type() == Object::ObjectType::Set) {
-                Set* os = static_cast<Set*>(other);
-                for (const auto& v : self->values()) if (!os->has(v)) result->add(v);
-                for (const auto& v : os->values()) if (!self->has(v)) result->add(v);
-            } else {
-                for (const auto& v : self->values()) if (!call_has(ctx, other, has_fn, v)) result->add(v);
-                Value self_has_fn = obj->get_property("has");
-                for (const auto& v : iterate_keys(ctx, other)) {
-                    if (!call_has(ctx, obj, self_has_fn, v)) result->add(v);
-                }
+            for (const auto& v : self->values()) result->add(v);
+            for (const auto& v : iterate_keys(ctx, other)) {
+                if (ctx.has_exception()) return Value();
+                if (result->has(v)) result->delete_value(v);
+                else result->add(v);
             }
             if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);
@@ -1147,8 +1175,10 @@ void Set::setup_set_prototype(Context& ctx) {
         }
     }
 
+    Object* set_proto_ptr = set_prototype.get();
     set_constructor_fn->set_property("prototype", Value(set_prototype.release()), PropertyAttributes::None);
-    ctx.create_binding("Set", Value(set_constructor_fn.release()));
+    set_proto_ptr->set_property("constructor", Value(set_constructor_fn.get()), PropertyAttributes::BuiltinFunction);
+    ctx.register_built_in_object("Set", set_constructor_fn.release());
 }
 
 

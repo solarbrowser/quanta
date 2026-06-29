@@ -1974,6 +1974,18 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
             return Value();
         }
 
+    } else if (object_value.is_symbol()) {
+        Value method_value = member->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        if (method_value.is_function()) {
+            return method_value.as_function()->call(ctx, arg_values, object_value);
+        } else {
+            ctx.throw_type_error(member->to_string() + " is not a function");
+            return Value();
+        }
+
     } else if (object_value.is_object() || object_value.is_function()) {
         Object* obj = object_value.is_object() ? object_value.as_object() : object_value.as_function();
 

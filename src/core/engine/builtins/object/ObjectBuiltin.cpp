@@ -140,7 +140,8 @@ Value object_prototype_to_string(Context& ctx, const Value& this_val) {
         } else if (obj_type == Object::ObjectType::String ||
             (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_string())) {
             builtinTag = "String";
-        } else if (obj_type == Object::ObjectType::Number) {
+        } else if (obj_type == Object::ObjectType::Number ||
+            (this_obj->has_own_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_number())) {
             builtinTag = "Number";
         } else if (obj_type == Object::ObjectType::Boolean ||
             (this_obj->has_own_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_boolean())) {
@@ -803,8 +804,19 @@ void register_object_builtins(Context& ctx) {
                 } else if (obj_val.is_boolean()) {
                     Value boolean_ctor = ctx.get_binding("Boolean");
                     if (boolean_ctor.is_function()) {
-                        Function* bool_fn = boolean_ctor.as_function();
-                        Value proto = bool_fn->get_property("prototype");
+                        Value proto = boolean_ctor.as_function()->get_property("prototype");
+                        return proto;
+                    }
+                } else if (obj_val.is_symbol()) {
+                    Value symbol_ctor = ctx.get_binding("Symbol");
+                    if (symbol_ctor.is_function()) {
+                        Value proto = symbol_ctor.as_function()->get_property("prototype");
+                        return proto;
+                    }
+                } else if (obj_val.is_bigint()) {
+                    Value bigint_ctor = ctx.get_binding("BigInt");
+                    if (bigint_ctor.is_function()) {
+                        Value proto = bigint_ctor.as_function()->get_property("prototype");
                         return proto;
                     }
                 }

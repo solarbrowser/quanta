@@ -14,11 +14,16 @@ namespace Quanta {
 void register_symbol_builtins(Context& ctx) {
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (ctx.is_in_constructor_call()) {
+                ctx.throw_type_error("Symbol is not a constructor");
+                return Value();
+            }
             bool has_desc = !args.empty() && !args[0].is_undefined();
             std::string description = has_desc ? args[0].to_string() : "";
+            if (ctx.has_exception()) return Value();
             auto symbol = Symbol::create(description, has_desc);
             return Value(symbol.release());
-        });
+        }, 0);
     
     auto symbol_for_fn = ObjectFactory::create_native_function("for",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -34,77 +39,77 @@ void register_symbol_builtins(Context& ctx) {
 
     Symbol* iterator_sym = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_sym) {
-        symbol_constructor->set_property("iterator", Value(iterator_sym));
+        symbol_constructor->set_property_descriptor("iterator", PropertyDescriptor(Value(iterator_sym), PropertyAttributes::None));
     }
     
     Symbol* async_iterator_sym = Symbol::get_well_known(Symbol::ASYNC_ITERATOR);
     if (async_iterator_sym) {
-        symbol_constructor->set_property("asyncIterator", Value(async_iterator_sym));
+        symbol_constructor->set_property_descriptor("asyncIterator", PropertyDescriptor(Value(async_iterator_sym), PropertyAttributes::None));
     }
     
     Symbol* match_sym = Symbol::get_well_known(Symbol::MATCH);
     if (match_sym) {
-        symbol_constructor->set_property("match", Value(match_sym));
+        symbol_constructor->set_property_descriptor("match", PropertyDescriptor(Value(match_sym), PropertyAttributes::None));
     }
 
     Symbol* match_all_sym = Symbol::get_well_known(Symbol::MATCH_ALL);
     if (match_all_sym) {
-        symbol_constructor->set_property("matchAll", Value(match_all_sym));
+        symbol_constructor->set_property_descriptor("matchAll", PropertyDescriptor(Value(match_all_sym), PropertyAttributes::None));
     }
 
     Symbol* replace_sym = Symbol::get_well_known(Symbol::REPLACE);
     if (replace_sym) {
-        symbol_constructor->set_property("replace", Value(replace_sym));
+        symbol_constructor->set_property_descriptor("replace", PropertyDescriptor(Value(replace_sym), PropertyAttributes::None));
     }
     
     Symbol* search_sym = Symbol::get_well_known(Symbol::SEARCH);
     if (search_sym) {
-        symbol_constructor->set_property("search", Value(search_sym));
+        symbol_constructor->set_property_descriptor("search", PropertyDescriptor(Value(search_sym), PropertyAttributes::None));
     }
     
     Symbol* split_sym = Symbol::get_well_known(Symbol::SPLIT);
     if (split_sym) {
-        symbol_constructor->set_property("split", Value(split_sym));
+        symbol_constructor->set_property_descriptor("split", PropertyDescriptor(Value(split_sym), PropertyAttributes::None));
     }
     
     Symbol* has_instance_sym = Symbol::get_well_known(Symbol::HAS_INSTANCE);
     if (has_instance_sym) {
-        symbol_constructor->set_property("hasInstance", Value(has_instance_sym));
+        symbol_constructor->set_property_descriptor("hasInstance", PropertyDescriptor(Value(has_instance_sym), PropertyAttributes::None));
     }
     
     Symbol* is_concat_spreadable_sym = Symbol::get_well_known(Symbol::IS_CONCAT_SPREADABLE);
     if (is_concat_spreadable_sym) {
-        symbol_constructor->set_property("isConcatSpreadable", Value(is_concat_spreadable_sym));
+        symbol_constructor->set_property_descriptor("isConcatSpreadable", PropertyDescriptor(Value(is_concat_spreadable_sym), PropertyAttributes::None));
     }
     
     Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
     if (species_sym) {
-        symbol_constructor->set_property("species", Value(species_sym));
+        symbol_constructor->set_property_descriptor("species", PropertyDescriptor(Value(species_sym), PropertyAttributes::None));
     }
     
     Symbol* to_primitive_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
     if (to_primitive_sym) {
-        symbol_constructor->set_property("toPrimitive", Value(to_primitive_sym));
+        symbol_constructor->set_property_descriptor("toPrimitive", PropertyDescriptor(Value(to_primitive_sym), PropertyAttributes::None));
     }
     
     Symbol* to_string_tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
     if (to_string_tag_sym) {
-        symbol_constructor->set_property("toStringTag", Value(to_string_tag_sym));
+        symbol_constructor->set_property_descriptor("toStringTag", PropertyDescriptor(Value(to_string_tag_sym), PropertyAttributes::None));
     }
     
     Symbol* unscopables_sym = Symbol::get_well_known(Symbol::UNSCOPABLES);
     if (unscopables_sym) {
-        symbol_constructor->set_property("unscopables", Value(unscopables_sym));
+        symbol_constructor->set_property_descriptor("unscopables", PropertyDescriptor(Value(unscopables_sym), PropertyAttributes::None));
     }
 
     Symbol* dispose_sym = Symbol::get_well_known(Symbol::DISPOSE);
     if (dispose_sym) {
-        symbol_constructor->set_property("dispose", Value(dispose_sym));
+        symbol_constructor->set_property_descriptor("dispose", PropertyDescriptor(Value(dispose_sym), PropertyAttributes::None));
     }
 
     Symbol* async_dispose_sym = Symbol::get_well_known(Symbol::ASYNC_DISPOSE);
     if (async_dispose_sym) {
-        symbol_constructor->set_property("asyncDispose", Value(async_dispose_sym));
+        symbol_constructor->set_property_descriptor("asyncDispose", PropertyDescriptor(Value(async_dispose_sym), PropertyAttributes::None));
     }
 
     {
@@ -179,7 +184,7 @@ void register_symbol_builtins(Context& ctx) {
                     ctx.throw_type_error("Symbol.prototype[Symbol.toPrimitive] requires a symbol");
                     return Value();
                 }, 1);
-            sym_proto->set_property(toPrim_sym->to_property_key(), Value(sym_toPrimitive.release()), PropertyAttributes::BuiltinFunction);
+            sym_proto->set_property(toPrim_sym->to_property_key(), Value(sym_toPrimitive.release()), PropertyAttributes::Configurable);
         }
 
         symbol_constructor->set_property("prototype", Value(sym_proto.release()), PropertyAttributes::None);
