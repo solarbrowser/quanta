@@ -542,10 +542,22 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                 return Value();
             }
 
-            // Iterable protocol
-            if (items.is_object() || items.is_function() || items.is_string()) {
+            // Iterable protocol -- also handle primitives (number/boolean/bigint/symbol) by boxing.
+            bool is_iterable_candidate = items.is_object() || items.is_function() || items.is_string()
+                || items.is_number() || items.is_boolean() || items.is_bigint() || items.is_symbol();
+            if (is_iterable_candidate) {
                 Object* src_obj = nullptr;
                 Value items_boxed = items;
+                if (!items.is_object() && !items.is_function()) {
+                    // Box primitive to find Symbol.iterator via prototype chain.
+                    Value obj_ctor = ctx.get_binding("Object");
+                    if (obj_ctor.is_function()) {
+                        Value boxed = obj_ctor.as_function()->call(ctx, {items});
+                        if (!ctx.has_exception() && (boxed.is_object() || boxed.is_function())) {
+                            items_boxed = boxed;
+                        }
+                    }
+                }
                 if (items.is_string()) {
                     // Box string via Object() to expose its iterator
                     Value obj_ctor = ctx.get_binding("Object");
@@ -568,7 +580,11 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
                         return Value(res);
                     }
                 } else {
-                    src_obj = items.is_function() ? static_cast<Object*>(items.as_function()) : items.as_object();
+                    // Use boxed value for primitives (number, boolean, etc.) to access prototype chain.
+                    if (items_boxed.is_function()) src_obj = static_cast<Object*>(items_boxed.as_function());
+                    else if (items_boxed.is_object()) src_obj = items_boxed.as_object();
+                    else if (items.is_function()) src_obj = static_cast<Object*>(items.as_function());
+                    else if (items.is_object()) src_obj = items.as_object();
                 }
 
                 Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);

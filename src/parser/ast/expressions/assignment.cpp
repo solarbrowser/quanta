@@ -748,6 +748,7 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                     if (setter_fn) {
                         try {
                             setter_fn->call(ctx, {right_value}, Value(obj));
+                            if (ctx.has_exception()) return Value();
                             return right_value;
                         } catch (const std::exception& e) {
                             ctx.throw_exception(Value(std::string("Setter call failed: ") + e.what()));
