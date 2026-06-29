@@ -34,6 +34,8 @@ void register_boolean_builtins(Context& ctx) {
         });
 
     auto boolean_prototype = ObjectFactory::create_object();
+    // Boolean.prototype is itself a Boolean object with value false.
+    boolean_prototype->set_property("[[PrimitiveValue]]", Value(false), PropertyAttributes::Writable);
 
     auto boolean_valueOf = ObjectFactory::create_native_function("valueOf",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -45,8 +47,9 @@ void register_boolean_builtins(Context& ctx) {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->has_property("[[PrimitiveValue]]")) {
-                        return this_obj->get_property("[[PrimitiveValue]]");
+                    if (this_obj->get_type() == Object::ObjectType::Boolean || this_obj->has_property("[[PrimitiveValue]]")) {
+                        Value pv = this_obj->get_property("[[PrimitiveValue]]");
+                        if (pv.is_boolean()) return pv;
                     }
                 }
                 ctx.throw_type_error("Boolean.prototype.valueOf called on non-boolean");
@@ -78,9 +81,9 @@ void register_boolean_builtins(Context& ctx) {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->has_property("[[PrimitiveValue]]")) {
-                        Value primitive = this_obj->get_property("[[PrimitiveValue]]");
-                        return Value(primitive.to_boolean() ? "true" : "false");
+                    if (this_obj->get_type() == Object::ObjectType::Boolean || this_obj->has_property("[[PrimitiveValue]]")) {
+                        Value pv = this_obj->get_property("[[PrimitiveValue]]");
+                        if (pv.is_boolean()) return Value(pv.to_boolean() ? "true" : "false");
                     }
                 }
                 ctx.throw_type_error("Boolean.prototype.toString called on non-boolean");

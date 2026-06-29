@@ -849,10 +849,28 @@ int Value::compare(const Value& other) const {
 }
 
 bool Value::instanceof_check(const Value& constructor) const {
-    if ((!is_object() && !is_function()) || !constructor.is_function()) {
+    if (!is_object() && !is_function()) return false;
+
+    // A Proxy wrapping a callable/constructible function is a valid instanceof RHS.
+    if (constructor.is_object() && constructor.as_object()->get_type() == Object::ObjectType::Proxy) {
+        Proxy* proxy_ctor = static_cast<Proxy*>(constructor.as_object());
+        if (!proxy_ctor->target_was_callable()) return false;
+        Object* obj = is_function() ? static_cast<Object*>(as_function()) : as_object();
+        Value prototype_prop = proxy_ctor->get_property("prototype");
+        if (!prototype_prop.is_object() && !prototype_prop.is_function()) return false;
+        Object* ctor_prototype = prototype_prop.is_function()
+            ? static_cast<Object*>(prototype_prop.as_function()) : prototype_prop.as_object();
+        Object* current = obj->get_prototype();
+        while (current) {
+            if (current == ctor_prototype) return true;
+            if (Object::current_context_ && Object::current_context_->has_exception()) return false;
+            current = current->get_prototype();
+        }
         return false;
     }
-    
+
+    if (!constructor.is_function()) return false;
+
     Function* ctor = constructor.as_function();
     std::string ctor_name = ctor->get_name();
     
