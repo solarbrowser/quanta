@@ -34,7 +34,14 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
 
     if (val.is_object_like() && val.as_object()) {
         Object* obj = val.as_object();
-        if (obj->is_array()) {
+        // IsArray: unwrap Proxies recursively like Array.isArray does.
+        Object* unwrapped = obj;
+        while (unwrapped && unwrapped->get_type() == Object::ObjectType::Proxy) {
+            Proxy* p = static_cast<Proxy*>(unwrapped);
+            if (p->is_revoked()) { ctx.throw_type_error("IsArray called on revoked Proxy"); return Value(); }
+            unwrapped = p->get_proxy_target();
+        }
+        if (unwrapped && unwrapped->is_array()) {
             // Array: walk by integer index
             Value len_val = obj->get_property("length");
             uint32_t len = static_cast<uint32_t>(len_val.to_number());
@@ -44,25 +51,40 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(idx);
+                    if (ctx.has_exception()) return Value();
                 } else {
                     // CreateDataProperty: {value:V, writable:true, enumerable:true, configurable:true}
                     PropertyDescriptor d(new_element, static_cast<PropertyAttributes>(
                         PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
                     obj->set_property_descriptor(idx, d);
+                    if (ctx.has_exception()) return Value();
                 }
             }
         } else {
-            // Object: walk keys in ES6 property order (via get_own_property_keys)
-            std::vector<std::string> keys = obj->get_own_property_keys();
+            // Object: walk enumerable own string keys (via proxy ownKeys trap if applicable).
+            std::vector<std::string> keys;
+            if (obj->get_type() == Object::ObjectType::Proxy) {
+                try {
+                    keys = static_cast<Proxy*>(obj)->own_keys_trap();
+                    if (ctx.has_exception()) return Value();
+                } catch (const std::runtime_error&) {
+                    if (!ctx.has_exception()) ctx.throw_type_error("'ownKeys' proxy invariant violated");
+                    return Value();
+                }
+            } else {
+                keys = obj->get_own_property_keys();
+            }
             for (const auto& key : keys) {
                 Value new_element = internalize_json_property(ctx, obj, key, reviver);
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(key);
+                    if (ctx.has_exception()) return Value();
                 } else {
                     PropertyDescriptor d(new_element, static_cast<PropertyAttributes>(
                         PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
                     obj->set_property_descriptor(key, d);
+                    if (ctx.has_exception()) return Value();
                 }
             }
         }
@@ -666,16 +688,42 @@ JSON::Stringifier::Stringifier(const StringifyOptions& options, Context* ctx)
     : options_(options), depth_(0), context_(ctx), current_key_("") {
 }
 
+// GetV(v, "toJSON") semantics: returns the toJSON function preserving primitive receiver for accessors.
+Function* JSON::Stringifier::get_to_json(const Value& v) {
+    if (!context_) return nullptr;
+    if ((v.is_object() || v.is_function()) && v.as_object()) {
+        Value tj = const_cast<Object*>(v.as_object())->get_property("toJSON");
+        if (tj.is_function()) return tj.as_function();
+        return nullptr;
+    }
+    if (v.is_bigint()) {
+        Value bigint_ctor = context_->get_binding("BigInt");
+        if (bigint_ctor.is_function()) {
+            Value bp = bigint_ctor.as_function()->get_property("prototype");
+            if (bp.is_object()) {
+                PropertyDescriptor d = bp.as_object()->get_property_descriptor("toJSON");
+                if (d.is_data_descriptor() && d.get_value().is_function()) return d.get_value().as_function();
+                if (d.is_accessor_descriptor() && d.get_getter()) {
+                    Function* getter = dynamic_cast<Function*>(d.get_getter());
+                    if (getter) {
+                        Value tj = getter->call(*context_, {}, v);
+                        if (!context_->has_exception() && tj.is_function()) return tj.as_function();
+                    }
+                }
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::string JSON::Stringifier::stringify(const Value& value) {
     if (options_.replacer_function && context_) {
-        // Apply toJSON on root value BEFORE passing to replacer (spec order).
+        // Apply toJSON on root value BEFORE passing to replacer (spec step 2, also for BigInt).
         Value root = value;
-        if ((root.is_object() || root.is_function()) && root.as_object()) {
-            Value tj = const_cast<Object*>(root.as_object())->get_property("toJSON");
-            if (tj.is_function()) {
-                root = tj.as_function()->call(*context_, {Value(std::string(""))}, root);
-                if (context_->has_exception()) return "";
-            }
+        Function* to_json = get_to_json(root);
+        if (to_json) {
+            root = to_json->call(*context_, {Value(std::string(""))}, root);
+            if (context_->has_exception()) return "";
         }
 
         std::vector<Value> args = { Value(std::string("")), root };
@@ -691,10 +739,25 @@ std::string JSON::Stringifier::stringify(const Value& value) {
         if (context_->has_exception()) return "";
         if (result.is_undefined() || result.is_function() || result.is_symbol()) return "";
         current_key_ = "";
-        return stringify_value(result);
+        skip_bigint_toJSON_ = true;
+        std::string out = stringify_value(result);
+        skip_bigint_toJSON_ = false;
+        return out;
     }
 
     current_key_ = "";
+    // For BigInt primitives without a replacer, apply toJSON before serialising.
+    if (value.is_bigint() && context_) {
+        Function* to_json_noRepl = get_to_json(value);
+        if (to_json_noRepl) {
+            Value after_toJSON = to_json_noRepl->call(*context_, {Value(std::string(""))}, value);
+            if (context_->has_exception()) return "";
+            skip_bigint_toJSON_ = true;
+            std::string out = stringify_value(after_toJSON);
+            skip_bigint_toJSON_ = false;
+            return out;
+        }
+    }
     return stringify_value(value);
 }
 
@@ -704,23 +767,16 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
     } else if (value.is_undefined()) {
         return "null"; // arrays: undefined elements -> null; objects skip before calling here
     } else if (value.is_bigint()) {
-
-        if (context_) {
-            Value bigint_ctor = context_->get_binding("BigInt");
-            if (bigint_ctor.is_function()) {
-                Value bigint_proto = bigint_ctor.as_function()->get_property("prototype");
-                if (bigint_proto.is_object()) {
-                    Value toJSON_val = bigint_proto.as_object()->get_property("toJSON");
-                    if (toJSON_val.is_function()) {
-                        std::vector<Value> tj_args = { Value(current_key_) };
-                        Value result = toJSON_val.as_function()->call(*context_, tj_args, value);
-                        if (context_->has_exception()) return "";
-                        return stringify_value(result);
-                    }
-                }
+        if (context_ && !skip_bigint_toJSON_) {
+            Function* to_json = get_to_json(value);
+            if (to_json) {
+                std::vector<Value> tj_args = { Value(current_key_) };
+                Value result = to_json->call(*context_, tj_args, value);
+                if (context_->has_exception()) return "";
+                if (!result.is_bigint()) return stringify_value(result);
             }
-            context_->throw_type_error("Do not know how to serialize a BigInt");
         }
+        if (context_) context_->throw_type_error("Do not know how to serialize a BigInt");
         return "";
     } else if (value.is_symbol()) {
         return "null";
@@ -759,13 +815,14 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                     }
                 }
             }
-            const Object* effective_obj = obj;
-            if (is_proxy) {
-                const Proxy* proxy = static_cast<const Proxy*>(obj);
-                if (!proxy->is_revoked()) {
-                    effective_obj = proxy->get_proxy_target();
-                }
+            // Determine if it's array-like by unwrapping Proxies (Array.isArray semantics).
+            const Object* unwrapped = obj;
+            while (unwrapped && unwrapped->get_type() == Object::ObjectType::Proxy) {
+                const Proxy* p = static_cast<const Proxy*>(unwrapped);
+                if (p->is_revoked()) { unwrapped = nullptr; break; }
+                unwrapped = p->get_proxy_target();
             }
+            bool is_array_value = unwrapped && unwrapped->is_array();
 
             // toJSON takes the current key as its first argument
             if (obj && context_) {
@@ -817,8 +874,8 @@ std::string JSON::Stringifier::stringify_value(const Value& value) {
                 }
             }
 
-            if (effective_obj && effective_obj->is_array()) {
-                return stringify_array(effective_obj);
+            if (is_array_value) {
+                return stringify_array(obj);
             } else {
                 return stringify_object(obj);
             }
@@ -847,15 +904,13 @@ std::string JSON::Stringifier::stringify_object(const Object* obj) {
         Proxy* proxy = static_cast<Proxy*>(const_cast<Object*>(obj));
         if (!proxy->is_revoked()) {
             keys = proxy->own_keys_trap();
-            // Filter to only enumerable keys
+            // Filter to only enumerable string keys via the proxy's getOwnPropertyDescriptor trap.
             std::vector<std::string> enumerable_keys;
-            Object* target = proxy->get_proxy_target();
             for (const auto& k : keys) {
-                if (target && target->has_own_property(k)) {
-                    PropertyDescriptor desc = target->get_property_descriptor(k);
-                    if (!desc.has_value() || desc.is_enumerable()) {
-                        enumerable_keys.push_back(k);
-                    }
+                if (k.find("@@sym:") == 0 || k.find("Symbol.") == 0) continue;
+                PropertyDescriptor desc = proxy->get_own_property_descriptor_trap(Value(k));
+                if (desc.is_data_descriptor() || desc.is_accessor_descriptor()) {
+                    if (desc.is_enumerable()) enumerable_keys.push_back(k);
                 }
             }
             keys = enumerable_keys;

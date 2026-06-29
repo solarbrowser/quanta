@@ -460,7 +460,7 @@ void register_function_builtins(Context& ctx) {
         }
     }
 
-    // Only strict/class/arrow functions restrict caller and arguments; non-strict functions allow access
+    // %ThrowTypeError%: single shared getter+setter -- throws only for strict/bound/generator/class/arrow.
     {
         auto get_this_fn = [](Context& ctx) -> Function* {
             Value this_val = ctx.get_binding("this");
@@ -471,8 +471,7 @@ void register_function_builtins(Context& ctx) {
             }
             return nullptr;
         };
-
-        auto poison_getter = ObjectFactory::create_native_function("ThrowTypeError",
+        auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
             [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
                 Function* fn = get_this_fn(ctx);
                 if (fn) {
@@ -482,36 +481,24 @@ void register_function_builtins(Context& ctx) {
                         ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
                         return Value();
                     }
+                } else {
+                    ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
                 }
                 return Value();
-            });
-        auto poison_setter = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
-                Function* fn = get_this_fn(ctx);
-                if (fn) {
-                    bool is_bound = !fn->get_property("__bound_target__").is_undefined();
-                    bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
-                    if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor()) {
-                        ctx.throw_type_error("'caller' and 'arguments' are restricted function properties");
-                        return Value();
-                    }
-                }
-                return Value();
-            });
+            }, 0);
 
-        Function* getter_raw = poison_getter.release();
-        Function* setter_raw = poison_setter.release();
+        Function* thrower = thrower_fn.release();
 
         PropertyDescriptor caller_desc;
-        caller_desc.set_getter(getter_raw);
-        caller_desc.set_setter(setter_raw);
+        caller_desc.set_getter(thrower);
+        caller_desc.set_setter(thrower);
         caller_desc.set_configurable(true);
         caller_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("caller", caller_desc);
 
         PropertyDescriptor arguments_desc;
-        arguments_desc.set_getter(getter_raw);
-        arguments_desc.set_setter(setter_raw);
+        arguments_desc.set_getter(thrower);
+        arguments_desc.set_setter(thrower);
         arguments_desc.set_configurable(true);
         arguments_desc.set_enumerable(false);
         function_proto_ptr->set_property_descriptor("arguments", arguments_desc);

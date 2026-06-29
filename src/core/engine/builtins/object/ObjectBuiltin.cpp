@@ -142,7 +142,8 @@ Value object_prototype_to_string(Context& ctx, const Value& this_val) {
             builtinTag = "String";
         } else if (obj_type == Object::ObjectType::Number) {
             builtinTag = "Number";
-        } else if (obj_type == Object::ObjectType::Boolean) {
+        } else if (obj_type == Object::ObjectType::Boolean ||
+            (this_obj->has_own_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_boolean())) {
             builtinTag = "Boolean";
         } else if (obj_type == Object::ObjectType::Date) {
             builtinTag = "Date";
@@ -272,20 +273,33 @@ Object* to_object_or_throw(Context& ctx, const Value& this_val) {
 void register_object_builtins(Context& ctx) {
     auto object_constructor = ObjectFactory::create_native_constructor("Object",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Spec: if NewTarget is neither undefined nor the active function, return OrdinaryCreateFromConstructor.
+            Value new_target = ctx.get_new_target();
+            Object* active_object_ctor = ctx.get_built_in_object("Object");
+            bool has_different_new_target = !new_target.is_undefined() &&
+                !(new_target.is_function() && new_target.as_function() == static_cast<Function*>(active_object_ctor)) &&
+                !(new_target.is_object() && new_target.as_object() == active_object_ctor);
+            if (has_different_new_target) {
+                auto new_obj = ObjectFactory::create_object();
+                Object* nt_obj = new_target.is_function() ? static_cast<Object*>(new_target.as_function()) : new_target.as_object();
+                if (nt_obj) {
+                    Value proto = nt_obj->get_property("prototype");
+                    if (proto.is_object()) new_obj->set_prototype(proto.as_object());
+                    else if (proto.is_function()) new_obj->set_prototype(static_cast<Object*>(proto.as_function()));
+                }
+                return Value(new_obj.release());
+            }
+
             if (args.size() == 0) {
                 return Value(ObjectFactory::create_object().release());
             }
-            
             Value value = args[0];
-            
             if (value.is_null() || value.is_undefined()) {
                 return Value(ObjectFactory::create_object().release());
             }
-            
             if (value.is_object() || value.is_function()) {
                 return value;
             }
-
             return box_primitive(ctx, value);
         });
     

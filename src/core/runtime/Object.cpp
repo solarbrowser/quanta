@@ -501,6 +501,19 @@ bool Object::set_property(const std::string& key, const Value& value, PropertyAt
         // [[Set]] must check the prototype chain for an inherited accessor first. Scoped to
         // Array only: plain-object literals ({0: x, ...}) also reach set_property() for
         // CreateDataProperty-style init and must not trigger this.
+        // Check if own property at this index is an accessor -- must call setter or return false.
+        if (has_own_property(key) && descriptors_ && descriptors_->count(key)) {
+            const PropertyDescriptor& own_pd = (*descriptors_)[key];
+            if (own_pd.is_accessor_descriptor()) {
+                Object* setter = own_pd.get_setter();
+                if (!setter) return false;
+                if (current_context_) {
+                    Function* setter_fn = dynamic_cast<Function*>(setter);
+                    if (setter_fn) setter_fn->call(*current_context_, {value}, Value(this));
+                }
+                return true;
+            }
+        }
         if (header_.type == ObjectType::Array && !has_own_property(key) && header_.prototype) {
             Object* proto = header_.prototype;
             while (proto) {
