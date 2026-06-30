@@ -16,10 +16,6 @@ namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript Symbol implementation
- * Symbols are unique identifiers that can be used as object keys
- */
 class Symbol {
 private:
     std::string description_;

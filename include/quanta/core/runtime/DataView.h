@@ -18,10 +18,6 @@ namespace Quanta {
 class Context;
 class ArrayBuffer;
 
-/**
- * DataView provides a flexible interface for reading and writing 
- * multi-byte numeric data at arbitrary offsets in ArrayBuffers
- */
 class DataView : public Object {
 private:
     std::shared_ptr<ArrayBuffer> buffer_;

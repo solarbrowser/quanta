@@ -390,8 +390,11 @@ public:
     }
 
     static Function* create_function_prototype();
-    
+
     std::string to_string() const;
+
+    // The %ThrowTypeError% intrinsic, shared by Function.prototype.caller/.arguments and arguments.callee.
+    static Object* s_throw_type_error_;
 
 protected:
     void scan_for_var_declarations(class ASTNode* node, Context& ctx);

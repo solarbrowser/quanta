@@ -601,7 +601,7 @@ PropertyDescriptor Proxy::get_own_property_descriptor_trap(const Value& key) {
     if (target_->get_type() == Object::ObjectType::Proxy) {
         return static_cast<Proxy*>(target_)->get_own_property_descriptor_trap(key);
     }
-    return target_->get_property_descriptor(key.to_string());
+    return target_->get_property_descriptor(to_prop_key(key));
 }
 
 bool Proxy::define_property_trap(const Value& key, const PropertyDescriptor& desc) {

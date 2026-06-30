@@ -17,10 +17,6 @@ namespace Quanta {
 class Context;
 class Symbol;
 
-/**
- * JavaScript Iterator protocol implementation
- * Implements the ES6 iteration protocol with Symbol.iterator
- */
 class Iterator : public Object {
 public:
     struct IteratorResult {

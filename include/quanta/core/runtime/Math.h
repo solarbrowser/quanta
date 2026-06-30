@@ -15,10 +15,6 @@ namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript Math object implementation
- * Provides all standard Math methods and constants
- */
 class Math {
 public:
     static constexpr double E = 2.718281828459045;

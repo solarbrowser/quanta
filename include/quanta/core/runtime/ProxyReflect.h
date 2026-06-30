@@ -14,10 +14,6 @@ namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript Proxy implementation
- * ES6 Proxy for intercepting and customizing operations
- */
 class Proxy : public Object {
 private:
     Object* target_;

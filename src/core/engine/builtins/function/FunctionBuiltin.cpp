@@ -472,9 +472,10 @@ void register_function_builtins(Context& ctx) {
             return nullptr;
         };
         auto thrower_fn = ObjectFactory::create_native_function("ThrowTypeError",
-            [get_this_fn](Context& ctx, const std::vector<Value>&) -> Value {
+            [get_this_fn, function_proto_ptr](Context& ctx, const std::vector<Value>&) -> Value {
                 Function* fn = get_this_fn(ctx);
-                if (fn) {
+                // Function.prototype always throws (no legacy non-strict caller/arguments shadowing for it).
+                if (fn && fn != function_proto_ptr) {
                     bool is_bound = !fn->get_property("__bound_target__").is_undefined();
                     bool is_generator_fn = fn->get_prototype() == Generator::s_generator_function_prototype_;
                     if (is_bound || is_generator_fn || fn->is_strict() || fn->is_class_constructor() || fn->is_arrow()) {
@@ -488,6 +489,17 @@ void register_function_builtins(Context& ctx) {
             }, 0);
 
         Function* thrower = thrower_fn.release();
+        // %ThrowTypeError% must be non-extensible with non-configurable, non-writable length/name.
+        {
+            PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
+            len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
+            thrower->set_property_descriptor("length", len_desc);
+            PropertyDescriptor name_desc(Value(std::string("")), PropertyAttributes::None);
+            name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
+            thrower->set_property_descriptor("name", name_desc);
+            thrower->prevent_extensions();
+        }
+        Function::s_throw_type_error_ = thrower;
 
         PropertyDescriptor caller_desc;
         caller_desc.set_getter(thrower);
