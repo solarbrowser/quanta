@@ -310,11 +310,8 @@ Value Object::get_property(const std::string& key) const {
                             }
                             return Value(const_cast<Object*>(original_receiver));
                         }
-                        // Native getters must be called with the original receiver as `this`;
-                        // without this, the native getter runs with `this` = the prototype
-                        // (wrong) and returns the prototype object instead of calling itself.
-                        // JS getters fall through to get_own_property which handles them correctly.
-                        if (getter_fn->is_native() && current_context_) {
+                        // Inherited getters must be called with the original receiver as `this`.
+                        if (current_context_) {
                             Value recv = original_receiver->is_function()
                                 ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
                                 : Value(const_cast<Object*>(original_receiver));
