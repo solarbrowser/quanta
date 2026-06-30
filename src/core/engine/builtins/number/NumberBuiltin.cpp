@@ -8,6 +8,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/parser/AST.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <iomanip>
@@ -15,6 +16,54 @@
 #include <sstream>
 
 namespace Quanta {
+
+// Round abs_num to (digits+1) sig figs using round-half-up (JS ties pick the larger n).
+static std::string round_half_up_exponential(double abs_num, int digits, int& out_exp) {
+    char buf[400];
+    int extra = digits + 30;
+    snprintf(buf, sizeof(buf), "%.*e", extra, abs_num);
+    std::string s(buf);
+    size_t epos = s.find('e');
+    out_exp = std::stoi(s.substr(epos + 1));
+    std::string mantissa = s.substr(0, epos);
+    size_t dot = mantissa.find('.');
+    std::string all_digits = mantissa.substr(0, dot) + mantissa.substr(dot + 1);
+    int keep = digits + 1;
+    if (static_cast<int>(all_digits.size()) <= keep) all_digits += std::string(keep - all_digits.size(), '0');
+    bool round_up = all_digits[keep] >= '5';
+    std::string kept = all_digits.substr(0, keep);
+    if (round_up) {
+        int i = keep - 1;
+        while (i >= 0 && kept[i] == '9') { kept[i] = '0'; i--; }
+        if (i >= 0) kept[i]++;
+        else { kept = "1" + kept.substr(0, keep - 1); out_exp++; }
+    }
+    return kept.size() > 1 ? (kept.substr(0, 1) + "." + kept.substr(1)) : kept;
+}
+
+// Round abs_num to frac_digits decimal places using round-half-up; returns the fixed digit string.
+static std::string round_half_up_fixed(double abs_num, int frac_digits) {
+    char buf[512];
+    int extra = frac_digits + 30;
+    snprintf(buf, sizeof(buf), "%.*f", extra, abs_num);
+    std::string s(buf);
+    size_t dot = s.find('.');
+    std::string int_part = s.substr(0, dot);
+    std::string frac_part = s.substr(dot + 1);
+    bool round_up = frac_part[frac_digits] >= '5';
+    std::string kept_int = int_part;
+    std::string kept_frac = frac_part.substr(0, frac_digits);
+    if (round_up) {
+        std::string combined = kept_int + kept_frac;
+        int i = static_cast<int>(combined.size()) - 1;
+        while (i >= 0 && combined[i] == '9') { combined[i] = '0'; i--; }
+        if (i >= 0) combined[i]++;
+        else combined = "1" + combined;
+        kept_int = combined.substr(0, combined.size() - kept_frac.size());
+        kept_frac = combined.substr(combined.size() - kept_frac.size());
+    }
+    return kept_frac.empty() ? kept_int : (kept_int + "." + kept_frac);
+}
 
 void register_number_builtins(Context& ctx) {
     auto number_constructor = ObjectFactory::create_native_constructor("Number",
@@ -185,30 +234,7 @@ void register_number_builtins(Context& ctx) {
                 if (std::isinf(num)) return Value(num > 0 ? "Infinity" : "-Infinity");
 
                 if (radix == 10) {
-                    // Check if number is an integer
-                    if (num == std::floor(num) && std::abs(num) < 1e15) {
-                        // Format as integer
-                        std::ostringstream oss;
-                        oss << std::fixed << std::setprecision(0) << num;
-                        return Value(oss.str());
-                    } else {
-                        // Use default formatting for decimal numbers
-                        std::ostringstream oss;
-                        oss << num;
-                        std::string result = oss.str();
-
-                        // Remove trailing zeros after decimal point
-                        size_t dot_pos = result.find('.');
-                        if (dot_pos != std::string::npos) {
-                            size_t last_nonzero = result.find_last_not_of('0');
-                            if (last_nonzero > dot_pos) {
-                                result = result.substr(0, last_nonzero + 1);
-                            } else if (last_nonzero == dot_pos) {
-                                result = result.substr(0, dot_pos);
-                            }
-                        }
-                        return Value(result);
-                    }
+                    return Value(Value(num).to_string());
                 }
 
                 bool negative = num < 0;
@@ -286,29 +312,43 @@ void register_number_builtins(Context& ctx) {
             }
 
             bool negative = num < 0;
+            double abs_num = std::abs(num);
 
-            // Use snprintf directly for correct IEEE 754 representation.
-            char buf[200];
+            std::string m_part;
+            int parsed_exp;
             if (!has_frac) {
-                // Undefined fractionDigits: use minimum representation (%.17e then strip trailing zeros).
-                snprintf(buf, sizeof(buf), "%.17e", std::abs(num));
-            } else {
-                snprintf(buf, sizeof(buf), "%.*e", frac, std::abs(num));
-            }
-            std::string s(buf);
-            size_t e_pos = s.find('e');
-            if (e_pos == std::string::npos) return Value(s);
-
-            std::string m_part = s.substr(0, e_pos);
-            if (!has_frac) {
-                // Strip trailing zeros from mantissa.
-                if (m_part.find('.') != std::string::npos) {
-                    size_t last = m_part.find_last_not_of('0');
-                    if (last != std::string::npos && m_part[last] == '.') m_part = m_part.substr(0, last);
-                    else if (last != std::string::npos) m_part = m_part.substr(0, last + 1);
+                // Undefined fractionDigits: minimum digits, reusing the shortest round-trip string.
+                if (abs_num == 0) { m_part = "0"; parsed_exp = 0; }
+                else {
+                    std::string shortest = Value(abs_num).to_string();
+                    int base_exp = 0;
+                    std::string mantissa_str = shortest;
+                    size_t epos = shortest.find('e');
+                    if (epos != std::string::npos) {
+                        base_exp = std::stoi(shortest.substr(epos + 1));
+                        mantissa_str = shortest.substr(0, epos);
+                    }
+                    size_t dot = mantissa_str.find('.');
+                    std::string digits;
+                    int int_part_len;
+                    if (dot != std::string::npos) {
+                        digits = mantissa_str.substr(0, dot) + mantissa_str.substr(dot + 1);
+                        int_part_len = static_cast<int>(dot);
+                    } else {
+                        digits = mantissa_str;
+                        int_part_len = static_cast<int>(mantissa_str.length());
+                    }
+                    size_t first_nz = digits.find_first_not_of('0');
+                    parsed_exp = base_exp + (int_part_len - 1) - static_cast<int>(first_nz);
+                    digits = digits.substr(first_nz);
+                    size_t last_nz = digits.find_last_not_of('0');
+                    digits = digits.substr(0, last_nz + 1);
+                    m_part = digits.size() > 1 ? (digits.substr(0, 1) + "." + digits.substr(1)) : digits;
                 }
+            } else {
+                m_part = round_half_up_exponential(abs_num, frac, parsed_exp);
             }
-            int parsed_exp = std::stoi(s.substr(e_pos + 1));
+
             std::string result;
             if (negative) result += "-";
             result += m_part;
@@ -347,17 +387,16 @@ void register_number_builtins(Context& ctx) {
             if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
 
             bool negative = num < 0;
-            double abs_num = negative ? -num : num;
-            double factor = std::pow(10.0, precision);
-            abs_num = std::floor(abs_num * factor + 0.5) / factor;
+            double abs_num = std::abs(num);
 
-            char buffer[256];
-            std::string format = "%." + std::to_string(precision) + "f";
-            snprintf(buffer, sizeof(buffer), format.c_str(), abs_num);
+            // Spec: if abs_num >= 10^21, toFixed falls back to ToString.
+            if (abs_num >= 1e21) return Value(Value(num).to_string());
+
+            std::string formatted = round_half_up_fixed(abs_num, precision);
 
             std::string result;
             if (negative && abs_num != 0) result += "-";
-            result += buffer;
+            result += formatted;
             return Value(result);
         }, 1);
     PropertyDescriptor toFixed_desc(Value(toFixed_fn.release()),
@@ -396,52 +435,30 @@ void register_number_builtins(Context& ctx) {
             if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
 
             bool negative = num < 0;
-            double abs_num = negative ? -num : num;
+            double abs_num = std::abs(num);
 
-            int exp = 0;
-            if (abs_num != 0) {
-                exp = static_cast<int>(std::floor(std::log10(abs_num)));
-                double test_m = abs_num / std::pow(10.0, exp);
-                if (test_m >= 10.0) exp++;
-                else if (test_m < 1.0) exp--;
-            }
+            // m_part's digits + exp give the rounded value, reused for fixed/exponential output.
+            int exp;
+            std::string m_part = round_half_up_exponential(abs_num, precision - 1, exp);
+            std::string digits = m_part;
+            digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
 
-            char buf[256];
-            if (exp >= 0 && exp < precision) {
-                int frac_digits = precision - exp - 1;
-                double factor = std::pow(10.0, frac_digits);
-                double rounded = std::floor(abs_num * factor + 0.5) / factor;
-                snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), rounded);
+            if ((exp >= 0 && exp < precision) || (exp < 0 && exp >= -6)) {
                 std::string result;
                 if (negative) result += "-";
-                result += buf;
-                return Value(result);
-            } else if (exp < 0 && exp >= -6) {
-                int frac_digits = precision - exp - 1;
-                double factor = std::pow(10.0, frac_digits);
-                double rounded = std::floor(abs_num * factor + 0.5) / factor;
-                snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), rounded);
-                std::string result;
-                if (negative) result += "-";
-                result += buf;
+                if (exp >= 0) {
+                    result += digits.substr(0, exp + 1);
+                    if (exp + 1 < precision) { result += "."; result += digits.substr(exp + 1); }
+                } else {
+                    result += "0.";
+                    result += std::string(-exp - 1, '0');
+                    result += digits;
+                }
                 return Value(result);
             } else {
-                int frac_digits = precision - 1;
-                double mantissa = (abs_num == 0) ? 0.0 : abs_num / std::pow(10.0, exp);
-                if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
-                else if (mantissa < 1.0 && mantissa > 0) { mantissa *= 10.0; exp--; }
-                double factor = std::pow(10.0, frac_digits);
-                mantissa = std::floor(mantissa * factor + 0.5) / factor;
-                if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
-
-                if (frac_digits > 0)
-                    snprintf(buf, sizeof(buf), ("%." + std::to_string(frac_digits) + "f").c_str(), mantissa);
-                else
-                    snprintf(buf, sizeof(buf), "%.0f", mantissa);
-
                 std::string result;
                 if (negative) result += "-";
-                result += buf;
+                result += m_part;
                 result += "e";
                 result += (exp >= 0) ? "+" : "-";
                 result += std::to_string(std::abs(exp));
