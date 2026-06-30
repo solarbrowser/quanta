@@ -361,15 +361,16 @@ Value MapIterator::map_iterator_next_method(Context& ctx, const std::vector<Valu
 }
 
 Iterator::IteratorResult MapIterator::next_impl() {
-    if (!map_ || index_ >= map_->size()) {
+    if (exhausted_ || !map_) {
         return IteratorResult(Value(), true);
     }
-    
+
     auto entries = map_->entries();
     if (index_ >= entries.size()) {
+        exhausted_ = true;
         return IteratorResult(Value(), true);
     }
-    
+
     auto& entry = entries[index_];
     index_++;
     
@@ -425,24 +426,19 @@ Value SetIterator::set_iterator_next_method(Context& ctx, const std::vector<Valu
 }
 
 Iterator::IteratorResult SetIterator::next_impl() {
-    if (!set_ || index_ >= set_->size()) {
+    if (exhausted_ || !set_) {
         return IteratorResult(Value(), true);
     }
-    
+
     auto values = set_->values();
     if (index_ >= values.size()) {
+        exhausted_ = true;
         return IteratorResult(Value(), true);
     }
-    
+
     Value value = values[index_];
-    
-    size_t old_index = index_;
     index_++;
-    
-    if (old_index >= values.size()) {
-        return IteratorResult(Value(), true);
-    }
-    
+
     switch (kind_) {
         case Kind::Values:
             return IteratorResult(value, false);
