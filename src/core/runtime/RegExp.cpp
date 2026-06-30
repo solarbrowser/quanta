@@ -756,17 +756,18 @@ Value RegExp::exec(const std::string& str) {
     if (advances) last_index_ = static_cast<int>(match_end);
     pcre2_match_data_free(md);
 
-    auto result = new Object();
-    result->set_property("0", Value(str.substr(match_start, match_end - match_start)));
+    // ArrayCreate(n): the match result is a genuine Array (RegExpBuiltinExec step 24), not a plain object.
+    auto result_owner = ObjectFactory::create_array(capture_count + 1);
+    Object* result = result_owner.get();
+    result->set_element(0, Value(str.substr(match_start, match_end - match_start)));
     result->set_property("index", Value(static_cast<double>(match_start)));
     result->set_property("input", Value(str));
-    result->set_property("length", Value(static_cast<double>(capture_count + 1)));
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
         if (saved[2 * i] == PCRE2_UNSET)
-            result->set_property(std::to_string(i), Value());
+            result->set_element(i, Value());
         else
-            result->set_property(std::to_string(i),
+            result->set_element(i,
                 Value(str.substr(saved[2*i], saved[2*i+1] - saved[2*i])));
     }
 
@@ -778,21 +779,25 @@ Value RegExp::exec(const std::string& str) {
         pcre2_pattern_info(re, PCRE2_INFO_NAMEENTRYSIZE, &entry_size);
         pcre2_pattern_info(re, PCRE2_INFO_NAMETABLE, &name_table);
 
-        auto groups = new Object();
+        // ObjectCreate(null): groups dict has null prototype per spec.
+        auto groups_owner = ObjectFactory::create_object();
+        groups_owner->set_prototype(nullptr);
         const unsigned char* tbl = reinterpret_cast<const unsigned char*>(name_table);
         for (uint32_t i = 0; i < name_count; ++i) {
             const unsigned char* e = tbl + i * entry_size;
             uint32_t gn = (e[0] << 8) | e[1];
             const char* name = reinterpret_cast<const char*>(e + 2);
-            if (gn <= capture_count && saved[2*gn] != PCRE2_UNSET)
-                groups->set_property(name, Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])));
-            else
-                groups->set_property(name, Value());
+            Value gval = (gn <= capture_count && saved[2*gn] != PCRE2_UNSET)
+                ? Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])) : Value();
+            groups_owner->set_property_descriptor(name, PropertyDescriptor(gval, PropertyAttributes::Default));
         }
-        result->set_property("groups", Value(groups));
+        // CreateDataProperty: define directly on A, bypassing any inherited setter on Array.prototype["groups"].
+        result->set_property_descriptor("groups", PropertyDescriptor(Value(groups_owner.release()), PropertyAttributes::Default));
+    } else {
+        result->set_property_descriptor("groups", PropertyDescriptor(Value(), PropertyAttributes::Default));
     }
 
-    return Value(result);
+    return Value(result_owner.release());
 }
 
 void RegExp::compile(const std::string& pattern, const std::string& flags) {
