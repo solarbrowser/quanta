@@ -72,6 +72,7 @@ Generator::GeneratorResult Generator::next(const Value& value) {
     throwing_ = false;
     returning_ = false;
 
+    state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
     swapcontext(&caller_ctx_, &fiber_ctx_);
@@ -111,6 +112,7 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
     return_argument_ = value;
     sent_value_ = Value();
 
+    state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
     swapcontext(&caller_ctx_, &fiber_ctx_);
@@ -135,7 +137,9 @@ Generator::GeneratorResult Generator::return_value(const Value& value) {
 }
 
 Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
-    if (state_ == State::Completed) {
+    if (state_ == State::Completed || state_ == State::SuspendedStart) {
+        // Per spec 27.5.3.4: throw() on a never-started/completed generator completes it directly.
+        state_ = State::Completed;
         generator_context_->throw_exception(exception, true);
         return GeneratorResult(Value(), true);
     }
@@ -143,6 +147,7 @@ Generator::GeneratorResult Generator::throw_exception(const Value& exception) {
     throw_value_ = exception;
     sent_value_ = Value();
 
+    state_ = State::Executing;
     Generator* prev = current_generator_;
     current_generator_ = this;
     swapcontext(&caller_ctx_, &fiber_ctx_);
@@ -325,6 +330,10 @@ Value Generator::generator_next(Context& ctx, const std::vector<Value>& args) {
     }
 
     Generator* generator = static_cast<Generator*>(this_obj);
+    if (generator->get_state() == Generator::State::Executing) {
+        ctx.throw_type_error("Generator is already executing");
+        return Value();
+    }
     Value sent_value = args.empty() ? Value() : args[0];
 
     auto result = generator->next(sent_value);
@@ -358,6 +367,10 @@ Value Generator::generator_return(Context& ctx, const std::vector<Value>& args) 
     }
 
     Generator* generator = static_cast<Generator*>(obj);
+    if (generator->get_state() == Generator::State::Executing) {
+        ctx.throw_type_error("Generator is already executing");
+        return Value();
+    }
     Value return_val = args.empty() ? Value() : args[0];
 
     auto result = generator->return_value(return_val);
@@ -388,6 +401,10 @@ Value Generator::generator_throw(Context& ctx, const std::vector<Value>& args) {
     }
 
     Generator* generator = static_cast<Generator*>(obj);
+    if (generator->get_state() == Generator::State::Executing) {
+        ctx.throw_type_error("Generator is already executing");
+        return Value();
+    }
     Value exception = args.empty() ? Value() : args[0];
 
     auto result = generator->throw_exception(exception);
@@ -532,7 +549,10 @@ void Generator::setup_generator_prototype(Context& ctx) {
         s_generator_function_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
         generator_function_constructor->set_property("prototype", Value(s_generator_function_prototype_), PropertyAttributes::None);
     }
-    s_generator_prototype_->set_property("constructor", Value(generator_function_constructor.get()), PropertyAttributes::BuiltinFunction);
+    // Per spec 27.5.1.1: %GeneratorPrototype%.constructor is %GeneratorFunction.prototype%, not %GeneratorFunction%.
+    PropertyDescriptor gp_ctor_desc(Value(s_generator_function_prototype_),
+        static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+    s_generator_prototype_->set_property_descriptor("constructor", gp_ctor_desc);
 
     ctx.create_binding("GeneratorFunction", Value(generator_function_constructor.release()));
 }

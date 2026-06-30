@@ -43,6 +43,7 @@ public:
     enum class State {
         SuspendedStart,
         SuspendedYield,
+        Executing,
         Completed
     };
     
