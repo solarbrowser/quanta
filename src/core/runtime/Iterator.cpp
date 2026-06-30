@@ -14,30 +14,16 @@
 namespace Quanta {
 
 
-Iterator::Iterator(NextFunction next_fn) 
+Iterator::Iterator(NextFunction next_fn)
     : Object(ObjectType::Custom), next_fn_(next_fn), done_(false) {
-    auto next_method = ObjectFactory::create_native_function("next", 
-        [this](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            auto result = this->next();
-            return Iterator::create_iterator_result(result.value, result.done);
-        });
-    this->set_property("next", Value(next_method.release()));
 }
 
-Iterator::Iterator() 
+Iterator::Iterator()
     : Object(ObjectType::Custom), done_(false) {
 }
 
 void Iterator::set_next_function(NextFunction next_fn) {
     next_fn_ = next_fn;
-    auto next_method = ObjectFactory::create_native_function("next", 
-        [this](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)args;
-            auto result = this->next();
-            return Iterator::create_iterator_result(result.value, result.done);
-        });
-    this->set_property("next", Value(next_method.release()));
 }
 
 Iterator::IteratorResult Iterator::next() {
@@ -182,6 +168,12 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
     s_iterator_prototype_ = iter_proto.get();
     ctx.create_binding("@@IteratorPrototype", Value(iter_proto.release()));
 
+    // Shared "next" on a kind-specific prototype: dispatches through the virtual Iterator::next() override of whatever subclass `this` actually is, so monkey-patching the prototype's "next" (instead of relying on an own property per instance) is observable, matching the spec.
+    auto install_next = [](Object* proto) {
+        auto next_fn = ObjectFactory::create_native_function("next", Iterator::iterator_next);
+        proto->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
+    };
+
     // %ArrayIteratorPrototype%
     auto arr_iter_proto = ObjectFactory::create_object();
     arr_iter_proto->set_prototype(s_iterator_prototype_);
@@ -189,6 +181,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         PropertyDescriptor tag_desc(Value(std::string("Array Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         arr_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
+    install_next(arr_iter_proto.get());
     s_array_iterator_prototype_ = arr_iter_proto.get();
     ctx.create_binding("@@ArrayIteratorPrototype", Value(arr_iter_proto.release()));
 
@@ -199,6 +192,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         PropertyDescriptor tag_desc(Value(std::string("String Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         str_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
+    install_next(str_iter_proto.get());
     s_string_iterator_prototype_ = str_iter_proto.get();
     ctx.create_binding("@@StringIteratorPrototype", Value(str_iter_proto.release()));
 
@@ -209,6 +203,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         PropertyDescriptor tag_desc(Value(std::string("Map Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         map_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
+    install_next(map_iter_proto.get());
     s_map_iterator_prototype_ = map_iter_proto.get();
     ctx.create_binding("@@MapIteratorPrototype", Value(map_iter_proto.release()));
 
@@ -219,6 +214,7 @@ void Iterator::setup_iterator_prototype(Context& ctx) {
         PropertyDescriptor tag_desc(Value(std::string("Set Iterator")), static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
         set_iter_proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
     }
+    install_next(set_iter_proto.get());
     s_set_iterator_prototype_ = set_iter_proto.get();
     ctx.create_binding("@@SetIteratorPrototype", Value(set_iter_proto.release()));
 }
@@ -280,8 +276,6 @@ Iterator::IteratorResult ArrayIterator::next_impl() {
 
 StringIterator::StringIterator(const std::string& str)
     : Iterator(), string_(str), position_(0) {
-    auto next_method = ObjectFactory::create_native_function("next", StringIterator::string_iterator_next_method);
-    this->set_property("next", Value(next_method.release()));
     if (s_string_iterator_prototype_) {
         set_prototype(s_string_iterator_prototype_);
     }
@@ -308,30 +302,8 @@ Iterator::IteratorResult StringIterator::next_impl() {
     return IteratorResult(Value(codepoint), false);
 }
 
-Value StringIterator::string_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args;
-    
-    Object* this_obj = ctx.get_this_binding();
-    if (!this_obj) {
-        ctx.throw_type_error("StringIterator next() called without proper this binding");
-        return Value();
-    }
-    
-    if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_type_error("StringIterator next() called on non-iterator object");
-        return Value();
-    }
-    
-    StringIterator* string_iter = static_cast<StringIterator*>(this_obj);
-    auto result = string_iter->next();
-    return Iterator::create_iterator_result(result.value, result.done);
-}
-
-
 MapIterator::MapIterator(Map* map, Kind kind)
     : Iterator(), map_(map), kind_(kind), index_(0) {
-    auto next_method = ObjectFactory::create_native_function("next", MapIterator::map_iterator_next_method);
-    this->set_property("next", Value(next_method.release()));
     if (s_map_iterator_prototype_) {
         set_prototype(s_map_iterator_prototype_);
     }
@@ -339,25 +311,6 @@ MapIterator::MapIterator(Map* map, Kind kind)
 
 Iterator::IteratorResult MapIterator::next() {
     return next_impl();
-}
-
-Value MapIterator::map_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args;
-    
-    Object* this_obj = ctx.get_this_binding();
-    if (!this_obj) {
-        ctx.throw_type_error("MapIterator next() called without proper this binding");
-        return Value();
-    }
-
-    if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_type_error("MapIterator next() called on non-iterator object");
-        return Value();
-    }
-    
-    MapIterator* map_iter = static_cast<MapIterator*>(this_obj);
-    auto result = map_iter->next();
-    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Iterator::IteratorResult MapIterator::next_impl() {
@@ -395,8 +348,6 @@ Iterator::IteratorResult MapIterator::next_impl() {
 
 SetIterator::SetIterator(Set* set, Kind kind)
     : Iterator(), set_(set), kind_(kind), index_(0) {
-    auto next_method = ObjectFactory::create_native_function("next", SetIterator::set_iterator_next_method);
-    this->set_property("next", Value(next_method.release()));
     if (s_set_iterator_prototype_) {
         set_prototype(s_set_iterator_prototype_);
     }
@@ -404,25 +355,6 @@ SetIterator::SetIterator(Set* set, Kind kind)
 
 Iterator::IteratorResult SetIterator::next() {
     return next_impl();
-}
-
-Value SetIterator::set_iterator_next_method(Context& ctx, const std::vector<Value>& args) {
-    (void)args;
-    
-    Object* this_obj = ctx.get_this_binding();
-    if (!this_obj) {
-        ctx.throw_type_error("SetIterator next() called without proper this binding");
-        return Value();
-    }
-    
-    if (this_obj->get_type() != Object::ObjectType::Custom) {
-        ctx.throw_type_error("SetIterator next() called on non-iterator object");
-        return Value();
-    }
-    
-    SetIterator* set_iter = static_cast<SetIterator*>(this_obj);
-    auto result = set_iter->next();
-    return Iterator::create_iterator_result(result.value, result.done);
 }
 
 Iterator::IteratorResult SetIterator::next_impl() {

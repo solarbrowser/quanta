@@ -18,6 +18,7 @@
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/runtime/String.h"
 #include "quanta/core/runtime/Math.h"
+#include "quanta/core/runtime/TypedArray.h"
 #include "../ast_internal.h"
 #include <sstream>
 #include <set>
@@ -579,6 +580,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                             if (ctx.has_exception()) return Value();
                             return right_value;
                         }
+                        // Integer-Indexed exotic [[Set]] (10.4.5.5): a canonical-but-invalid numeric key on a TypedArray prototype is a no-op success, it must not fall through to creating an own element on this array.
+                        if (proto && proto->is_typed_array()) {
+                            double num_idx;
+                            if (TypedArrayBase::canonical_numeric_index(std::to_string(index), num_idx) &&
+                                !static_cast<TypedArrayBase*>(proto)->is_valid_integer_index(num_idx)) {
+                                return right_value;
+                            }
+                        }
                     } else {
                         // Property is owned -- use set_property to respect any own accessor descriptor.
                         bool ok = obj->set_property(std::to_string(index), right_value);
@@ -718,6 +727,14 @@ Value AssignmentExpression::evaluate(Context& ctx) {
                 while (proto) {
                     // Stop at a Proxy -- its [[Set]] handles everything; we'd fire an unexpected trap here.
                     if (proto->get_type() == Object::ObjectType::Proxy) break;
+                    // Integer-Indexed exotic [[Set]] (10.4.5.5): a canonical-but-invalid numeric key on a TypedArray ancestor (receiver != this typed array) is a no-op success right here, it must not keep walking up to that TypedArray's own .prototype for the same key.
+                    if (proto->is_typed_array()) {
+                        double num_idx;
+                        if (TypedArrayBase::canonical_numeric_index(prop_name, num_idx) &&
+                            !static_cast<TypedArrayBase*>(proto)->is_valid_integer_index(num_idx)) {
+                            return right_value;
+                        }
+                    }
                     PropertyDescriptor proto_desc = proto->get_property_descriptor(prop_name);
                     if (proto_desc.is_accessor_descriptor()) {
                         desc = proto_desc;
