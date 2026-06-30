@@ -96,11 +96,9 @@ private:
     
 public:
     StringIterator(const std::string& str);
-    
+
     IteratorResult next() override;
-    
-    static Value string_iterator_next_method(Context& ctx, const std::vector<Value>& args);
-    
+
 private:
     IteratorResult next_impl();
 };
@@ -125,11 +123,9 @@ private:
 
 public:
     MapIterator(class Map* map, Kind kind);
-    
+
     IteratorResult next() override;
-    
-    static Value map_iterator_next_method(Context& ctx, const std::vector<Value>& args);
-    
+
 private:
     IteratorResult next_impl();
 };
@@ -153,11 +149,9 @@ private:
 
 public:
     SetIterator(class Set* set, Kind kind);
-    
+
     IteratorResult next() override;
-    
-    static Value set_iterator_next_method(Context& ctx, const std::vector<Value>& args);
-    
+
 private:
     IteratorResult next_impl();
 };
