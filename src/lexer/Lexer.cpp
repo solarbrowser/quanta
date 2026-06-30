@@ -720,7 +720,18 @@ Token Lexer::read_template_literal() {
             size_t raw_start = position_;
             size_t error_count_before = errors_.size();
             std::string cooked_char = parse_escape_sequence(true);
-            full_raw += source_.substr(raw_start, position_ - raw_start);
+            std::string raw_piece = source_.substr(raw_start, position_ - raw_start);
+            // TRV normalizes CR/CRLF to LF even inside a LineContinuation escape's raw text.
+            std::string normalized_piece;
+            for (size_t i = 0; i < raw_piece.size(); i++) {
+                if (raw_piece[i] == '\r') {
+                    normalized_piece += '\n';
+                    if (i + 1 < raw_piece.size() && raw_piece[i + 1] == '\n') i++;
+                } else {
+                    normalized_piece += raw_piece[i];
+                }
+            }
+            full_raw += normalized_piece;
             if (errors_.size() > error_count_before) {
                 errors_.resize(error_count_before);
                 seg_valid = false;

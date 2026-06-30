@@ -16,10 +16,6 @@
 
 namespace Quanta {
 
-/**
- * JavaScript Date object implementation
- * Provides date and time functionality
- */
 class Date {
 private:
     std::chrono::system_clock::time_point time_point_;

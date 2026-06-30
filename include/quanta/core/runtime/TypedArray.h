@@ -19,10 +19,6 @@ namespace Quanta {
 class Context;
 class ArrayBuffer;
 
-/**
- * Base class for all TypedArray variants
- * Provides common functionality for typed array operations
- */
 class TypedArrayBase : public Object {
 public:
     enum class ArrayType {

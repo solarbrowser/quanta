@@ -12,6 +12,21 @@
 
 namespace Quanta {
 
+// OrdinaryCreateFromConstructor's prototype source: new.target.prototype, else a subclass `this` already wired up by super(), else the intrinsic default.
+static Object* resolve_error_prototype(Context& ctx, Object* default_proto) {
+    Value new_target = ctx.get_new_target();
+    if (new_target.is_function()) {
+        Value nt_proto = new_target.as_function()->get_property("prototype");
+        if (nt_proto.is_object()) return nt_proto.as_object();
+    }
+    Object* this_obj = ctx.get_this_binding();
+    if (this_obj) {
+        Object* this_proto = this_obj->get_prototype();
+        if (this_proto && this_proto != default_proto) return this_proto;
+    }
+    return default_proto;
+}
+
 void register_error_builtins(Context& ctx) {
     auto error_prototype = ObjectFactory::create_object();
 
@@ -116,18 +131,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
-            // Support subclassing: when called via super() from a derived class,
-            // ctx.get_this_binding() is the subclass instance with its prototype.
-            // Use that prototype so c instanceof C works alongside c instanceof Error.
-            Object* proto_to_use = error_prototype_ptr;
-            Object* this_obj = ctx.get_this_binding();
-            if (this_obj) {
-                Object* this_proto = this_obj->get_prototype();
-                if (this_proto && this_proto != error_prototype_ptr) {
-                    proto_to_use = this_proto;
-                }
-            }
-            error_obj->set_prototype(proto_to_use);
+            error_obj->set_prototype(resolve_error_prototype(ctx, error_prototype_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -192,7 +196,9 @@ void register_error_builtins(Context& ctx) {
                         return Value();
                     }
                     // 2. [[Set]] with Throw=true -- triggers set trap on Proxy.
-                    if (!self->set_property("stack", v)) {
+                    bool set_ok = self->set_property("stack", v);
+                    if (ctx.has_exception()) return Value();
+                    if (!set_ok) {
                         ctx.throw_type_error("Error.prototype.stack setter: [[Set]] failed");
                     }
                     return Value();
@@ -200,7 +206,9 @@ void register_error_builtins(Context& ctx) {
                 // 3. No own property: [[DefineOwnProperty]] -- triggers defineProperty trap.
                 PropertyDescriptor d(v, static_cast<PropertyAttributes>(
                     PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
-                if (!self->set_property_descriptor("stack", d)) {
+                bool ok = self->set_property_descriptor("stack", d);
+                if (ctx.has_exception()) return Value();
+                if (!ok) {
                     ctx.throw_type_error("Error.prototype.stack setter: [[DefineOwnProperty]] failed");
                 }
                 return Value();
@@ -239,7 +247,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::TypeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(type_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, type_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -288,7 +296,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::ReferenceError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(reference_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, reference_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -336,7 +344,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::SyntaxError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(syntax_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, syntax_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -384,7 +392,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::RangeError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(range_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, range_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -433,7 +441,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::URIError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(uri_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, uri_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -474,7 +482,7 @@ void register_error_builtins(Context& ctx) {
             }
             auto error_obj = std::make_unique<Error>(Error::Type::EvalError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
-            error_obj->set_prototype(eval_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, eval_error_proto_ptr));
 
             if (args.size() > 1 && args[1].is_object()) {
                 Object* options = args[1].as_object();
@@ -539,7 +547,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::AggregateError, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
 
-            error_obj->set_prototype(agg_error_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, agg_error_proto_ptr));
 
             if (args.size() > 0 && args[0].is_object()) {
                 error_obj->set_property("errors", args[0]);
@@ -609,7 +617,7 @@ void register_error_builtins(Context& ctx) {
             auto error_obj = std::make_unique<Error>(Error::Type::Error, message);
             error_obj->set_property("_isError", Value(true), PropertyAttributes::Writable);
             error_obj->set_property("name", Value(std::string("SuppressedError")));
-            error_obj->set_prototype(suppressed_proto_ptr);
+            error_obj->set_prototype(resolve_error_prototype(ctx, suppressed_proto_ptr));
             if (args.size() >= 1) error_obj->set_property("error", args[0], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             if (args.size() >= 2) error_obj->set_property("suppressed", args[1], static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
             if (!message.empty()) error_obj->set_property("message", Value(message));

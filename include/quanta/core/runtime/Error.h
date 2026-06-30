@@ -15,10 +15,6 @@
 
 namespace Quanta {
 
-/**
- * JavaScript Error object implementation
- * Supports all standard error types: Error, TypeError, ReferenceError, etc.
- */
 class Error : public Object {
 public:
     enum class Type {

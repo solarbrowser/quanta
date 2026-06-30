@@ -22,10 +22,6 @@ namespace Quanta {
 class Context;
 class Engine;
 
-/**
- * Garbage Collector for Quanta JavaScript Engine
- * Implements mark-and-sweep with generational collection
- */
 class GarbageCollector {
 public:
     enum class CollectionMode {

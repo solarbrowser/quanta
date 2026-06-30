@@ -23,13 +23,23 @@ Value JSON::parse(const std::string& json_string, const ParseOptions& options) {
     return parser.parse();
 }
 
+Value JSON::parse(const std::string& json_string, const ParseOptions& options, SourceMap& out_source_map,
+        std::string& out_root_source) {
+    Parser parser(json_string, options);
+    Value result = parser.parse();
+    out_source_map = parser.source_map();
+    out_root_source = parser.root_source();
+    return result;
+}
+
 std::string JSON::stringify(const Value& value, const StringifyOptions& options) {
     Stringifier stringifier(options, nullptr);
     return stringifier.stringify(value);
 }
 
-// ES6 24.3.1.1 InternalizeJSONProperty - recursive walk for reviver
-static Value internalize_json_property(Context& ctx, Object* holder, const std::string& name, Function* reviver) {
+// ES6 24.3.1.1 InternalizeJSONProperty, extended with the json-parse-with-source "context" arg.
+static Value internalize_json_property(Context& ctx, Object* holder, const std::string& name, Function* reviver,
+        const JSON::SourceMap& source_map) {
     Value val = holder->get_property(name);
 
     if (val.is_object_like() && val.as_object()) {
@@ -47,7 +57,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
             uint32_t len = static_cast<uint32_t>(len_val.to_number());
             for (uint32_t i = 0; i < len; i++) {
                 std::string idx = std::to_string(i);
-                Value new_element = internalize_json_property(ctx, obj, idx, reviver);
+                Value new_element = internalize_json_property(ctx, obj, idx, reviver, source_map);
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(idx);
@@ -75,7 +85,7 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
                 keys = obj->get_own_property_keys();
             }
             for (const auto& key : keys) {
-                Value new_element = internalize_json_property(ctx, obj, key, reviver);
+                Value new_element = internalize_json_property(ctx, obj, key, reviver, source_map);
                 if (ctx.has_exception()) return Value();
                 if (new_element.is_undefined()) {
                     obj->delete_property(key);
@@ -90,10 +100,22 @@ static Value internalize_json_property(Context& ctx, Object* holder, const std::
         }
     }
 
-    // Call reviver(name, val)
+    // context = { source } only if `val` is still the exact primitive originally parsed here.
+    auto context = ObjectFactory::create_object();
+    auto parent_it = source_map.find(holder);
+    if (parent_it != source_map.end()) {
+        auto key_it = parent_it->second.find(name);
+        if (key_it != parent_it->second.end() && key_it->second.second.strict_equals(val)) {
+            context->set_property("source", Value(key_it->second.first),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
+        }
+    }
+
+    // Call reviver(name, val, context)
     std::vector<Value> reviver_args;
     reviver_args.push_back(Value(name));
     reviver_args.push_back(val);
+    reviver_args.push_back(Value(context.release()));
     return reviver->call(ctx, reviver_args, Value(holder));
 }
 
@@ -149,7 +171,9 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
     }
 
     try {
-        Value result = parse(json_string, options);
+        SourceMap source_map;
+        std::string root_source;
+        Value result = reviver ? parse(json_string, options, source_map, root_source) : parse(json_string, options);
 
         // Apply reviver via InternalizeJSONProperty walk
         if (reviver) {
@@ -158,8 +182,11 @@ Value JSON::js_parse(Context& ctx, const std::vector<Value>& args) {
             PropertyDescriptor root_desc(result, static_cast<PropertyAttributes>(
                 PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
             wrapper->set_property_descriptor("", root_desc);
+            if (!root_source.empty()) {
+                source_map[wrapper.get()][""] = {root_source, result};
+            }
 
-            result = internalize_json_property(ctx, wrapper.get(), "", reviver);
+            result = internalize_json_property(ctx, wrapper.get(), "", reviver, source_map);
             wrapper.release();
 
             if (ctx.has_exception()) {
@@ -301,19 +328,28 @@ JSON::Parser::Parser(const std::string& json, const ParseOptions& options)
 
 Value JSON::Parser::parse() {
     skip_whitespace();
-    
+
     if (at_end()) {
         throw_syntax_error("Unexpected end of JSON input");
     }
-    
+
+    size_t start = position_;
     Value result = parse_value();
-    
+    if (result.is_number() || result.is_boolean() || result.is_string() || result.is_null()) {
+        root_source_ = json_.substr(start, position_ - start);
+    }
+
     skip_whitespace();
     if (!at_end()) {
         throw_syntax_error("Unexpected token after JSON value");
     }
-    
+
     return result;
+}
+
+void JSON::Parser::record_source(Object* parent, const std::string& key, size_t start, const Value& value) {
+    if (!(value.is_number() || value.is_boolean() || value.is_string() || value.is_null())) return;
+    source_map_[parent][key] = {json_.substr(start, position_ - start), value};
 }
 
 Value JSON::Parser::parse_value() {
@@ -378,7 +414,10 @@ Value JSON::Parser::parse_object() {
         }
         advance();
 
+        skip_whitespace();
+        size_t value_start = position_;
         Value value = parse_value();
+        record_source(obj.get(), key, value_start, value);
 
         PropertyDescriptor d(value, static_cast<PropertyAttributes>(
             PropertyAttributes::Writable | PropertyAttributes::Enumerable | PropertyAttributes::Configurable));
@@ -430,9 +469,12 @@ Value JSON::Parser::parse_array() {
     }
     
     while (true) {
+        skip_whitespace();
+        size_t value_start = position_;
         Value value = parse_value();
+        record_source(arr.get(), std::to_string(index), value_start, value);
         arr->set_element(index++, value);
-        
+
         skip_whitespace();
         char ch = current_char();
         

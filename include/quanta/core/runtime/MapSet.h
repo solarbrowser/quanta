@@ -17,10 +17,6 @@ namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript Map implementation
- * ES6 Map with proper key equality semantics
- */
 class Map : public Object {
 private:
     struct MapEntry {

@@ -25,6 +25,8 @@ namespace Quanta {
 
 namespace Quanta {
 
+Object* Function::s_throw_type_error_ = nullptr;
+
 // Duplicate parameter names share one binding; only the last occurrence is live-mapped.
 // Shared by setup_mapped_arguments() and the pre-pass seeding raw element values.
 static bool param_gets_mapped_accessor(const std::vector<std::unique_ptr<Parameter>>& params, size_t mi) {
@@ -611,16 +613,16 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
         }
 
         // In strict mode, arguments has no 'caller' own property (ES2017+).
-        // 'callee' is a poison-pill accessor that throws TypeError.
+        // 'callee' is a poison-pill accessor using the shared %ThrowTypeError% intrinsic.
         if (function_context.is_strict_mode()) {
-            auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
-                    return Value();
-                });
-            // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
-            {
+            if (!Function::s_throw_type_error_) {
+                auto thrower = ObjectFactory::create_native_function("ThrowTypeError",
+                    [](Context& ctx, const std::vector<Value>& args) -> Value {
+                        (void)args;
+                        ctx.throw_type_error("'callee' may not be accessed on strict mode arguments");
+                        return Value();
+                    });
+                // %ThrowTypeError% must be non-extensible with non-configurable, non-writable properties
                 PropertyDescriptor len_desc(Value(0.0), PropertyAttributes::None);
                 len_desc.set_configurable(false); len_desc.set_writable(false); len_desc.set_enumerable(false);
                 thrower->set_property_descriptor("length", len_desc);
@@ -628,15 +630,15 @@ Value Function::call(Context& ctx, const std::vector<Value>& args, Value this_va
                 name_desc.set_configurable(false); name_desc.set_writable(false); name_desc.set_enumerable(false);
                 thrower->set_property_descriptor("name", name_desc);
                 thrower->prevent_extensions();
+                Function::s_throw_type_error_ = thrower.release();
             }
 
             PropertyDescriptor callee_desc;
-            callee_desc.set_getter(thrower.get());
-            callee_desc.set_setter(thrower.get());
+            callee_desc.set_getter(Function::s_throw_type_error_);
+            callee_desc.set_setter(Function::s_throw_type_error_);
             callee_desc.set_configurable(false);
             callee_desc.set_enumerable(false);
             arguments_obj->set_property_descriptor("callee", callee_desc);
-            thrower.release();
             // 'caller' is NOT added as own property in strict mode (ES2017 spec)
         } else {
             // ES5 10.6 step 13.a: callee is {writable:true, enumerable:false, configurable:true}

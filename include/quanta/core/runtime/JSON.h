@@ -12,15 +12,12 @@
 #include <string>
 #include <memory>
 #include <set>
+#include <unordered_map>
 
 namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript JSON object implementation
- * Provides JSON.parse() and JSON.stringify() functionality
- */
 class JSON {
 public:
     struct ParseOptions {
@@ -47,8 +44,13 @@ public:
         StringifyOptions() : indent(""), max_depth(100), quote_keys(true), escape_unicode(false), replacer_function(nullptr), has_replacer_array(false) {}
     };
 
+    // Per-key source text of primitive children, recorded for the json-parse-with-source reviver context arg (objects/arrays never get one).
+    using SourceMap = std::unordered_map<Object*, std::unordered_map<std::string, std::pair<std::string, Value>>>;
+
 public:
     static Value parse(const std::string& json_string, const ParseOptions& options = ParseOptions());
+    static Value parse(const std::string& json_string, const ParseOptions& options, SourceMap& out_source_map,
+        std::string& out_root_source);
     static std::string stringify(const Value& value, const StringifyOptions& options = StringifyOptions());
     
     static Value js_parse(Context& ctx, const std::vector<Value>& args);
@@ -65,12 +67,16 @@ private:
         size_t column_;
         size_t depth_;
         ParseOptions options_;
-        
+        SourceMap source_map_;
+        std::string root_source_;
+
     public:
         Parser(const std::string& json, const ParseOptions& options);
-        
+
         Value parse();
-        
+        const SourceMap& source_map() const { return source_map_; }
+        const std::string& root_source() const { return root_source_; }
+
     private:
         Value parse_value();
         Value parse_object();
@@ -95,6 +101,9 @@ private:
         double parse_number_literal();
         bool is_digit(char ch) const;
         bool is_hex_digit(char ch) const;
+
+        // Records source text for a just-parsed primitive child, keyed by parent object + property name.
+        void record_source(Object* parent, const std::string& key, size_t start, const Value& value);
     };
     
     class Stringifier {

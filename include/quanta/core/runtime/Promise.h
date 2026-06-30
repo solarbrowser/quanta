@@ -18,18 +18,13 @@ class Context;
 class Function;
 class Engine;
 
-/**
- * Promise states according to JavaScript Promise specification
- */
 enum class PromiseState {
     PENDING,
     FULFILLED,
     REJECTED
 };
 
-/**
- * JavaScript Promise implementation
- */
+
 class Promise : public Object {
 public:
     // ThenRecord tracks the handler pair AND the child promise for proper chaining

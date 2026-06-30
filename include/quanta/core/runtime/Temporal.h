@@ -18,11 +18,6 @@ namespace Quanta {
 
 class Context;
 
-/**
- * JavaScript Temporal API implementation (TC39 Stage 3)
- * Modern date/time API with better design than Date
- */
-
 class TemporalInstant;
 class TemporalPlainDate;
 class TemporalPlainTime;
