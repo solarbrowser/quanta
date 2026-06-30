@@ -2930,6 +2930,19 @@ Value TryStatement::evaluate(Context& ctx) {
         if (catch_param_ok) {
             try {
                 result = catch_node->get_body()->evaluate(ctx);
+            } catch (const YieldException&) {
+                ctx.set_lexical_environment(catch_old_env);
+                try_recursion_depth--;
+                throw;
+            } catch (const GeneratorReturnException&) {
+                ctx.set_lexical_environment(catch_old_env);
+                try_recursion_depth--;
+                if (!finally_block_) throw;
+                finally_block_->evaluate(ctx);
+                if (ctx.has_exception() || ctx.has_return_value() || ctx.has_break() || ctx.has_continue()) {
+                    return Value();
+                }
+                throw;
             } catch (const std::exception& e) {
                 if (!ctx.has_exception()) {
                     ctx.throw_exception(Value(std::string(e.what())));
@@ -2942,6 +2955,11 @@ Value TryStatement::evaluate(Context& ctx) {
         }
 
         ctx.set_lexical_environment(catch_old_env);
+    }
+
+    // No catch clause: restore the exception onto ctx so the finally save/restore logic below sees it.
+    if (caught_exception && !catch_clause_ && !ctx.has_exception()) {
+        ctx.throw_exception(exception_value, true);
     }
 
     if (finally_block_) {
@@ -2962,6 +2980,8 @@ Value TryStatement::evaluate(Context& ctx) {
 
         try {
             finally_block_->evaluate(ctx);
+        } catch (const GeneratorReturnException&) {
+            throw; // yield-in-finally resumed via .return(): propagate, don't swallow
         } catch (const std::exception& e) {
             std::cerr << "Finally block error: " << e.what() << std::endl;
         } catch (...) {
