@@ -176,15 +176,14 @@ Value Object::get_property(const std::string& key) const {
         // call, apply, bind are now handled via Function.prototype
         // No need for special handling here anymore
 
-        Value result = get_own_property(key);
-        if (!result.is_undefined()) {
-            return result;
+        if (has_own_property(key)) {
+            return get_own_property(key);
         }
     }
-    
+
     if (this->get_type() == ObjectType::ArrayBuffer) {
         const ArrayBuffer* buffer = static_cast<const ArrayBuffer*>(this);
-        
+
         if (key == "byteLength") {
             return Value(static_cast<double>(buffer->byte_length()));
         }
@@ -197,11 +196,9 @@ Value Object::get_property(const std::string& key) const {
         if (key == "_isArrayBuffer") {
             return Value(true);
         }
-        
-        
-        Value result = get_own_property(key);
-        if (!result.is_undefined()) {
-            return result;
+
+        if (has_own_property(key)) {
+            return get_own_property(key);
         }
     }
     
@@ -233,12 +230,12 @@ Value Object::get_property(const std::string& key) const {
             return Value(static_cast<double>(typed_array->bytes_per_element()));
         }
         
-        Value result = get_own_property(key);
-        if (!result.is_undefined()) {
-            return result;
+        // has_own_property avoids re-firing an own accessor that legitimately returns undefined.
+        if (has_own_property(key)) {
+            return get_own_property(key);
         }
     }
-    
+
     if (this->get_type() == ObjectType::Array) {
         // Special case: length is always computed, not from prototype
         if (key == "length") {
@@ -295,28 +292,18 @@ Value Object::get_property(const std::string& key) const {
                 : Value(const_cast<Object*>(original_receiver));
             return static_cast<Proxy*>(current)->get_trap(Value(key), receiver_val);
         }
-        // For inherited "get [Symbol.xxx]" accessors, return the original receiver
+        // Inherited accessors must be called with the original receiver as `this`, not the prototype.
         if (current->descriptors_) {
             auto desc_it = current->descriptors_->find(key);
             if (desc_it != current->descriptors_->end()) {
                 const PropertyDescriptor& desc = desc_it->second;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
-                    if (getter_fn) {
-                        if (getter_fn->get_name().find("get [Symbol.") == 0) {
-                            // Well-known Symbol getters return the original receiver.
-                            if (original_receiver->is_function()) {
-                                return Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)));
-                            }
-                            return Value(const_cast<Object*>(original_receiver));
-                        }
-                        // Inherited getters must be called with the original receiver as `this`.
-                        if (current_context_) {
-                            Value recv = original_receiver->is_function()
-                                ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
-                                : Value(const_cast<Object*>(original_receiver));
-                            return getter_fn->call(*current_context_, {}, recv);
-                        }
+                    if (getter_fn && current_context_) {
+                        Value recv = original_receiver->is_function()
+                            ? Value(const_cast<Function*>(static_cast<const Function*>(original_receiver)))
+                            : Value(const_cast<Object*>(original_receiver));
+                        return getter_fn->call(*current_context_, {}, recv);
                     }
                 }
             }

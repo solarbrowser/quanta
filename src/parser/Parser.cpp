@@ -1789,6 +1789,13 @@ std::unique_ptr<ASTNode> Parser::parse_primary_expression() {
             advance();
             return id;
         }
+        case TokenType::FROM:
+        {   // 'from' is always a contextual keyword -- valid as identifier in expressions
+            auto id = std::make_unique<Identifier>("from",
+                current_token().get_start(), current_token().get_end());
+            advance();
+            return id;
+        }
         case TokenType::IMPORT:
             return parse_import_expression();
         case TokenType::LEFT_BRACE:

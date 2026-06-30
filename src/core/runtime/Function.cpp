@@ -821,8 +821,8 @@ Value Function::get_property(const std::string& key) const {
                 const PropertyDescriptor& desc = desc_it->second;
                 if (desc.is_accessor_descriptor() && desc.has_getter()) {
                     Function* getter_fn = dynamic_cast<Function*>(desc.get_getter());
-                    if (getter_fn && getter_fn->get_name().find("get [Symbol.") == 0) {
-                        return Value(const_cast<Function*>(this));
+                    if (getter_fn && current_context_) {
+                        return getter_fn->call(*current_context_, {}, Value(const_cast<Function*>(this)));
                     }
                 }
             }

@@ -9,6 +9,7 @@
 #include "quanta/core/runtime/BigInt.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Error.h"
+#include "quanta/core/runtime/Symbol.h"
 #include <algorithm>
 #include <sstream>
 #include <cmath>
@@ -135,7 +136,8 @@ bool TypedArrayBase::canonical_numeric_index(const std::string& key, double& out
     if (key.empty()) return false;
     if (key == "-0") { out = -0.0; return true; }
     char c0 = key[0];
-    if (!(c0 == '-' || (c0 >= '0' && c0 <= '9'))) return false;
+    // "Infinity"/"NaN" round-trip too (checked below) but don't start with a digit or '-'.
+    if (!(c0 == '-' || (c0 >= '0' && c0 <= '9') || c0 == 'I' || c0 == 'N')) return false;
 
     if (c0 != '-' && !(c0 == '0' && key.length() > 1)) {
         char* end = nullptr;
@@ -457,6 +459,19 @@ bool to_bigint_checked(const Value& value, BigInt*& out) {
     }
     if (value.is_object()) {
         Object* obj = value.as_object();
+        // ToPrimitive(argument, hint Number): @@toPrimitive("number") first, then valueOf, then toString.
+        Symbol* toPrim_sym = ctx ? Symbol::get_well_known(Symbol::TO_PRIMITIVE) : nullptr;
+        if (toPrim_sym) {
+            Value toPrim = obj->get_property(toPrim_sym->to_property_key());
+            if (ctx->has_exception()) return false;
+            if (!toPrim.is_null() && !toPrim.is_undefined()) {
+                if (!toPrim.is_function()) { ctx->throw_type_error("@@toPrimitive is not callable"); return false; }
+                Value prim = toPrim.as_function()->call(*ctx, {Value(std::string("number"))}, value);
+                if (ctx->has_exception()) return false;
+                if (prim.is_object() || prim.is_function()) { ctx->throw_type_error("Cannot convert object to BigInt"); return false; }
+                return to_bigint_checked(prim, out);
+            }
+        }
         Value valueOf_fn = obj->get_property("valueOf");
         if (ctx && valueOf_fn.is_function()) {
             Value prim = valueOf_fn.as_function()->call(*ctx, {}, value);

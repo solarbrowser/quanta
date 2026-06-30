@@ -473,7 +473,23 @@ void register_number_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
             Value this_val = ctx.get_binding("this");
-            return Value(this_val.to_string());
+            double num;
+            if (this_val.is_number()) {
+                num = this_val.as_number();
+            } else if (this_val.is_object()) {
+                Object* this_obj = this_val.as_object();
+                if (this_obj->get_type() == Object::ObjectType::Number ||
+                    (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_number())) {
+                    num = this_obj->get_property("[[PrimitiveValue]]").as_number();
+                } else {
+                    ctx.throw_type_error("Number.prototype.toLocaleString requires a Number or Number wrapper");
+                    return Value();
+                }
+            } else {
+                ctx.throw_type_error("Number.prototype.toLocaleString requires a Number or Number wrapper");
+                return Value();
+            }
+            return Value(Value(num).to_string());
         });
     PropertyDescriptor number_toLocaleString_desc(Value(number_toLocaleString_fn.release()),
         PropertyAttributes::BuiltinFunction);

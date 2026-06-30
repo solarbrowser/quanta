@@ -550,7 +550,6 @@ public:
 private:
     Value handle_array_method_call(Object* array, const std::string& method_name, Context& ctx);
     Value handle_string_method_call(const std::string& str, const std::string& method_name, Context& ctx);
-    Value handle_bigint_method_call(BigInt* bigint, const std::string& method_name, Context& ctx);
     Value handle_member_expression_call(Context& ctx);
 };
 

@@ -1583,33 +1583,31 @@ void register_array_builtins(Context& ctx, Object* function_prototype) {
 
                 if (!element.is_null() && !element.is_undefined()) {
                     // Invoke(element, "toLocaleString") per spec.
+                    Value fn_val;
                     if (element.is_object() || element.is_function()) {
                         Object* elem_obj = element.is_function()
                             ? static_cast<Object*>(element.as_function()) : element.as_object();
-                        if (elem_obj->has_property("toLocaleString")) {
-                            Value fn_val = elem_obj->get_property("toLocaleString");
-                            if (fn_val.is_function()) {
-                                Value str_val = fn_val.as_function()->call(ctx, {}, element);
+                        fn_val = elem_obj->get_property("toLocaleString");
+                        if (ctx.has_exception()) return Value();
+                    } else {
+                        // Primitive: look up toLocaleString on the matching wrapper's prototype.
+                        const char* ctor_name = element.is_boolean() ? "Boolean"
+                            : element.is_number() ? "Number" : element.is_bigint() ? "BigInt" : nullptr;
+                        if (ctor_name) {
+                            Value ctor = ctx.get_binding(ctor_name);
+                            if (ctor.is_function()) {
+                                Value proto = static_cast<Object*>(ctor.as_function())->get_property("prototype");
+                                if (proto.is_object()) fn_val = proto.as_object()->get_property("toLocaleString");
                                 if (ctx.has_exception()) return Value();
-                                result += str_val.to_string();
-                                continue;
                             }
                         }
-                    } else if (element.is_boolean()) {
-                        // Box boolean to call its prototype chain toLocaleString with primitive this.
-                        Value bool_proto_tls = ctx.get_binding("Boolean");
-                        if (bool_proto_tls.is_function()) {
-                            Value proto = static_cast<Object*>(bool_proto_tls.as_function())->get_property("prototype");
-                            if (proto.is_object()) {
-                                Value fn_val = proto.as_object()->get_property("toLocaleString");
-                                if (fn_val.is_function()) {
-                                    Value str_val = fn_val.as_function()->call(ctx, {}, element);
-                                    if (ctx.has_exception()) return Value();
-                                    result += str_val.to_string();
-                                    continue;
-                                }
-                            }
-                        }
+                    }
+                    if (fn_val.is_function()) {
+                        Value str_val = fn_val.as_function()->call(ctx, {}, element);
+                        if (ctx.has_exception()) return Value();
+                        result += sort_default_to_string(ctx, str_val);
+                        if (ctx.has_exception()) return Value();
+                        continue;
                     }
                     result += element.to_string();
                 }
