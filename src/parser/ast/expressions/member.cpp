@@ -286,7 +286,8 @@ Value MemberExpression::evaluate(Context& ctx) {
     }
 
     // ES5: Property access on primitives - check prototype for accessors
-    if ((object_value.is_string() || object_value.is_number() || object_value.is_boolean()) && !computed_) {
+    if ((object_value.is_string() || object_value.is_number() || object_value.is_boolean() || object_value.is_bigint())
+            && !computed_) {
         if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
             Identifier* prop = static_cast<Identifier*>(property_.get());
             std::string prop_name = prop->get_name();
@@ -297,7 +298,8 @@ Value MemberExpression::evaluate(Context& ctx) {
             }
 
             std::string ctor_name = object_value.is_string() ? "String" :
-                (object_value.is_number() ? "Number" : "Boolean");
+                object_value.is_number() ? "Number" :
+                object_value.is_bigint() ? "BigInt" : "Boolean";
             Value ctor = ctx.get_binding(ctor_name);
             if (ctor.is_object() || ctor.is_function()) {
                 Object* ctor_obj = ctor.is_object() ? ctor.as_object() : ctor.as_function();

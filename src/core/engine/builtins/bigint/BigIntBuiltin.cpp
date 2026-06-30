@@ -141,6 +141,23 @@ void register_bigint_builtins(Context& ctx) {
         if (proto_val.is_object()) proto_val.as_object()->set_property("valueOf", Value(bigint_valueOf.release()), PropertyAttributes::BuiltinFunction);
     }
 
+    // BigInt.prototype.toLocaleString(): without Intl, this is just toString().
+    {
+        Value proto_val = bigint_constructor->get_property("prototype");
+        if (proto_val.is_object()) {
+            Value to_string_fn = proto_val.as_object()->get_property("toString");
+            proto_val.as_object()->set_property("toLocaleString", to_string_fn, PropertyAttributes::BuiltinFunction);
+        }
+    }
+
+    // BigInt.prototype.constructor === BigInt
+    {
+        Value proto_val = bigint_constructor->get_property("prototype");
+        if (proto_val.is_object()) {
+            proto_val.as_object()->set_property("constructor", Value(bigint_constructor.get()), PropertyAttributes::BuiltinFunction);
+        }
+    }
+
     // ES2022 20.2.3.10: BigInt.prototype[@@toStringTag] = "BigInt", configurable:true
     {
         Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);

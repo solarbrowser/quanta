@@ -1647,16 +1647,6 @@ Value CallExpression::handle_string_method_call(const std::string& str, const st
     }
 }
 
-Value CallExpression::handle_bigint_method_call(BigInt* bigint, const std::string& method_name, Context& ctx) {
-    if (method_name == "toString") {
-        return Value(bigint->to_string());
-        
-    } else {
-        std::cout << "Calling BigInt method: " << method_name << "() -> [Method not fully implemented yet]" << std::endl;
-        return Value();
-    }
-}
-
 Value CallExpression::handle_member_expression_call(Context& ctx) {
     MemberExpression* member = static_cast<MemberExpression*>(callee_.get());
 
@@ -1929,25 +1919,18 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
         return handle_string_method_call(str_value, method_name, ctx);
         
     } else if (object_value.is_bigint()) {
-        BigInt* bigint_value = object_value.as_bigint();
-        
-        std::string method_name;
-        if (member->is_computed()) {
-            Value key_value = member->get_property()->evaluate(ctx);
-            if (ctx.has_exception()) return Value();
-            method_name = key_value.to_property_key();
+        Value method_value = member->evaluate(ctx);
+        if (ctx.has_exception()) return Value();
+        std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
+        if (ctx.has_exception()) return Value();
+        if (method_value.is_function()) {
+            Function* method = method_value.as_function();
+            return method->call(ctx, arg_values, object_value);
         } else {
-            if (member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-                Identifier* prop = static_cast<Identifier*>(member->get_property());
-                method_name = prop->get_name();
-            } else {
-                ctx.throw_exception(Value(std::string("Invalid method name")));
-                return Value();
-            }
+            ctx.throw_type_error(member->to_string() + " is not a function");
+            return Value();
         }
-        
-        return handle_bigint_method_call(bigint_value, method_name, ctx);
-        
+
     } else if (object_value.is_number()) {
         Value method_value = member->evaluate(ctx);
         if (ctx.has_exception()) return Value();
