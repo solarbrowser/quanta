@@ -71,7 +71,8 @@ static Value postfix_to_numeric(Context& ctx, const Value& val) {
         if (obj->has_property("[[PrimitiveValue]]")) {
             Value pv = obj->get_property("[[PrimitiveValue]]");
             if (pv.is_bigint()) return pv;
-            if (!pv.is_object()) return Value(pv.to_number());
+            // Skip for Symbol wrappers so overridden valueOf/toString are honored below.
+            if (!pv.is_object() && !pv.is_symbol()) return Value(pv.to_number());
         }
         Value valueOf_method = obj->get_property("valueOf");
         if (ctx.has_exception()) return Value();

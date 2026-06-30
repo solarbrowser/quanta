@@ -137,6 +137,11 @@ Value Symbol::symbol_constructor(Context& ctx, const std::vector<Value>& args) {
 
 Value Symbol::symbol_for(Context& ctx, const std::vector<Value>& args) {
     Value key_val = args.empty() ? Value() : args[0];
+    // Spec: ToString(key) -- unlike ToPropertyKey, a Symbol argument must throw TypeError.
+    if (key_val.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return Value();
+    }
     std::string key = key_val.to_property_key();
     if (ctx.has_exception()) return Value();
     Symbol* symbol = for_key(key);
