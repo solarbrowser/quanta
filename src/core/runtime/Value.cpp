@@ -6,6 +6,8 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/runtime/Object.h"
+#include <cstdlib>
+#include <cerrno>
 #include "quanta/core/runtime/ProxyReflect.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/String.h"
@@ -116,18 +118,10 @@ std::string Value::to_string() const {
         if (use_exponential) {
             oss << num;
         } else {
-            // Use fixed notation for numbers in range
-            // Check if it's effectively an integer
-            if (num == std::floor(num)) {
-                oss << std::fixed << std::setprecision(0) << num;
-            } else {
-                // setprecision alone still falls back to scientific notation for small
-                // magnitudes (e.g. 1e-6); to_chars with chars_format::fixed forces fixed
-                // notation with the shortest round-tripping digit sequence.
-                char buf[64];
-                auto res = std::to_chars(buf, buf + sizeof(buf), num, std::chars_format::fixed);
-                oss << std::string(buf, res.ptr);
-            }
+            // to_chars gives the shortest round-tripping digits in fixed notation; setprecision(0) for integers would print the EXACT value instead, which can be longer.
+            char buf[400];
+            auto res = std::to_chars(buf, buf + sizeof(buf), num, std::chars_format::fixed);
+            oss << std::string(buf, res.ptr);
         }
         std::string result = oss.str();
 
@@ -317,25 +311,23 @@ double Value::to_number() const {
         // Reject numeric separator underscores in decimal strings.
         if (trimmed.find('_') != std::string::npos) return std::numeric_limits<double>::quiet_NaN();
 
-        try {
-            size_t consumed = 0;
-            double result = std::stod(trimmed, &consumed);
-            // JS ToNumber requires the *entire* trimmed string to be numeric
-            if (consumed != trimmed.length()) {
+        {
+            // strtod returns +-HUGE_VAL/0 on overflow instead of throwing, matching JS ToNumber.
+            const char* start = trimmed.c_str();
+            char* endptr = nullptr;
+            errno = 0;
+            double result = std::strtod(start, &endptr);
+            if (endptr != start + trimmed.length()) {
                 return std::numeric_limits<double>::quiet_NaN();
             }
-            // stod accepts "INFINITY"/"INF" case-insensitively; only "Infinity" is valid in JS.
-            // BUT numeric overflow (e.g. "10e10000") is valid and should return Infinity.
+            // strtod accepts "INFINITY"/"INF" case-insensitively; only "Infinity" is valid in JS.
             if (std::isinf(result) && trimmed != "Infinity" && trimmed != "+Infinity" && trimmed != "-Infinity") {
-                // Reject if string looks like a word form of infinity (starts with letter)
                 char first = (trimmed[0] == '+' || trimmed[0] == '-') ? trimmed[1] : trimmed[0];
                 if (!std::isdigit(static_cast<unsigned char>(first))) {
                     return std::numeric_limits<double>::quiet_NaN();
                 }
             }
             return result;
-        } catch (...) {
-            return std::numeric_limits<double>::quiet_NaN();
         }
     }
     if (is_bigint()) {
