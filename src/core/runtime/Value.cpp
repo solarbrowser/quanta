@@ -325,8 +325,13 @@ double Value::to_number() const {
                 return std::numeric_limits<double>::quiet_NaN();
             }
             // stod accepts "INFINITY"/"INF" case-insensitively; only "Infinity" is valid in JS.
+            // BUT numeric overflow (e.g. "10e10000") is valid and should return Infinity.
             if (std::isinf(result) && trimmed != "Infinity" && trimmed != "+Infinity" && trimmed != "-Infinity") {
-                return std::numeric_limits<double>::quiet_NaN();
+                // Reject if string looks like a word form of infinity (starts with letter)
+                char first = (trimmed[0] == '+' || trimmed[0] == '-') ? trimmed[1] : trimmed[0];
+                if (!std::isdigit(static_cast<unsigned char>(first))) {
+                    return std::numeric_limits<double>::quiet_NaN();
+                }
             }
             return result;
         } catch (...) {
