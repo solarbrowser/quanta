@@ -11,6 +11,46 @@
 
 namespace Quanta {
 
+// ToString(v): Symbols always throw; objects go through ToPrimitive(hint="string") first.
+static std::string symbol_to_string_coerce(Context& ctx, const Value& v) {
+    if (v.is_symbol()) {
+        ctx.throw_type_error("Cannot convert a Symbol value to a string");
+        return "";
+    }
+    if (!v.is_object() && !v.is_function()) return v.to_string();
+
+    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+    Symbol* toPrim_sym = Symbol::get_well_known("Symbol.toPrimitive");
+    if (toPrim_sym) {
+        Value toPrim = obj->get_property(toPrim_sym->to_property_key());
+        if (ctx.has_exception()) return "";
+        if (toPrim.is_function()) {
+            Value r = toPrim.as_function()->call(ctx, {Value(std::string("string"))}, v);
+            if (ctx.has_exception()) return "";
+            if (r.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return ""; }
+            if (!r.is_object() && !r.is_function()) return r.to_string();
+            ctx.throw_type_error("Cannot convert object to string");
+            return "";
+        }
+    }
+    Value ts = obj->get_property("toString");
+    if (ctx.has_exception()) return "";
+    if (ts.is_function()) {
+        Value r = ts.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    Value vof = obj->get_property("valueOf");
+    if (ctx.has_exception()) return "";
+    if (vof.is_function()) {
+        Value r = vof.as_function()->call(ctx, {}, v);
+        if (ctx.has_exception()) return "";
+        if (!r.is_object() && !r.is_function()) return r.to_string();
+    }
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return "";
+}
+
 void register_symbol_builtins(Context& ctx) {
     auto symbol_constructor = ObjectFactory::create_native_constructor("Symbol",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -19,7 +59,7 @@ void register_symbol_builtins(Context& ctx) {
                 return Value();
             }
             bool has_desc = !args.empty() && !args[0].is_undefined();
-            std::string description = has_desc ? args[0].to_string() : "";
+            std::string description = has_desc ? symbol_to_string_coerce(ctx, args[0]) : "";
             if (ctx.has_exception()) return Value();
             auto symbol = Symbol::create(description, has_desc);
             return Value(symbol.release());

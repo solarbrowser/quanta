@@ -354,10 +354,10 @@ double Value::to_number() const {
                 }
             }
         }
-        // Number/Boolean wrapper objects store their primitive in [[PrimitiveValue]]
+        // Skip the [[PrimitiveValue]] fast path for Symbol wrappers so overridden valueOf/toString are honored below.
         if (obj && obj->has_property("[[PrimitiveValue]]")) {
             Value pv = obj->get_property("[[PrimitiveValue]]");
-            if (!pv.is_object()) {
+            if (!pv.is_object() && !pv.is_symbol()) {
                 return pv.to_number();
             }
         }

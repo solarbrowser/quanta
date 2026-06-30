@@ -255,23 +255,31 @@ Value MemberExpression::evaluate(Context& ctx) {
     }
 
     // ES6: Property access on symbols - look up Symbol.prototype
-    if (object_value.is_symbol() && !computed_) {
-        if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
-            std::string prop_name = static_cast<Identifier*>(property_.get())->get_name();
-            Value ctor = ctx.get_binding("Symbol");
-            if (ctor.is_function()) {
-                Value proto = ctor.as_function()->get_property("prototype");
-                if (proto.is_object()) {
-                    Object* proto_obj = proto.as_object();
-                    PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
-                    if (desc.is_accessor_descriptor() && desc.has_getter()) {
-                        Function* getter = dynamic_cast<Function*>(desc.get_getter());
-                        if (getter) return getter->call(ctx, {}, object_value);
-                        return Value();
-                    }
-                    Value val = proto_obj->get_property(prop_name);
-                    if (!val.is_undefined()) return val;
+    if (object_value.is_symbol()) {
+        std::string prop_name;
+        if (computed_) {
+            Value prop_value = property_->evaluate(ctx);
+            if (ctx.has_exception()) return Value();
+            prop_name = to_js_property_key(ctx, prop_value);
+            if (ctx.has_exception()) return Value();
+        } else if (property_->get_type() == ASTNode::Type::IDENTIFIER) {
+            prop_name = static_cast<Identifier*>(property_.get())->get_name();
+        } else {
+            return Value();
+        }
+        Value ctor = ctx.get_binding("Symbol");
+        if (ctor.is_function()) {
+            Value proto = ctor.as_function()->get_property("prototype");
+            if (proto.is_object()) {
+                Object* proto_obj = proto.as_object();
+                PropertyDescriptor desc = proto_obj->get_property_descriptor(prop_name);
+                if (desc.is_accessor_descriptor() && desc.has_getter()) {
+                    Function* getter = dynamic_cast<Function*>(desc.get_getter());
+                    if (getter) return getter->call(ctx, {}, object_value);
+                    return Value();
                 }
+                Value val = proto_obj->get_property(prop_name);
+                if (!val.is_undefined()) return val;
             }
         }
         return Value();
