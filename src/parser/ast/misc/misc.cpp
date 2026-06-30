@@ -60,15 +60,15 @@ Value RegexLiteral::evaluate(Context& ctx) {
         obj->set_property("__pattern__", Value(pattern_));
         obj->set_property("__flags__", Value(flags_));
 
-        obj->set_property("source", Value(pattern_));
-        std::string sorted_flags = flags_;
-        std::sort(sorted_flags.begin(), sorted_flags.end());
-        obj->set_property("flags", Value(sorted_flags));
-        obj->set_property("global", Value(flags_.find('g') != std::string::npos));
-        obj->set_property("ignoreCase", Value(flags_.find('i') != std::string::npos));
-        obj->set_property("multiline", Value(flags_.find('m') != std::string::npos));
-        obj->set_property("unicode", Value(flags_.find('u') != std::string::npos));
-        obj->set_property("sticky", Value(flags_.find('y') != std::string::npos));
+        // Internal flag slots: non-enumerable/non-writable/non-configurable, named [[X]] so they don't shadow the accessor getters on RegExp.prototype.
+        obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(pattern_), PropertyAttributes::None));
+        obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(flags_.find('g') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(flags_.find('i') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(flags_.find('m') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(flags_.find('u') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(flags_.find('y') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(flags_.find('s') != std::string::npos), PropertyAttributes::None));
+        obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(flags_.find('d') != std::string::npos), PropertyAttributes::None));
         {
             PropertyDescriptor us_desc(Value(flags_.find('v') != std::string::npos), PropertyAttributes::BuiltinFunction);
             obj->set_property_descriptor("unicodeSets", us_desc);
@@ -84,8 +84,11 @@ Value RegexLiteral::evaluate(Context& ctx) {
 
         auto test_fn = ObjectFactory::create_native_function("test",
             [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx;
-                if (args.empty()) return Value(false);
+                Value arg0 = args.empty() ? Value() : args[0];
+                std::string str;
+                if (arg0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
+                else if (arg0.is_object() || arg0.is_function()) { str = arg0.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { str = arg0.to_string(); }
 
                 if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
                     Value lastIndex_val = obj_ptr->get_property("lastIndex");
@@ -94,7 +97,6 @@ Value RegexLiteral::evaluate(Context& ctx) {
                     }
                 }
 
-                std::string str = args[0].to_string();
                 bool result = regexp_impl->test(str);
 
                 if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
@@ -106,15 +108,17 @@ Value RegexLiteral::evaluate(Context& ctx) {
 
         auto exec_fn = ObjectFactory::create_native_function("exec",
             [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx;
-                if (args.empty()) return Value::null();
+                Value arg0 = args.empty() ? Value() : args[0];
+                std::string str;
+                if (arg0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
+                else if (arg0.is_object() || arg0.is_function()) { str = arg0.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { str = arg0.to_string(); }
 
                 Value lastIndex_val = obj_ptr->get_property("lastIndex");
                 if (lastIndex_val.is_number()) {
                     regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
                 }
 
-                std::string str = args[0].to_string();
                 Value result = regexp_impl->exec(str);
 
                 int new_last = regexp_impl->get_last_index();
@@ -149,13 +153,14 @@ Value RegexLiteral::evaluate(Context& ctx) {
 
                 regexp_impl->compile(pattern, flags);
 
-                obj_ptr->set_property("source", Value(regexp_impl->get_source()));
-                std::string sf = regexp_impl->get_flags();
-                std::sort(sf.begin(), sf.end());
-                obj_ptr->set_property("flags", Value(sf));
-                obj_ptr->set_property("global", Value(regexp_impl->get_global()));
-                obj_ptr->set_property("ignoreCase", Value(regexp_impl->get_ignore_case()));
-                obj_ptr->set_property("multiline", Value(regexp_impl->get_multiline()));
+                obj_ptr->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::None));
+                obj_ptr->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::None));
                 obj_ptr->set_property("lastIndex", Value(0.0));
 
                 return Value(obj_ptr);
