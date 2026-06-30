@@ -118,7 +118,8 @@ void register_number_builtins(Context& ctx) {
                 }
                 if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->has_property("[[PrimitiveValue]]")) {
+                    if (this_obj->get_type() == Object::ObjectType::Number ||
+                        (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_number())) {
                         return this_obj->get_property("[[PrimitiveValue]]");
                     }
                 }
@@ -151,9 +152,10 @@ void register_number_builtins(Context& ctx) {
                     num = this_val.as_number();
                 } else if (this_val.is_object()) {
                     Object* this_obj = this_val.as_object();
-                    if (this_obj->has_property("[[PrimitiveValue]]")) {
+                    if (this_obj->get_type() == Object::ObjectType::Number ||
+                        (this_obj->has_property("[[PrimitiveValue]]") && this_obj->get_property("[[PrimitiveValue]]").is_number())) {
                         Value primitive = this_obj->get_property("[[PrimitiveValue]]");
-                        num = primitive.to_number();
+                        num = primitive.as_number();
                     } else {
                         ctx.throw_type_error("Number.prototype.toString requires a Number or Number wrapper");
                         return Value();
@@ -262,74 +264,57 @@ void register_number_builtins(Context& ctx) {
                 num = pv.as_number();
             } else { ctx.throw_type_error("Number method requires a Number or Number wrapper"); return Value(); }
 
-            if (std::isnan(num)) return Value(std::string("NaN"));
-            if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
-
+            // Spec order: 1) ToIntegerOrInfinity(frac) -- can throw, 2) check NaN/Inf, 3) check range.
             bool has_frac = !args.empty() && !args[0].is_undefined();
             int frac = 0;
+            double frac_int = 0.0;
             if (has_frac) {
                 if (args[0].is_symbol() || args[0].is_bigint()) { ctx.throw_type_error("Cannot convert Symbol/BigInt to number"); return Value(); }
                 double frac_d = args[0].to_number();
                 if (ctx.has_exception()) return Value();
-                double frac_int = std::isnan(frac_d) ? 0.0 : std::trunc(frac_d);
-                if (frac_int < 0 || frac_int > 100) {
-                    ctx.throw_range_error("toExponential() precision out of range");
-                    return Value();
-                }
+                frac_int = std::isnan(frac_d) ? 0.0 : std::trunc(frac_d);
                 frac = static_cast<int>(frac_int);
             }
 
-            bool negative = num < 0;
-            double abs_num = negative ? -num : num;
+            // NaN/Infinity check AFTER ToInteger but BEFORE range check.
+            if (std::isnan(num)) return Value(std::string("NaN"));
+            if (std::isinf(num)) return Value(num > 0 ? std::string("Infinity") : std::string("-Infinity"));
 
-            int exp = 0;
-            if (abs_num != 0) {
-                exp = static_cast<int>(std::floor(std::log10(abs_num)));
-                double test_m = abs_num / std::pow(10.0, exp);
-                if (test_m >= 10.0) { exp++; }
-                else if (test_m < 1.0) { exp--; }
+            if (has_frac && (frac_int < 0 || frac_int > 100)) {
+                ctx.throw_range_error("toExponential() precision out of range");
+                return Value();
             }
 
-            double mantissa = (abs_num == 0) ? 0.0 : abs_num / std::pow(10.0, exp);
+            bool negative = num < 0;
 
+            // Use snprintf directly for correct IEEE 754 representation.
+            char buf[200];
             if (!has_frac) {
-                char buf[64];
-                snprintf(buf, sizeof(buf), "%.17e", abs_num);
-                std::string s(buf);
-                size_t e_pos = s.find('e');
-                if (e_pos != std::string::npos) {
-                    std::string m_part = s.substr(0, e_pos);
-                    if (m_part.find('.') != std::string::npos) {
-                        size_t last = m_part.find_last_not_of('0');
-                        if (last != std::string::npos && m_part[last] == '.')
-                            m_part = m_part.substr(0, last);
-                        else if (last != std::string::npos)
-                            m_part = m_part.substr(0, last + 1);
-                    }
-                    int parsed_exp = std::stoi(s.substr(e_pos + 1));
-                    std::string result;
-                    if (negative) result += "-";
-                    result += m_part;
-                    result += "e";
-                    result += (parsed_exp >= 0) ? "+" : "-";
-                    result += std::to_string(std::abs(parsed_exp));
-                    return Value(result);
+                // Undefined fractionDigits: use minimum representation (%.17e then strip trailing zeros).
+                snprintf(buf, sizeof(buf), "%.17e", std::abs(num));
+            } else {
+                snprintf(buf, sizeof(buf), "%.*e", frac, std::abs(num));
+            }
+            std::string s(buf);
+            size_t e_pos = s.find('e');
+            if (e_pos == std::string::npos) return Value(s);
+
+            std::string m_part = s.substr(0, e_pos);
+            if (!has_frac) {
+                // Strip trailing zeros from mantissa.
+                if (m_part.find('.') != std::string::npos) {
+                    size_t last = m_part.find_last_not_of('0');
+                    if (last != std::string::npos && m_part[last] == '.') m_part = m_part.substr(0, last);
+                    else if (last != std::string::npos) m_part = m_part.substr(0, last + 1);
                 }
             }
-
-            double factor = std::pow(10.0, frac);
-            mantissa = std::floor(mantissa * factor + 0.5) / factor;
-            if (mantissa >= 10.0) { mantissa /= 10.0; exp++; }
-
-            char buf[64];
-            snprintf(buf, sizeof(buf), ("%." + std::to_string(frac) + "f").c_str(), mantissa);
-
+            int parsed_exp = std::stoi(s.substr(e_pos + 1));
             std::string result;
             if (negative) result += "-";
-            result += buf;
+            result += m_part;
             result += "e";
-            result += (exp >= 0) ? "+" : "-";
-            result += std::to_string(std::abs(exp));
+            result += (parsed_exp >= 0) ? "+" : "-";
+            result += std::to_string(std::abs(parsed_exp));
             return Value(result);
         }, 1);
     PropertyDescriptor toExponential_desc(Value(toExponential_fn.release()),
