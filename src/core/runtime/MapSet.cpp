@@ -16,7 +16,12 @@ namespace Quanta {
 
 static void close_iterator(Object* iter_obj, Context& ctx) {
     Value ret_fn = iter_obj->get_property("return");
-    if (ret_fn.is_function()) ret_fn.as_function()->call(ctx, {}, Value(iter_obj));
+    if (!ret_fn.is_function()) return;
+    // Per IteratorClose: a pre-existing pending exception wins even if return() throws too.
+    bool had_exception = ctx.has_exception();
+    Value original = had_exception ? ctx.get_exception() : Value();
+    ret_fn.as_function()->call(ctx, {}, Value(iter_obj));
+    if (had_exception) ctx.throw_exception(original, true);
 }
 
 static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object* iterable,
@@ -36,8 +41,11 @@ static bool iterate_with_closing(Context& ctx, const Value& iterable_val, Object
         Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
         if (ctx.has_exception()) break;
         if (!res.is_object()) break;
-        if (res.as_object()->get_property("done").to_boolean()) break;
+        bool done = res.as_object()->get_property("done").to_boolean();
+        if (ctx.has_exception()) { close_iterator(iter_obj.as_object(), ctx); break; }
+        if (done) break;
         Value val = res.as_object()->get_property("value");
+        if (ctx.has_exception()) { close_iterator(iter_obj.as_object(), ctx); break; }
         if (!process(val, iter_obj.as_object())) break;
     }
     return true;
@@ -77,7 +85,8 @@ void Map::set(const Value& key, const Value& value) {
 bool Map::delete_key(const Value& key) {
     auto it = find_entry(key);
     if (it != entries_.end()) {
-        entries_.erase(it);
+        // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
+        it->deleted = true;
         size_--;
         return true;
     }
@@ -100,7 +109,7 @@ std::vector<Value> Map::keys() const {
     std::vector<Value> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        result.push_back(entry.key);
+        if (!entry.deleted) result.push_back(entry.key);
     }
     return result;
 }
@@ -109,7 +118,7 @@ std::vector<Value> Map::values() const {
     std::vector<Value> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        result.push_back(entry.value);
+        if (!entry.deleted) result.push_back(entry.value);
     }
     return result;
 }
@@ -118,14 +127,15 @@ std::vector<std::pair<Value, Value>> Map::entries() const {
     std::vector<std::pair<Value, Value>> result;
     result.reserve(size_);
     for (const auto& entry : entries_) {
-        result.emplace_back(entry.key, entry.value);
+        if (!entry.deleted) result.emplace_back(entry.key, entry.value);
     }
     return result;
 }
 
 std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
-    return std::find_if(entries_.begin(), entries_.end(), 
+    return std::find_if(entries_.begin(), entries_.end(),
         [&key](const MapEntry& entry) {
+            if (entry.deleted) return false;
             // SameValueZero: NaN equals NaN, +0 equals -0
             if (key.is_number() && entry.key.is_number()) {
                 if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
@@ -135,8 +145,9 @@ std::vector<Map::MapEntry>::iterator Map::find_entry(const Value& key) {
 }
 
 std::vector<Map::MapEntry>::const_iterator Map::find_entry(const Value& key) const {
-    return std::find_if(entries_.begin(), entries_.end(), 
+    return std::find_if(entries_.begin(), entries_.end(),
         [&key](const MapEntry& entry) {
+            if (entry.deleted) return false;
             // SameValueZero: NaN equals NaN, +0 equals -0
             if (key.is_number() && entry.key.is_number()) {
                 if (std::isnan(key.as_number()) && std::isnan(entry.key.as_number())) return true;
@@ -168,68 +179,49 @@ Value Map::map_constructor(Context& ctx, const std::vector<Value>& args) {
     Map* map_ptr = map.get();
     Object* map_obj = map.release();
 
-    if (!args.empty() && args[0].is_object()) {
+    if (!args.empty() && !args[0].is_undefined() && !args[0].is_null() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
-        // ES6: constructor must invoke the "set" method on the instance
+        // ES6: constructor must invoke a callable "set" method, checked before any iteration.
         Value set_method = map_obj->get_property("set");
-        Function* set_fn = set_method.is_function() ? set_method.as_function() : nullptr;
+        if (ctx.has_exception()) return Value();
+        if (!set_method.is_function()) {
+            ctx.throw_type_error("'set' is not callable");
+            return Value();
+        }
+        Function* set_fn = set_method.as_function();
+
+        // Per spec, entries need only be objects (Get(entry, "0")/"1"), not specifically arrays.
+        auto process_entry = [&](const Value& entry, Object* iter) -> bool {
+            if (!entry.is_object() && !entry.is_function()) {
+                if (iter) close_iterator(iter, ctx);
+                ctx.throw_type_error("Iterator value is not an entry object");
+                return false;
+            }
+            Object* pair = entry.is_function() ? static_cast<Object*>(entry.as_function()) : entry.as_object();
+            Value key = pair->get_property("0");
+            if (ctx.has_exception()) { if (iter) close_iterator(iter, ctx); return false; }
+            Value value = pair->get_property("1");
+            if (ctx.has_exception()) { if (iter) close_iterator(iter, ctx); return false; }
+            set_fn->call(ctx, {key, value}, Value(map_obj));
+            if (ctx.has_exception()) { if (iter) close_iterator(iter, ctx); return false; }
+            return true;
+        };
 
         if (iterable->is_array()) {
             uint32_t length = iterable->get_length();
             for (uint32_t i = 0; i < length; i++) {
                 Value entry = iterable->get_element(i);
-                if (entry.is_object() && entry.as_object()->is_array()) {
-                    Object* pair = entry.as_object();
-                    if (pair->get_length() >= 2) {
-                        Value key = pair->get_element(0);
-                        Value value = pair->get_element(1);
-                        if (set_fn) {
-                            set_fn->call(ctx, {key, value}, Value(map_obj));
-                        } else {
-                            map_ptr->set(key, value);
-                        }
-                    }
-                }
+                if (!process_entry(entry, nullptr)) return Value();
             }
         } else {
-            bool handled = iterate_with_closing(ctx, args[0], iterable,
-                [&](const Value& entry, Object* iter) -> bool {
-                    if (!entry.is_object() || !entry.as_object()->is_array()) {
-                        close_iterator(iter, ctx);
-                        ctx.throw_type_error("Iterator value is not a [key, value] pair");
-                        return false;
-                    }
-                    Object* pair = entry.as_object();
-                    if (pair->get_length() >= 2) {
-                        Value key = pair->get_element(0);
-                        Value value = pair->get_element(1);
-                        if (set_fn) {
-                            set_fn->call(ctx, {key, value}, Value(map_obj));
-                            if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
-                        } else {
-                            map_ptr->set(key, value);
-                        }
-                    }
-                    return true;
-                });
+            bool handled = iterate_with_closing(ctx, args[0], iterable, process_entry);
             if (!handled && !ctx.has_exception()) {
                 auto iterator = IterableUtils::get_iterator(args[0], ctx);
                 if (iterator) {
                     while (true) {
                         auto result = iterator->next();
                         if (result.done) break;
-                        if (result.value.is_object() && result.value.as_object()->is_array()) {
-                            Object* pair = result.value.as_object();
-                            if (pair->get_length() >= 2) {
-                                Value key = pair->get_element(0);
-                                Value value = pair->get_element(1);
-                                if (set_fn) {
-                                    set_fn->call(ctx, {key, value}, Value(map_obj));
-                                } else {
-                                    map_ptr->set(key, value);
-                                }
-                            }
-                        }
+                        if (!process_entry(result.value, nullptr)) return Value();
                     }
                 }
             }
@@ -371,12 +363,12 @@ void Map::setup_map_prototype(Context& ctx) {
     
     auto map_prototype = ObjectFactory::create_object();
     
-    auto set_fn = ObjectFactory::create_native_function("set", map_set);
+    auto set_fn = ObjectFactory::create_native_function("set", map_set, 2);
     auto get_fn = ObjectFactory::create_native_function("get", map_get, 1);
     auto has_fn = ObjectFactory::create_native_function("has", map_has, 1);
     auto delete_fn = ObjectFactory::create_native_function("delete", map_delete, 1);
     auto clear_fn = ObjectFactory::create_native_function("clear", map_clear);
-    auto size_fn = ObjectFactory::create_native_function("size", map_size_getter);
+    auto size_fn = ObjectFactory::create_native_function("get size", map_size_getter, 0);
 
     map_prototype->set_property("set", Value(set_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -412,9 +404,10 @@ void Map::setup_map_prototype(Context& ctx) {
             Map* map = static_cast<Map*>(obj);
             Function* callback = args[0].as_function();
             Value this_arg = args.size() > 1 ? args[1] : Value();
-            auto entries = map->entries();
-            for (const auto& entry : entries) {
-                std::vector<Value> cb_args = {entry.second, entry.first, Value(obj)};
+            // Live index walk: soft-deleted entries keep positions stable; added entries are picked up as i reaches them.
+            for (size_t i = 0; i < map->entries_.size(); i++) {
+                if (map->entries_[i].deleted) continue;
+                std::vector<Value> cb_args = {map->entries_[i].value, map->entries_[i].key, Value(obj)};
                 callback->call(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
             }
@@ -505,42 +498,93 @@ void Map::setup_map_prototype(Context& ctx) {
 
     auto map_groupBy_fn = ObjectFactory::create_native_function("groupBy",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.size() < 2) {
-                throw std::runtime_error("Map.groupBy requires 2 arguments");
+            if (args.size() < 2 || !args[1].is_function()) {
+                ctx.throw_type_error("Map.groupBy requires a callback function");
+                return Value();
             }
-
-            Object* iterable = args[0].as_object();
+            Value items = args.empty() ? Value() : args[0];
+            if (items.is_null() || items.is_undefined()) {
+                ctx.throw_type_error("Map.groupBy requires an iterable");
+                return Value();
+            }
             Function* callback = args[1].as_function();
-
-            if (!iterable || !callback) {
-                throw std::runtime_error("Invalid arguments to Map.groupBy");
-            }
 
             auto result_map = std::make_unique<Map>();
             if (Map::prototype_object) result_map->set_prototype(Map::prototype_object);
-            // Use iterator if available, fall back to array-like length/element access.
-            uint32_t length = iterable->get_length();
+            Map* result = result_map.get();
 
-            for (uint32_t i = 0; i < length; i++) {
-                Value element = iterable->get_element(i);
-                std::vector<Value> callback_args = { element, Value(static_cast<double>(i)) };
-                Value key = callback->call(ctx, callback_args);
-                if (ctx.has_exception()) return Value();
-
-                Value group = result_map->get(key);
+            // Map keys preserve SameValueZero identity -- no property-key stringification.
+            auto add_to_group = [&](const Value& element, double idx) -> bool {
+                Value key = callback->call(ctx, {element, Value(idx)});
+                if (ctx.has_exception()) return false;
+                Value group = result->get(key);
                 Object* group_array;
-
-                if (group.is_undefined()) {
-                    auto new_array = ObjectFactory::create_array();
-                    group_array = new_array.get();
-                    result_map->set(key, Value(new_array.release()));
-                } else {
+                if (group.is_object()) {
                     group_array = group.as_object();
+                } else {
+                    auto arr = ObjectFactory::create_array(0);
+                    group_array = arr.get();
+                    result->set(key, Value(arr.release()));
                 }
+                group_array->set_element(group_array->get_length(), element);
+                return true;
+            };
 
-                uint32_t group_length = group_array->get_length();
-                group_array->set_element(group_length, element);
-                group_array->set_length(group_length + 1);
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            bool used_iterator = false;
+            if (iter_sym && (items.is_object() || items.is_function() || items.is_string())) {
+                Object* src = items.is_function() ? static_cast<Object*>(items.as_function())
+                    : items.is_object() ? items.as_object() : nullptr;
+                if (src) {
+                    Value iter_method = src->get_property(iter_sym->to_property_key());
+                    if (ctx.has_exception()) return Value();
+                    if (!iter_method.is_function()) {
+                        if (!iter_method.is_undefined()) {
+                            ctx.throw_type_error("items[Symbol.iterator] is not callable");
+                        } else {
+                            ctx.throw_type_error("items is not iterable");
+                        }
+                        return Value();
+                    }
+                    used_iterator = true;
+                    Value iter_obj = iter_method.as_function()->call(ctx, {}, items);
+                    if (ctx.has_exception()) return Value();
+                    if (!iter_obj.is_object()) { ctx.throw_type_error("Iterator must be object"); return Value(); }
+                    Object* iter = iter_obj.as_object();
+                    Value next_fn = iter->get_property("next");
+                    if (ctx.has_exception()) return Value();
+                    if (!next_fn.is_function()) { ctx.throw_type_error("Iterator.next must be function"); return Value(); }
+                    double idx = 0;
+                    while (true) {
+                        Value res = next_fn.as_function()->call(ctx, {}, iter_obj);
+                        if (ctx.has_exception()) return Value();
+                        if (!res.is_object()) { ctx.throw_type_error("Iterator result must be object"); return Value(); }
+                        if (res.as_object()->get_property("done").to_boolean()) break;
+                        Value el = res.as_object()->get_property("value");
+                        if (ctx.has_exception()) return Value();
+                        if (!add_to_group(el, idx++)) return Value();
+                    }
+                }
+                if (!used_iterator && items.is_string()) {
+                    std::string s = items.to_string();
+                    double idx = 0;
+                    size_t i = 0;
+                    while (i < s.size()) {
+                        unsigned char ch = static_cast<unsigned char>(s[i]);
+                        size_t char_len = 1;
+                        if (ch >= 0xF0) char_len = 4;
+                        else if (ch >= 0xE0) char_len = 3;
+                        else if (ch >= 0xC0) char_len = 2;
+                        if (i + char_len > s.size()) char_len = 1;
+                        if (!add_to_group(Value(s.substr(i, char_len)), idx++)) return Value();
+                        i += char_len;
+                    }
+                    used_iterator = true;
+                }
+            }
+            if (!used_iterator) {
+                ctx.throw_type_error("items is not iterable");
+                return Value();
             }
 
             return Value(result_map.release());
@@ -581,7 +625,7 @@ bool Set::has(const Value& value) const {
 
 void Set::add(const Value& value) {
     if (find_value(value) == values_.end()) {
-        values_.push_back(value);
+        values_.emplace_back(value);
         size_++;
     }
 }
@@ -589,7 +633,8 @@ void Set::add(const Value& value) {
 bool Set::delete_value(const Value& value) {
     auto it = find_value(value);
     if (it != values_.end()) {
-        values_.erase(it);
+        // Soft-delete (don't erase) so live forEach iteration (by index) keeps stable positions.
+        it->deleted = true;
         size_--;
         return true;
     }
@@ -609,29 +654,38 @@ Value Set::get_property(const std::string& key) const {
 }
 
 std::vector<Value> Set::values() const {
-    return values_;
+    std::vector<Value> result;
+    result.reserve(size_);
+    for (const auto& entry : values_) {
+        if (!entry.deleted) result.push_back(entry.value);
+    }
+    return result;
 }
 
 std::vector<std::pair<Value, Value>> Set::entries() const {
     std::vector<std::pair<Value, Value>> result;
     result.reserve(size_);
-    for (const auto& value : values_) {
-        result.emplace_back(value, value);
+    for (const auto& entry : values_) {
+        if (!entry.deleted) result.emplace_back(entry.value, entry.value);
     }
     return result;
 }
 
-std::vector<Value>::iterator Set::find_value(const Value& value) {
+std::vector<Set::SetEntry>::iterator Set::find_value(const Value& value) {
     return std::find_if(values_.begin(), values_.end(),
-        [&value](const Value& v) {
+        [&value](const SetEntry& e) {
+            if (e.deleted) return false;
+            const Value& v = e.value;
             if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
             return v.strict_equals(value);
         });
 }
 
-std::vector<Value>::const_iterator Set::find_value(const Value& value) const {
+std::vector<Set::SetEntry>::const_iterator Set::find_value(const Value& value) const {
     return std::find_if(values_.begin(), values_.end(),
-        [&value](const Value& v) {
+        [&value](const SetEntry& e) {
+            if (e.deleted) return false;
+            const Value& v = e.value;
             if (value.is_number() && v.is_number() && std::isnan(value.as_number()) && std::isnan(v.as_number())) return true;
             return v.strict_equals(value);
         });
@@ -660,32 +714,30 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
     Set* set_ptr = set.get();
     Object* set_obj = set.release();
 
-    if (!args.empty() && args[0].is_object()) {
+    if (!args.empty() && !args[0].is_undefined() && !args[0].is_null() && args[0].is_object()) {
         Object* iterable = args[0].as_object();
-        // ES6: constructor must invoke the "add" method on the instance
+        // ES6: constructor must invoke a callable "add" method, checked before any iteration.
         Value add_method = set_obj->get_property("add");
-        Function* add_fn = add_method.is_function() ? add_method.as_function() : nullptr;
+        if (ctx.has_exception()) return Value();
+        if (!add_method.is_function()) {
+            ctx.throw_type_error("'add' is not callable");
+            return Value();
+        }
+        Function* add_fn = add_method.as_function();
 
         if (iterable->is_array()) {
             uint32_t length = iterable->get_length();
             for (uint32_t i = 0; i < length; i++) {
                 Value element = iterable->get_element(i);
-                if (add_fn) {
-                    add_fn->call(ctx, {element}, Value(set_obj));
-                } else {
-                    set_ptr->add(element);
-                }
+                add_fn->call(ctx, {element}, Value(set_obj));
+                if (ctx.has_exception()) return Value();
             }
         }
         else {
             bool handled = iterate_with_closing(ctx, args[0], iterable,
                 [&](const Value& val, Object* iter) -> bool {
-                    if (add_fn) {
-                        add_fn->call(ctx, {val}, Value(set_obj));
-                        if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
-                    } else {
-                        set_ptr->add(val);
-                    }
+                    add_fn->call(ctx, {val}, Value(set_obj));
+                    if (ctx.has_exception()) { close_iterator(iter, ctx); return false; }
                     return true;
                 });
             if (!handled && !ctx.has_exception()) {
@@ -694,11 +746,8 @@ Value Set::set_constructor(Context& ctx, const std::vector<Value>& args) {
                     while (true) {
                         auto result = iterator->next();
                         if (result.done) break;
-                        if (add_fn) {
-                            add_fn->call(ctx, {result.value}, Value(set_obj));
-                        } else {
-                            set_ptr->add(result.value);
-                        }
+                        add_fn->call(ctx, {result.value}, Value(set_obj));
+                        if (ctx.has_exception()) return Value();
                     }
                 }
             }
@@ -822,7 +871,7 @@ void Set::setup_set_prototype(Context& ctx) {
     auto has_fn = ObjectFactory::create_native_function("has", set_has, 1);
     auto delete_fn = ObjectFactory::create_native_function("delete", set_delete, 1);
     auto clear_fn = ObjectFactory::create_native_function("clear", set_clear);
-    auto size_fn = ObjectFactory::create_native_function("size", set_size_getter);
+    auto size_fn = ObjectFactory::create_native_function("get size", set_size_getter, 0);
     
     set_prototype->set_property("add", Value(add_fn.release()),
         static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
@@ -856,8 +905,10 @@ void Set::setup_set_prototype(Context& ctx) {
             Set* set = static_cast<Set*>(obj);
             Function* callback = args[0].as_function();
             Value this_arg = args.size() > 1 ? args[1] : Value();
-            auto vals = set->values();
-            for (const auto& val : vals) {
+            // Live, index-based walk -- see Map::forEach for why deletions are soft.
+            for (size_t i = 0; i < set->values_.size(); i++) {
+                if (set->values_[i].deleted) continue;
+                Value val = set->values_[i].value;
                 std::vector<Value> cb_args = {val, val, Value(obj)};
                 callback->call(ctx, cb_args, this_arg);
                 if (ctx.has_exception()) return Value();
@@ -905,31 +956,44 @@ void Set::setup_set_prototype(Context& ctx) {
 
     Symbol* iterator_symbol = Symbol::get_well_known(Symbol::ITERATOR);
     if (iterator_symbol) {
-        auto set_iterator_fn = ObjectFactory::create_native_function("@@iterator", set_iterator_method);
-        set_prototype->set_property(iterator_symbol->to_property_key(), Value(set_iterator_fn.release()));
+        // Per spec: Set.prototype[Symbol.iterator] is the same function object as .values.
+        Value values_val = set_prototype->get_property("values");
+        set_prototype->set_property(iterator_symbol->to_property_key(), values_val,
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
     }
 
     // ES2024 Set methods — accept "set-like" objects (anything with .has, .size, .keys)
+    // normalize_zero: per spec, keys read from other.keys() have -0 normalized to +0.
+    auto normalize_zero = [](Value v) -> Value {
+        if (v.is_number() && v.as_number() == 0.0 && std::signbit(v.as_number())) return Value(0.0);
+        return v;
+    };
+    // iterate_self_live: walks self's backing storage live (by index, skipping deleted slots) so a has() callback that deletes a not-yet-visited element causes it to be skipped.
+    auto iterate_self_live = [](Set* self, const std::function<bool(const Value&)>& fn) {
+        for (size_t i = 0; i < self->values_.size(); i++) {
+            if (self->values_[i].deleted) continue;
+            if (!fn(self->values_[i].value)) return;
+        }
+    };
     // call_has(ctx, other, has_fn, v): invoke has_fn.call(other, v) and return boolean
     auto call_has = [](Context& ctx, Object* other, Value has_fn, const Value& v) -> bool {
         if (!has_fn.is_function()) return false;
         Value r = has_fn.as_function()->call(ctx, {v}, Value(other));
         return !ctx.has_exception() && r.to_boolean();
     };
-    // iterate_keys(ctx, other): iterate other.keys() or fallback Symbol.iterator
-    auto iterate_keys = [](Context& ctx, Object* other) -> std::vector<Value> {
+    // iterate_keys: reuses the already-fetched keys_fn/next (fetched once, not per-iteration) to avoid duplicate property-getter calls that call-order tests check for.
+    auto iterate_keys = [](Context& ctx, Object* other, Value keys_fn) -> std::vector<Value> {
         std::vector<Value> result;
         if (other->get_type() == Object::ObjectType::Set) {
             return static_cast<Set*>(other)->values();
         }
-        Value keys_fn = other->get_property("keys");
         if (!keys_fn.is_function()) return result;
         Value iter = keys_fn.as_function()->call(ctx, {}, Value(other));
         if (ctx.has_exception() || !iter.is_object()) return result;
         Object* it = iter.as_object();
+        Value next_fn = it->get_property("next");
+        if (ctx.has_exception() || !next_fn.is_function()) return result;
         for (int i = 0; i < 1000000; i++) {
-            Value next_fn = it->get_property("next");
-            if (!next_fn.is_function()) break;
             Value res = next_fn.as_function()->call(ctx, {}, iter);
             if (ctx.has_exception() || !res.is_object()) break;
             if (res.as_object()->get_property("done").to_boolean()) break;
@@ -937,20 +1001,31 @@ void Set::setup_set_prototype(Context& ctx) {
         }
         return result;
     };
-    // Validate a "set-like" argument per GetSetRecord spec: must have callable has, keys, and numeric size.
-    auto validate_set_like = [](Context& ctx, Object* other) -> bool {
-        Value has_fn = other->get_property("has");
-        if (ctx.has_exception()) return false;
-        if (!has_fn.is_function()) {
-            ctx.throw_type_error("GetSetRecord: has is not callable");
-            return false;
+    // iterate_keys_lazy: like iterate_keys, but calls fn(value) per element and IteratorCloses (.return()) on early exit -- needed for short-circuiting isSupersetOf/isDisjointFrom.
+    auto iterate_keys_lazy = [](Context& ctx, Object* other, Value keys_fn, const std::function<bool(const Value&)>& fn) {
+        if (other->get_type() == Object::ObjectType::Set) {
+            for (const auto& v : static_cast<Set*>(other)->values()) {
+                if (!fn(v)) return;
+            }
+            return;
         }
-        Value keys_fn = other->get_property("keys");
-        if (ctx.has_exception()) return false;
-        if (!keys_fn.is_function()) {
-            ctx.throw_type_error("GetSetRecord: keys is not callable");
-            return false;
+        if (!keys_fn.is_function()) return;
+        Value iter = keys_fn.as_function()->call(ctx, {}, Value(other));
+        if (ctx.has_exception() || !iter.is_object()) return;
+        Object* it = iter.as_object();
+        Value next_fn = it->get_property("next");
+        if (ctx.has_exception() || !next_fn.is_function()) return;
+        for (int i = 0; i < 1000000; i++) {
+            Value res = next_fn.as_function()->call(ctx, {}, iter);
+            if (ctx.has_exception() || !res.is_object()) return;
+            if (res.as_object()->get_property("done").to_boolean()) return;
+            Value val = res.as_object()->get_property("value");
+            if (!fn(val)) { close_iterator(it, ctx); return; }
         }
+    };
+    // GetSetRecord(other): size (ToNumber'd) read before has/keys, each fetched exactly once -- callers must reuse the returned has/keys references, not re-fetch.
+    struct SetRecord { double size; Value has_fn; Value keys_fn; };
+    auto validate_set_like = [](Context& ctx, Object* other, SetRecord& rec) -> bool {
         Value size_val = other->get_property("size");
         if (ctx.has_exception()) return false;
         if (size_val.is_symbol() || size_val.is_bigint()) {
@@ -961,6 +1036,19 @@ void Set::setup_set_prototype(Context& ctx) {
         if (ctx.has_exception()) return false;
         if (std::isnan(num_size)) {
             ctx.throw_type_error("GetSetRecord: size is NaN");
+            return false;
+        }
+        rec.size = num_size;
+        rec.has_fn = other->get_property("has");
+        if (ctx.has_exception()) return false;
+        if (!rec.has_fn.is_function()) {
+            ctx.throw_type_error("GetSetRecord: has is not callable");
+            return false;
+        }
+        rec.keys_fn = other->get_property("keys");
+        if (ctx.has_exception()) return false;
+        if (!rec.keys_fn.is_function()) {
+            ctx.throw_type_error("GetSetRecord: keys is not callable");
             return false;
         }
         return true;
@@ -975,17 +1063,19 @@ void Set::setup_set_prototype(Context& ctx) {
     };
 
     auto union_fn = ObjectFactory::create_native_function("union",
-        [validate_set_like, iterate_keys](Context& ctx, const std::vector<Value>& args) -> Value {
+        [validate_set_like, iterate_keys, normalize_zero](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.union"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.union requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
+            Object* other = args[0].as_object();
+            if (!validate_set_like(ctx, other, rec)) return Value();
             auto result = std::make_unique<Set>();
             for (const auto& v : self->values()) result->add(v);
-            for (const auto& v : iterate_keys(ctx, args[0].as_object())) {
+            for (const auto& v : iterate_keys(ctx, other, rec.keys_fn)) {
                 if (ctx.has_exception()) return Value();
-                result->add(v);
+                result->add(normalize_zero(v));
             }
             if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);
@@ -999,23 +1089,19 @@ void Set::setup_set_prototype(Context& ctx) {
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.intersection"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.intersection requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            Value other_size_val = other->get_property("size");
-            if (ctx.has_exception()) return Value();
-            double other_size = other_size_val.to_number();
+            if (!validate_set_like(ctx, other, rec)) return Value();
             auto result = std::make_unique<Set>();
-            if ((double)self->size() <= other_size) {
+            if ((double)self->size() <= rec.size) {
                 // Iterate this, call other.has() for each element.
-                Value has_fn = other->get_property("has");
-                if (ctx.has_exception()) return Value();
                 for (const auto& v : self->values()) {
-                    if (call_has(ctx, other, has_fn, v)) result->add(v);
+                    if (call_has(ctx, other, rec.has_fn, v)) result->add(v);
                     if (ctx.has_exception()) return Value();
                 }
             } else {
                 // this.size > other.size: iterate other.keys(); normalize -0→+0 (spec step 8.b.i), add if in this.
-                for (auto k : iterate_keys(ctx, other)) {
+                for (auto k : iterate_keys(ctx, other, rec.keys_fn)) {
                     if (ctx.has_exception()) return Value();
                     if (k.is_number() && k.as_number() == 0.0 && std::signbit(k.as_number())) k = Value(0.0);
                     if (self->has(k)) result->add(k);
@@ -1033,24 +1119,20 @@ void Set::setup_set_prototype(Context& ctx) {
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.difference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.difference requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            Value other_size_val = other->get_property("size");
-            if (ctx.has_exception()) return Value();
-            double other_size = other_size_val.to_number();
+            if (!validate_set_like(ctx, other, rec)) return Value();
             auto result = std::make_unique<Set>();
-            if ((double)self->size() <= other_size) {
+            if ((double)self->size() <= rec.size) {
                 // this.size <= other.size: iterate this, call other.has() for each element.
-                Value has_fn = other->get_property("has");
-                if (ctx.has_exception()) return Value();
                 for (const auto& v : self->values()) {
-                    if (!call_has(ctx, other, has_fn, v)) result->add(v);
+                    if (!call_has(ctx, other, rec.has_fn, v)) result->add(v);
                     if (ctx.has_exception()) return Value();
                 }
             } else {
                 // this.size > other.size: copy this, remove elements from other.keys().
                 for (const auto& v : self->values()) result->add(v);
-                for (const auto& v : iterate_keys(ctx, other)) {
+                for (const auto& v : iterate_keys(ctx, other, rec.keys_fn)) {
                     if (ctx.has_exception()) return Value();
                     result->delete_value(v);
                 }
@@ -1062,20 +1144,24 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("difference", Value(difference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto symmetricDifference_fn = ObjectFactory::create_native_function("symmetricDifference",
-        [iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterate_keys, validate_set_like, normalize_zero](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.symmetricDifference"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.symmetricDifference requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            // Spec: start with copy of this, then for each key in other: toggle membership (no other.has() calls).
+            if (!validate_set_like(ctx, other, rec)) return Value();
+            // Spec: add/remove decision is based on whether `self` (LIVE, not the result copy) currently has the key -- a keys() iterator that mutates self mid-iteration matters.
             auto result = std::make_unique<Set>();
             for (const auto& v : self->values()) result->add(v);
-            for (const auto& v : iterate_keys(ctx, other)) {
+            for (auto v : iterate_keys(ctx, other, rec.keys_fn)) {
                 if (ctx.has_exception()) return Value();
-                if (result->has(v)) result->delete_value(v);
-                else result->add(v);
+                v = normalize_zero(v);
+                bool in_self = self->has(v);
+                bool in_result = result->has(v);
+                if (in_self) { if (in_result) result->delete_value(v); }
+                else { if (!in_result) result->add(v); }
             }
             if (ctx.has_exception()) return Value();
             if (Set::prototype_object) result->set_prototype(Set::prototype_object);
@@ -1084,77 +1170,90 @@ void Set::setup_set_prototype(Context& ctx) {
     set_prototype->set_property("symmetricDifference", Value(symmetricDifference_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSubsetOf_fn = ObjectFactory::create_native_function("isSubsetOf",
-        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, validate_set_like, iterate_self_live](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSubsetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isSubsetOf requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
+            if (!validate_set_like(ctx, other, rec)) return Value();
+            // A larger set can't be a subset of a smaller one -- skip iteration entirely.
+            if ((double)self->size() > rec.size) return Value(false);
+            bool result = true;
             if (other->get_type() == Object::ObjectType::Set) {
                 Set* os = static_cast<Set*>(other);
-                for (const auto& v : self->values()) if (!os->has(v)) return Value(false);
+                iterate_self_live(self, [&](const Value& v) -> bool {
+                    if (!os->has(v)) { result = false; return false; }
+                    return true;
+                });
             } else {
-                Value has_fn = other->get_property("has");
-                for (const auto& v : self->values()) {
-                    if (!call_has(ctx, other, has_fn, v)) return Value(false);
-                    if (ctx.has_exception()) return Value();
-                }
+                iterate_self_live(self, [&](const Value& v) -> bool {
+                    if (!call_has(ctx, other, rec.has_fn, v)) { result = false; return false; }
+                    return !ctx.has_exception();
+                });
+                if (ctx.has_exception()) return Value();
             }
-            return Value(true);
+            return Value(result);
         }, 1);
     set_prototype->set_property("isSubsetOf", Value(isSubsetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isSupersetOf_fn = ObjectFactory::create_native_function("isSupersetOf",
-        [call_has, iterate_keys, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [iterate_keys_lazy, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isSupersetOf"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isSupersetOf requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
-            Value self_has = obj->get_property("has");
-            if (other->get_type() == Object::ObjectType::Set) {
-                for (const auto& v : static_cast<Set*>(other)->values()) if (!self->has(v)) return Value(false);
-            } else {
-                for (const auto& v : iterate_keys(ctx, other)) {
-                    if (!call_has(ctx, obj, self_has, v)) return Value(false);
-                    if (ctx.has_exception()) return Value();
-                }
-            }
-            return Value(true);
+            if (!validate_set_like(ctx, other, rec)) return Value();
+            // A smaller set can't be a superset of a larger one -- skip iteration entirely.
+            if ((double)self->size() < rec.size) return Value(false);
+            bool result = true;
+            iterate_keys_lazy(ctx, other, rec.keys_fn, [&](const Value& v) -> bool {
+                if (!self->has(v)) { result = false; return false; }
+                return !ctx.has_exception();
+            });
+            if (ctx.has_exception()) return Value();
+            return Value(result);
         }, 1);
     set_prototype->set_property("isSupersetOf", Value(isSupersetOf_fn.release()), static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable));
 
     auto isDisjointFrom_fn = ObjectFactory::create_native_function("isDisjointFrom",
-        [call_has, validate_set_like](Context& ctx, const std::vector<Value>& args) -> Value {
+        [call_has, iterate_keys_lazy, validate_set_like, iterate_self_live](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
             if (!obj || obj->get_type() != Object::ObjectType::Set) { ctx.throw_type_error("Set.prototype.isDisjointFrom"); return Value(); }
             Set* self = static_cast<Set*>(obj);
             if (args.empty() || !args[0].is_object()) { ctx.throw_type_error("Set.prototype.isDisjointFrom requires a set-like"); return Value(); }
-            if (!validate_set_like(ctx, args[0].as_object())) return Value();
+            SetRecord rec;
             Object* other = args[0].as_object();
-            if (other->get_type() != Object::ObjectType::Set) {
-                if (!other->get_property("has").is_function()) { ctx.throw_type_error("GetSetRecord: has is not callable"); return Value(); }
-                if (!other->get_property("keys").is_function()) { ctx.throw_type_error("GetSetRecord: keys is not callable"); return Value(); }
-            }
-            if (other->get_type() == Object::ObjectType::Set) {
-                Set* os = static_cast<Set*>(other);
-                for (const auto& v : self->values()) if (os->has(v)) return Value(false);
-            } else {
-                Value has_fn = other->get_property("has");
-                for (const auto& v : self->values()) {
-                    if (call_has(ctx, other, has_fn, v)) return Value(false);
+            if (!validate_set_like(ctx, other, rec)) return Value();
+            if ((double)self->size() <= rec.size) {
+                // Iterate this LIVE -- a has() callback that deletes a not-yet-visited element of `this` must skip that element.
+                bool result = true;
+                if (other->get_type() == Object::ObjectType::Set) {
+                    Set* os = static_cast<Set*>(other);
+                    iterate_self_live(self, [&](const Value& v) -> bool {
+                        if (os->has(v)) { result = false; return false; }
+                        return true;
+                    });
+                } else {
+                    iterate_self_live(self, [&](const Value& v) -> bool {
+                        if (call_has(ctx, other, rec.has_fn, v)) { result = false; return false; }
+                        return !ctx.has_exception();
+                    });
                     if (ctx.has_exception()) return Value();
                 }
+                if (!result) return Value(false);
+            } else {
+                // this.size > other.size: iterate other.keys(), check self.has() for each.
+                bool result = true;
+                iterate_keys_lazy(ctx, other, rec.keys_fn, [&](const Value& v) -> bool {
+                    if (self->has(v)) { result = false; return false; }
+                    return !ctx.has_exception();
+                });
+                if (ctx.has_exception()) return Value();
+                if (!result) return Value(false);
             }
             return Value(true);
         }, 1);

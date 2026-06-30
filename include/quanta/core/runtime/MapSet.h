@@ -26,7 +26,8 @@ private:
     struct MapEntry {
         Value key;
         Value value;
-        
+        bool deleted = false; // soft-delete: keeps insertion-order positions stable for live forEach.
+
         MapEntry(const Value& k, const Value& v) : key(k), value(v) {}
     };
     
@@ -92,9 +93,14 @@ private:
  */
 class Set : public Object {
 private:
-    std::vector<Value> values_;
+    struct SetEntry {
+        Value value;
+        bool deleted = false; // soft-delete: keeps insertion-order positions stable for live forEach.
+        explicit SetEntry(const Value& v) : value(v) {}
+    };
+    std::vector<SetEntry> values_;
     size_t size_;
-    
+
 public:
     Set();
     virtual ~Set() = default;
@@ -129,8 +135,8 @@ public:
     static Object* prototype_object;
     
 private:
-    std::vector<Value>::iterator find_value(const Value& value);
-    std::vector<Value>::const_iterator find_value(const Value& value) const;
+    std::vector<SetEntry>::iterator find_value(const Value& value);
+    std::vector<SetEntry>::const_iterator find_value(const Value& value) const;
 };
 
 /**

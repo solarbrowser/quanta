@@ -125,7 +125,8 @@ private:
     class Map* map_;
     Kind kind_;
     size_t index_;
-    
+    bool exhausted_ = false; // once done=true is returned, stays done even if the Map grows later.
+
 public:
     MapIterator(class Map* map, Kind kind);
     
@@ -152,7 +153,8 @@ private:
     class Set* set_;
     Kind kind_;
     size_t index_;
-    
+    bool exhausted_ = false; // once done=true is returned, stays done even if the Set grows later.
+
 public:
     SetIterator(class Set* set, Kind kind);
     
