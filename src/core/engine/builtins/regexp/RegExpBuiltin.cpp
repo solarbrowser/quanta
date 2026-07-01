@@ -298,8 +298,8 @@ void register_regexp_builtins(Context& ctx) {
                 return Value(regex_raw);
 
             } catch (const std::exception& e) {
-                ctx.throw_error("Invalid RegExp: " + std::string(e.what()));
-                return Value::null();
+                ctx.throw_syntax_error(std::string(e.what()));
+                return Value();
             }
         });
 

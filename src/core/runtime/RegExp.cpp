@@ -615,11 +615,74 @@ static std::string transform_v_mode_classes(const std::string& pattern) {
     return result;
 }
 
+static void validate_js_modifiers(const std::string& pat) {
+    bool in_class = false;
+    bool esc = false;
+    for (size_t i = 0; i < pat.size(); i++) {
+        unsigned char c = (unsigned char)pat[i];
+        if (esc) { esc = false; continue; }
+        if (c == '\\') { esc = true; continue; }
+        if (c == '[' && !in_class) { in_class = true; continue; }
+        if (c == ']' && in_class) { in_class = false; continue; }
+        if (in_class) continue;
+        if (c != '(' || i + 1 >= pat.size() || (unsigned char)pat[i+1] != '?') continue;
+
+        size_t j = i + 2;
+        bool has_dash = false;
+        std::string add_flags, rem_flags;
+        bool is_modifier = false;
+
+        while (j < pat.size()) {
+            unsigned char b = (unsigned char)pat[j];
+            if (b == ':') { is_modifier = true; break; }
+            if (b == '-' && !has_dash) { has_dash = true; j++; continue; }
+            if ((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+                (b >= '0' && b <= '9') || b == '_' || b == '$') {
+                (has_dash ? rem_flags : add_flags) += (char)b;
+                j++;
+                continue;
+            }
+            if (b >= 0x80) {
+                (has_dash ? rem_flags : add_flags) += '\x01';
+                j++;
+                while (j < pat.size() && ((unsigned char)pat[j] & 0xC0) == 0x80) j++;
+                continue;
+            }
+            break;
+        }
+
+        if (!is_modifier) continue;
+
+        if (has_dash && add_flags.empty() && rem_flags.empty())
+            throw std::runtime_error("Regexp modifier: both add and remove sets are empty");
+
+        auto validate_flags = [](const std::string& flags) {
+            bool seen[3] = {};
+            for (unsigned char fc : flags) {
+                int idx = (fc == 'i') ? 0 : (fc == 'm') ? 1 : (fc == 's') ? 2 : -1;
+                if (idx < 0) throw std::runtime_error("Invalid character in regexp modifier flags");
+                if (seen[idx]) throw std::runtime_error("Duplicate flag in regexp modifier");
+                seen[idx] = true;
+            }
+        };
+        validate_flags(add_flags);
+        validate_flags(rem_flags);
+
+        if (has_dash) {
+            for (char ac : add_flags)
+                for (char rc : rem_flags)
+                    if (ac == rc) throw std::runtime_error("Same flag in both add and remove of regexp modifier");
+        }
+    }
+}
+
 void RegExp::do_compile() {
     if (code_) {
         pcre2_code_free(static_cast<pcre2_code*>(code_));
         code_ = nullptr;
     }
+
+    validate_js_modifiers(pattern_);
 
     std::string pat = unicode_
         ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_))))
