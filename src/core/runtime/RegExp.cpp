@@ -884,11 +884,14 @@ bool RegExp::is_valid_unicode_pattern(const std::string& pattern, const std::str
     uint32_t options = PCRE2_UTF | PCRE2_UCP;
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
+    pcre2_compile_context* cctx = pcre2_compile_context_create(nullptr);
+    if (cctx) pcre2_set_compile_extra_options(cctx, PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES);
     pcre2_code* re = pcre2_compile(
         reinterpret_cast<PCRE2_SPTR>(pat.c_str()),
         PCRE2_ZERO_TERMINATED,
-        options, &errcode, &erroffset, nullptr
+        options, &errcode, &erroffset, cctx
     );
+    if (cctx) pcre2_compile_context_free(cctx);
     if (!re) return false;
     pcre2_code_free(re);
     return true;
