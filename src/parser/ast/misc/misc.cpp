@@ -173,7 +173,8 @@ Value RegexLiteral::evaluate(Context& ctx) {
 
         return Value(obj.release());
     } catch (const std::exception& e) {
-        return Value::null();
+        ctx.throw_syntax_error(std::string(e.what()));
+        return Value();
     }
 }
 

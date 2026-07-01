@@ -464,8 +464,20 @@ static VModeOperand parse_vmode_operand(const std::string& content, size_t& i) {
     }
     if (content[i] == '\\' && i + 1 < content.size() && content[i+1] == 'q' &&
         i + 2 < content.size() && content[i+2] == '{') {
-        size_t end = content.find('}', i + 3);
-        if (end == std::string::npos) end = content.size();
+        // Skip } inside \x{}/\p{}/\u{} so convert_unicode_escapes output doesn't fool us
+        size_t end = content.size();
+        for (size_t k = i + 3; k < content.size(); k++) {
+            if (content[k] == '\\' && k + 1 < content.size()) {
+                char nx = content[k+1];
+                k += 2;
+                if ((nx == 'x' || nx == 'p' || nx == 'P' || nx == 'u') && k < content.size() && content[k] == '{') {
+                    size_t inner = content.find('}', k + 1);
+                    k = (inner == std::string::npos) ? content.size() - 1 : inner;
+                }
+                continue;
+            }
+            if (content[k] == '}') { end = k; break; }
+        }
         std::string body = content.substr(i + 3, end - (i + 3));
         op.is_simple = false;
         size_t start = 0;
@@ -724,10 +736,18 @@ void RegExp::do_compile() {
     if (cctx) pcre2_compile_context_free(cctx);
 
     if (!re) {
-        re = pcre2_compile(
-            reinterpret_cast<PCRE2_SPTR>("(?!)"),
-            PCRE2_ZERO_TERMINATED, 0, &errcode, &erroffset, nullptr
-        );
+        // JS-valid but PCRE2-unsupported: huge quantifier (105), empty [] (106),
+        // variable lookbehind (125), \u in PCRE2 ctx (137), string properties (147).
+        if (errcode == 105 || errcode == 106 || errcode == 125 || errcode == 137 || errcode == 147) {
+            re = pcre2_compile(
+                reinterpret_cast<PCRE2_SPTR>("(?!)"),
+                PCRE2_ZERO_TERMINATED, 0, &errcode, &erroffset, nullptr
+            );
+        } else {
+            PCRE2_UCHAR8 errbuf[256] = {};
+            pcre2_get_error_message(errcode, errbuf, sizeof(errbuf));
+            throw std::runtime_error(std::string("Invalid regular expression: ") + reinterpret_cast<const char*>(errbuf));
+        }
     } else {
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);
     }
