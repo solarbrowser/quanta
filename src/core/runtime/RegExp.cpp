@@ -39,6 +39,33 @@ static const std::string& sanitize_wtf8(const std::string& s, std::string& buf) 
     return buf;
 }
 
+// Convert UTF-8 byte offset to JS string index (UTF-16 code units).
+// 4-byte UTF-8 sequences (U+10000..U+10FFFF) become surrogate pairs = 2 JS chars.
+static size_t byte_to_js_index(const std::string& s, size_t byte_off) {
+    size_t b = 0, js = 0;
+    while (b < byte_off && b < s.size()) {
+        unsigned char c = (unsigned char)s[b];
+        if (c < 0x80)       { b += 1; js += 1; }
+        else if (c < 0xE0)  { b += 2; js += 1; }
+        else if (c < 0xF0)  { b += 3; js += 1; }
+        else                 { b += 4; js += 2; }
+    }
+    return js;
+}
+
+// Convert JS string index (UTF-16 code units) to UTF-8 byte offset.
+static size_t js_index_to_byte(const std::string& s, size_t js_idx) {
+    size_t b = 0, js = 0;
+    while (b < s.size() && js < js_idx) {
+        unsigned char c = (unsigned char)s[b];
+        if (c < 0x80)       { b += 1; js += 1; }
+        else if (c < 0xE0)  { b += 2; js += 1; }
+        else if (c < 0xF0)  { b += 3; js += 1; }
+        else                 { b += 4; js += 2; }
+    }
+    return b;
+}
+
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
     : pattern_(pattern), flags_(flags), code_(nullptr),
       global_(false), ignore_case_(false), multiline_(false),
@@ -55,17 +82,24 @@ RegExp::~RegExp() {
 }
 
 void RegExp::parse_flags(const std::string& flags) {
+    bool seen[8] = {};
     for (char flag : flags) {
+        int idx = -1;
         switch (flag) {
-            case 'g': global_ = true; break;
-            case 'i': ignore_case_ = true; break;
-            case 'm': multiline_ = true; break;
-            case 'u': unicode_ = true; break;
-            case 'y': sticky_ = true; break;
-            case 's': dotall_ = true; break;
-            case 'v': unicode_sets_ = true; unicode_ = true; break;
-            default: break;
+            case 'd':                        idx = 0; break;
+            case 'g': global_ = true;        idx = 1; break;
+            case 'i': ignore_case_ = true;   idx = 2; break;
+            case 'm': multiline_ = true;     idx = 3; break;
+            case 's': dotall_ = true;        idx = 4; break;
+            case 'u': unicode_ = true;       idx = 5; break;
+            case 'v': unicode_sets_ = true; unicode_ = true; idx = 6; break;
+            case 'y': sticky_ = true;        idx = 7; break;
+            default:
+                throw std::runtime_error("Invalid regular expression flags");
         }
+        if (idx >= 0 && seen[idx])
+            throw std::runtime_error("Invalid regular expression flags");
+        if (idx >= 0) seen[idx] = true;
     }
 }
 
@@ -635,6 +669,9 @@ static void validate_js_modifiers(const std::string& pat) {
         if (esc) { esc = false; continue; }
         if (c == '\\') { esc = true; continue; }
         if (c == '[' && !in_class) { in_class = true; continue; }
+        if (!in_class && (c == '*' || c == '+' || c == '?') &&
+            i + 1 < pat.size() && (unsigned char)pat[i+1] == '+')
+            throw std::runtime_error("Invalid regular expression: nothing to repeat");
         if (c == ']' && in_class) { in_class = false; continue; }
         if (in_class) continue;
         if (c != '(' || i + 1 >= pat.size() || (unsigned char)pat[i+1] != '?') continue;
@@ -702,7 +739,7 @@ void RegExp::do_compile() {
 
     if (unicode_sets_) pat = transform_v_mode_classes(pat);
 
-    uint32_t options = PCRE2_UTF;
+    uint32_t options = PCRE2_UTF | PCRE2_DUPNAMES;
     if (unicode_) {
         // PCRE2_UCP intentionally absent: it would extend \d/\w to Unicode categories,
         // but JS spec requires \d=[0-9] and \w=[A-Za-z0-9_] (ASCII only). \s is handled
@@ -765,12 +802,13 @@ bool RegExp::test(const std::string& str) {
 
     PCRE2_SIZE start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
-        start = static_cast<PCRE2_SIZE>(last_index_);
-        if (start > subject.length()) {
+        size_t js_len = byte_to_js_index(subject, subject.length());
+        if (static_cast<size_t>(last_index_) > js_len) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return false;
         }
+        start = static_cast<PCRE2_SIZE>(js_index_to_byte(subject, static_cast<size_t>(last_index_)));
     }
 
     int rc = pcre2_match(re,
@@ -783,7 +821,7 @@ bool RegExp::test(const std::string& str) {
         if (match_start != start) found = false;
     }
     if (found && (global_ || sticky_)) {
-        last_index_ = static_cast<int>(pcre2_get_ovector_pointer(md)[1]);
+        last_index_ = static_cast<int>(byte_to_js_index(subject, pcre2_get_ovector_pointer(md)[1]));
     } else if (!found && (global_ || sticky_)) {
         last_index_ = 0;
     }
@@ -803,12 +841,13 @@ Value RegExp::exec(const std::string& str) {
     bool advances = global_ || sticky_;
     PCRE2_SIZE start = 0;
     if (advances && last_index_ > 0) {
-        start = static_cast<PCRE2_SIZE>(last_index_);
-        if (start > subject.length()) {
+        size_t js_len = byte_to_js_index(subject, subject.length());
+        if (static_cast<size_t>(last_index_) > js_len) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return Value::null();
         }
+        start = static_cast<PCRE2_SIZE>(js_index_to_byte(subject, static_cast<size_t>(last_index_)));
     }
 
     int rc = pcre2_match(re,
@@ -836,14 +875,17 @@ Value RegExp::exec(const std::string& str) {
     size_t match_end   = ov[1];
     std::vector<PCRE2_SIZE> saved(ov, ov + (capture_count + 1) * 2);
 
-    if (advances) last_index_ = static_cast<int>(match_end);
+    size_t match_start_js = byte_to_js_index(subject, match_start);
+    size_t match_end_js   = byte_to_js_index(subject, match_end);
+
+    if (advances) last_index_ = static_cast<int>(match_end_js);
     pcre2_match_data_free(md);
 
     // ArrayCreate(n): the match result is a genuine Array (RegExpBuiltinExec step 24), not a plain object.
     auto result_owner = ObjectFactory::create_array(capture_count + 1);
     Object* result = result_owner.get();
     result->set_element(0, Value(str.substr(match_start, match_end - match_start)));
-    result->set_property("index", Value(static_cast<double>(match_start)));
+    result->set_property("index", Value(static_cast<double>(match_start_js)));
     result->set_property("input", Value(str));
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
@@ -870,9 +912,12 @@ Value RegExp::exec(const std::string& str) {
             const unsigned char* e = tbl + i * entry_size;
             uint32_t gn = (e[0] << 8) | e[1];
             const char* name = reinterpret_cast<const char*>(e + 2);
-            Value gval = (gn <= capture_count && saved[2*gn] != PCRE2_UNSET)
-                ? Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])) : Value();
-            groups_owner->set_property_descriptor(name, PropertyDescriptor(gval, PropertyAttributes::Default));
+            bool matched = (gn <= capture_count && saved[2*gn] != PCRE2_UNSET);
+            Value gval = matched ? Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])) : Value();
+            // With PCRE2_DUPNAMES, prefer the matched entry over an already-set undefined.
+            Value existing = groups_owner->get_own_property(name);
+            if (matched || existing.is_undefined())
+                groups_owner->set_property_descriptor(name, PropertyDescriptor(gval, PropertyAttributes::Default));
         }
         // CreateDataProperty: define directly on A, bypassing any inherited setter on Array.prototype["groups"].
         result->set_property_descriptor("groups", PropertyDescriptor(Value(groups_owner.release()), PropertyAttributes::Default));

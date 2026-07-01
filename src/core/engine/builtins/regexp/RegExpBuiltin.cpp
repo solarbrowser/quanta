@@ -15,6 +15,19 @@
 
 namespace Quanta {
 
+// Convert JS string index (UTF-16 code units) to UTF-8 byte offset.
+static size_t js_idx_to_byte(const std::string& s, size_t js_idx) {
+    size_t b = 0, js = 0;
+    while (b < s.size() && js < js_idx) {
+        unsigned char c = (unsigned char)s[b];
+        if (c < 0x80)      { b += 1; js += 1; }
+        else if (c < 0xE0) { b += 2; js += 1; }
+        else if (c < 0xF0) { b += 3; js += 1; }
+        else               { b += 4; js += 2; }
+    }
+    return b;
+}
+
 static std::string regexp_get_substitution(const std::string& replacement, const std::string& str,
         size_t match_pos, const std::string& matched, const std::vector<std::string>& captures,
         Object* named_groups = nullptr) {
@@ -90,7 +103,20 @@ void register_regexp_builtins(Context& ctx) {
             // ES6: Check IsRegExp(pattern) via Symbol.match
             bool pattern_is_regexp = false;
             std::string pattern = "";
-            std::string flags = (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) ? args[1].to_string() : "";
+            std::string flags = "";
+            if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
+                if (args[1].is_object() || args[1].is_function()) {
+                    Object* fo = args[1].is_object() ? args[1].as_object() : static_cast<Object*>(args[1].as_function());
+                    Value ts = fo->get_property("toString");
+                    if (!ctx.has_exception() && ts.is_function()) {
+                        Value r = ts.as_function()->call(ctx, {}, args[1]);
+                        if (!ctx.has_exception()) flags = r.to_string();
+                    }
+                    if (ctx.has_exception()) return Value();
+                } else {
+                    flags = args[1].to_string();
+                }
+            }
 
             if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
                 Object* pat_obj = args[0].is_object() ? args[0].as_object() : args[0].as_function();
@@ -229,7 +255,14 @@ void register_regexp_builtins(Context& ctx) {
                             !result.is_null() && result.is_object()) {
                             Value matched = result.as_object()->get_element(0);
                             if (!matched.is_undefined() && matched.to_string().empty()) {
-                                new_last = static_cast<int>(li) + 1;
+                                // AdvanceStringIndex: in unicode mode, skip surrogate pairs (4-byte UTF-8).
+                                int advance = 1;
+                                if (regexp_impl->get_unicode() || regexp_impl->get_unicode_sets()) {
+                                    size_t byte_pos = js_idx_to_byte(str, static_cast<size_t>(li));
+                                    if (byte_pos < str.size() && (unsigned char)str[byte_pos] >= 0xF0)
+                                        advance = 2;
+                                }
+                                new_last = static_cast<int>(li) + advance;
                             }
                         }
                         regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
@@ -542,7 +575,8 @@ void register_regexp_builtins(Context& ctx) {
                     if (match.is_object()) {
                         Value matched = match.as_object()->get_property("0");
                         Value index_val = match.as_object()->get_property("index");
-                        int index = static_cast<int>(index_val.to_number());
+                        int index = static_cast<int>(index_val.to_number()); // JS char index
+                        size_t index_byte = js_idx_to_byte(str, static_cast<size_t>(index < 0 ? 0 : index));
                         std::string matched_str = matched.to_string();
                         std::string replacement;
                         if (replace_val.is_function()) {
@@ -566,9 +600,9 @@ void register_regexp_builtins(Context& ctx) {
                             std::string rv_str;
                             if (replace_val.is_object() || replace_val.is_function()) { rv_str = replace_val.to_property_key(); if (ctx.has_exception()) return Value(); }
                             else { rv_str = replace_val.to_string(); }
-                            replacement = regexp_get_substitution(rv_str, str, index, matched_str, caps, ng);
+                            replacement = regexp_get_substitution(rv_str, str, index_byte, matched_str, caps, ng);
                         }
-                        return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
+                        return Value(str.substr(0, index_byte) + replacement + str.substr(index_byte + matched_str.length()));
                     }
                 }
                 return Value(str);
@@ -641,14 +675,17 @@ void register_regexp_builtins(Context& ctx) {
             std::string result;
             size_t last_end = 0;
             for (auto& mr : matches) {
-                size_t mi = (mr.index >= 0 && static_cast<size_t>(mr.index) <= str.size()) ? static_cast<size_t>(mr.index) : str.size();
+                // mr.index is a JS char index; convert to byte offset for C++ string ops.
+                size_t mi_js = (mr.index >= 0) ? static_cast<size_t>(mr.index) : 0;
+                size_t mi = js_idx_to_byte(str, mi_js);
+                if (mi > str.size()) mi = str.size();
                 if (mi > last_end) result += str.substr(last_end, mi - last_end);
                 else if (mi < last_end) { /* overlapping match: skip */ }
                 std::string repl;
                 if (is_fn_replace) {
                     std::vector<Value> fn_a = {Value(mr.matched)};
                     for (auto& c : mr.captures) fn_a.push_back(Value(c));
-                    fn_a.push_back(Value(static_cast<double>(mr.index)));
+                    fn_a.push_back(Value(static_cast<double>(mr.index))); // JS char index for fn arg
                     fn_a.push_back(Value(str));
                     Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                     if (ctx.has_exception()) return Value();
@@ -766,8 +803,10 @@ void register_regexp_builtins(Context& ctx) {
                 any_match = true;
                 Object* m = match.as_object();
                 Value idx_v = m->get_property("index");
-                int rel_mi = idx_v.is_number() ? static_cast<int>(idx_v.to_number()) : 0;
-                size_t mi = last_end + static_cast<size_t>(rel_mi);
+                int rel_mi_js = idx_v.is_number() ? static_cast<int>(idx_v.to_number()) : 0;
+                // rel_mi_js is a JS char index into sub; convert to byte offset in sub.
+                size_t rel_mi = js_idx_to_byte(sub, static_cast<size_t>(rel_mi_js < 0 ? 0 : rel_mi_js));
+                size_t mi = last_end + rel_mi;
                 std::string matched_str = m->get_element(0).is_undefined() ? "" : m->get_element(0).to_string();
                 if (matched_str.empty() && mi == last_end) {
                     // Zero-length match at current position: emit the next code unit, like "" string split.
