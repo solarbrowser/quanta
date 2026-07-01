@@ -126,7 +126,20 @@ Value RegexLiteral::evaluate(Context& ctx) {
                     !result.is_null() && result.is_object()) {
                     Value matched = result.as_object()->get_element(0);
                     if (!matched.is_undefined() && matched.to_string().empty()) {
-                        new_last = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0) + 1;
+                        int li = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0);
+                        int advance = 1;
+                        if (regexp_impl->get_unicode() || regexp_impl->get_unicode_sets()) {
+                            size_t b = 0; int js = 0;
+                            while (b < str.size() && js < li) {
+                                unsigned char c = (unsigned char)str[b];
+                                if (c < 0x80) { b++; js++; }
+                                else if (c < 0xE0) { b += 2; js++; }
+                                else if (c < 0xF0) { b += 3; js++; }
+                                else { b += 4; js += 2; }
+                            }
+                            if (b < str.size() && (unsigned char)str[b] >= 0xF0) advance = 2;
+                        }
+                        new_last = li + advance;
                     }
                 }
                 obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
