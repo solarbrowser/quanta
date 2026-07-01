@@ -314,7 +314,7 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
             // Annex B identity escapes: unknown escape chars become their literal char.
             // But some letters are valid PCRE2 sequences with different semantics (e.g. \z, \Z, \A, \G).
             // ECMAScript only allows specific escape sequences; unknown ones → literal.
-            static const char* js_valid_escapes = "dDwWsSnrtfvbBxu0123456789().[]{}\\^$|*+?/";
+            static const char* js_valid_escapes = "cdDwWsSnrtfvbBxu0123456789().[]{}\\^$|*+?/";
             bool is_valid = false;
             // In non-Unicode mode, \k<name> with no named group → literal 'k' (identity escape).
             // Scan ahead to check if the referenced group exists in the pattern.
@@ -354,6 +354,12 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
             continue;
         }
 
+        // [^] is ES "match any character" (empty negated class); replace for PCRE2
+        if (ch == '[' && !in_char_class && i + 2 < pat.size() && pat[i+1] == '^' && pat[i+2] == ']') {
+            result += "[\\s\\S]";
+            i += 3;
+            continue;
+        }
         if (ch == ']' && !in_char_class) {
             result += "\\]";
             i++;
@@ -397,6 +403,11 @@ static std::string expand_js_charclass_shortcuts(const std::string& p) {
             result += p[i++];
             result += p[i];
         } else if (p[i] == '[' && !in_cc) {
+            if (i + 2 < p.size() && p[i+1] == '^' && p[i+2] == ']') {
+                result += "[\\s\\S]";
+                i += 2;
+                continue;
+            }
             in_cc = true;
             result += p[i];
         } else if (p[i] == ']' && in_cc) {
@@ -739,7 +750,10 @@ void RegExp::do_compile() {
 
     if (unicode_sets_) pat = transform_v_mode_classes(pat);
 
-    uint32_t options = PCRE2_UTF | PCRE2_DUPNAMES;
+    // PCRE2_MATCH_UNSET_BACKREF: ES spec 15.10.2.9 says a backreference to an unset
+    // capture group matches empty string ("return c(x)"). Baked in at compile time so
+    // JIT is aware of it (JIT rejects this option at match time).
+    uint32_t options = PCRE2_UTF | PCRE2_DUPNAMES | PCRE2_MATCH_UNSET_BACKREF;
     if (unicode_) {
         // PCRE2_UCP intentionally absent: it would extend \d/\w to Unicode categories,
         // but JS spec requires \d=[0-9] and \w=[A-Za-z0-9_] (ASCII only). \s is handled
