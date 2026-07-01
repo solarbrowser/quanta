@@ -114,19 +114,23 @@ Value RegexLiteral::evaluate(Context& ctx) {
                 else if (arg0.is_object() || arg0.is_function()) { str = arg0.to_property_key(); if (ctx.has_exception()) return Value(); }
                 else { str = arg0.to_string(); }
 
+                // Spec step 4: ToLength(Get(R, "lastIndex")) -- always invoke valueOf if needed
                 Value lastIndex_val = obj_ptr->get_property("lastIndex");
-                if (lastIndex_val.is_number()) {
-                    regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
+                double li_num = lastIndex_val.to_number();
+                if (ctx.has_exception()) return Value();
+                if (std::isnan(li_num) || li_num < 0) li_num = 0;
+                bool advances = regexp_impl->get_global() || regexp_impl->get_sticky();
+                if (advances) {
+                    regexp_impl->set_last_index(li_num > static_cast<double>(std::numeric_limits<int>::max()) ? std::numeric_limits<int>::max() : static_cast<int>(li_num));
                 }
 
                 Value result = regexp_impl->exec(str);
 
                 int new_last = regexp_impl->get_last_index();
-                if ((regexp_impl->get_global() || regexp_impl->get_sticky()) &&
-                    !result.is_null() && result.is_object()) {
+                if (advances && !result.is_null() && result.is_object()) {
                     Value matched = result.as_object()->get_element(0);
                     if (!matched.is_undefined() && matched.to_string().empty()) {
-                        int li = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0);
+                        int li = static_cast<int>(li_num);
                         int advance = 1;
                         if (regexp_impl->get_unicode() || regexp_impl->get_unicode_sets()) {
                             size_t b = 0; int js = 0;
@@ -142,7 +146,10 @@ Value RegexLiteral::evaluate(Context& ctx) {
                         new_last = li + advance;
                     }
                 }
-                obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
+                // Only write lastIndex back for global/sticky regexps (spec step 8)
+                if (advances) {
+                    obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
+                }
 
                 return result;
             });
