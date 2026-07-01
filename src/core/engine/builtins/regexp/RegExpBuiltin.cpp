@@ -11,6 +11,7 @@
 #include <sstream>
 #include "quanta/parser/AST.h"
 #include <algorithm>
+#include <limits>
 
 namespace Quanta {
 
@@ -215,9 +216,10 @@ void register_regexp_builtins(Context& ctx) {
                         }
 
                         Value lastIndex_val = regex_obj_ptr->get_property("lastIndex");
-                        if (lastIndex_val.is_number()) {
-                            regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
-                        }
+                        double li = lastIndex_val.to_number();
+                        if (ctx.has_exception()) return Value();
+                        if (std::isnan(li) || li < 0) li = 0;
+                        regexp_impl->set_last_index(li > static_cast<double>(std::numeric_limits<int>::max()) ? std::numeric_limits<int>::max() : static_cast<int>(li));
 
                         Value result = regexp_impl->exec(str);
 
@@ -227,7 +229,7 @@ void register_regexp_builtins(Context& ctx) {
                             !result.is_null() && result.is_object()) {
                             Value matched = result.as_object()->get_element(0);
                             if (!matched.is_undefined() && matched.to_string().empty()) {
-                                new_last = static_cast<int>(lastIndex_val.is_number() ? lastIndex_val.to_number() : 0) + 1;
+                                new_last = static_cast<int>(li) + 1;
                             }
                         }
                         regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
@@ -455,12 +457,14 @@ void register_regexp_builtins(Context& ctx) {
     auto regexp_test_fn = ObjectFactory::create_native_function("test",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
+            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
                 ctx.throw_type_error("RegExp.prototype.test called on incompatible receiver");
                 return Value();
             }
-            std::string str = args.empty() ? "" : args[0].to_string();
-            // Call this.exec via get_property (fires get("exec") trap on Proxy)
+            Value arg0_t = args.empty() ? Value() : args[0];
+            std::string str;
+            if (arg0_t.is_object() || arg0_t.is_function()) { str = arg0_t.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else { str = arg0_t.to_string(); }
             Value exec_fn = this_obj->get_property("exec");
             if (exec_fn.is_function()) {
                 Value result = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
@@ -476,7 +480,10 @@ void register_regexp_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
-            std::string str = args.empty() ? "" : args[0].to_string();
+            Value arg0_m = args.empty() ? Value() : args[0];
+            std::string str;
+            if (arg0_m.is_object() || arg0_m.is_function()) { str = arg0_m.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else { str = arg0_m.to_string(); }
             // Check global flag via get_property (fires get("global") trap on Proxy)
             Value global_val = this_obj->get_property("global");
             bool is_global = global_val.to_boolean();
@@ -518,7 +525,10 @@ void register_regexp_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
-            std::string str = args.size() > 0 ? args[0].to_string() : "";
+            Value arg0_r = args.size() > 0 ? args[0] : Value();
+            std::string str;
+            if (arg0_r.is_object() || arg0_r.is_function()) { str = arg0_r.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else { str = arg0_r.to_string(); }
             Value replace_val = args.size() > 1 ? args[1] : Value();
             // Check global flag via get_property (fires get("global") trap on Proxy)
             Value global_val = this_obj->get_property("global");
@@ -541,6 +551,7 @@ void register_regexp_builtins(Context& ctx) {
                             int ml = mlen_v.is_number() ? static_cast<int>(mlen_v.to_number()) : 1;
                             for (int ci = 1; ci < ml; ci++) fn_a.insert(fn_a.begin()+1+ci-1, match.as_object()->get_element(ci));
                             Value r = replace_val.as_function()->call(ctx, fn_a, Value());
+                            if (ctx.has_exception()) return Value();
                             replacement = r.to_string();
                         } else {
                             std::vector<std::string> caps;
@@ -552,7 +563,10 @@ void register_regexp_builtins(Context& ctx) {
                             }
                             Value grps = match.as_object()->get_property("groups");
                             Object* ng = (!grps.is_undefined() && !grps.is_null() && grps.is_object()) ? grps.as_object() : nullptr;
-                            replacement = regexp_get_substitution(replace_val.to_string(), str, index, matched_str, caps, ng);
+                            std::string rv_str;
+                            if (replace_val.is_object() || replace_val.is_function()) { rv_str = replace_val.to_property_key(); if (ctx.has_exception()) return Value(); }
+                            else { rv_str = replace_val.to_string(); }
+                            replacement = regexp_get_substitution(rv_str, str, index, matched_str, caps, ng);
                         }
                         return Value(str.substr(0, index) + replacement + str.substr(index + matched_str.length()));
                     }
@@ -569,7 +583,11 @@ void register_regexp_builtins(Context& ctx) {
             size_t safety = 0;
             const size_t max_iter = str.length() + 2;
             bool is_fn_replace = replace_val.is_function();
-            std::string replace_str = is_fn_replace ? "" : replace_val.to_string();
+            std::string replace_str;
+            if (!is_fn_replace) {
+                if (replace_val.is_object() || replace_val.is_function()) { replace_str = replace_val.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { replace_str = replace_val.to_string(); }
+            }
             while (safety++ < max_iter) {
                 Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
                 if (ctx.has_exception()) return Value();
@@ -578,24 +596,54 @@ void register_regexp_builtins(Context& ctx) {
                 Object* m = match.as_object();
                 Value idx_v = m->get_property("index");
                 if (ctx.has_exception()) return Value();
-                int idx = idx_v.is_number() ? static_cast<int>(idx_v.to_number()) : 0;
-                std::string matched_s = m->get_element(0).to_string();
+                double idx_d = idx_v.to_number();
+                if (ctx.has_exception()) return Value();
+                int idx = (std::isnan(idx_d) || idx_d < 0) ? 0 : static_cast<int>(idx_d);
+                Value el0 = m->get_element(0);
+                std::string matched_s;
+                if (el0.is_object() || el0.is_function()) { matched_s = el0.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { matched_s = el0.is_undefined() ? "" : el0.to_string(); }
                 std::vector<std::string> caps;
                 Value len_v = m->get_property("length");
-                int mlen = len_v.is_number() ? static_cast<int>(len_v.to_number()) : 1;
+                if (ctx.has_exception()) return Value();
+                double len_d = len_v.to_number();
+                if (ctx.has_exception()) return Value();
+                int mlen = (std::isnan(len_d) || len_d < 1) ? 1 : static_cast<int>(len_d);
                 for (int ci = 1; ci < mlen; ci++) {
                     Value cv = m->get_element(ci);
-                    caps.push_back(cv.is_undefined() ? "" : cv.to_string());
+                    if (ctx.has_exception()) return Value();
+                    if (cv.is_undefined()) { caps.push_back(""); continue; }
+                    std::string cs;
+                    if (cv.is_object() || cv.is_function()) { cs = cv.to_property_key(); if (ctx.has_exception()) return Value(); }
+                    else { cs = cv.to_string(); }
+                    caps.push_back(cs);
                 }
+                if (ctx.has_exception()) return Value();
                 Value grps_v = m->get_property("groups");
                 Object* grps_obj = (!grps_v.is_undefined() && !grps_v.is_null() && grps_v.is_object()) ? grps_v.as_object() : nullptr;
                 matches.push_back({idx, matched_s, caps, grps_obj});
+                // Per spec step 11.c.iii.2: after zero-length match, ToLength(lastIndex) and
+                // advance if exec didn't already move past the match position.
+                // Real exec advances internally; overridden exec may not.
+                if (matched_s.empty()) {
+                    Value cur_li = this_obj->get_property("lastIndex");
+                    if (ctx.has_exception()) return Value();
+                    double thisIndex = cur_li.to_number();
+                    if (ctx.has_exception()) return Value();
+                    if (std::isnan(thisIndex) || thisIndex < 0) thisIndex = 0;
+                    if (static_cast<size_t>(thisIndex) <= static_cast<size_t>(idx)) {
+                        this_obj->set_property("lastIndex", Value(static_cast<double>(idx + 1)));
+                        if (ctx.has_exception()) return Value();
+                    }
+                }
             }
             if (matches.empty()) return Value(str);
             std::string result;
-            int last_end = 0;
+            size_t last_end = 0;
             for (auto& mr : matches) {
-                result += str.substr(last_end, mr.index - last_end);
+                size_t mi = (mr.index >= 0 && static_cast<size_t>(mr.index) <= str.size()) ? static_cast<size_t>(mr.index) : str.size();
+                if (mi > last_end) result += str.substr(last_end, mi - last_end);
+                else if (mi < last_end) { /* overlapping match: skip */ }
                 std::string repl;
                 if (is_fn_replace) {
                     std::vector<Value> fn_a = {Value(mr.matched)};
@@ -606,12 +654,13 @@ void register_regexp_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                     repl = r.to_string();
                 } else {
-                    repl = regexp_get_substitution(replace_str, str, mr.index, mr.matched, mr.captures, mr.groups);
+                    repl = regexp_get_substitution(replace_str, str, mi, mr.matched, mr.captures, mr.groups);
                 }
                 result += repl;
-                last_end = mr.index + static_cast<int>(mr.matched.length());
+                last_end = mi + mr.matched.length();
+                if (last_end > str.size()) last_end = str.size();
             }
-            result += str.substr(last_end);
+            if (last_end <= str.size()) result += str.substr(last_end);
             return Value(result);
         }, 2);
     regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
@@ -620,7 +669,10 @@ void register_regexp_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value(-1.0);
-            std::string str = args.empty() ? "" : args[0].to_string();
+            Value arg0_s = args.empty() ? Value() : args[0];
+            std::string str;
+            if (arg0_s.is_object() || arg0_s.is_function()) { str = arg0_s.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else { str = arg0_s.to_string(); }
             // Save previousLastIndex via get_property (fires get("lastIndex") trap on Proxy)
             Value prev_last_index = this_obj->get_property("lastIndex");
             // Set lastIndex to 0
@@ -650,7 +702,10 @@ void register_regexp_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) return Value();
-            std::string str = args.size() > 0 ? args[0].to_string() : "";
+            Value arg0_sp = args.size() > 0 ? args[0] : Value();
+            std::string str;
+            if (arg0_sp.is_object() || arg0_sp.is_function()) { str = arg0_sp.to_property_key(); if (ctx.has_exception()) return Value(); }
+            else { str = arg0_sp.to_string(); }
             // ES6: SpeciesConstructor -- Construct(C, «rx, newFlags»)
             Value ctor_val = this_obj->get_property("constructor");
             if (ctor_val.is_object() || ctor_val.is_function()) {
@@ -758,7 +813,10 @@ void register_regexp_builtins(Context& ctx) {
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 Object* this_obj = ctx.get_this_binding();
                 if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.matchAll] called on null"); return Value(); }
-                std::string str = args.empty() ? "" : args[0].to_string();
+                Value arg0_ma = args.empty() ? Value() : args[0];
+                std::string str;
+                if (arg0_ma.is_object() || arg0_ma.is_function()) { str = arg0_ma.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { str = arg0_ma.to_string(); }
                 Value flags_val = this_obj->get_property("flags");
                 if (ctx.has_exception()) return Value();
                 std::string flags = flags_val.is_string() ? flags_val.to_string() :
