@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <memory>
 
 namespace Quanta {
 
@@ -18,6 +19,8 @@ namespace Quanta {
 // string indices are UTF-16 units and may fall inside a surrogate pair.
 std::u16string wtf8_to_utf16(const std::string& s);
 std::string utf16_to_wtf8(const char16_t* p, size_t len);
+
+class RegexBacktrackEngine;
 
 class RegExp {
 private:
@@ -38,6 +41,8 @@ private:
     // duplicate names) are renamed to synthetic names before compilation and
     // resolved back through this table.
     std::vector<std::pair<std::string, std::vector<uint32_t>>> named_groups_;
+    // Non-null when PCRE2's lookbehind is known to get this pattern wrong; test()/exec() use it instead.
+    std::unique_ptr<RegexBacktrackEngine> backtrack_engine_;
 
 public:
     RegExp(const std::string& pattern, const std::string& flags = "");

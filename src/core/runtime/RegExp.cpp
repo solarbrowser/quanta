@@ -6,6 +6,7 @@
 
 #define PCRE2_CODE_UNIT_WIDTH 16
 #include "quanta/core/runtime/RegExp.h"
+#include "quanta/core/runtime/RegExpBacktrack.h"
 #include "quanta/core/runtime/Object.h"
 #include "utf8proc.h"
 #include <pcre2.h>
@@ -1920,13 +1921,14 @@ private:
             return;
         }
         // Identity escapes: SyntaxCharacter and '/'; in class also '-'.
+        // c != '\0' guards: strchr(s, '\0') always "finds" s's own terminator.
         static const char* syntax_chars = "^$\\.*+?()[]{}|/";
-        if (strchr(syntax_chars, c) || (in_class && c == '-')) {
+        if ((c != '\0' && strchr(syntax_chars, c)) || (in_class && c == '-')) {
             i_++;
             return;
         }
         if (in_class && c == 'b') { i_++; return; }
-        if (v_ && in_class && strchr("&-!#%,:;<=>@`~", c)) { i_++; return; }
+        if (v_ && in_class && c != '\0' && strchr("&-!#%,:;<=>@`~", c)) { i_++; return; }
         fail(std::string("invalid escape \\") + c);
     }
 
@@ -2222,6 +2224,15 @@ void RegExp::do_compile() {
 
     validate_js_modifiers(pattern_);
 
+    backtrack_engine_.reset();
+    if (RegexBacktrackEngine::pattern_needs_backtrack_engine(pattern_)) {
+        try {
+            backtrack_engine_ = std::make_unique<RegexBacktrackEngine>(pattern_, ignore_case_, multiline_, dotall_, unicode_);
+        } catch (...) {
+            backtrack_engine_.reset(); // unsupported syntax; keep the PCRE2 (possibly imperfect) result
+        }
+    }
+
     // Trailing backslash is a SyntaxError in every mode; PCRE2's
     // BAD_ESCAPE_IS_LITERAL would otherwise swallow it.
     {
@@ -2289,6 +2300,18 @@ void RegExp::do_compile() {
         cctx
     );
 
+    // MATCH_UNSET_BACKREF makes PCRE2 reject any lookbehind with a backreference (error 125); retry without it.
+    if (!re && errcode == 125 && (options & PCRE2_MATCH_UNSET_BACKREF)) {
+        re = pcre2_compile(
+            reinterpret_cast<PCRE2_SPTR>(pat16.c_str()),
+            pat16.size(),
+            options & ~PCRE2_MATCH_UNSET_BACKREF,
+            &errcode,
+            &erroffset,
+            cctx
+        );
+    }
+
     if (cctx) pcre2_compile_context_free(cctx);
 
     if (!re) {
@@ -2329,93 +2352,119 @@ static void sanitize_utf16_surrogates(std::u16string& s) {
 }
 
 bool RegExp::test(const std::string& str) {
-    if (!code_) return false;
-
     std::u16string subject = wtf8_to_utf16(str);
     if (unicode_) sanitize_utf16_surrogates(subject);
-    pcre2_code* re = static_cast<pcre2_code*>(code_);
-    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
-    if (!md) return false;
 
-    PCRE2_SIZE start = 0;
+    size_t start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
         if (static_cast<size_t>(last_index_) > subject.size()) {
             last_index_ = 0;
-            pcre2_match_data_free(md);
             return false;
         }
-        start = static_cast<PCRE2_SIZE>(last_index_);
+        start = static_cast<size_t>(last_index_);
     }
 
-    int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
-        start, 0, md, nullptr);
+    bool found = false;
+    size_t match_end = 0;
 
-    bool found = (rc >= 0);
-    if (found && sticky_) {
-        PCRE2_SIZE match_start = pcre2_get_ovector_pointer(md)[0];
-        if (match_start != start) found = false;
+    if (backtrack_engine_) {
+        BacktrackMatch bm;
+        found = backtrack_engine_->exec(subject, start, sticky_, bm);
+        if (found) match_end = bm.end;
+    } else {
+        if (!code_) return false;
+        pcre2_code* re = static_cast<pcre2_code*>(code_);
+        pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+        if (!md) return false;
+
+        int rc = pcre2_match(re,
+            reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+            static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
+
+        found = (rc >= 0);
+        if (found) {
+            PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+            if (sticky_ && ov[0] != start) found = false;
+            else match_end = ov[1];
+        }
+        pcre2_match_data_free(md);
     }
+
     if (found && (global_ || sticky_)) {
-        last_index_ = static_cast<int>(pcre2_get_ovector_pointer(md)[1]);
+        last_index_ = static_cast<int>(match_end);
     } else if (!found && (global_ || sticky_)) {
         last_index_ = 0;
     }
-
-    pcre2_match_data_free(md);
     return found;
 }
 
 Value RegExp::exec(const std::string& str) {
-    if (!code_) return Value::null();
-
     // orig holds the unsanitized units so capture text preserves lone surrogates.
     std::u16string orig = wtf8_to_utf16(str);
     std::u16string subject = orig;
     if (unicode_) sanitize_utf16_surrogates(subject);
-    pcre2_code* re = static_cast<pcre2_code*>(code_);
-    pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
-    if (!md) return Value::null();
 
     bool advances = global_ || sticky_;
-    PCRE2_SIZE start = 0;
+    size_t start = 0;
     if (advances && last_index_ > 0) {
         if (static_cast<size_t>(last_index_) > subject.size()) {
             last_index_ = 0;
-            pcre2_match_data_free(md);
             return Value::null();
         }
-        start = static_cast<PCRE2_SIZE>(last_index_);
-    }
-
-    int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
-        start, 0, md, nullptr);
-
-    if (rc < 0) {
-        if (advances) last_index_ = 0;
-        pcre2_match_data_free(md);
-        return Value::null();
-    }
-
-    PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
-
-    if (sticky_ && ov[0] != start) {
-        if (advances) last_index_ = 0;
-        pcre2_match_data_free(md);
-        return Value::null();
+        start = static_cast<size_t>(last_index_);
     }
 
     uint32_t capture_count = 0;
-    pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &capture_count);
+    // PCRE2_UNSET convention shared by both backends so result-building below is unchanged.
+    std::vector<PCRE2_SIZE> saved;
+    size_t match_start = 0, match_end = 0;
+    bool found = false;
 
-    size_t match_start = ov[0];
-    size_t match_end   = ov[1];
-    std::vector<PCRE2_SIZE> saved(ov, ov + (capture_count + 1) * 2);
-    reset_stale_captures(pattern_, saved, capture_count);
+    if (backtrack_engine_) {
+        BacktrackMatch bm;
+        found = backtrack_engine_->exec(subject, start, sticky_, bm);
+        if (found) {
+            capture_count = backtrack_engine_->capture_count();
+            match_start = bm.start;
+            match_end = bm.end;
+            saved.assign((capture_count + 1) * 2, PCRE2_UNSET);
+            saved[0] = match_start;
+            saved[1] = match_end;
+            for (uint32_t g = 1; g <= capture_count; g++) {
+                if (bm.captures[g].first < 0) continue;
+                saved[2 * g] = static_cast<PCRE2_SIZE>(bm.captures[g].first);
+                saved[2 * g + 1] = static_cast<PCRE2_SIZE>(bm.captures[g].second);
+            }
+        }
+    } else {
+        if (!code_) return Value::null();
+        pcre2_code* re = static_cast<pcre2_code*>(code_);
+        pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
+        if (!md) return Value::null();
 
+        int rc = pcre2_match(re,
+            reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
+            static_cast<PCRE2_SIZE>(start), 0, md, nullptr);
+
+        if (rc >= 0) {
+            PCRE2_SIZE* ov = pcre2_get_ovector_pointer(md);
+            if (!(sticky_ && ov[0] != start)) {
+                found = true;
+                pcre2_pattern_info(re, PCRE2_INFO_CAPTURECOUNT, &capture_count);
+                match_start = ov[0];
+                match_end = ov[1];
+                saved.assign(ov, ov + (capture_count + 1) * 2);
+                reset_stale_captures(pattern_, saved, capture_count);
+            }
+        }
+        pcre2_match_data_free(md);
+    }
+
+    if (!found) {
+        if (advances) last_index_ = 0;
+        return Value::null();
+    }
     if (advances) last_index_ = static_cast<int>(match_end);
-    pcre2_match_data_free(md);
 
     auto slice = [&](size_t from, size_t to) -> std::string {
         return utf16_to_wtf8(orig.data() + from, to - from);
