@@ -9,6 +9,8 @@
 
 #include "quanta/core/runtime/Value.h"
 #include <string>
+#include <vector>
+#include <cstdint>
 
 namespace Quanta {
 
@@ -24,7 +26,13 @@ private:
     bool sticky_;
     bool dotall_;
     bool unicode_sets_;
+    bool has_indices_;
     int last_index_;
+    // Named capture groups in source order: (original JS name, capture numbers).
+    // PCRE2 restricts group names to ASCII \w, so JS names (Unicode, $, long or
+    // duplicate names) are renamed to synthetic names before compilation and
+    // resolved back through this table.
+    std::vector<std::pair<std::string, std::vector<uint32_t>>> named_groups_;
 
 public:
     RegExp(const std::string& pattern, const std::string& flags = "");
@@ -45,6 +53,7 @@ public:
     bool get_sticky() const { return sticky_; }
     bool get_dotall() const { return dotall_; }
     bool get_unicode_sets() const { return unicode_sets_; }
+    bool get_has_indices() const { return has_indices_; }
     int get_last_index() const { return last_index_; }
     void set_last_index(int index) { last_index_ = index; }
 
@@ -56,6 +65,7 @@ private:
     void parse_flags(const std::string& flags);
     void do_compile();
     std::string preprocess_pattern(const std::string& pattern) const;
+    std::string rename_named_groups(const std::string& pattern);
 };
 
 }

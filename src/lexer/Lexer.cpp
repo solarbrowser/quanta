@@ -1812,9 +1812,12 @@ Token Lexer::read_regex() {
 
     std::string pattern;
     bool first_char = true;
+    bool in_class = false; // '/' inside [...] is a literal, not the closing delimiter
 
-    while (!at_end() && current_char() != '/') {
+    while (!at_end() && (current_char() != '/' || in_class)) {
         char ch = current_char();
+        if (ch == '[') in_class = true;
+        else if (ch == ']') in_class = false;
 
         if (first_char && ch == '*') {
             add_error("SyntaxError: Invalid regular expression: first char may not be '*'");
