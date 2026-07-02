@@ -43,159 +43,20 @@ std::unique_ptr<ASTNode> ConditionalExpression::clone() const {
 
 
 Value RegexLiteral::evaluate(Context& ctx) {
-    (void)ctx;
-    try {
-        auto obj = std::make_unique<Object>(Object::ObjectType::RegExp);
-
-        Value regexp_ctor = ctx.get_binding("RegExp");
-        if (regexp_ctor.is_function()) {
-            Value proto = regexp_ctor.as_function()->get_property("prototype");
-            if (proto.is_object()) {
-                obj->set_prototype(proto.as_object());
-            }
-        }
-
-        obj->set_property("_isRegExp", Value(true));
-
-        obj->set_property("__pattern__", Value(pattern_));
-        obj->set_property("__flags__", Value(flags_));
-
-        // Internal flag slots: non-enumerable/non-writable/non-configurable, named [[X]] so they don't shadow the accessor getters on RegExp.prototype.
-        obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(pattern_), PropertyAttributes::None));
-        obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(flags_.find('g') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(flags_.find('i') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(flags_.find('m') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(flags_.find('u') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(flags_.find('y') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(flags_.find('s') != std::string::npos), PropertyAttributes::None));
-        obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(flags_.find('d') != std::string::npos), PropertyAttributes::None));
-        {
-            PropertyDescriptor us_desc(Value(flags_.find('v') != std::string::npos), PropertyAttributes::BuiltinFunction);
-            obj->set_property_descriptor("unicodeSets", us_desc);
-        }
-        {
-            // ES2015 21.2.3.2.1: lastIndex is {Writable:true, Enumerable:false, Configurable:false}
-            PropertyDescriptor li_desc(Value(0.0), PropertyAttributes::Writable);
-            obj->set_property_descriptor("lastIndex", li_desc);
-        }
-
-        auto regexp_impl = std::make_shared<RegExp>(pattern_, flags_);
-        Object* obj_ptr = obj.get();
-
-        auto test_fn = ObjectFactory::create_native_function("test",
-            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                Value arg0 = args.empty() ? Value() : args[0];
-                std::string str;
-                if (arg0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
-                else if (arg0.is_object() || arg0.is_function()) { str = arg0.to_property_key(); if (ctx.has_exception()) return Value(); }
-                else { str = arg0.to_string(); }
-
-                if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
-                    Value lastIndex_val = obj_ptr->get_property("lastIndex");
-                    if (lastIndex_val.is_number()) {
-                        regexp_impl->set_last_index(static_cast<int>(lastIndex_val.to_number()));
-                    }
-                }
-
-                bool result = regexp_impl->test(str);
-
-                if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
-                    obj_ptr->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
-                }
-
-                return Value(result);
-            });
-
-        auto exec_fn = ObjectFactory::create_native_function("exec",
-            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                Value arg0 = args.empty() ? Value() : args[0];
-                std::string str;
-                if (arg0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
-                else if (arg0.is_object() || arg0.is_function()) { str = arg0.to_property_key(); if (ctx.has_exception()) return Value(); }
-                else { str = arg0.to_string(); }
-
-                // Spec step 4: ToLength(Get(R, "lastIndex")) -- always invoke valueOf if needed
-                Value lastIndex_val = obj_ptr->get_property("lastIndex");
-                double li_num = lastIndex_val.to_number();
-                if (ctx.has_exception()) return Value();
-                if (std::isnan(li_num) || li_num < 0) li_num = 0;
-                bool advances = regexp_impl->get_global() || regexp_impl->get_sticky();
-                if (advances) {
-                    regexp_impl->set_last_index(li_num > static_cast<double>(std::numeric_limits<int>::max()) ? std::numeric_limits<int>::max() : static_cast<int>(li_num));
-                }
-
-                Value result = regexp_impl->exec(str);
-
-                int new_last = regexp_impl->get_last_index();
-                if (advances && !result.is_null() && result.is_object()) {
-                    Value matched = result.as_object()->get_element(0);
-                    if (!matched.is_undefined() && matched.to_string().empty()) {
-                        int li = static_cast<int>(li_num);
-                        int advance = 1;
-                        if (regexp_impl->get_unicode() || regexp_impl->get_unicode_sets()) {
-                            size_t b = 0; int js = 0;
-                            while (b < str.size() && js < li) {
-                                unsigned char c = (unsigned char)str[b];
-                                if (c < 0x80) { b++; js++; }
-                                else if (c < 0xE0) { b += 2; js++; }
-                                else if (c < 0xF0) { b += 3; js++; }
-                                else { b += 4; js += 2; }
-                            }
-                            if (b < str.size() && (unsigned char)str[b] >= 0xF0) advance = 2;
-                        }
-                        new_last = li + advance;
-                    }
-                }
-                // Only write lastIndex back for global/sticky regexps (spec step 8)
-                if (advances) {
-                    obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
-                }
-
-                return result;
-            });
-
-        auto toString_fn = ObjectFactory::create_native_function("toString",
-            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)args;
-                // Use sorted `flags` property per spec (RegExp.prototype.toString = /source/flags).
-                Value flags_v = obj_ptr->get_property("flags");
-                std::string flags_str = flags_v.is_string() ? flags_v.to_string() : regexp_impl->get_flags();
-                return Value("/" + regexp_impl->get_source() + "/" + flags_str);
-            });
-
-        auto compile_fn = ObjectFactory::create_native_function("compile",
-            [regexp_impl, obj_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
-                (void)ctx;
-                std::string pattern = "";
-                std::string flags = "";
-                if (args.size() > 0) pattern = args[0].to_string();
-                if (args.size() > 1) flags = args[1].to_string();
-
-                regexp_impl->compile(pattern, flags);
-
-                obj_ptr->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::None));
-                obj_ptr->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::None));
-                obj_ptr->set_property("lastIndex", Value(0.0));
-
-                return Value(obj_ptr);
-            }, 2);
-
-        obj->set_property("test", Value(test_fn.release()));
-        obj->set_property("exec", Value(exec_fn.release()));
-        obj->set_property("toString", Value(toString_fn.release()));
-        obj->set_property("compile", Value(compile_fn.release()));
-
-        return Value(obj.release());
-    } catch (const std::exception& e) {
-        ctx.throw_syntax_error(std::string(e.what()));
+    // Regex literals share the RegExp constructor implementation so exec/test and
+    // lastIndex semantics can never diverge between literals and new RegExp().
+    Object* ctor = ctx.get_built_in_object("RegExp");
+    if (!ctor || !ctor->is_function()) {
+        ctx.throw_error("RegExp constructor is not available");
         return Value();
     }
+    // Clear any enclosing new.target: a literal evaluated inside a constructor body
+    // must not inherit that constructor's prototype.
+    Value saved_new_target = ctx.get_new_target();
+    ctx.set_new_target(Value());
+    Value re = static_cast<Function*>(ctor)->construct(ctx, { Value(pattern_), Value(flags_) });
+    ctx.set_new_target(saved_new_target);
+    return re;
 }
 
 std::string RegexLiteral::to_string() const {

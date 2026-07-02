@@ -6,6 +6,7 @@
 
 #include "quanta/parser/Parser.h"
 #include "quanta/core/runtime/RegExp.h"
+#include "utf8proc.h"
 #include <algorithm>
 #include <functional>
 #include <iostream>
@@ -2030,30 +2031,36 @@ static uint32_t decode_utf8_cp(const std::string& s, size_t& i) {
     return 0xFFFD;
 }
 
+// ES RegExpIdentifierStart/Part: UnicodeIDStart/IDContinue plus $, _, ZWNJ, ZWJ.
 static bool is_unicode_id_start(uint32_t cp) {
     if (cp < 0x80) return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || cp == '_' || cp == '$';
     if (cp >= 0xD800 && cp <= 0xDFFF) return false; // surrogates
     if (cp > 0x10FFFF) return false;
-    // reject non-letter symbol blocks
-    if (cp >= 0x2000 && cp <= 0x27FF) return false; // punctuation/symbols/dingbats
-    if (cp >= 0x2E00 && cp <= 0x2FFF) return false;
-    if (cp >= 0x3000 && cp <= 0x3004) return false; // CJK symbols partial
-    if (cp >= 0x104A0 && cp <= 0x104A9) return false; // Osmanya digits
-    if (cp >= 0x1F000 && cp <= 0x1FFFF) return false; // emoji/special blocks
-    if (cp == 0x10FFFF) return false; // last codepoint, not a letter
-    return true;
+    switch (utf8proc_category(static_cast<utf8proc_int32_t>(cp))) {
+        case UTF8PROC_CATEGORY_LU: case UTF8PROC_CATEGORY_LL: case UTF8PROC_CATEGORY_LT:
+        case UTF8PROC_CATEGORY_LM: case UTF8PROC_CATEGORY_LO: case UTF8PROC_CATEGORY_NL:
+            return true;
+        default: break;
+    }
+    // Other_ID_Start
+    return cp == 0x1885 || cp == 0x1886 || cp == 0x2118 || cp == 0x212E ||
+           cp == 0x309B || cp == 0x309C;
 }
 
 static bool is_unicode_id_continue(uint32_t cp) {
     if (cp < 0x80) return (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9') || cp == '_' || cp == '$';
+    if (is_unicode_id_start(cp)) return true;
     if (cp >= 0xD800 && cp <= 0xDFFF) return false;
     if (cp > 0x10FFFF) return false;
-    if (cp >= 0x2000 && cp <= 0x27FF) return false;
-    if (cp >= 0x2E00 && cp <= 0x2FFF) return false;
-    if (cp >= 0x104A0 && cp <= 0x104A9) return false;
-    if (cp >= 0x1F000 && cp <= 0x1FFFF) return false;
-    if (cp == 0x10FFFF) return false;
-    return true;
+    switch (utf8proc_category(static_cast<utf8proc_int32_t>(cp))) {
+        case UTF8PROC_CATEGORY_MN: case UTF8PROC_CATEGORY_MC:
+        case UTF8PROC_CATEGORY_ND: case UTF8PROC_CATEGORY_PC:
+            return true;
+        default: break;
+    }
+    // Other_ID_Continue plus ZWNJ/ZWJ
+    return cp == 0x00B7 || cp == 0x0387 || (cp >= 0x1369 && cp <= 0x1371) ||
+           cp == 0x19DA || cp == 0x200C || cp == 0x200D;
 }
 
 static bool parse_regex_hex_escape(const std::string& name, size_t& i, uint32_t& out_cp) {
@@ -2109,6 +2116,18 @@ static std::string validate_regex_group_name(const std::string& name) {
                 return "SyntaxError: Invalid unicode escape in named capture group";
             if (cp > 0x10FFFF)
                 return "SyntaxError: Unicode escape out of range in named capture group";
+            if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < name.size() &&
+                name[i] == '\\' && name[i+1] == 'u') {
+                // Combine an escaped surrogate pair into one code point.
+                size_t save = i;
+                i += 2;
+                uint32_t lo = 0;
+                if (parse_regex_hex_escape(name, i, lo) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                } else {
+                    i = save;
+                }
+            }
             if (cp >= 0xD800 && cp <= 0xDFFF)
                 return "SyntaxError: Lone surrogate in named capture group";
             if (first && !is_unicode_id_start(cp))
@@ -2244,6 +2263,15 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
                         v_class_error = true;
                         return;
                     }
+                    // Set operators with an empty operand ([&&x], [x&&]) are SyntaxErrors.
+                    if (content_end >= content_start + 2 &&
+                        ((p[content_start] == '&' && p[content_start+1] == '&') ||
+                         (p[content_end-1] == '&' && p[content_end-2] == '&' &&
+                          (content_end < content_start + 3 || p[content_end-3] != '\\')))) {
+                        add_error("SyntaxError: Empty set operand in character class in regexp /v");
+                        v_class_error = true;
+                        return;
+                    }
                     for (size_t k = content_start; k < content_end; k++) {
                         char ch = p[k];
                         if (ch == '\\') {
@@ -2315,15 +2343,17 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
             static const std::unordered_set<std::string> unsupported_properties = {
                 "Grapheme_Link", "Prepended_Concatenation_Mark"
             };
-            bool in_class = false;
+            int class_depth = 0;
             bool class_negated = false;
             int group_count = 0;
             for (size_t i = 0; i < p.size(); i++) {
-                if (p[i] == '[' && (i == 0 || p[i-1] != '\\') && !in_class) {
-                    in_class = true;
-                    class_negated = (i + 1 < p.size() && p[i+1] == '^');
-                } else if (p[i] == ']' && (i == 0 || p[i-1] != '\\') && in_class) {
-                    in_class = false;
+                bool in_class = class_depth > 0;
+                if (p[i] == '[' && (i == 0 || p[i-1] != '\\')) {
+                    // v-mode classes nest; only the outermost negation matters here.
+                    if (class_depth == 0) class_negated = (i + 1 < p.size() && p[i+1] == '^');
+                    class_depth++;
+                } else if (p[i] == ']' && (i == 0 || p[i-1] != '\\') && class_depth > 0) {
+                    class_depth--;
                 } else if (p[i] == '(' && (i == 0 || p[i-1] != '\\')) {
                     group_count++;
                 } else if (p[i] == '\\' && i + 1 < p.size()) {
@@ -2506,8 +2536,9 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         }
         for (const auto& ref : backrefs) {
             if (named_groups.find(ref) == named_groups.end()) {
-                // In non-Unicode mode, \k<name> with no group is a legacy identity escape (not an error).
-                if (has_unicode_flag) {
+                // Annex B: \k<name> with no group is a legacy identity escape, but only
+                // when the pattern contains no named groups at all.
+                if (has_unicode_flag || !named_groups.empty()) {
                     add_error("SyntaxError: Invalid named capture group reference: \\k<" + ref + ">");
                     return nullptr;
                 }
@@ -2552,11 +2583,11 @@ std::unique_ptr<ASTNode> Parser::parse_regex_literal() {
         }
     }
 
-    if (flags.find('u') != std::string::npos) {
-        if (!RegExp::is_valid_unicode_pattern(pattern, flags)) {
-            add_error("SyntaxError: Invalid regular expression: " + pattern);
-            return nullptr;
-        }
+    // Full engine-side validation (shared with the RegExp constructor) so literal
+    // and constructor behavior can never disagree.
+    if (!RegExp::is_valid_unicode_pattern(pattern, flags)) {
+        add_error("SyntaxError: Invalid regular expression: " + pattern);
+        return nullptr;
     }
 
     return std::make_unique<RegexLiteral>(pattern, flags, start, end);
