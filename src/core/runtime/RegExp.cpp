@@ -10,6 +10,7 @@
 #include <pcre2.h>
 #include <vector>
 #include <cstring>
+#include <climits>
 
 namespace Quanta {
 
@@ -372,11 +373,113 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
     return result;
 }
 
+// U+2028 and U+2029 are ES LineTerminators but PCRE2 ANYCRLF does not exclude them
+// from dot. Add a negative lookahead before . when not in dotall mode.
+static std::string adjust_dot(const std::string& pat, bool dotall) {
+    if (dotall) return pat; // PCRE2_DOTALL handles everything correctly
+
+    // PCRE2 ANYCRLF already excludes \n/\r from dot. Lookahead adds U+2028/U+2029
+    // exclusion while preserving . so (?s:) inline modifiers still work.
+    std::string result;
+    result.reserve(pat.size() + 32);
+    bool in_cc = false;
+    for (size_t i = 0; i < pat.size(); i++) {
+        if (pat[i] == '\\' && i + 1 < pat.size()) {
+            result += pat[i++]; result += pat[i]; continue;
+        }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; result += pat[i]; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; result += pat[i]; continue; }
+        if (!in_cc && pat[i] == '.') {
+            result += "(?:(?!\\x{2028}|\\x{2029}).)"; 
+            continue;
+        }
+        result += pat[i];
+    }
+    return result;
+}
+
 // PCRE2 backtracks into (?=...) / (?!...) content; ES spec requires atomicity.
 // Wrap lookahead content in (?>...) to prevent backtracking.
+// Inside a lookbehind/lookahead, replace unbounded quantifiers with bounded ones so
+// PCRE2 can compile variable-length lookbehinds (error 125 otherwise).
+static std::string bound_lookbehind_quantifiers(const std::string& pat) {
+    std::string result;
+    result.reserve(pat.size() + 64);
+    size_t i = 0;
+    bool in_cc = false;
+    std::vector<bool> stk; // true = this group is a lookbehind
+    int lb_depth = 0;
+
+    while (i < pat.size()) {
+        if (pat[i] == '\\' && i + 1 < pat.size()) {
+            result += pat[i++]; result += pat[i++]; continue;
+        }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; result += pat[i++]; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; result += pat[i++]; continue; }
+        if (in_cc) { result += pat[i++]; continue; }
+
+        if (pat[i] == '(') {
+            bool is_lb = i + 3 < pat.size() && pat[i+1] == '?' && pat[i+2] == '<' &&
+                         (pat[i+3] == '=' || pat[i+3] == '!');
+            stk.push_back(is_lb);
+            if (is_lb) lb_depth++;
+            result += pat[i++];
+            continue;
+        }
+        if (pat[i] == ')' && !stk.empty()) {
+            if (stk.back()) lb_depth--;
+            stk.pop_back();
+            result += pat[i++];
+            continue;
+        }
+
+        if (lb_depth > 0) {
+            if (pat[i] == '*' || pat[i] == '+') {
+                result += (pat[i] == '*') ? "{0,255}" : "{1,255}";
+                i++;
+                if (i < pat.size() && pat[i] == '?') { result += '?'; i++; }
+                continue;
+            }
+            if (pat[i] == '{') {
+                size_t j = i + 1;
+                while (j < pat.size() && pat[j] >= '0' && pat[j] <= '9') j++;
+                if (j > i + 1 && j < pat.size() && pat[j] == ',') {
+                    size_t k = j + 1;
+                    if (k < pat.size() && pat[k] == '}') {
+                        result += pat.substr(i, j - i + 1);
+                        result += "255}";
+                        i = k + 1;
+                        if (i < pat.size() && pat[i] == '?') { result += '?'; i++; }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result += pat[i++];
+    }
+    return result;
+}
+
+// Returns true if pat[start..end) contains a | alternation outside char classes.
+static bool has_alternation(const std::string& pat, size_t start, size_t end) {
+    bool in_cc = false;
+    for (size_t i = start; i < end; i++) {
+        if (pat[i] == '\\' && i + 1 < end) { i++; continue; }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; continue; }
+        if (in_cc) continue;
+        if (pat[i] == '|') return true;
+    }
+    return false;
+}
+
+// Wrap lookahead (?=/!) content and positive lookbehind (?<=) content in (?>...) to
+// enforce ES spec atomicity. For lookbehinds, only wrap when there are alternatives
+// (|) -- quantifier-only lookbehinds need normal backtracking to work correctly.
 static std::string wrap_lookaheads_atomic(const std::string& pat) {
     std::string result;
-    result.reserve(pat.size() + 16);
+    result.reserve(pat.size() + 32);
     size_t i = 0;
     bool in_cc = false;
 
@@ -388,12 +491,37 @@ static std::string wrap_lookaheads_atomic(const std::string& pat) {
         if (pat[i] == ']' && in_cc) { in_cc = false; result += pat[i++]; continue; }
         if (in_cc) { result += pat[i++]; continue; }
 
-        if (pat[i] == '(' && i + 2 < pat.size() && pat[i+1] == '?' &&
-            (pat[i+2] == '=' || pat[i+2] == '!')) {
-            result += pat[i++];
-            result += pat[i++];
-            result += pat[i++];
-            result += "(?>";
+        bool is_la = pat[i] == '(' && i + 2 < pat.size() && pat[i+1] == '?' &&
+                     (pat[i+2] == '=' || pat[i+2] == '!');
+        // Only positive lookbehind (?<= needs atomicity; (?<! passes when nothing matches.
+        bool is_lb = pat[i] == '(' && i + 3 < pat.size() && pat[i+1] == '?' &&
+                     pat[i+2] == '<' && pat[i+3] == '=';
+
+        if (is_la || is_lb) {
+            // For positive lookbehinds, pre-scan content to check for alternation.
+            // Only wrap with (?>...) if alternations are present.
+            bool do_wrap = is_la;
+            if (is_lb) {
+                size_t j = i + 4, d = 1;
+                bool jcc = false;
+                while (j < pat.size() && d > 0) {
+                    if (pat[j] == '\\' && j+1 < pat.size()) { j += 2; continue; }
+                    if (pat[j] == '[' && !jcc) { jcc = true; j++; continue; }
+                    if (pat[j] == ']' && jcc) { jcc = false; j++; continue; }
+                    if (jcc) { j++; continue; }
+                    if (pat[j] == '(') { d++; j++; }
+                    else if (pat[j] == ')') { d--; j++; }
+                    else j++;
+                }
+                // Content is pat[i+4 .. j-1), closing ')' at j-1.
+                do_wrap = has_alternation(pat, i + 4, j - 1);
+            }
+
+            result += pat[i++]; // (
+            result += pat[i++]; // ?
+            if (is_lb) result += pat[i++]; // <
+            result += pat[i++]; // = or !
+            if (do_wrap) result += "(?>";
 
             int depth = 1;
             bool la_cc = false;
@@ -408,7 +536,7 @@ static std::string wrap_lookaheads_atomic(const std::string& pat) {
                 if (pat[i] == ')') {
                     depth--;
                     if (depth == 0) {
-                        result += ')';
+                        if (do_wrap) result += ')';
                         result += pat[i++];
                         break;
                     }
@@ -865,8 +993,8 @@ void RegExp::do_compile() {
     validate_js_modifiers(pattern_);
 
     std::string pat = unicode_
-        ? fix_optional_backrefs(wrap_lookaheads_atomic(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_)))))
-        : fix_optional_backrefs(wrap_lookaheads_atomic(convert_unicode_escapes(preprocess_pattern(pattern_))));
+        ? fix_optional_backrefs(adjust_dot(wrap_lookaheads_atomic(bound_lookbehind_quantifiers(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_))))), dotall_))
+        : fix_optional_backrefs(adjust_dot(wrap_lookaheads_atomic(bound_lookbehind_quantifiers(convert_unicode_escapes(preprocess_pattern(pattern_)))), dotall_));
 
     if (unicode_sets_) pat = transform_v_mode_classes(pat);
 
@@ -893,6 +1021,7 @@ void RegExp::do_compile() {
         uint32_t extra = PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES;
         if (!unicode_) extra |= PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL;
         pcre2_set_compile_extra_options(cctx, extra);
+        pcre2_set_max_varlookbehind(cctx, UINT32_MAX);
     }
 
     pcre2_code* re = pcre2_compile(
@@ -909,7 +1038,7 @@ void RegExp::do_compile() {
     if (!re) {
         // JS-valid but PCRE2-unsupported: huge quantifier (105), empty [] (106),
         // variable lookbehind (125), \u in PCRE2 ctx (137), string properties (147).
-        if (errcode == 105 || errcode == 106 || errcode == 125 || errcode == 137 || errcode == 147) {
+        if (errcode == 105 || errcode == 106 || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
             re = pcre2_compile(
                 reinterpret_cast<PCRE2_SPTR>("(?!)"),
                 PCRE2_ZERO_TERMINATED, 0, &errcode, &erroffset, nullptr
