@@ -758,7 +758,75 @@ bool RegexBacktrackEngine::exec(const std::u16string& subject, size_t start_at, 
     return false;
 }
 
+namespace {
+
+// PCRE2 doesn't reset a duplicate-named group's capture between quantifier iterations.
+bool has_duplicate_name_backref(const std::string& pattern) {
+    std::unordered_map<std::string, int> name_count;
+    bool has_k_ref = false;
+    int cc = 0;
+    for (size_t i = 0; i < pattern.size(); i++) {
+        if (pattern[i] == '\\') {
+            if (i + 2 < pattern.size() && pattern[i + 1] == 'k' && pattern[i + 2] == '<') has_k_ref = true;
+            i++;
+            continue;
+        }
+        if (pattern[i] == '[') { cc++; continue; }
+        if (pattern[i] == ']') { if (cc > 0) cc--; continue; }
+        if (cc > 0) continue;
+        if (pattern[i] == '(' && i + 3 < pattern.size() && pattern[i + 1] == '?' && pattern[i + 2] == '<' &&
+            pattern[i + 3] != '=' && pattern[i + 3] != '!') {
+            size_t close = pattern.find('>', i + 3);
+            if (close != std::string::npos) name_count[pattern.substr(i + 3, close - (i + 3))]++;
+        }
+    }
+    if (!has_k_ref) return false;
+    for (auto& p : name_count) if (p.second >= 2) return true;
+    return false;
+}
+
+// PCRE2 discards an empty iteration without backtracking a nested lazy quantifier first.
+bool has_nullable_lazy_combo(const std::string& pattern) {
+    int cc = 0;
+    for (size_t i = 0; i < pattern.size(); i++) {
+        if (pattern[i] == '\\') { i++; continue; }
+        if (pattern[i] == '[') { cc++; continue; }
+        if (pattern[i] == ']') { if (cc > 0) cc--; continue; }
+        if (cc > 0 || pattern[i] != '(') continue;
+        size_t j = i + 1;
+        int depth = 1;
+        bool jcc = false;
+        while (j < pattern.size() && depth > 0) {
+            if (pattern[j] == '\\' && j + 1 < pattern.size()) { j += 2; continue; }
+            if (pattern[j] == '[' && !jcc) { jcc = true; j++; continue; }
+            if (pattern[j] == ']' && jcc) { jcc = false; j++; continue; }
+            if (jcc) { j++; continue; }
+            if (pattern[j] == '(') depth++;
+            else if (pattern[j] == ')') depth--;
+            j++;
+        }
+        if (j >= pattern.size() || (pattern[j] != '*' && pattern[j] != '+' && pattern[j] != '{')) continue;
+        std::string body = pattern.substr(i + 1, (j - 1) - (i + 1));
+        bool plain_optional = false, lazy = false;
+        for (size_t k = 0; k < body.size(); k++) {
+            if (body[k] == '\\') { k++; continue; }
+            if (body[k] == '?') {
+                if (k + 1 < body.size() && body[k + 1] == '?') { lazy = true; k++; }
+                else plain_optional = true;
+                continue;
+            }
+            if ((body[k] == '*' || body[k] == '+') && k + 1 < body.size() && body[k + 1] == '?') { lazy = true; k++; }
+        }
+        if (plain_optional && lazy) return true;
+    }
+    return false;
+}
+
+} // namespace
+
 bool RegexBacktrackEngine::pattern_needs_backtrack_engine(const std::string& pattern) {
+    if (has_duplicate_name_backref(pattern) || has_nullable_lazy_combo(pattern)) return true;
+
     // Risky: a lookbehind with a repeated capturing group, a backreference, or a nested lookaround.
     int cc = 0;
     for (size_t i = 0; i + 3 < pattern.size(); i++) {
