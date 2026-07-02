@@ -17,32 +17,19 @@
 
 namespace Quanta {
 
-// Convert JS string index (UTF-16 code units) to UTF-8 byte offset.
-static size_t js_idx_to_byte(const std::string& s, size_t js_idx) {
-    size_t b = 0, js = 0;
-    while (b < s.size() && js < js_idx) {
-        unsigned char c = (unsigned char)s[b];
-        if (c < 0x80)      { b += 1; js += 1; }
-        else if (c < 0xE0) { b += 2; js += 1; }
-        else if (c < 0xF0) { b += 3; js += 1; }
-        else               { b += 4; js += 2; }
-    }
-    return b;
-}
-
-// GetSubstitution: named_groups is the already-validated groups value (undefined,
-// an object, or a string primitive standing in for ToObject(string)).
+// GetSubstitution: match_start/match_end are UTF-16 offsets into str16 so $`/$'
+// slice correctly even when a match boundary falls inside a surrogate pair.
 // Returns false when a property get or coercion threw.
-static bool regexp_get_substitution(Context& ctx, const std::string& replacement, const std::string& str,
-        size_t match_pos, const std::string& matched, const std::vector<std::string>& captures,
+static bool regexp_get_substitution(Context& ctx, const std::string& replacement, const std::u16string& str16,
+        size_t match_start, size_t match_end, const std::string& matched, const std::vector<std::string>& captures,
         const Value& named_groups, std::string& result) {
     for (size_t i = 0; i < replacement.size(); i++) {
         if (replacement[i] != '$' || i + 1 >= replacement.size()) { result += replacement[i]; continue; }
         char next = replacement[i + 1];
         if (next == '$') { result += '$'; i++; }
         else if (next == '&') { result += matched; i++; }
-        else if (next == '`') { result += str.substr(0, match_pos); i++; }
-        else if (next == '\'') { result += str.substr(match_pos + matched.size()); i++; }
+        else if (next == '`') { result += utf16_to_wtf8(str16.data(), match_start); i++; }
+        else if (next == '\'') { result += utf16_to_wtf8(str16.data() + match_end, str16.size() - match_end); i++; }
         else if (next == '<' && !named_groups.is_undefined()) {
             size_t close = replacement.find('>', i + 2);
             if (close != std::string::npos) {
@@ -705,8 +692,9 @@ void register_regexp_builtins(Context& ctx) {
                     size_t match_pos = static_cast<size_t>(idx_d);
                     size_t nextIdx = match_pos + 1;
                     if (full_unicode_m) {
-                        size_t b = js_idx_to_byte(str, match_pos);
-                        if (b < str.size() && (unsigned char)str[b] >= 0xF0) nextIdx = match_pos + 2;
+                        std::u16string s16 = wtf8_to_utf16(str);
+                        if (match_pos < s16.size() && s16[match_pos] >= 0xD800 && s16[match_pos] <= 0xDBFF)
+                            nextIdx = match_pos + 2;
                     }
                     bool ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
                     if (ctx.has_exception()) return Value();
@@ -778,7 +766,9 @@ void register_regexp_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 if (std::isnan(idx_d) || idx_d < 0) idx_d = 0;
                 int idx_js = static_cast<int>(idx_d);
-                size_t idx_byte = js_idx_to_byte(str, static_cast<size_t>(idx_js));
+                std::u16string str16 = wtf8_to_utf16(str);
+                size_t pos = std::min(static_cast<size_t>(idx_js), str16.size());
+                size_t end_pos = std::min(pos + wtf8_to_utf16(matched_str).size(), str16.size());
                 // Get nCaptures
                 Value len_v = m->get_property("length");
                 if (ctx.has_exception()) return Value();
@@ -819,13 +809,11 @@ void register_regexp_builtins(Context& ctx) {
                     Value grps_v = m->get_property("groups");
                     if (ctx.has_exception()) return Value();
                     if (grps_v.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
-                    if (!regexp_get_substitution(ctx, replace_str, str, idx_byte, matched_str, caps, grps_v, replacement))
+                    if (!regexp_get_substitution(ctx, replace_str, str16, pos, end_pos, matched_str, caps, grps_v, replacement))
                         return Value();
                 }
-                size_t end_byte = idx_byte + matched_str.length();
-                if (idx_byte > str.size()) idx_byte = str.size();
-                if (end_byte > str.size()) end_byte = str.size();
-                return Value(str.substr(0, idx_byte) + replacement + str.substr(end_byte));
+                return Value(utf16_to_wtf8(str16.data(), pos) + replacement +
+                             utf16_to_wtf8(str16.data() + end_pos, str16.size() - end_pos));
             }
             // Global: Set(rx, "lastIndex", 0, true)
             bool set_ok = this_obj->set_property("lastIndex", Value(0.0));
@@ -882,8 +870,9 @@ void register_regexp_builtins(Context& ctx) {
                     size_t thisIdxSz = static_cast<size_t>(thisIdx);
                     size_t nextIdx = thisIdxSz + 1;
                     if (full_unicode) {
-                        size_t b = js_idx_to_byte(str, thisIdxSz);
-                        if (b < str.size() && (unsigned char)str[b] >= 0xF0) nextIdx = thisIdxSz + 2;
+                        std::u16string s16 = wtf8_to_utf16(str);
+                        if (thisIdxSz < s16.size() && s16[thisIdxSz] >= 0xD800 && s16[thisIdxSz] <= 0xDBFF)
+                            nextIdx = thisIdxSz + 2;
                     }
                     bool adv_ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
                     if (ctx.has_exception()) return Value();
@@ -891,15 +880,15 @@ void register_regexp_builtins(Context& ctx) {
                 }
             }
             if (matches.empty()) return Value(str);
+            std::u16string str16 = wtf8_to_utf16(str);
             std::string result;
             size_t last_end = 0;
             for (auto& mr : matches) {
-                size_t mi_js = static_cast<size_t>(mr.js_idx >= 0 ? mr.js_idx : 0);
-                size_t mi = js_idx_to_byte(str, mi_js);
-                if (mi > str.size()) mi = str.size();
+                size_t mi = static_cast<size_t>(mr.js_idx >= 0 ? mr.js_idx : 0);
+                if (mi > str16.size()) mi = str16.size();
                 // Spec: skip match if position moved backwards (position < nextSourcePosition)
                 if (mi < last_end) continue;
-                if (mi > last_end) result += str.substr(last_end, mi - last_end);
+                if (mi > last_end) result += utf16_to_wtf8(str16.data() + last_end, mi - last_end);
                 std::string repl;
                 if (is_fn_replace) {
                     std::vector<Value> fn_a;
@@ -917,14 +906,15 @@ void register_regexp_builtins(Context& ctx) {
                     std::vector<std::string> caps_str;
                     for (auto& c : mr.captures) caps_str.push_back(c.is_undefined() ? "" : c.to_string());
                     if (mr.groups.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
-                    if (!regexp_get_substitution(ctx, replace_str, str, mi, mr.matched, caps_str, mr.groups, repl))
+                    size_t m_end = std::min(mi + wtf8_to_utf16(mr.matched).size(), str16.size());
+                    if (!regexp_get_substitution(ctx, replace_str, str16, mi, m_end, mr.matched, caps_str, mr.groups, repl))
                         return Value();
                 }
                 result += repl;
-                last_end = mi + mr.matched.length();
-                if (last_end > str.size()) last_end = str.size();
+                last_end = std::min(mi + wtf8_to_utf16(mr.matched).size(), str16.size());
             }
-            if (last_end <= str.size()) result += str.substr(last_end);
+            if (last_end <= str16.size())
+                result += utf16_to_wtf8(str16.data() + last_end, str16.size() - last_end);
             return Value(result);
         }, 2);
     regexp_prototype->set_property("Symbol.replace", Value(regexp_sym_replace.release()), PropertyAttributes::BuiltinFunction);
@@ -1077,13 +1067,8 @@ void register_regexp_builtins(Context& ctx) {
             };
 
             // Step 15: size = length of S in UTF-16 code units
-            size_t size = 0;
-            for (size_t b = 0; b < str.size(); ) {
-                unsigned char c = (unsigned char)str[b];
-                size_t adv = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
-                size += (adv == 4) ? 2 : 1;
-                b += adv;
-            }
+            std::u16string str16 = wtf8_to_utf16(str);
+            size_t size = str16.size();
 
             // Step 16: empty string: single exec decides between [] and [""]
             if (size == 0) {
@@ -1097,14 +1082,11 @@ void register_regexp_builtins(Context& ctx) {
 
             auto advance_index = [&](size_t q) -> size_t {
                 if (!unicode_matching) return q + 1;
-                size_t b = js_idx_to_byte(str, q);
-                if (b < str.size() && (unsigned char)str[b] >= 0xF0) return q + 2;
+                if (q < str16.size() && str16[q] >= 0xD800 && str16[q] <= 0xDBFF) return q + 2;
                 return q + 1;
             };
             auto substring_js = [&](size_t from, size_t to) -> std::string {
-                size_t b0 = js_idx_to_byte(str, from);
-                size_t b1 = js_idx_to_byte(str, to);
-                return str.substr(b0, b1 - b0);
+                return utf16_to_wtf8(str16.data() + from, to - from);
             };
 
             // Steps 17-19: p = q = 0; loop while q < size
@@ -1284,8 +1266,9 @@ void register_regexp_builtins(Context& ctx) {
                                     size_t mi = (match_idx >= 0) ? static_cast<size_t>(match_idx) : 0;
                                     size_t min_next = mi + 1;
                                     if (state->full_unicode) {
-                                        size_t b = js_idx_to_byte(state->str, mi);
-                                        if (b < state->str.size() && (unsigned char)state->str[b] >= 0xF0) min_next = mi + 2;
+                                        std::u16string s16 = wtf8_to_utf16(state->str);
+                                        if (mi < s16.size() && s16[mi] >= 0xD800 && s16[mi] <= 0xDBFF)
+                                            min_next = mi + 2;
                                     }
                                     if (cur < min_next) {
                                         mx->set_property("lastIndex", Value(static_cast<double>(min_next)));

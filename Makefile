@@ -23,7 +23,7 @@ LTO_FLAGS = -fuse-ld=lld -flto=thin
 DEBUG_FLAGS = -g -DDEBUG -O0
 
 PCRE2_DIR = third_party/pcre2/src
-PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=8 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
+PCRE2_CFLAGS = -O3 -DPCRE2_CODE_UNIT_WIDTH=16 -DHAVE_CONFIG_H -I$(PCRE2_DIR) -march=native -fomit-frame-pointer
 
 UTF8PROC_DIR = third_party/utf8proc
 UTF8PROC_CFLAGS = -O3 -DUTF8PROC_STATIC -I$(UTF8PROC_DIR) -march=native -fomit-frame-pointer

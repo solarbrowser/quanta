@@ -14,6 +14,11 @@
 
 namespace Quanta {
 
+// WTF-8 <-> UTF-16 converters shared by the regexp engine and builtins: JS
+// string indices are UTF-16 units and may fall inside a surrogate pair.
+std::u16string wtf8_to_utf16(const std::string& s);
+std::string utf16_to_wtf8(const char16_t* p, size_t len);
+
 class RegExp {
 private:
     std::string pattern_;
