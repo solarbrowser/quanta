@@ -206,7 +206,6 @@ static std::string fix_optional_backrefs(const std::string& pat) {
                 if (is_capture) {
                     n_groups++;
                     while ((int)optional_group.size() < n_groups) optional_group.push_back(false);
-                    if (lookahead_depth > 0) optional_group[n_groups-1] = true;
                     gnum = n_groups;
                 }
                 stack.push_back({gnum, is_lookahead});
@@ -371,6 +370,127 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
         i++;
     }
     return result;
+}
+
+// PCRE2 backtracks into (?=...) / (?!...) content; ES spec requires atomicity.
+// Wrap lookahead content in (?>...) to prevent backtracking.
+static std::string wrap_lookaheads_atomic(const std::string& pat) {
+    std::string result;
+    result.reserve(pat.size() + 16);
+    size_t i = 0;
+    bool in_cc = false;
+
+    while (i < pat.size()) {
+        if (pat[i] == '\\' && i + 1 < pat.size()) {
+            result += pat[i++]; result += pat[i++]; continue;
+        }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; result += pat[i++]; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; result += pat[i++]; continue; }
+        if (in_cc) { result += pat[i++]; continue; }
+
+        if (pat[i] == '(' && i + 2 < pat.size() && pat[i+1] == '?' &&
+            (pat[i+2] == '=' || pat[i+2] == '!')) {
+            result += pat[i++];
+            result += pat[i++];
+            result += pat[i++];
+            result += "(?>";
+
+            int depth = 1;
+            bool la_cc = false;
+            while (i < pat.size() && depth > 0) {
+                if (pat[i] == '\\' && i + 1 < pat.size()) {
+                    result += pat[i++]; result += pat[i++]; continue;
+                }
+                if (pat[i] == '[' && !la_cc) { la_cc = true; result += pat[i++]; continue; }
+                if (pat[i] == ']' && la_cc) { la_cc = false; result += pat[i++]; continue; }
+                if (la_cc) { result += pat[i++]; continue; }
+                if (pat[i] == '(') { depth++; result += pat[i++]; continue; }
+                if (pat[i] == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        result += ')';
+                        result += pat[i++];
+                        break;
+                    }
+                }
+                result += pat[i++];
+            }
+            continue;
+        }
+
+        result += pat[i++];
+    }
+    return result;
+}
+
+// PCRE2 retains inner captures from previous iterations of * / +; ES spec requires
+// them undefined if they didn't participate in the last iteration. Reset captures
+// whose span falls outside their nearest enclosing repeated capturing group's span.
+static void reset_stale_captures(const std::string& pat,
+                                  std::vector<PCRE2_SIZE>& ov, uint32_t cap_count) {
+    if (cap_count == 0) return;
+
+    struct GInfo { int num; bool is_cap; bool repeated; };
+    std::vector<GInfo> groups;
+    std::vector<int> stk;
+    bool esc = false, in_cc = false;
+    int n_cap = 0;
+
+    for (size_t i = 0; i < pat.size(); ++i) {
+        if (esc) { esc = false; continue; }
+        if (pat[i] == '\\') { esc = true; continue; }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; continue; }
+        if (in_cc) continue;
+        if (pat[i] == '(') {
+            bool is_cap = true;
+            if (i + 1 < pat.size() && pat[i+1] == '?') {
+                is_cap = false;
+                if (i + 3 < pat.size() && pat[i+2] == '<' &&
+                    pat[i+3] != '=' && pat[i+3] != '!')
+                    is_cap = true;
+            }
+            GInfo g; g.num = is_cap ? ++n_cap : 0; g.is_cap = is_cap; g.repeated = false;
+            groups.push_back(g);
+            stk.push_back((int)groups.size() - 1);
+        } else if (pat[i] == ')' && !stk.empty()) {
+            int idx = stk.back(); stk.pop_back();
+            if (i + 1 < pat.size() && (pat[i+1] == '*' || pat[i+1] == '+'))
+                groups[idx].repeated = true;
+        }
+    }
+
+    std::vector<int> rep_parent(cap_count, 0);
+    stk.clear(); esc = false; in_cc = false;
+    int gi = 0;
+    for (size_t i = 0; i < pat.size(); ++i) {
+        if (esc) { esc = false; continue; }
+        if (pat[i] == '\\') { esc = true; continue; }
+        if (pat[i] == '[' && !in_cc) { in_cc = true; continue; }
+        if (pat[i] == ']' && in_cc) { in_cc = false; continue; }
+        if (in_cc) continue;
+        if (pat[i] == '(') {
+            int rp = 0;
+            for (int k = (int)stk.size() - 1; k >= 0; --k) {
+                const GInfo& g = groups[stk[k]];
+                if (g.is_cap && g.repeated) { rp = g.num; break; }
+            }
+            const GInfo& cur = groups[gi];
+            if (cur.is_cap && cur.num >= 1 && cur.num <= (int)cap_count)
+                rep_parent[cur.num - 1] = rp;
+            stk.push_back(gi++);
+        } else if (pat[i] == ')' && !stk.empty()) {
+            stk.pop_back();
+        }
+    }
+
+    for (uint32_t i = 1; i <= cap_count; ++i) {
+        int rp = rep_parent[i - 1];
+        if (rp <= 0 || rp > (int)cap_count) continue;
+        if (ov[2*i] == PCRE2_UNSET || ov[2*rp] == PCRE2_UNSET) continue;
+        if (ov[2*i] < ov[2*rp] || ov[2*i+1] > ov[2*rp+1])
+            ov[2*i] = ov[2*i+1] = PCRE2_UNSET;
+    }
 }
 
 // JS spec: \d = [0-9], \w = [A-Za-z0-9_], \s = specific Unicode whitespace list.
@@ -745,8 +865,8 @@ void RegExp::do_compile() {
     validate_js_modifiers(pattern_);
 
     std::string pat = unicode_
-        ? fix_optional_backrefs(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_))))
-        : fix_optional_backrefs(convert_unicode_escapes(preprocess_pattern(pattern_)));
+        ? fix_optional_backrefs(wrap_lookaheads_atomic(convert_unicode_escapes(expand_gc_aliases(expand_js_charclass_shortcuts(pattern_)))))
+        : fix_optional_backrefs(wrap_lookaheads_atomic(convert_unicode_escapes(preprocess_pattern(pattern_))));
 
     if (unicode_sets_) pat = transform_v_mode_classes(pat);
 
@@ -888,6 +1008,7 @@ Value RegExp::exec(const std::string& str) {
     size_t match_start = ov[0];
     size_t match_end   = ov[1];
     std::vector<PCRE2_SIZE> saved(ov, ov + (capture_count + 1) * 2);
+    reset_stale_captures(pattern_, saved, capture_count);
 
     size_t match_start_js = byte_to_js_index(subject, match_start);
     size_t match_end_js   = byte_to_js_index(subject, match_end);
