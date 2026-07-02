@@ -157,7 +157,7 @@ INCLUDES=(-Iinclude -Ithird_party/pcre2/src -Ithird_party/utf8proc)
 
 PCRE2FLAGS=(
     -O3
-    -DPCRE2_CODE_UNIT_WIDTH=8
+    -DPCRE2_CODE_UNIT_WIDTH=16
     -DHAVE_CONFIG_H
     -Ithird_party/pcre2/src
     -march=native

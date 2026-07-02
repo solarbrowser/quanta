@@ -4,7 +4,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/.
  */
 
-#define PCRE2_CODE_UNIT_WIDTH 8
+#define PCRE2_CODE_UNIT_WIDTH 16
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Object.h"
 #include "utf8proc.h"
@@ -23,35 +23,65 @@ namespace Quanta {
 // skips JIT compilation of the probe.
 static thread_local bool g_regexp_validation_only = false;
 
-// Replace WTF-8 lone surrogate sequences (ED [A0-BF] [80-BF]) with U+FFFD (EF BF BD).
-// Both are 3 bytes so byte offsets are preserved; PCRE2 rejects raw surrogate bytes.
-// Fast-path: if the string contains no 0xED byte, no surrogates -> return original.
-static const std::string& sanitize_wtf8(const std::string& s, std::string& buf) {
-    if (s.find('\xED') == std::string::npos) return s;
-    buf = s;
-    for (size_t i = 0; i + 2 < buf.size(); ) {
-        unsigned char c = static_cast<unsigned char>(buf[i]);
-        if (c == 0xED) {
-            unsigned char c1 = static_cast<unsigned char>(buf[i+1]);
-            if (c1 >= 0xA0 && c1 <= 0xBF) {
-                buf[i]   = static_cast<char>(0xEF);
-                buf[i+1] = static_cast<char>(0xBF);
-                buf[i+2] = static_cast<char>(0xBD);
-                i += 3;
-                continue;
-            }
+// PCRE2 runs in 16-bit mode: match offsets ARE JS string indices, and
+// non-unicode patterns get real UTF-16 code-unit semantics.
+
+// Decode WTF-8 (UTF-8 plus 3-byte-encoded lone surrogates) to UTF-16 code units.
+std::u16string wtf8_to_utf16(const std::string& s) {
+    std::u16string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) { out += (char16_t)c; i++; continue; }
+        size_t len = (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : 4;
+        if (i + len > s.size()) { out += u'�'; break; }
+        uint32_t cp = len == 2 ? (c & 0x1F) : len == 3 ? (c & 0x0F) : (c & 0x07);
+        for (size_t k = 1; k < len; k++)
+            cp = (cp << 6) | ((unsigned char)s[i+k] & 0x3F);
+        if (cp >= 0x10000) {
+            cp -= 0x10000;
+            out += (char16_t)(0xD800 + (cp >> 10));
+            out += (char16_t)(0xDC00 + (cp & 0x3FF));
+        } else {
+            out += (char16_t)cp; // includes WTF-8 lone surrogates as-is
         }
-        if (c < 0x80) i += 1;
-        else if ((c & 0xE0) == 0xC0) i += 2;
-        else if ((c & 0xF0) == 0xE0) i += 3;
-        else i += 4;
+        i += len;
     }
-    return buf;
+    return out;
 }
 
-// Replace raw WTF-8 lone surrogates in a PATTERN with \x{D8xx} escapes: PCRE2
-// rejects them as invalid UTF-8 but accepts the escape form via
-// PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES.
+// Encode UTF-16 back to WTF-8; unpaired surrogates get the 3-byte WTF-8 form.
+std::string utf16_to_wtf8(const char16_t* p, size_t len) {
+    std::string out;
+    out.reserve(len * 3);
+    for (size_t i = 0; i < len; i++) {
+        uint32_t cp = p[i];
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < len &&
+            p[i+1] >= 0xDC00 && p[i+1] <= 0xDFFF) {
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (p[i+1] - 0xDC00);
+            i++;
+        }
+        if (cp < 0x80) out += (char)cp;
+        else if (cp < 0x800) {
+            out += (char)(0xC0 | (cp >> 6));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += (char)(0xE0 | (cp >> 12));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        } else {
+            out += (char)(0xF0 | (cp >> 18));
+            out += (char)(0x80 | ((cp >> 12) & 0x3F));
+            out += (char)(0x80 | ((cp >> 6) & 0x3F));
+            out += (char)(0x80 | (cp & 0x3F));
+        }
+    }
+    return out;
+}
+
+// Replace raw WTF-8 lone surrogates in a PATTERN with \x{D8xx} escapes so the
+// normalization pass below sees every surrogate in one uniform form.
 static std::string escape_wtf8_surrogates(const std::string& s) {
     if (s.find('\xED') == std::string::npos) return s;
     std::string out;
@@ -74,31 +104,56 @@ static std::string escape_wtf8_surrogates(const std::string& s) {
     return out;
 }
 
-// Convert UTF-8 byte offset to JS string index (UTF-16 code units).
-// 4-byte UTF-8 sequences (U+10000..U+10FFFF) become surrogate pairs = 2 JS chars.
-static size_t byte_to_js_index(const std::string& s, size_t byte_off) {
-    size_t b = 0, js = 0;
-    while (b < byte_off && b < s.size()) {
-        unsigned char c = (unsigned char)s[b];
-        if (c < 0x80)       { b += 1; js += 1; }
-        else if (c < 0xE0)  { b += 2; js += 1; }
-        else if (c < 0xF0)  { b += 3; js += 1; }
-        else                 { b += 4; js += 2; }
-    }
-    return js;
-}
+static bool is_hex_ch(char c);
 
-// Convert JS string index (UTF-16 code units) to UTF-8 byte offset.
-static size_t js_index_to_byte(const std::string& s, size_t js_idx) {
-    size_t b = 0, js = 0;
-    while (b < s.size() && js < js_idx) {
-        unsigned char c = (unsigned char)s[b];
-        if (c < 0x80)       { b += 1; js += 1; }
-        else if (c < 0xE0)  { b += 2; js += 1; }
-        else if (c < 0xF0)  { b += 3; js += 1; }
-        else                 { b += 4; js += 2; }
+// PCRE2_UTF in 16-bit mode rejects surrogate escapes outright, so a high+low
+// \x{} pair is combined to the astral code point and an unpaired one becomes
+// U+FFFD (mirrors the subject-side sanitization).
+static std::string normalize_u_surrogate_escapes(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    auto parse_x = [&](size_t at, uint32_t& val, size_t& end) -> bool {
+        // expects at -> backslash of "\x{...}"
+        if (at + 3 >= s.size() || s[at] != '\\' || s[at+1] != 'x' || s[at+2] != '{') return false;
+        size_t close = s.find('}', at + 3);
+        if (close == std::string::npos || close == at + 3) return false;
+        uint32_t v = 0;
+        for (size_t k = at + 3; k < close; k++) {
+            char c = s[k];
+            if (!is_hex_ch(c)) return false;
+            v = v * 16 + (c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10);
+            if (v > 0x10FFFF) return false;
+        }
+        val = v;
+        end = close + 1;
+        return true;
+    };
+    for (size_t i = 0; i < s.size(); ) {
+        if (s[i] == '\\') {
+            uint32_t hi;
+            size_t hi_end;
+            if (parse_x(i, hi, hi_end) && hi >= 0xD800 && hi <= 0xDFFF) {
+                uint32_t lo;
+                size_t lo_end;
+                if (hi <= 0xDBFF && parse_x(hi_end, lo, lo_end) && lo >= 0xDC00 && lo <= 0xDFFF) {
+                    char buf[16];
+                    snprintf(buf, sizeof(buf), "\\x{%X}", 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00));
+                    out += buf;
+                    i = lo_end;
+                    continue;
+                }
+                out += "\\x{FFFD}";
+                i = hi_end;
+                continue;
+            }
+            out += s[i];
+            if (i + 1 < s.size()) out += s[i+1];
+            i += 2;
+            continue;
+        }
+        out += s[i++];
     }
-    return b;
+    return out;
 }
 
 RegExp::RegExp(const std::string& pattern, const std::string& flags)
@@ -139,11 +194,10 @@ void RegExp::parse_flags(const std::string& flags) {
     }
 }
 
-// For non-unicode mode: strip unknown escapes (Annex B identity escapes).
-// PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL handles most cases, but lone ] needs fixing.
-// Convert \uXXXX and \u{XXXXX} to \x{XXXX} for PCRE2, in both unicode and non-unicode mode.
-// Also convert \uD800\uDC00 surrogate pairs to the combined codepoint.
-static std::string convert_unicode_escapes(const std::string& pat) {
+// Convert \uXXXX and \u{XXXXX} to \x{XXXX} for PCRE2. Surrogate pairs combine
+// to one code point only in unicode mode -- \x{} above 0xFFFF needs PCRE2_UTF,
+// and non-unicode mode keeps the two escapes as separate JS-semantics units.
+static std::string convert_unicode_escapes(const std::string& pat, bool unicode) {
     std::string result;
     result.reserve(pat.size());
     size_t i = 0;
@@ -172,7 +226,7 @@ static std::string convert_unicode_escapes(const std::string& pat) {
                 int cp = (hex_val(pat[i+2]) << 12) | (hex_val(pat[i+3]) << 8) |
                          (hex_val(pat[i+4]) << 4) | hex_val(pat[i+5]);
                 // Check for surrogate pair
-                if (cp >= 0xD800 && cp <= 0xDBFF && i + 11 < pat.size() &&
+                if (unicode && cp >= 0xD800 && cp <= 0xDBFF && i + 11 < pat.size() &&
                     pat[i+6] == '\\' && pat[i+7] == 'u' &&
                     is_hex(pat[i+8]) && is_hex(pat[i+9]) && is_hex(pat[i+10]) && is_hex(pat[i+11])) {
                     int lo = (hex_val(pat[i+8]) << 12) | (hex_val(pat[i+9]) << 8) |
@@ -661,15 +715,51 @@ std::string RegExp::preprocess_pattern(const std::string& pat) const {
     return result;
 }
 
-// U+2028 and U+2029 are ES LineTerminators but PCRE2 ANYCRLF does not exclude them
-// from dot. Add a negative lookahead before . when not in dotall mode.
-static std::string adjust_dot(const std::string& pat, bool dotall) {
-    if (dotall) return pat; // PCRE2_DOTALL handles everything correctly
+// JS has no POSIX class syntax, but PCRE2 parses [.x.], [:x:], [=x=] inside
+// character classes (e.g. /[.-.]/ fails as a collating element). Escape the
+// trigger character so these stay ordinary literals. Runs after the v-mode
+// transform, so every remaining class is flat.
+static std::string escape_posix_lookalikes(const std::string& pat) {
+    std::string result;
+    result.reserve(pat.size() + 8);
+    int cc_depth = 0;
+    for (size_t i = 0; i < pat.size(); i++) {
+        if (pat[i] == '\\' && i + 1 < pat.size()) {
+            result += pat[i++];
+            result += pat[i];
+            continue;
+        }
+        if (pat[i] == '[') {
+            if (cc_depth == 0) {
+                cc_depth = 1;
+                result += '[';
+                if (i + 1 < pat.size() && pat[i+1] == '^') { result += '^'; i++; }
+                if (i + 1 < pat.size() && (pat[i+1] == '.' || pat[i+1] == ':' || pat[i+1] == '=')) {
+                    result += '\\';
+                    result += pat[i+1];
+                    i++;
+                }
+            } else {
+                // Literal '[' inside a class: escape when a POSIX form would follow.
+                if (i + 1 < pat.size() && (pat[i+1] == '.' || pat[i+1] == ':' || pat[i+1] == '=')) result += '\\';
+                result += '[';
+            }
+            continue;
+        }
+        if (pat[i] == ']' && cc_depth > 0) cc_depth = 0;
+        result += pat[i];
+    }
+    return result;
+}
 
-    // PCRE2 ANYCRLF already excludes \n/\r from dot. Lookahead adds U+2028/U+2029
-    // exclusion while preserving . so (?s:) inline modifiers still work.
+static std::string adjust_dot(const std::string& pat, bool dotall) {
+    // JS non-dotAll '.' excludes exactly the four LineTerminators (PCRE2's dot
+    // depends on its newline convention instead); s-state is tracked through
+    // (?s:)/(?-s:) modifier groups so the substitution follows scope.
     std::string result;
     result.reserve(pat.size() + 32);
+    std::vector<bool> stk;
+    bool cur_s = dotall;
     bool in_cc = false;
     for (size_t i = 0; i < pat.size(); i++) {
         if (pat[i] == '\\' && i + 1 < pat.size()) {
@@ -677,8 +767,41 @@ static std::string adjust_dot(const std::string& pat, bool dotall) {
         }
         if (pat[i] == '[' && !in_cc) { in_cc = true; result += pat[i]; continue; }
         if (pat[i] == ']' && in_cc) { in_cc = false; result += pat[i]; continue; }
-        if (!in_cc && pat[i] == '.') {
-            result += "(?:(?!\\x{2028}|\\x{2029}).)"; 
+        if (in_cc) { result += pat[i]; continue; }
+        if (pat[i] == '(') {
+            bool next_s = cur_s;
+            if (i + 1 < pat.size() && pat[i+1] == '?') {
+                size_t k = i + 2;
+                bool add_s = false, rem_s = false, dash = false, is_mod = false;
+                while (k < pat.size()) {
+                    char c = pat[k];
+                    if (c == ':') { is_mod = (k > i + 2); break; }
+                    if (c == '-' && !dash) { dash = true; k++; continue; }
+                    if (c == 'i' || c == 'm' || c == 's') {
+                        if (c == 's') (dash ? rem_s : add_s) = true;
+                        k++;
+                        continue;
+                    }
+                    break;
+                }
+                if (is_mod) {
+                    if (add_s) next_s = true;
+                    if (rem_s) next_s = false;
+                }
+            }
+            stk.push_back(cur_s);
+            cur_s = next_s;
+            result += pat[i];
+            continue;
+        }
+        if (pat[i] == ')' && !stk.empty()) {
+            cur_s = stk.back();
+            stk.pop_back();
+            result += pat[i];
+            continue;
+        }
+        if (pat[i] == '.' && !cur_s) {
+            result += "[^\\n\\r\\x{2028}\\x{2029}]";
             continue;
         }
         result += pat[i];
@@ -1003,13 +1126,15 @@ static void reset_stale_captures(const std::string& pat,
 // JS spec: \d = [0-9], \w = [A-Za-z0-9_], \s = specific Unicode whitespace list.
 // PCRE2_UCP extends these to full Unicode categories and non-UCP \s is ASCII-only;
 // both are wrong per spec, so \s and \S are expanded to explicit code point sets.
-static std::string expand_js_charclass_shortcuts(const std::string& p) {
+static std::string expand_js_charclass_shortcuts(const std::string& p, bool unicode) {
     // JS \s whitespace — exactly the set from ECMAScript spec (WhiteSpace + LineTerminator)
     static const char* s_inner  = "\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}";
     static const char* s_outer  = "[\\t\\n\\x0B\\f\\r\\x20\\x{00A0}\\x{1680}\\x{2000}-\\x{200A}\\x{2028}\\x{2029}\\x{202F}\\x{205F}\\x{3000}\\x{FEFF}]";
     // Complement of the JS whitespace set as explicit ranges so \S also works
     // inside character classes (set subtraction is not available in PCRE2 /u).
-    static const char* S_inner  = "\\x00-\\x08\\x0E-\\x1F\\x21-\\x9F\\x{A1}-\\x{167F}\\x{1681}-\\x{1FFF}\\x{200B}-\\x{2027}\\x{202A}-\\x{202E}\\x{2030}-\\x{205E}\\x{2060}-\\x{2FFF}\\x{3001}-\\x{FEFE}\\x{FF00}-\\x{10FFFF}";
+    static const char* S_inner_u  = "\\x00-\\x08\\x0E-\\x1F\\x21-\\x9F\\x{A1}-\\x{167F}\\x{1681}-\\x{1FFF}\\x{200B}-\\x{2027}\\x{202A}-\\x{202E}\\x{2030}-\\x{205E}\\x{2060}-\\x{2FFF}\\x{3001}-\\x{FEFE}\\x{FF00}-\\x{10FFFF}";
+    static const char* S_inner_16 = "\\x00-\\x08\\x0E-\\x1F\\x21-\\x9F\\x{A1}-\\x{167F}\\x{1681}-\\x{1FFF}\\x{200B}-\\x{2027}\\x{202A}-\\x{202E}\\x{2030}-\\x{205E}\\x{2060}-\\x{2FFF}\\x{3001}-\\x{FEFE}\\x{FF00}-\\x{FFFF}";
+    const char* S_inner = unicode ? S_inner_u : S_inner_16;
 
     std::string result;
     result.reserve(p.size() * 2);
@@ -1044,6 +1169,60 @@ static std::string expand_js_charclass_shortcuts(const std::string& p) {
         } else {
             result += p[i];
         }
+    }
+    return result;
+}
+
+// Non-unicode mode compiles with PCRE2_UCP (for full-range caseless folding),
+// which would wrongly extend \d/\w/\b to Unicode categories -- rewrite them to
+// their ASCII sets first. Inside classes, \D/\W become explicit complement ranges.
+static std::string expand_ascii_word_classes(const std::string& p) {
+    static const char* W = "[A-Za-z0-9_]";
+    static const char* D_ranges = "\\x00-\\x2F\\x3A-\\x{FFFF}";
+    static const char* W_ranges = "\\x00-\\x2F\\x3A-\\x40\\x5B-\\x5E\\x60\\x7B-\\x{FFFF}";
+    std::string result;
+    result.reserve(p.size() + 32);
+    int cc_depth = 0;
+    for (size_t i = 0; i < p.size(); i++) {
+        if (p[i] == '\\' && i + 1 < p.size()) {
+            char n = p[i+1];
+            bool in_cc = cc_depth > 0;
+            switch (n) {
+                case 'd': result += in_cc ? "0-9" : "[0-9]"; i++; continue;
+                case 'D':
+                    if (in_cc) result += D_ranges;
+                    else result += "[^0-9]";
+                    i++;
+                    continue;
+                case 'w': result += in_cc ? "A-Za-z0-9_" : W; i++; continue;
+                case 'W':
+                    if (in_cc) result += W_ranges;
+                    else result += "[^A-Za-z0-9_]";
+                    i++;
+                    continue;
+                case 'b':
+                    if (!in_cc) { // inside a class \b is backspace
+                        result += std::string("(?:(?<=") + W + ")(?!" + W + ")|(?<!" + W + ")(?=" + W + "))";
+                        i++;
+                        continue;
+                    }
+                    break;
+                case 'B':
+                    if (!in_cc) {
+                        result += std::string("(?:(?<=") + W + ")(?=" + W + ")|(?<!" + W + ")(?!" + W + "))";
+                        i++;
+                        continue;
+                    }
+                    break;
+                default: break;
+            }
+            result += p[i++];
+            result += p[i];
+            continue;
+        }
+        if (p[i] == '[') cc_depth++;
+        else if (p[i] == ']' && cc_depth > 0) cc_depth--;
+        result += p[i];
     }
     return result;
 }
@@ -2057,12 +2236,15 @@ void RegExp::do_compile() {
     }
 
     std::string pat = unicode_
-        ? convert_unicode_escapes(expand_gc_aliases(expand_word_classes_unicode_i(expand_js_charclass_shortcuts(base), ignore_case_)))
-        : convert_unicode_escapes(expand_js_charclass_shortcuts(preprocess_pattern(base)));
-    pat = escape_wtf8_surrogates(pat);
+        ? convert_unicode_escapes(expand_gc_aliases(expand_word_classes_unicode_i(expand_js_charclass_shortcuts(base, true), ignore_case_)), true)
+        : convert_unicode_escapes(expand_ascii_word_classes(expand_js_charclass_shortcuts(preprocess_pattern(base), false)), false);
+    // Only /u-mode PCRE2_UTF rejects unpaired surrogate units in the pattern; in
+    // 16-bit code-unit mode they are ordinary units.
+    if (unicode_) pat = normalize_u_surrogate_escapes(escape_wtf8_surrogates(pat));
     // v-mode class-set expressions are flattened before the passes below so they
     // only ever see PCRE2-style flat character classes.
     if (unicode_sets_) pat = transform_v_mode_classes(pat);
+    pat = escape_posix_lookalikes(pat);
     pat = discard_empty_optional_groups(pat);
     pat = fix_optional_backrefs(adjust_dot(wrap_lookaheads_atomic(bound_lookbehind_quantifiers(pat)), dotall_));
 
@@ -2070,11 +2252,16 @@ void RegExp::do_compile() {
     // capture group matches empty string ("return c(x)"). Baked in at compile time so
     // JIT is aware of it (JIT rejects this option at match time).
     // PCRE2_DOLLAR_ENDONLY: JS non-multiline $ never matches before a final newline.
-    uint32_t options = PCRE2_UTF | PCRE2_DUPNAMES | PCRE2_MATCH_UNSET_BACKREF | PCRE2_DOLLAR_ENDONLY;
+    uint32_t options = PCRE2_DUPNAMES | PCRE2_MATCH_UNSET_BACKREF | PCRE2_DOLLAR_ENDONLY;
     if (unicode_) {
-        // PCRE2_UCP intentionally absent: it would extend \d/\w to Unicode categories,
-        // but JS spec requires \d=[0-9] and \w=[A-Za-z0-9_] (ASCII only). \s is handled
-        // by expand_js_charclass_shortcuts above. \p{} still works via PCRE2_UTF.
+        // UTF-16 code point matching. PCRE2_UCP intentionally absent: it would extend
+        // \d/\w to Unicode categories, but JS requires ASCII sets.
+        options |= PCRE2_UTF;
+    } else {
+        // Code-unit matching (JS non-unicode semantics: '.' = one UTF-16 unit, astral
+        // chars are surrogate pairs). PCRE2_UCP provides full-range caseless folding
+        // and \p{} support; \d/\w/\b were already rewritten to ASCII sets above.
+        options |= PCRE2_UCP;
     }
     if (ignore_case_) options |= PCRE2_CASELESS;
     if (multiline_)  options |= PCRE2_MULTILINE;
@@ -2083,21 +2270,19 @@ void RegExp::do_compile() {
     int errcode = 0;
     PCRE2_SIZE erroffset = 0;
 
-    // Lone surrogates (e.g. \uDC00) are valid in JS regex source but PCRE2_UTF rejects
-    // them by default, silently falling through to the always-fail "(?!)" below.
     pcre2_compile_context* cctx = pcre2_compile_context_create(nullptr);
     if (cctx) {
-        uint32_t extra = PCRE2_EXTRA_ALLOW_SURROGATE_ESCAPES;
         // Non-unicode Canonicalize has an ASCII barrier (ToUpperCase must not map a
         // non-ASCII char into ASCII): CASELESS_RESTRICT implements exactly that.
-        if (!unicode_) extra |= PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL | PCRE2_EXTRA_CASELESS_RESTRICT;
+        uint32_t extra = unicode_ ? 0 : (PCRE2_EXTRA_BAD_ESCAPE_IS_LITERAL | PCRE2_EXTRA_CASELESS_RESTRICT);
         pcre2_set_compile_extra_options(cctx, extra);
         pcre2_set_max_varlookbehind(cctx, UINT32_MAX);
     }
 
+    std::u16string pat16 = wtf8_to_utf16(pat);
     pcre2_code* re = pcre2_compile(
-        reinterpret_cast<PCRE2_SPTR>(pat.c_str()),
-        PCRE2_ZERO_TERMINATED,
+        reinterpret_cast<PCRE2_SPTR>(pat16.c_str()),
+        pat16.size(),
         options,
         &errcode,
         &erroffset,
@@ -2110,14 +2295,17 @@ void RegExp::do_compile() {
         // JS-valid but PCRE2-unsupported: huge quantifier (105), empty [] (106),
         // variable lookbehind (125), \u in PCRE2 ctx (137), string properties (147).
         if (errcode == 105 || errcode == 106 || errcode == 125 || errcode == 137 || errcode == 147 || errcode == 187) {
+            static const char16_t always_fail[] = u"(?!)";
             re = pcre2_compile(
-                reinterpret_cast<PCRE2_SPTR>("(?!)"),
-                PCRE2_ZERO_TERMINATED, 0, &errcode, &erroffset, nullptr
+                reinterpret_cast<PCRE2_SPTR>(always_fail),
+                4, 0, &errcode, &erroffset, nullptr
             );
         } else {
-            PCRE2_UCHAR8 errbuf[256] = {};
-            pcre2_get_error_message(errcode, errbuf, sizeof(errbuf));
-            throw std::runtime_error(std::string("Invalid regular expression: ") + reinterpret_cast<const char*>(errbuf));
+            PCRE2_UCHAR errbuf[256] = {};
+            pcre2_get_error_message(errcode, errbuf, 256);
+            std::string msg;
+            for (size_t k = 0; k < 256 && errbuf[k]; k++) msg += static_cast<char>(errbuf[k]);
+            throw std::runtime_error("Invalid regular expression: " + msg);
         }
     } else if (!g_regexp_validation_only) {
         pcre2_jit_compile(re, PCRE2_JIT_COMPLETE | PCRE2_JIT_PARTIAL_SOFT);
@@ -2126,29 +2314,41 @@ void RegExp::do_compile() {
     code_ = re;
 }
 
+// In /u mode PCRE2_UTF validates the subject, so lone surrogate units are
+// replaced with U+FFFD (unit count preserved).
+static void sanitize_utf16_surrogates(std::u16string& s) {
+    for (size_t i = 0; i < s.size(); i++) {
+        char16_t c = s[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.size() &&
+            s[i+1] >= 0xDC00 && s[i+1] <= 0xDFFF) {
+            i++;
+            continue;
+        }
+        if (c >= 0xD800 && c <= 0xDFFF) s[i] = u'�';
+    }
+}
+
 bool RegExp::test(const std::string& str) {
     if (!code_) return false;
 
-    // PCRE2 refuses to match invalid UTF-8, so WTF-8 lone surrogates are sanitized in
-    // every mode; capture text is sliced from the original str so output is preserved.
-    std::string _wtf8_buf; const std::string& subject = sanitize_wtf8(str, _wtf8_buf);
+    std::u16string subject = wtf8_to_utf16(str);
+    if (unicode_) sanitize_utf16_surrogates(subject);
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return false;
 
     PCRE2_SIZE start = 0;
     if ((global_ || sticky_) && last_index_ > 0) {
-        size_t js_len = byte_to_js_index(subject, subject.length());
-        if (static_cast<size_t>(last_index_) > js_len) {
+        if (static_cast<size_t>(last_index_) > subject.size()) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return false;
         }
-        start = static_cast<PCRE2_SIZE>(js_index_to_byte(subject, static_cast<size_t>(last_index_)));
+        start = static_cast<PCRE2_SIZE>(last_index_);
     }
 
     int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.length(),
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
         start, 0, md, nullptr);
 
     bool found = (rc >= 0);
@@ -2157,7 +2357,7 @@ bool RegExp::test(const std::string& str) {
         if (match_start != start) found = false;
     }
     if (found && (global_ || sticky_)) {
-        last_index_ = static_cast<int>(byte_to_js_index(subject, pcre2_get_ovector_pointer(md)[1]));
+        last_index_ = static_cast<int>(pcre2_get_ovector_pointer(md)[1]);
     } else if (!found && (global_ || sticky_)) {
         last_index_ = 0;
     }
@@ -2169,9 +2369,10 @@ bool RegExp::test(const std::string& str) {
 Value RegExp::exec(const std::string& str) {
     if (!code_) return Value::null();
 
-    // PCRE2 refuses to match invalid UTF-8, so WTF-8 lone surrogates are sanitized in
-    // every mode; capture text is sliced from the original str so output is preserved.
-    std::string _wtf8_buf; const std::string& subject = sanitize_wtf8(str, _wtf8_buf);
+    // orig holds the unsanitized units so capture text preserves lone surrogates.
+    std::u16string orig = wtf8_to_utf16(str);
+    std::u16string subject = orig;
+    if (unicode_) sanitize_utf16_surrogates(subject);
     pcre2_code* re = static_cast<pcre2_code*>(code_);
     pcre2_match_data* md = pcre2_match_data_create_from_pattern(re, nullptr);
     if (!md) return Value::null();
@@ -2179,17 +2380,16 @@ Value RegExp::exec(const std::string& str) {
     bool advances = global_ || sticky_;
     PCRE2_SIZE start = 0;
     if (advances && last_index_ > 0) {
-        size_t js_len = byte_to_js_index(subject, subject.length());
-        if (static_cast<size_t>(last_index_) > js_len) {
+        if (static_cast<size_t>(last_index_) > subject.size()) {
             last_index_ = 0;
             pcre2_match_data_free(md);
             return Value::null();
         }
-        start = static_cast<PCRE2_SIZE>(js_index_to_byte(subject, static_cast<size_t>(last_index_)));
+        start = static_cast<PCRE2_SIZE>(last_index_);
     }
 
     int rc = pcre2_match(re,
-        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.length(),
+        reinterpret_cast<PCRE2_SPTR>(subject.c_str()), subject.size(),
         start, 0, md, nullptr);
 
     if (rc < 0) {
@@ -2214,25 +2414,25 @@ Value RegExp::exec(const std::string& str) {
     std::vector<PCRE2_SIZE> saved(ov, ov + (capture_count + 1) * 2);
     reset_stale_captures(pattern_, saved, capture_count);
 
-    size_t match_start_js = byte_to_js_index(subject, match_start);
-    size_t match_end_js   = byte_to_js_index(subject, match_end);
-
-    if (advances) last_index_ = static_cast<int>(match_end_js);
+    if (advances) last_index_ = static_cast<int>(match_end);
     pcre2_match_data_free(md);
+
+    auto slice = [&](size_t from, size_t to) -> std::string {
+        return utf16_to_wtf8(orig.data() + from, to - from);
+    };
 
     // ArrayCreate(n): the match result is a genuine Array (RegExpBuiltinExec step 24), not a plain object.
     auto result_owner = ObjectFactory::create_array(capture_count + 1);
     Object* result = result_owner.get();
-    result->set_element(0, Value(str.substr(match_start, match_end - match_start)));
-    result->set_property("index", Value(static_cast<double>(match_start_js)));
+    result->set_element(0, Value(slice(match_start, match_end)));
+    result->set_property("index", Value(static_cast<double>(match_start)));
     result->set_property("input", Value(str));
 
     for (uint32_t i = 1; i <= capture_count; ++i) {
         if (saved[2 * i] == PCRE2_UNSET)
             result->set_element(i, Value());
         else
-            result->set_element(i,
-                Value(str.substr(saved[2*i], saved[2*i+1] - saved[2*i])));
+            result->set_element(i, Value(slice(saved[2*i], saved[2*i+1])));
     }
 
     // Resolve the matched capture number for a named group (duplicates share a name).
@@ -2250,7 +2450,7 @@ Value RegExp::exec(const std::string& str) {
         groups_owner->set_prototype(nullptr);
         for (const auto& ng : named_groups_) {
             int gn = matched_capture(ng.second);
-            Value gval = gn >= 0 ? Value(str.substr(saved[2*gn], saved[2*gn+1] - saved[2*gn])) : Value();
+            Value gval = gn >= 0 ? Value(slice(saved[2*gn], saved[2*gn+1])) : Value();
             groups_owner->set_property_descriptor(ng.first, PropertyDescriptor(gval, PropertyAttributes::Default));
         }
         // CreateDataProperty: define directly on A, bypassing any inherited setter on Array.prototype["groups"].
@@ -2262,10 +2462,10 @@ Value RegExp::exec(const std::string& str) {
     if (has_indices_) {
         // MakeMatchIndicesIndexPairArray: per-capture [start, end] in JS indices.
         auto indices_owner = ObjectFactory::create_array(capture_count + 1);
-        auto make_pair = [&](size_t b_start, size_t b_end) -> Value {
+        auto make_pair = [&](size_t from, size_t to) -> Value {
             auto pair = ObjectFactory::create_array(2);
-            pair->set_element(0, Value(static_cast<double>(byte_to_js_index(subject, b_start))));
-            pair->set_element(1, Value(static_cast<double>(byte_to_js_index(subject, b_end))));
+            pair->set_element(0, Value(static_cast<double>(from)));
+            pair->set_element(1, Value(static_cast<double>(to)));
             return Value(pair.release());
         };
         for (uint32_t i = 0; i <= capture_count; ++i) {
