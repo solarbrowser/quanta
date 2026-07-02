@@ -265,23 +265,12 @@ void register_regexp_builtins(Context& ctx) {
                         Value result = regexp_impl->exec(str);
 
                         int new_last = regexp_impl->get_last_index();
-                        // Global/sticky: advance past zero-length matches to avoid infinite loops.
-                        if ((regexp_impl->get_global() || regexp_impl->get_sticky()) &&
-                            !result.is_null() && result.is_object()) {
-                            Value matched = result.as_object()->get_element(0);
-                            if (!matched.is_undefined() && matched.to_string().empty()) {
-                                // AdvanceStringIndex: in unicode mode, skip surrogate pairs (4-byte UTF-8).
-                                int advance = 1;
-                                if (regexp_impl->get_unicode() || regexp_impl->get_unicode_sets()) {
-                                    size_t byte_pos = js_idx_to_byte(str, static_cast<size_t>(li));
-                                    if (byte_pos < str.size() && (unsigned char)str[byte_pos] >= 0xF0)
-                                        advance = 2;
-                                }
-                                new_last = static_cast<int>(li) + advance;
-                            }
-                        }
                         if (regexp_impl->get_global() || regexp_impl->get_sticky()) {
-                            regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
+                            bool li_ok = regex_obj_ptr->set_property("lastIndex", Value(static_cast<double>(new_last)));
+                            if (!li_ok || ctx.has_exception()) {
+                                if (!ctx.has_exception()) ctx.throw_type_error("Cannot assign to read only property 'lastIndex'");
+                                return Value();
+                            }
                         }
 
                         return result;
@@ -430,6 +419,11 @@ void register_regexp_builtins(Context& ctx) {
         auto flags_getter_fn = ObjectFactory::create_native_function("get flags",
             [](Context& ctx, const std::vector<Value>& args) -> Value {
                 (void)args;
+                Value raw_this_fl = ctx.get_binding("this");
+                if (!raw_this_fl.is_object() && !raw_this_fl.is_function()) {
+                    ctx.throw_type_error("RegExp.prototype.flags getter called on non-object");
+                    return Value();
+                }
                 Object* this_obj = ctx.get_this_binding();
                 if (!this_obj) {
                     ctx.throw_type_error("RegExp.prototype.flags getter called on incompatible receiver");
@@ -528,6 +522,11 @@ void register_regexp_builtins(Context& ctx) {
     // ES6: RegExp.prototype[Symbol.match/replace/search/split]
     auto regexp_sym_match = ObjectFactory::create_native_function("[Symbol.match]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value raw_this_m = ctx.get_binding("this");
+            if (!raw_this_m.is_object() && !raw_this_m.is_function()) {
+                ctx.throw_type_error("RegExp.prototype[Symbol.match] called on non-object");
+                return Value();
+            }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.match] requires an object this value"); return Value(); }
             Value arg0_m = args.empty() ? Value() : args[0];
@@ -564,34 +563,74 @@ void register_regexp_builtins(Context& ctx) {
             }
             if (ctx.has_exception()) return Value();
             bool is_global = flags_str.find('g') != std::string::npos;
+            bool full_unicode_m = flags_str.find('u') != std::string::npos || flags_str.find('v') != std::string::npos;
             if (!is_global) {
-                // Non-global: call exec once
+                // Non-global: call exec once; validate result type per RegExpExec
                 Value exec_fn = this_obj->get_property("exec");
                 if (ctx.has_exception()) return Value();
                 if (exec_fn.is_function()) {
-                    return exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                    Value res = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
+                    if (ctx.has_exception()) return Value();
+                    if (!res.is_null() && !res.is_object() && !res.is_function()) {
+                        ctx.throw_type_error("RegExpExec: exec must return Object or null");
+                        return Value();
+                    }
+                    return res;
                 }
                 return Value::null();
             }
-            // Global: set lastIndex=0 then loop exec
-            this_obj->set_property("lastIndex", Value(0.0));
-            if (ctx.has_exception()) return Value();
+            // Global: Set(rx, "lastIndex", 0, true) -- strict
+            {
+                bool ok = this_obj->set_property("lastIndex", Value(0.0));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
+            }
             auto result_array = ObjectFactory::create_array();
             size_t match_count = 0;
             Value exec_fn = this_obj->get_property("exec");
             if (ctx.has_exception()) return Value();
             if (!exec_fn.is_function()) return Value::null();
             Function* exec_func = exec_fn.as_function();
-            size_t safety = 0;
-            const size_t max_iter = str.length() + 2;
-            while (safety++ < max_iter) {
+            while (true) {
                 Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
                 if (ctx.has_exception()) return Value();
                 if (match.is_null() || match.is_undefined()) break;
-                if (!match.is_object()) { ctx.throw_type_error("[Symbol.match]: exec must return an object or null"); return Value(); }
-                Value matched = match.as_object()->get_element(0);
+                if (!match.is_object() && !match.is_function()) {
+                    ctx.throw_type_error("[Symbol.match]: exec must return an object or null");
+                    return Value();
+                }
+                Object* m_obj = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
+                Value matched_v = m_obj->get_element(0);
                 if (ctx.has_exception()) return Value();
-                result_array->set_element(match_count++, matched);
+                std::string matched_str;
+                if (matched_v.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
+                else if (matched_v.is_object() || matched_v.is_function()) { matched_str = matched_v.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { matched_str = matched_v.to_string(); if (ctx.has_exception()) return Value(); }
+                result_array->set_element(match_count++, Value(matched_str));
+                if (matched_str.empty()) {
+                    // Per spec step 5.g.iv.5: thisIndex = ToLength(Get(rx, "lastIndex")).
+                    // Must call Get/ToLength for coercion side effects (e.g. coerce-lastindex tests).
+                    Value li_v = this_obj->get_property("lastIndex");
+                    if (ctx.has_exception()) return Value();
+                    li_v.to_number(); // invoke ToLength coercion; throw propagates via ctx
+                    if (ctx.has_exception()) return Value();
+                    // Use match result index as AdvanceStringIndex base to avoid
+                    // double-advance when built-in exec already updated lastIndex.
+                    Value idx_v = m_obj->get_property("index");
+                    if (ctx.has_exception()) return Value();
+                    double idx_d = idx_v.to_number();
+                    if (ctx.has_exception()) return Value();
+                    if (std::isnan(idx_d) || idx_d < 0) idx_d = 0;
+                    size_t match_pos = static_cast<size_t>(idx_d);
+                    size_t nextIdx = match_pos + 1;
+                    if (full_unicode_m) {
+                        size_t b = js_idx_to_byte(str, match_pos);
+                        if (b < str.size() && (unsigned char)str[b] >= 0xF0) nextIdx = match_pos + 2;
+                    }
+                    bool ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
+                }
             }
             if (match_count == 0) return Value::null();
             result_array->set_length(static_cast<uint32_t>(match_count));
@@ -601,6 +640,11 @@ void register_regexp_builtins(Context& ctx) {
 
     auto regexp_sym_replace = ObjectFactory::create_native_function("[Symbol.replace]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value raw_this_r = ctx.get_binding("this");
+            if (!raw_this_r.is_object() && !raw_this_r.is_function()) {
+                ctx.throw_type_error("RegExp.prototype[Symbol.replace] called on non-object");
+                return Value();
+            }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.replace] requires an object this value"); return Value(); }
             // Step 3: ToString(string)
@@ -672,7 +716,7 @@ void register_regexp_builtins(Context& ctx) {
                     for (int ci = 1; ci <= nCap; ci++) {
                         Value cv = m->get_element(ci);
                         if (ctx.has_exception()) return Value();
-                        fn_a.push_back(cv);  // raw Value -- undefined stays undefined
+                        fn_a.push_back(cv);
                     }
                     fn_a.push_back(Value(static_cast<double>(idx_js)));
                     fn_a.push_back(Value(str));
@@ -682,7 +726,8 @@ void register_regexp_builtins(Context& ctx) {
                     Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                     if (ctx.has_exception()) return Value();
                     if (r.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
-                    replacement = r.to_string();
+                    else if (r.is_object() || r.is_function()) { replacement = r.to_property_key(); if (ctx.has_exception()) return Value(); }
+                    else { replacement = r.to_string(); if (ctx.has_exception()) return Value(); }
                 } else {
                     std::vector<std::string> caps;
                     for (int ci = 1; ci <= nCap; ci++) {
@@ -695,7 +740,11 @@ void register_regexp_builtins(Context& ctx) {
                     }
                     Value grps_v = m->get_property("groups");
                     if (ctx.has_exception()) return Value();
-                    Object* ng = (!grps_v.is_undefined() && !grps_v.is_null() && grps_v.is_object()) ? grps_v.as_object() : nullptr;
+                    Object* ng = nullptr;
+                    if (!grps_v.is_undefined()) {
+                        if (grps_v.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
+                        else if (grps_v.is_object() || grps_v.is_function()) { ng = grps_v.is_function() ? static_cast<Object*>(grps_v.as_function()) : grps_v.as_object(); }
+                    }
                     replacement = regexp_get_substitution(replace_str, str, idx_byte, matched_str, caps, ng);
                 }
                 size_t end_byte = idx_byte + matched_str.length();
@@ -718,9 +767,9 @@ void register_regexp_builtins(Context& ctx) {
             while (safety++ < max_iter) {
                 Value match = exec_func->call(ctx, {Value(str)}, Value(this_obj));
                 if (ctx.has_exception()) return Value();
-                if (match.is_null() || match.is_undefined()) break;
-                if (!match.is_object()) { ctx.throw_type_error("[Symbol.replace]: exec must return an object or null"); return Value(); }
-                Object* m = match.as_object();
+                if (match.is_null()) break;
+                if (!match.is_object() && !match.is_function()) { ctx.throw_type_error("[Symbol.replace]: exec must return an object or null"); return Value(); }
+                Object* m = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
                 Value idx_v = m->get_property("index");
                 if (ctx.has_exception()) return Value();
                 double idx_d = idx_v.to_number();
@@ -753,23 +802,22 @@ void register_regexp_builtins(Context& ctx) {
                 if (ctx.has_exception()) return Value();
                 matches.push_back({idx_js, matched_s, caps, grps_v});
                 if (matched_s.empty()) {
-                    // AdvanceStringIndex(S, thisIndex, fullUnicode) when exec didn't advance
+                    // ToLength(Get(rx, "lastIndex")) then AdvanceStringIndex
                     Value cur_li = this_obj->get_property("lastIndex");
                     if (ctx.has_exception()) return Value();
                     double thisIdx = cur_li.to_number();
                     if (ctx.has_exception()) return Value();
                     if (std::isnan(thisIdx) || thisIdx < 0) thisIdx = 0;
-                    size_t next = static_cast<size_t>(thisIdx);
-                    size_t min_next = static_cast<size_t>(idx_js) + 1;
+                    if (thisIdx > 9007199254740991.0) thisIdx = 9007199254740991.0;
+                    size_t thisIdxSz = static_cast<size_t>(thisIdx);
+                    size_t nextIdx = thisIdxSz + 1;
                     if (full_unicode) {
-                        size_t b = js_idx_to_byte(str, static_cast<size_t>(idx_js));
-                        if (b < str.size() && (unsigned char)str[b] >= 0xF0) min_next = static_cast<size_t>(idx_js) + 2;
+                        size_t b = js_idx_to_byte(str, thisIdxSz);
+                        if (b < str.size() && (unsigned char)str[b] >= 0xF0) nextIdx = thisIdxSz + 2;
                     }
-                    if (next < min_next) {
-                        bool adv_ok = this_obj->set_property("lastIndex", Value(static_cast<double>(min_next)));
-                        if (ctx.has_exception()) return Value();
-                        if (!adv_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex' of regexp"); return Value(); }
-                    }
+                    bool adv_ok = this_obj->set_property("lastIndex", Value(static_cast<double>(nextIdx)));
+                    if (ctx.has_exception()) return Value();
+                    if (!adv_ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
                 }
             }
             if (matches.empty()) return Value(str);
@@ -779,6 +827,8 @@ void register_regexp_builtins(Context& ctx) {
                 size_t mi_js = static_cast<size_t>(mr.js_idx >= 0 ? mr.js_idx : 0);
                 size_t mi = js_idx_to_byte(str, mi_js);
                 if (mi > str.size()) mi = str.size();
+                // Spec: skip match if position moved backwards (position < nextSourcePosition)
+                if (mi < last_end) continue;
                 if (mi > last_end) result += str.substr(last_end, mi - last_end);
                 std::string repl;
                 if (is_fn_replace) {
@@ -791,11 +841,16 @@ void register_regexp_builtins(Context& ctx) {
                     Value r = replace_val.as_function()->call(ctx, fn_a, Value());
                     if (ctx.has_exception()) return Value();
                     if (r.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
-                    repl = r.to_string();
+                    else if (r.is_object() || r.is_function()) { repl = r.to_property_key(); if (ctx.has_exception()) return Value(); }
+                    else { repl = r.to_string(); if (ctx.has_exception()) return Value(); }
                 } else {
                     std::vector<std::string> caps_str;
                     for (auto& c : mr.captures) caps_str.push_back(c.is_undefined() ? "" : c.to_string());
-                    Object* ng = (!mr.groups.is_undefined() && !mr.groups.is_null() && mr.groups.is_object()) ? mr.groups.as_object() : nullptr;
+                    Object* ng = nullptr;
+                    if (!mr.groups.is_undefined()) {
+                        if (mr.groups.is_null()) { ctx.throw_type_error("Cannot convert null to object"); return Value(); }
+                        else if (mr.groups.is_object() || mr.groups.is_function()) { ng = mr.groups.is_function() ? static_cast<Object*>(mr.groups.as_function()) : mr.groups.as_object(); }
+                    }
                     repl = regexp_get_substitution(replace_str, str, mi, mr.matched, caps_str, ng);
                 }
                 result += repl;
@@ -809,6 +864,12 @@ void register_regexp_builtins(Context& ctx) {
 
     auto regexp_sym_search = ObjectFactory::create_native_function("[Symbol.search]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            // Step 1: If Type(rx) is not Object, throw TypeError
+            Value raw_this_s = ctx.get_binding("this");
+            if (!raw_this_s.is_object() && !raw_this_s.is_function()) {
+                ctx.throw_type_error("RegExp.prototype[Symbol.search] called on non-object");
+                return Value();
+            }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.search] requires an object this value"); return Value(); }
             Value arg0_s = args.empty() ? Value() : args[0];
@@ -816,39 +877,54 @@ void register_regexp_builtins(Context& ctx) {
             if (arg0_s.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
             else if (arg0_s.is_object() || arg0_s.is_function()) { str = arg0_s.to_property_key(); if (ctx.has_exception()) return Value(); }
             else { str = arg0_s.to_string(); }
-            // Step 5: previousLastIndex = Get(rx, "lastIndex")
+            // Step 4: previousLastIndex = Get(rx, "lastIndex")
             Value prev_last_index = this_obj->get_property("lastIndex");
             if (ctx.has_exception()) return Value();
-            // Step 7: Set(rx, "lastIndex", +0, true)
-            this_obj->set_property("lastIndex", Value(0.0));
-            if (ctx.has_exception()) return Value();
-            // Step 8: result = Invoke(rx, "exec", S)
+            // Step 5: If SameValue(previousLastIndex, 0) is false, Set(rx, "lastIndex", 0, true)
+            auto same_value_zero = [](const Value& v) -> bool {
+                if (!v.is_number()) return false;
+                double d = v.to_number();
+                return d == 0.0 && !std::signbit(d);
+            };
+            if (!same_value_zero(prev_last_index)) {
+                bool ok = this_obj->set_property("lastIndex", Value(0.0));
+                if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
+            }
+            // Step 6: result = RegExpExec(rx, S)
             Value exec_fn = this_obj->get_property("exec");
             if (ctx.has_exception()) return Value();
             Value result_val;
             if (exec_fn.is_function()) {
                 result_val = exec_fn.as_function()->call(ctx, {Value(str)}, Value(this_obj));
                 if (ctx.has_exception()) return Value();
+                if (!result_val.is_null() && !result_val.is_object() && !result_val.is_function()) {
+                    ctx.throw_type_error("RegExpExec: exec must return Object or null");
+                    return Value();
+                }
             }
-            // Step 9: currentLastIndex = Get(rx, "lastIndex")
+            // Step 7: currentLastIndex = Get(rx, "lastIndex")
             Value cur_last_index = this_obj->get_property("lastIndex");
             if (ctx.has_exception()) return Value();
-            // Step 10: If SameValue(currentLastIndex, previousLastIndex) is false, restore
-            bool same_val = false;
-            if (cur_last_index.is_number() && prev_last_index.is_number()) {
-                double cv = cur_last_index.to_number(), pv = prev_last_index.to_number();
-                same_val = (cv == pv) || (std::isnan(cv) && std::isnan(pv));
-            } else {
-                same_val = (cur_last_index.to_string() == prev_last_index.to_string());
-            }
-            if (!same_val) {
-                this_obj->set_property("lastIndex", prev_last_index);
+            // Step 8: SameValue(currentLastIndex, previousLastIndex): use signbit for -0 vs +0
+            auto same_value = [](const Value& a, const Value& b) -> bool {
+                if (a.is_number() && b.is_number()) {
+                    double da = a.to_number(), db = b.to_number();
+                    if (std::isnan(da) && std::isnan(db)) return true;
+                    return da == db && std::signbit(da) == std::signbit(db);
+                }
+                return false; // simplified for non-numeric case
+            };
+            if (!same_value(cur_last_index, prev_last_index)) {
+                bool ok = this_obj->set_property("lastIndex", prev_last_index);
                 if (ctx.has_exception()) return Value();
+                if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
             }
-            // Step 11-12
+            // Steps 9+: return
             if (result_val.is_null() || result_val.is_undefined()) return Value(-1.0);
-            if (result_val.is_object()) {
-                Value idx = result_val.as_object()->get_property("index");
+            if (result_val.is_object() || result_val.is_function()) {
+                Object* ro = result_val.is_function() ? static_cast<Object*>(result_val.as_function()) : result_val.as_object();
+                Value idx = ro->get_property("index");
                 if (ctx.has_exception()) return Value();
                 return idx;
             }
@@ -858,6 +934,11 @@ void register_regexp_builtins(Context& ctx) {
 
     auto regexp_sym_split = ObjectFactory::create_native_function("[Symbol.split]",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value raw_this_sp = ctx.get_binding("this");
+            if (!raw_this_sp.is_object() && !raw_this_sp.is_function()) {
+                ctx.throw_type_error("RegExp.prototype[Symbol.split] called on non-object");
+                return Value();
+            }
             Object* this_obj = ctx.get_this_binding();
             if (!this_obj) { ctx.throw_type_error("RegExp.prototype[Symbol.split] requires an object this value"); return Value(); }
             Value arg0_sp = args.size() > 0 ? args[0] : Value();
@@ -879,6 +960,11 @@ void register_regexp_builtins(Context& ctx) {
             // ES6: SpeciesConstructor -- Construct(C, «rx, flags»)
             Value ctor_val = this_obj->get_property("constructor");
             if (ctx.has_exception()) return Value();
+            // SpeciesConstructor step 3: if C is not undefined and not an Object, throw TypeError
+            if (!ctor_val.is_undefined() && !ctor_val.is_object() && !ctor_val.is_function()) {
+                ctx.throw_type_error("constructor property is not an object");
+                return Value();
+            }
             if (ctor_val.is_object() || ctor_val.is_function()) {
                 Object* ctor_obj = ctor_val.is_function() ? static_cast<Object*>(ctor_val.as_function()) : ctor_val.as_object();
                 Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
