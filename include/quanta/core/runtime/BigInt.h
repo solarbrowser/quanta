@@ -66,6 +66,8 @@ public:
     bool is_negative() const { return is_negative_; }
     
     static BigInt from_string(const std::string& str);
+    // Exact conversion of a finite integral double (mantissa shift, no int64 overflow).
+    static BigInt from_integral_double(double d);
     static BigInt pow(const BigInt& base, const BigInt& exponent);
 
     BigInt bitwise_not() const;

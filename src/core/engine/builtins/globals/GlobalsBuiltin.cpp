@@ -219,52 +219,40 @@ void register_global_builtins(Context& ctx) {
                 }
             }
 
-            // Hex prefix: if radix is 16 or radix is unspecified/0 and string starts with 0x.
+            double sign = 1.0;
+            if (str[start] == '+' || str[start] == '-') {
+                if (str[start] == '-') sign = -1.0;
+                ++start;
+            }
+
+            // Hex prefix strips only when radix is 16 or was left unspecified.
+            bool default_radix = !radix_provided;
             if (start + 1 < str.length() && str[start] == '0' &&
-                (str[start + 1] == 'x' || str[start + 1] == 'X')) {
-                if (radix == 16 || !radix_provided || radix == 10) {
-                    radix = 16;
-                    start += 2;
-                }
+                (str[start + 1] == 'x' || str[start + 1] == 'X') &&
+                (radix == 16 || default_radix)) {
+                radix = 16;
+                start += 2;
             }
 
-            if (start >= str.length()) {
-                return Value::nan();
+            // Digit-by-digit double accumulation: exact for values a 64-bit
+            // integer parse would overflow on (e.g. parseInt("0x1" + "0"*17, 16)).
+            auto digit_val = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+                return -1;
+            };
+            double result = 0.0;
+            size_t digits = 0;
+            while (start < str.length()) {
+                int d = digit_val(str[start]);
+                if (d < 0 || d >= radix) break;
+                result = result * radix + d;
+                ++start;
+                ++digits;
             }
-
-            char first_char = str[start];
-            bool has_valid_start = false;
-            
-            if (radix == 16) {
-                has_valid_start = std::isdigit(first_char) || 
-                                (first_char >= 'a' && first_char <= 'f') ||
-                                (first_char >= 'A' && first_char <= 'F');
-            } else if (radix == 8) {
-                has_valid_start = (first_char >= '0' && first_char <= '7');
-            } else {
-                has_valid_start = std::isdigit(first_char);
-            }
-            
-            if (!has_valid_start && first_char != '+' && first_char != '-') {
-                return Value::nan();
-            }
-            
-            // Use strtod/strtoull to handle large values without long overflow.
-            {
-                const char* s = str.c_str() + start;
-                char* endptr = nullptr;
-                double result;
-                if (radix == 10) {
-                    result = std::strtod(s, &endptr);
-                } else {
-                    bool neg = (*s == '-');
-                    const char* digits = s + ((*s == '-' || *s == '+') ? 1 : 0);
-                    unsigned long long ull = std::strtoull(digits, &endptr, radix);
-                    result = neg ? -static_cast<double>(ull) : static_cast<double>(ull);
-                }
-                if (!endptr || endptr == s) return Value::nan();
-                return Value(result);
-            }
+            if (digits == 0) return Value::nan();
+            return Value(sign * result);
         }, 2);
     Function* parseInt_raw = parseInt_fn.get();
     ctx.get_lexical_environment()->create_binding("parseInt", Value(parseInt_fn.release()), true, true, false);
@@ -273,7 +261,8 @@ void register_global_builtins(Context& ctx) {
         [js_trim](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty()) return Value::nan();
 
-            std::string str = js_trim(args[0].to_string());
+            // ToString via the string-hinted ToPrimitive path (toString before valueOf).
+            std::string str = js_trim(args[0].to_property_key());
             if (ctx.has_exception()) return Value::nan();
 
             if (str.empty()) return Value::nan();
@@ -291,6 +280,12 @@ void register_global_builtins(Context& ctx) {
             if (!std::isdigit(static_cast<unsigned char>(first_char)) && first_char != '.' &&
                 first_char != '+' && first_char != '-') {
                 return Value::nan();
+            }
+
+            // StrDecimalLiteral has no hex form: "0x1" parses as the prefix "0".
+            if (off + 1 < str.length() && str[off] == '0' &&
+                (str[off + 1] == 'x' || str[off + 1] == 'X')) {
+                return Value(str[0] == '-' ? -0.0 : 0.0);
             }
 
             try {

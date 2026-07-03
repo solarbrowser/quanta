@@ -658,9 +658,24 @@ Value BinaryExpression::evaluate(Context& ctx) {
             Value rp = toPrimitive(right_value, "number");
             if (ctx.has_exception()) return Value();
 
+            // -1 b<d, 0 b==d, 1 b>d, INT_MIN undefined (d is NaN). Exact: integer
+            // parts compared as BigInts, the fraction breaks ties.
+            auto bigint_vs_double = [](const BigInt& b, double d) -> int {
+                if (std::isnan(d)) return INT_MIN;
+                if (std::isinf(d)) return d > 0 ? -1 : 1;
+                double ipart = std::trunc(d);
+                BigInt di = BigInt::from_integral_double(ipart);
+                if (b < di) return -1;
+                if (di < b) return 1;
+                double frac = d - ipart;
+                if (frac > 0) return -1;
+                if (frac < 0) return 1;
+                return 0;
+            };
+
             // Abstract Relational Comparison (spec 7.2.13).
             // Returns -1 (px < py), 0 (px >= py), INT_MIN (undefined: NaN involved).
-            auto abstract_less = [](const Value& px, const Value& py) -> int {
+            auto abstract_less = [&bigint_vs_double](const Value& px, const Value& py) -> int {
                 if (px.is_string() && py.is_string()) {
                     const std::string& ls = px.as_string()->str();
                     const std::string& rs = py.as_string()->str();
@@ -668,6 +683,24 @@ Value BinaryExpression::evaluate(Context& ctx) {
                 }
                 if (px.is_bigint() && py.is_bigint()) {
                     return (*px.as_bigint() < *py.as_bigint()) ? -1 : 0;
+                }
+                if (px.is_bigint() && py.is_number()) {
+                    int c = bigint_vs_double(*px.as_bigint(), py.as_number());
+                    return c == INT_MIN ? INT_MIN : (c < 0 ? -1 : 0);
+                }
+                if (px.is_number() && py.is_bigint()) {
+                    int c = bigint_vs_double(*py.as_bigint(), px.as_number());
+                    return c == INT_MIN ? INT_MIN : (c > 0 ? -1 : 0);
+                }
+                if ((px.is_bigint() && py.is_string()) || (px.is_string() && py.is_bigint())) {
+                    // StringToBigInt: an unparseable string makes the comparison undefined.
+                    try {
+                        BigInt sb(px.is_string() ? px.as_string()->str() : py.as_string()->str());
+                        if (px.is_bigint()) return *px.as_bigint() < sb ? -1 : 0;
+                        return sb < *py.as_bigint() ? -1 : 0;
+                    } catch (...) {
+                        return INT_MIN;
+                    }
                 }
                 double ln = px.to_number();
                 double rn = py.to_number();

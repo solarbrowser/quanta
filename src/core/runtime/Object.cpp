@@ -941,9 +941,9 @@ std::vector<std::string> Object::get_own_property_keys() const {
         keys.push_back(ik.second);
     }
     for (const auto& sk : string_keys) {
-        // "[[PrimitiveValue]]" simulates a spec internal slot via a regular property
-        // (see box_primitive) -- it must never surface as an observable own key.
-        if (sk == "[[PrimitiveValue]]") continue;
+        // "[[...]]" names simulate spec internal slots via regular properties
+        // (see box_primitive, WeakRef) -- they must never surface as observable own keys.
+        if (sk.size() >= 4 && sk[0] == '[' && sk[1] == '[') continue;
         keys.push_back(sk);
     }
     for (const auto& sym_key : symbol_keys) {

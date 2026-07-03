@@ -7,97 +7,179 @@
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/BigInt.h"
+#include "quanta/core/runtime/String.h"
 #include "quanta/parser/AST.h"
 #include "quanta/core/runtime/Symbol.h"
 
 namespace Quanta {
 
+// ToPrimitive(value, number): @@toPrimitive first, then valueOf/toString.
+static Value to_primitive_number(Context& ctx, Value v) {
+    if (!v.is_object() && !v.is_function()) return v;
+    Object* obj = v.is_function() ? static_cast<Object*>(v.as_function()) : v.as_object();
+    Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+    Value fn = to_prim_sym ? obj->get_property(to_prim_sym->to_property_key()) : Value();
+    if (ctx.has_exception()) return Value();
+    if (fn.is_function()) {
+        Value r = fn.as_function()->call(ctx, {Value(std::string("number"))}, v);
+        if (ctx.has_exception()) return Value();
+        if (r.is_object() || r.is_function()) {
+            ctx.throw_type_error("Symbol.toPrimitive returned an object");
+            return Value();
+        }
+        return r;
+    }
+    if (!fn.is_undefined() && !fn.is_null()) {
+        ctx.throw_type_error("Symbol.toPrimitive is not a function");
+        return Value();
+    }
+    for (const char* name : {"valueOf", "toString"}) {
+        Value m = obj->get_property(name);
+        if (ctx.has_exception()) return Value();
+        if (!m.is_function()) continue;
+        Value r = m.as_function()->call(ctx, {}, Value(obj));
+        if (ctx.has_exception()) return Value();
+        if (!r.is_object() && !r.is_function()) return r;
+    }
+    ctx.throw_type_error("Cannot convert object to primitive value");
+    return Value();
+}
+
+// StringToBigInt: trimmed empty -> 0n, optional sign only on decimal, 0b/0o/0x
+// prefixes without sign, no numeric separators; invalid -> false.
+static bool string_to_bigint(const std::string& raw, std::unique_ptr<BigInt>& out) {
+    auto is_ws = [](unsigned char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+    };
+    size_t b = 0, e = raw.size();
+    while (b < e && is_ws(raw[b])) ++b;
+    while (e > b && is_ws(raw[e - 1])) --e;
+    std::string s = raw.substr(b, e - b);
+    if (s.empty()) {
+        out = std::make_unique<BigInt>(static_cast<int64_t>(0));
+        return true;
+    }
+    size_t i = 0;
+    bool neg = false;
+    int base = 10;
+    if (s[0] == '+' || s[0] == '-') {
+        neg = s[0] == '-';
+        i = 1;
+    } else if (s.size() > 2 && s[0] == '0') {
+        char p = s[1];
+        if (p == 'b' || p == 'B') { base = 2; i = 2; }
+        else if (p == 'o' || p == 'O') { base = 8; i = 2; }
+        else if (p == 'x' || p == 'X') { base = 16; i = 2; }
+    }
+    if (i >= s.size()) return false;
+    for (size_t k = i; k < s.size(); ++k) {
+        char c = s[k];
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return false;
+        if (d >= base) return false;
+    }
+    std::string digits = s.substr(i);
+    if (base == 16) digits = "0x" + digits;
+    else if (base == 8) digits = "0o" + digits;
+    else if (base == 2) digits = "0b" + digits;
+    try {
+        out = std::make_unique<BigInt>(digits);
+    } catch (...) {
+        return false;
+    }
+    if (neg) *out = -*out;
+    return true;
+}
+
+// ToBigInt(argument), after ToPrimitive(number) coercion.
+static std::unique_ptr<BigInt> to_bigint(Context& ctx, Value v) {
+    Value prim = to_primitive_number(ctx, v);
+    if (ctx.has_exception()) return nullptr;
+    if (prim.is_bigint()) return std::make_unique<BigInt>(*prim.as_bigint());
+    if (prim.is_boolean()) return std::make_unique<BigInt>(static_cast<int64_t>(prim.as_boolean() ? 1 : 0));
+    if (prim.is_string()) {
+        std::unique_ptr<BigInt> out;
+        if (!string_to_bigint(prim.as_string()->str(), out)) {
+            ctx.throw_syntax_error("Cannot convert string to a BigInt");
+            return nullptr;
+        }
+        return out;
+    }
+    ctx.throw_type_error("Cannot convert value to BigInt");
+    return nullptr;
+}
+
 void register_bigint_builtins(Context& ctx) {
     auto bigint_constructor = ObjectFactory::create_native_constructor("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Value prim = args.empty() ? Value() : args[0];
-            // ToPrimitive(value, number) before conversion.
-            if (prim.is_object() || prim.is_function()) {
-                Object* obj = prim.is_function() ? static_cast<Object*>(prim.as_function()) : prim.as_object();
-                Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
-                Value fn = to_prim_sym ? obj->get_property(to_prim_sym->to_property_key()) : Value();
-                if (ctx.has_exception()) return Value();
-                if (fn.is_function()) {
-                    prim = fn.as_function()->call(ctx, {Value(std::string("number"))}, prim);
-                    if (ctx.has_exception()) return Value();
-                    if (prim.is_object() || prim.is_function()) {
-                        ctx.throw_type_error("Symbol.toPrimitive returned an object");
-                        return Value();
-                    }
-                } else {
-                    prim = Value();
-                    for (const char* name : {"valueOf", "toString"}) {
-                        Value m = obj->get_property(name);
-                        if (ctx.has_exception()) return Value();
-                        if (!m.is_function()) continue;
-                        Value r = m.as_function()->call(ctx, {}, Value(obj));
-                        if (ctx.has_exception()) return Value();
-                        if (!r.is_object() && !r.is_function()) { prim = r; break; }
-                    }
-                }
-            }
+            Value prim = to_primitive_number(ctx, args.empty() ? Value() : args[0]);
+            if (ctx.has_exception()) return Value();
 
-            try {
-                if (prim.is_bigint()) {
-                    return prim;
-                } else if (prim.is_number()) {
-                    double num = prim.as_number();
-                    if (!std::isfinite(num) || std::floor(num) != num) {
-                        ctx.throw_range_error("Cannot convert non-integer Number to BigInt");
-                        return Value();
-                    }
-                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(num));
-                    return Value(bigint.release());
-                } else if (prim.is_string()) {
-                    auto bigint = std::make_unique<BigInt>(prim.to_string());
-                    return Value(bigint.release());
-                } else if (prim.is_boolean()) {
-                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(prim.to_boolean() ? 1 : 0));
-                    return Value(bigint.release());
-                } else {
-                    ctx.throw_type_error("Cannot convert value to BigInt");
+            if (prim.is_number()) {
+                double num = prim.as_number();
+                if (!std::isfinite(num) || std::floor(num) != num) {
+                    ctx.throw_range_error("Cannot convert non-integer Number to BigInt");
                     return Value();
                 }
-            } catch (const std::exception& e) {
-                ctx.throw_syntax_error("Invalid BigInt: " + std::string(e.what()));
-                return Value();
+                return Value(new BigInt(BigInt::from_integral_double(num)));
             }
+            std::unique_ptr<BigInt> result = to_bigint(ctx, prim);
+            if (!result) return Value();
+            return Value(result.release());
         });
     {
+        // Shared steps of asIntN/asUintN: bits = ? ToIndex(bits), v = ? ToBigInt(bigint),
+        // then mod = v modulo 2**bits (non-negative). Returns false on abrupt completion.
+        auto as_n_common = [](Context& ctx, const std::vector<Value>& args,
+                              BigInt& mod, BigInt& two_pow, uint64_t& bits_out) -> bool {
+            double bn = (args.empty() ? Value() : args[0]).to_number();
+            if (ctx.has_exception()) return false;
+            if (std::isnan(bn)) bn = 0.0;
+            bn = std::trunc(bn);
+            if (bn < 0 || bn > 9007199254740991.0) {
+                ctx.throw_range_error("Index out of range");
+                return false;
+            }
+            std::unique_ptr<BigInt> v = to_bigint(ctx, args.size() > 1 ? args[1] : Value());
+            if (!v) return false;
+            if (bn > 1000000.0) {
+                ctx.throw_range_error("Maximum BigInt size exceeded");
+                return false;
+            }
+            bits_out = static_cast<uint64_t>(bn);
+            if (bits_out == 0) {
+                mod = BigInt(static_cast<int64_t>(0));
+                two_pow = BigInt(static_cast<int64_t>(1));
+                return true;
+            }
+            two_pow = BigInt(static_cast<int64_t>(1)).left_shift(BigInt(static_cast<int64_t>(bits_out)));
+            mod = *v % two_pow;
+            if (mod.is_negative()) mod = mod + two_pow;
+            return true;
+        };
+
         auto asIntN_fn = ObjectFactory::create_native_function("asIntN",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                if (args.size() < 2) { ctx.throw_type_error("BigInt.asIntN requires 2 arguments"); return Value(); }
-                int64_t n = static_cast<int64_t>(args[0].to_number());
-                if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
-                if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
-                int64_t val = args[1].as_bigint()->to_int64();
-                if (n == 0) return Value(new BigInt(0));
-                if (n == 64) return Value(new BigInt(val));
-                int64_t mod = 1LL << n;
-                int64_t result = val & (mod - 1);
-                if (result >= (mod >> 1)) result -= mod;
-                return Value(new BigInt(result));
-            });
+            [as_n_common](Context& ctx, const std::vector<Value>& args) -> Value {
+                BigInt mod, two_pow;
+                uint64_t bits;
+                if (!as_n_common(ctx, args, mod, two_pow, bits)) return Value();
+                if (bits == 0) return Value(new BigInt(mod));
+                BigInt half = two_pow.right_shift(BigInt(static_cast<int64_t>(1)));
+                if (mod >= half) mod = mod - two_pow;
+                return Value(new BigInt(mod));
+            }, 2);
         bigint_constructor->set_property("asIntN", Value(asIntN_fn.release()), PropertyAttributes::BuiltinFunction);
 
         auto asUintN_fn = ObjectFactory::create_native_function("asUintN",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
-                if (args.size() < 2) { ctx.throw_type_error("BigInt.asUintN requires 2 arguments"); return Value(); }
-                int64_t n = static_cast<int64_t>(args[0].to_number());
-                if (n < 0 || n > 64) { ctx.throw_range_error("Invalid width"); return Value(); }
-                if (!args[1].is_bigint()) { ctx.throw_type_error("Not a BigInt"); return Value(); }
-                int64_t val = args[1].as_bigint()->to_int64();
-                if (n == 0) return Value(new BigInt(0));
-                if (n == 64) return Value(new BigInt(val));
-                uint64_t mask = (1ULL << n) - 1;
-                uint64_t result = static_cast<uint64_t>(val) & mask;
-                return Value(new BigInt(static_cast<int64_t>(result)));
-            });
+            [as_n_common](Context& ctx, const std::vector<Value>& args) -> Value {
+                BigInt mod, two_pow;
+                uint64_t bits;
+                if (!as_n_common(ctx, args, mod, two_pow, bits)) return Value();
+                return Value(new BigInt(mod));
+            }, 2);
         bigint_constructor->set_property("asUintN", Value(asUintN_fn.release()), PropertyAttributes::BuiltinFunction);
     }
     // BigInt.prototype.toString([radix])
@@ -108,11 +190,9 @@ void register_bigint_builtins(Context& ctx) {
                 BigInt* bi = nullptr;
                 if (this_val.is_bigint()) bi = this_val.as_bigint();
                 else if (this_val.is_object()) {
-                    Value pv = this_val.as_object()->get_property("valueOf");
-                    if (!ctx.has_exception() && pv.is_function()) {
-                        Value r = pv.as_function()->call(ctx, {}, this_val);
-                        if (!ctx.has_exception() && r.is_bigint()) bi = r.as_bigint();
-                    }
+                    // thisBigIntValue reads the [[BigIntData]] slot directly, never a user-visible method.
+                    Value pv = this_val.as_object()->get_property("[[PrimitiveValue]]");
+                    if (pv.is_bigint()) bi = pv.as_bigint();
                 }
                 if (!bi) { ctx.throw_type_error("BigInt.prototype.toString requires a BigInt this"); return Value(); }
                 int radix = 10;
@@ -141,7 +221,7 @@ void register_bigint_builtins(Context& ctx) {
                 }
                 if (negative) result = "-" + result;
                 return Value(result);
-            }, 1);
+            }, 0);
         Value proto_val = bigint_constructor->get_property("prototype");
         if (proto_val.is_object()) proto_val.as_object()->set_property("toString", Value(bigint_toString.release()), PropertyAttributes::BuiltinFunction);
     }

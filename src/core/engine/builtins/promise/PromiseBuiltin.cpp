@@ -1232,29 +1232,64 @@ void register_promise_builtins(Context& ctx) {
 
     ctx.register_built_in_object("Promise", promise_constructor.release());
 
+    auto weakref_prototype = ObjectFactory::create_object();
+    Object* weakref_proto_ptr = weakref_prototype.get();
+
     auto weakref_constructor = ObjectFactory::create_native_constructor("WeakRef",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty() || !args[0].is_object()) {
-                ctx.throw_type_error("WeakRef constructor requires an object argument");
+        [weakref_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (!ctx.is_in_constructor_call()) {
+                ctx.throw_type_error("Constructor WeakRef requires 'new'");
+                return Value();
+            }
+            Value target = args.empty() ? Value() : args[0];
+            // CanBeHeldWeakly: objects, functions, unregistered symbols.
+            bool can_hold = target.is_object() || target.is_function() ||
+                            (target.is_symbol() && Symbol::key_for(target.as_symbol()).empty());
+            if (!can_hold) {
+                ctx.throw_type_error("WeakRef target must be an object or unregistered symbol");
                 return Value();
             }
 
             auto weakref_obj = ObjectFactory::create_object();
-            weakref_obj->set_property("_target", args[0]);
-
-            auto deref_fn = ObjectFactory::create_native_function("deref",
-                [](Context& ctx, const std::vector<Value>& args) -> Value {
-                    (void)args;
-                    Object* this_obj = ctx.get_this_binding();
-                    if (this_obj) {
-                        return this_obj->get_property("_target");
-                    }
-                    return Value();
-                }, 0);
-            weakref_obj->set_property("deref", Value(deref_fn.release()), PropertyAttributes::BuiltinFunction);
-
+            Object* proto = weakref_proto_ptr;
+            Value nt = ctx.get_new_target();
+            if (nt.is_object() || nt.is_function()) {
+                Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function())
+                                                  : nt.as_object();
+                Value p = nt_obj->get_property("prototype");
+                if (ctx.has_exception()) return Value();
+                if (p.is_object()) proto = p.as_object();
+                else if (p.is_function()) proto = static_cast<Object*>(p.as_function());
+            }
+            weakref_obj->set_prototype(proto);
+            weakref_obj->set_property("[[WeakRefTarget]]", target, PropertyAttributes::Writable);
             return Value(weakref_obj.release());
-        });
+        }, 1);
+
+    auto deref_fn = ObjectFactory::create_native_function("deref",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            (void)args;
+            Object* this_obj = ctx.get_this_binding();
+            if (!this_obj || ctx.original_this_was_primitive() || ctx.original_this_was_nullish() ||
+                !this_obj->has_property("[[WeakRefTarget]]")) {
+                ctx.throw_type_error("WeakRef.prototype.deref requires a WeakRef this");
+                return Value();
+            }
+            return this_obj->get_property("[[WeakRefTarget]]");
+        }, 0);
+    weakref_prototype->set_property_descriptor("deref",
+        PropertyDescriptor(Value(deref_fn.release()), PropertyAttributes::BuiltinFunction));
+    weakref_prototype->set_property_descriptor("constructor",
+        PropertyDescriptor(Value(weakref_constructor.get()),
+            static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+    {
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            weakref_prototype->set_property_descriptor(tag_sym->to_property_key(),
+                PropertyDescriptor(Value(std::string("WeakRef")), PropertyAttributes::Configurable));
+        }
+    }
+    weakref_constructor->set_property("prototype", Value(weakref_prototype.release()), PropertyAttributes::None);
     ctx.register_built_in_object("WeakRef", weakref_constructor.release());
 
     auto finalizationregistry_prototype = ObjectFactory::create_object();

@@ -6,6 +6,7 @@
 
 #include "quanta/core/runtime/BigInt.h"
 #include <algorithm>
+#include <cstring>
 #include <sstream>
 #include <stdexcept>
 #include <climits>
@@ -442,6 +443,24 @@ bool BigInt::is_zero() const {
 
 BigInt BigInt::from_string(const std::string& str) {
     return BigInt(str);
+}
+
+BigInt BigInt::from_integral_double(double d) {
+    if (d == 0.0) return BigInt(static_cast<int64_t>(0));
+    uint64_t bits;
+    std::memcpy(&bits, &d, 8);
+    uint64_t mant = bits & 0x000FFFFFFFFFFFFFULL;
+    int biased = static_cast<int>((bits >> 52) & 0x7FF);
+    int e2 = biased - 1075;
+    mant |= (1ULL << 52);
+    BigInt result(static_cast<int64_t>(mant));
+    if (e2 > 0) {
+        result = result.left_shift(BigInt(static_cast<int64_t>(e2)));
+    } else if (e2 < 0) {
+        result = result.right_shift(BigInt(static_cast<int64_t>(-e2)));
+    }
+    if (bits >> 63) result = -result;
+    return result;
 }
 
 // Arbitrary-precision two's complement bitwise operations.

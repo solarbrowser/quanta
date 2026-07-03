@@ -7,7 +7,9 @@
 #include "quanta/core/engine/builtins/MathBuiltin.h"
 #include "quanta/core/engine/Context.h"
 #include "quanta/core/runtime/Object.h"
+#include "quanta/core/runtime/Symbol.h"
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <cstring>
 #include <memory>
@@ -33,24 +35,19 @@ void register_math_builtins(Context& ctx) {
 
     auto math_max_fn = ObjectFactory::create_native_function("max",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                return Value::negative_infinity();
-            }
-
-            double result = -std::numeric_limits<double>::infinity();
+            // Every argument is coerced before any NaN short-circuits.
+            std::vector<double> coerced;
+            coerced.reserve(args.size());
             for (const Value& arg : args) {
-                if (arg.is_nan()) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-                double value = arg.to_number();
-                if (std::isnan(value)) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-                // Handle +0/-0: +0 > -0 per spec
-                if (value == 0.0 && result == 0.0) {
-                    if (std::signbit(result) && !std::signbit(value)) result = value;
-                } else {
-                    result = std::max(result, value);
+                coerced.push_back(arg.to_number());
+                if (ctx.has_exception()) return Value();
+            }
+            double result = -std::numeric_limits<double>::infinity();
+            for (double value : coerced) {
+                if (std::isnan(value)) return Value(std::numeric_limits<double>::quiet_NaN());
+                if (value > result || (value == 0.0 && result == 0.0 &&
+                                       std::signbit(result) && !std::signbit(value))) {
+                    result = value;
                 }
             }
             return Value(result);
@@ -59,24 +56,18 @@ void register_math_builtins(Context& ctx) {
 
     auto math_min_fn = ObjectFactory::create_native_function("min",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                return Value::positive_infinity();
-            }
-
-            double result = std::numeric_limits<double>::infinity();
+            std::vector<double> coerced;
+            coerced.reserve(args.size());
             for (const Value& arg : args) {
-                if (arg.is_nan()) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-                double value = arg.to_number();
-                if (std::isnan(value)) {
-                    return Value(std::numeric_limits<double>::quiet_NaN());
-                }
-                // Handle +0/-0: -0 < +0 per spec
-                if (value == 0.0 && result == 0.0) {
-                    if (!std::signbit(result) && std::signbit(value)) result = value;
-                } else {
-                    result = std::min(result, value);
+                coerced.push_back(arg.to_number());
+                if (ctx.has_exception()) return Value();
+            }
+            double result = std::numeric_limits<double>::infinity();
+            for (double value : coerced) {
+                if (std::isnan(value)) return Value(std::numeric_limits<double>::quiet_NaN());
+                if (value < result || (value == 0.0 && result == 0.0 &&
+                                       !std::signbit(result) && std::signbit(value))) {
+                    result = value;
                 }
             }
             return Value(result);
@@ -90,7 +81,14 @@ void register_math_builtins(Context& ctx) {
             }
 
             double value = args[0].to_number();
-            return Value(std::round(value));
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(value) || std::isinf(value) || value == 0.0) return Value(value);
+            // Halfway cases round toward +Infinity; computed without the x+0.5
+            // precision loss (e.g. round(0.49999999999999994) must be 0).
+            double f = std::floor(value);
+            double result = (value - f >= 0.5) ? f + 1.0 : f;
+            if (result == 0.0 && std::signbit(value)) return Value(-0.0);
+            return Value(result);
         }, 1);
     math_object->set_property("round", Value(store_fn(std::move(math_round_fn))), PropertyAttributes::BuiltinFunction);
 
@@ -141,8 +139,17 @@ void register_math_builtins(Context& ctx) {
     auto math_pow_fn = ObjectFactory::create_native_function("pow",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.size() < 2) return Value(std::numeric_limits<double>::quiet_NaN());
-            return Value(std::pow(args[0].to_number(), args[1].to_number()));
+            double base = (args.empty() ? Value() : args[0]).to_number();
+            if (ctx.has_exception()) return Value();
+            double exp = (args.size() > 1 ? args[1] : Value()).to_number();
+            if (ctx.has_exception()) return Value();
+            // JS diverges from C99 pow: NaN exponent always yields NaN (even for
+            // base 1), and (+-1) ** +-Infinity is NaN rather than 1.
+            if (std::isnan(exp)) return Value(exp);
+            if (std::isinf(exp) && (base == 1.0 || base == -1.0)) {
+                return Value(std::numeric_limits<double>::quiet_NaN());
+            }
+            return Value(std::pow(base, exp));
         }, 2);
     math_object->set_property("pow", Value(store_fn(std::move(math_pow_fn))), PropertyAttributes::BuiltinFunction);
 
@@ -197,10 +204,9 @@ void register_math_builtins(Context& ctx) {
     auto math_trunc_fn = ObjectFactory::create_native_function("trunc",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value(0.0);
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             double val = args[0].to_number();
-            if (std::isinf(val)) return Value(val);
-            if (std::isnan(val)) return Value(0.0);
+            if (std::isnan(val) || std::isinf(val)) return Value(val);
             return Value(std::trunc(val));
         }, 1);
     math_object->set_property("trunc", Value(store_fn(std::move(math_trunc_fn))), PropertyAttributes::BuiltinFunction);
@@ -208,9 +214,9 @@ void register_math_builtins(Context& ctx) {
     auto math_sign_fn = ObjectFactory::create_native_function("sign",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)ctx;
-            if (args.empty()) return Value(0.0);
+            if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             double val = args[0].to_number();
-            if (std::isnan(val)) return Value(0.0);
+            if (std::isnan(val)) return Value(val);
             if (val > 0) return Value(1.0);
             if (val < 0) return Value(-1.0);
             return Value(val);
@@ -404,33 +410,159 @@ void register_math_builtins(Context& ctx) {
     PropertyDescriptor math_tag_desc(Value(std::string("Math")), PropertyAttributes::Configurable);
     math_object->set_property_descriptor("Symbol.toStringTag", math_tag_desc);
 
-    // ES2024: Math.f16round -- round to nearest IEEE 754 float16 representation.
+    // ES2024: Math.f16round -- round to nearest-even IEEE 754 float16 value.
     auto math_f16round_fn = ObjectFactory::create_native_function("f16round",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            (void)ctx;
             if (args.empty()) return Value(std::numeric_limits<double>::quiet_NaN());
             double x = args[0].to_number();
-            if (std::isnan(x)) return Value(std::numeric_limits<double>::quiet_NaN());
-            if (std::isinf(x) || x == 0.0) return Value(x);
-            // Convert to float16 bit pattern and back (sign=1b, exp=5b bias-15, mantissa=10b).
-            uint64_t bits; memcpy(&bits, &x, 8);
-            int sign = (bits >> 63) & 1;
-            int exp64 = (bits >> 52) & 0x7FF;
-            uint64_t mant64 = bits & 0x000FFFFFFFFFFFFFULL;
-            int exp16 = exp64 - 1023 + 15;
-            if (exp16 >= 31) return Value(sign ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity());
-            if (exp16 <= 0) { return Value(sign ? -0.0 : 0.0); }
-            uint16_t mant16 = static_cast<uint16_t>(mant64 >> 42);
-            uint16_t h = (sign << 15) | (exp16 << 10) | mant16;
-            int s16 = (h >> 15) & 1;
-            int e16 = (h >> 10) & 0x1F;
-            int m16 = h & 0x3FF;
+            if (ctx.has_exception()) return Value();
+            if (std::isnan(x) || std::isinf(x) || x == 0.0) return Value(x);
+            double a = std::fabs(x);
+            double sign = std::signbit(x) ? -1.0 : 1.0;
+            // Beyond the max-half/infinity midpoint (65504 + 16) everything rounds to Infinity.
+            if (a >= 65520.0) return Value(sign * std::numeric_limits<double>::infinity());
             double result;
-            if (e16 == 0) result = (m16 / 1024.0) * std::pow(2.0, -14);
-            else result = (1.0 + m16 / 1024.0) * std::pow(2.0, e16 - 15);
-            return Value(s16 ? -result : result);
+            if (a < std::ldexp(1.0, -14)) {
+                // Subnormal half: quantum 2^-24; scaling by powers of two is exact,
+                // nearbyint gives the required round-to-nearest-even in one rounding.
+                result = std::ldexp(std::nearbyint(std::ldexp(a, 24)), -24);
+            } else {
+                int e;
+                std::frexp(a, &e);
+                --e;
+                result = std::ldexp(std::nearbyint(std::ldexp(a, 10 - e)), e - 10);
+            }
+            if (result == 0.0) return Value(sign * 0.0);
+            return Value(sign * result);
         }, 1);
     math_object->set_property("f16round", Value(math_f16round_fn.release()), PropertyAttributes::BuiltinFunction);
+
+    // Math.sumPrecise: exact summation via a fixed-point superaccumulator wide
+    // enough for the full double exponent range, correctly rounded at the end.
+    auto math_sumPrecise_fn = ObjectFactory::create_native_function("sumPrecise",
+        [](Context& ctx, const std::vector<Value>& args) -> Value {
+            Value iterable = args.empty() ? Value() : args[0];
+            Object* obj = iterable.is_object() ? iterable.as_object()
+                        : iterable.is_function() ? static_cast<Object*>(iterable.as_function()) : nullptr;
+            if (!obj) { ctx.throw_type_error("Math.sumPrecise requires an iterable"); return Value(); }
+            Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
+            Value iter_fn = iter_sym ? obj->get_property(iter_sym->to_property_key()) : Value();
+            if (ctx.has_exception()) return Value();
+            if (!iter_fn.is_function()) { ctx.throw_type_error("Math.sumPrecise requires an iterable"); return Value(); }
+            Value iterator = iter_fn.as_function()->call(ctx, {}, iterable);
+            if (ctx.has_exception()) return Value();
+            Object* it = iterator.is_object() ? iterator.as_object() : nullptr;
+            if (!it) { ctx.throw_type_error("iterator is not an object"); return Value(); }
+            Value next_fn = it->get_property("next");
+            if (ctx.has_exception()) return Value();
+            if (!next_fn.is_function()) { ctx.throw_type_error("iterator has no next method"); return Value(); }
+
+            // IteratorClose: preserves the pending exception across the return() call.
+            auto close_iterator = [&](Object* iter_obj) {
+                bool had = ctx.has_exception();
+                Value saved = ctx.get_exception();
+                ctx.clear_exception();
+                Value ret = iter_obj->get_property("return");
+                if (!ctx.has_exception() && ret.is_function()) {
+                    ret.as_function()->call(ctx, {}, Value(iter_obj));
+                }
+                ctx.clear_exception();
+                if (had) ctx.throw_exception(saved, true);
+            };
+
+            // Bit b of the accumulator has weight 2^(b-1074); 70 words cover the
+            // whole finite range plus carry headroom. Words carry signed partial
+            // sums in base 2^32, normalized during final extraction.
+            constexpr int kWords = 70;
+            int64_t acc[kWords] = {0};
+            bool all_minus_zero = true;
+            bool seen_nan = false, seen_pos_inf = false, seen_neg_inf = false;
+
+            while (true) {
+                Value res = next_fn.as_function()->call(ctx, {}, iterator);
+                if (ctx.has_exception()) return Value();
+                if (!res.is_object()) { ctx.throw_type_error("iterator result is not an object"); return Value(); }
+                Value done = res.as_object()->get_property("done");
+                if (ctx.has_exception()) return Value();
+                if (done.to_boolean()) break;
+                Value v = res.as_object()->get_property("value");
+                if (ctx.has_exception()) return Value();
+                if (!v.is_number()) {
+                    ctx.throw_type_error("Math.sumPrecise: all elements must be numbers");
+                    close_iterator(it);
+                    return Value();
+                }
+                double d = v.as_number();
+                if (std::isnan(d)) { seen_nan = true; continue; }
+                if (std::isinf(d)) { (d > 0 ? seen_pos_inf : seen_neg_inf) = true; all_minus_zero = false; continue; }
+                if (d == 0.0) { if (!std::signbit(d)) all_minus_zero = false; continue; }
+                all_minus_zero = false;
+
+                uint64_t bits;
+                std::memcpy(&bits, &d, 8);
+                uint64_t mant = bits & 0x000FFFFFFFFFFFFFULL;
+                int biased = static_cast<int>((bits >> 52) & 0x7FF);
+                int shift;
+                if (biased == 0) { shift = 0; } else { mant |= (1ULL << 52); shift = biased - 1; }
+                int64_t s = (bits >> 63) ? -1 : 1;
+                int word = shift / 32, off = shift % 32;
+                unsigned __int128 wide = static_cast<unsigned __int128>(mant) << off;
+                for (int k = 0; k < 3; ++k) {
+                    acc[word + k] += s * static_cast<int64_t>(static_cast<uint32_t>(wide >> (32 * k)));
+                }
+            }
+
+            if (seen_nan || (seen_pos_inf && seen_neg_inf)) return Value(std::numeric_limits<double>::quiet_NaN());
+            if (seen_pos_inf) return Value(std::numeric_limits<double>::infinity());
+            if (seen_neg_inf) return Value(-std::numeric_limits<double>::infinity());
+            if (all_minus_zero) return Value(-0.0);
+
+            // Normalize to words in [0, 2^32); a negative final carry means the sum is negative.
+            int64_t carry = 0;
+            for (int i = 0; i < kWords; ++i) {
+                int64_t w = acc[i] + carry;
+                carry = w >> 32;
+                acc[i] = w & 0xFFFFFFFFLL;
+            }
+            double sign = 1.0;
+            if (carry < 0) {
+                sign = -1.0;
+                int64_t borrow = 0;
+                for (int i = 0; i < kWords; ++i) {
+                    int64_t w = -acc[i] + borrow;
+                    borrow = w >> 32;
+                    acc[i] = w & 0xFFFFFFFFLL;
+                }
+            }
+
+            int top = kWords - 1;
+            while (top >= 0 && acc[top] == 0) --top;
+            if (top < 0) return Value(0.0);
+            int msb = 31;
+            while (!((acc[top] >> msb) & 1)) --msb;
+            long long p = top * 32 + msb;
+
+            auto bit_at = [&](long long b) -> int {
+                if (b < 0) return 0;
+                return static_cast<int>((acc[b / 32] >> (b % 32)) & 1);
+            };
+            uint64_t mant = 0;
+            for (long long b = p; b > p - 53 && b >= 0; --b) mant = (mant << 1) | bit_at(b);
+            long long low = p - 52;
+            if (low > 0) {
+                int round = bit_at(low - 1);
+                bool sticky = false;
+                for (long long b = low - 2; b >= 0 && !sticky; --b) sticky = bit_at(b);
+                if (round && (sticky || (mant & 1))) ++mant;
+            } else {
+                // Fewer than 53 significant bits: the value is exact as-is.
+                low = 0;
+                mant = 0;
+                for (long long b = p; b >= 0; --b) mant = (mant << 1) | bit_at(b);
+            }
+            return Value(sign * std::ldexp(static_cast<double>(mant), static_cast<int>(low) - 1074));
+        }, 1);
+    math_object->set_property("sumPrecise", Value(math_sumPrecise_fn.release()), PropertyAttributes::BuiltinFunction);
 
     ctx.register_built_in_object("Math", math_object.release());
 }

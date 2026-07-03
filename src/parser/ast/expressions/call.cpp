@@ -1705,50 +1705,6 @@ Value CallExpression::handle_member_expression_call(Context& ctx) {
     }
     
     
-    if (member->get_object()->get_type() == ASTNode::Type::IDENTIFIER &&
-        member->get_property()->get_type() == ASTNode::Type::IDENTIFIER) {
-        
-        Identifier* obj = static_cast<Identifier*>(member->get_object());
-        Identifier* prop = static_cast<Identifier*>(member->get_property());
-        
-        if (obj->get_name() == "Math") {
-            std::string method_name = prop->get_name();
-
-            std::vector<Value> arg_values = process_arguments_with_spread(arguments_, ctx);
-            if (ctx.has_exception()) return Value();
-
-            if (method_name == "abs") {
-                return Math::abs(ctx, arg_values);
-            } else if (method_name == "sqrt") {
-                return Math::sqrt(ctx, arg_values);
-            } else if (method_name == "max") {
-                return Math::max(ctx, arg_values);
-            } else if (method_name == "min") {
-                return Math::min(ctx, arg_values);
-            } else if (method_name == "round") {
-                return Math::round(ctx, arg_values);
-            } else if (method_name == "floor") {
-                return Math::floor(ctx, arg_values);
-            } else if (method_name == "ceil") {
-                return Math::ceil(ctx, arg_values);
-            } else if (method_name == "pow") {
-                return Math::pow(ctx, arg_values);
-            } else if (method_name == "sin") {
-                return Math::sin(ctx, arg_values);
-            } else if (method_name == "cos") {
-                return Math::cos(ctx, arg_values);
-            } else if (method_name == "tan") {
-                return Math::tan(ctx, arg_values);
-            } else if (method_name == "log") {
-                return Math::log(ctx, arg_values);
-            } else if (method_name == "exp") {
-                return Math::exp(ctx, arg_values);
-            } else if (method_name == "random") {
-                return Math::random(ctx, arg_values);
-            }
-        }
-    }
-
     Value object_value = member->get_object()->evaluate(ctx);
     if (ctx.has_exception()) {
         return Value();
