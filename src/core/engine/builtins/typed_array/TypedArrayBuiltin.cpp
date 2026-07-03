@@ -21,6 +21,177 @@ namespace Quanta {
 
 static void register_uint8array_base64_hex(Context& ctx); // forward declaration
 
+// Uint8Array base64/hex codec (shared by fromBase64/fromHex statics and setFromBase64/setFromHex/toBase64/toHex prototype methods)
+namespace Base64Codec {
+
+enum class LastChunkHandling { Loose, Strict, StopBeforePartial };
+
+struct DecodeResult {
+    size_t read = 0;
+    std::vector<uint8_t> bytes;
+    bool error = false;
+};
+
+inline bool is_ascii_whitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r';
+}
+
+inline int decode_char(char c, bool url_safe) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (url_safe) { if (c == '-') return 62; if (c == '_') return 63; }
+    else { if (c == '+') return 62; if (c == '/') return 63; }
+    return -1;
+}
+
+// FromBase64: decodes 4-character quanta at a time. On error, keeps whatever
+// bytes prior groups already produced (callers write those before throwing).
+// A whole group that would exceed max_length is left unconsumed instead.
+inline DecodeResult decode(const std::string& s, bool url_safe, LastChunkHandling mode, size_t max_length) {
+    DecodeResult result;
+    size_t i = 0, n = s.size();
+
+    while (i < n) {
+        // Output already full: stop without inspecting any more input, even invalid input.
+        if (result.bytes.size() >= max_length) break;
+
+        size_t group_start = i;
+        int slot_vals[4];
+        int real_count = 0, pad_count = 0, slots_filled = 0;
+
+        while (slots_filled < 4 && i < n) {
+            char c = s[i];
+            if (is_ascii_whitespace(c)) { ++i; continue; }
+            if (c == '=') {
+                if (real_count < 2) { result.error = true; return result; }
+                ++pad_count; ++slots_filled; ++i;
+                continue;
+            }
+            int v = decode_char(c, url_safe);
+            if (v < 0 || pad_count > 0) { result.error = true; return result; }
+            slot_vals[real_count++] = v;
+            ++slots_filled;
+            ++i;
+        }
+
+        if (slots_filled < 4) {
+            if (real_count == 0 && pad_count == 0) break; // clean end on a group boundary
+            if (mode == LastChunkHandling::StopBeforePartial) {
+                result.read = group_start;
+                return result;
+            }
+            if (real_count <= 1 || pad_count > 0) { result.error = true; return result; } // never completable
+            if (mode == LastChunkHandling::Strict) { result.error = true; return result; }
+            // Loose, 2 or 3 real chars, no padding at all: decode as if implicitly padded.
+        } else if (pad_count > 0) {
+            // A complete padded group must end the input; anything left over is garbage.
+            size_t j = i;
+            while (j < n && is_ascii_whitespace(s[j])) ++j;
+            if (j < n) { result.error = true; return result; }
+        }
+
+        std::vector<uint8_t> group_bytes;
+        if (real_count == 4) {
+            group_bytes.push_back(static_cast<uint8_t>((slot_vals[0] << 2) | (slot_vals[1] >> 4)));
+            group_bytes.push_back(static_cast<uint8_t>(((slot_vals[1] & 0xF) << 4) | (slot_vals[2] >> 2)));
+            group_bytes.push_back(static_cast<uint8_t>(((slot_vals[2] & 0x3) << 6) | slot_vals[3]));
+        } else if (real_count == 3) {
+            if (mode == LastChunkHandling::Strict && (slot_vals[2] & 0x3) != 0) { result.error = true; return result; }
+            group_bytes.push_back(static_cast<uint8_t>((slot_vals[0] << 2) | (slot_vals[1] >> 4)));
+            group_bytes.push_back(static_cast<uint8_t>(((slot_vals[1] & 0xF) << 4) | (slot_vals[2] >> 2)));
+        } else if (real_count == 2) {
+            if (mode == LastChunkHandling::Strict && (slot_vals[1] & 0xF) != 0) { result.error = true; return result; }
+            group_bytes.push_back(static_cast<uint8_t>((slot_vals[0] << 2) | (slot_vals[1] >> 4)));
+        }
+
+        if (result.bytes.size() + group_bytes.size() > max_length) {
+            result.read = group_start;
+            return result;
+        }
+        result.bytes.insert(result.bytes.end(), group_bytes.begin(), group_bytes.end());
+        result.read = i;
+    }
+    return result;
+}
+
+inline void encode(const uint8_t* data, size_t n, bool url_safe, bool omit_padding, std::string& out) {
+    static const char* std_tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    static const char* url_tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const char* tbl = url_safe ? url_tbl : std_tbl;
+    for (size_t i = 0; i < n; i += 3) {
+        uint8_t b0 = data[i], b1 = i + 1 < n ? data[i + 1] : 0, b2 = i + 2 < n ? data[i + 2] : 0;
+        out += tbl[b0 >> 2];
+        out += tbl[((b0 & 3) << 4) | (b1 >> 4)];
+        if (i + 1 < n) out += tbl[((b1 & 0xF) << 2) | (b2 >> 6)];
+        else if (!omit_padding) out += '=';
+        if (i + 2 < n) out += tbl[b2 & 0x3F];
+        else if (!omit_padding) out += '=';
+    }
+}
+
+inline int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// FromHex: stops (without erroring) once a further pair would exceed max_length.
+inline DecodeResult decode_hex(const std::string& s, size_t max_length) {
+    DecodeResult result;
+    size_t n = s.size();
+    // Odd length is checked upfront: unlike a bad character, it writes nothing at all.
+    if (n % 2 != 0) { result.error = true; return result; }
+    size_t i = 0;
+    while (i < n) {
+        int hi = hex_digit(s[i]), lo = hex_digit(s[i + 1]);
+        if (hi < 0 || lo < 0) { result.error = true; return result; }
+        if (result.bytes.size() + 1 > max_length) { result.read = i; return result; }
+        result.bytes.push_back(static_cast<uint8_t>((hi << 4) | lo));
+        i += 2;
+        result.read = i;
+    }
+    return result;
+}
+
+inline void encode_hex(const uint8_t* data, size_t n, std::string& out) {
+    static const char* digits = "0123456789abcdef";
+    out.reserve(out.size() + n * 2);
+    for (size_t i = 0; i < n; i++) {
+        out += digits[data[i] >> 4];
+        out += digits[data[i] & 0xF];
+    }
+}
+
+// GetOption: reads options[name] (firing any getter) and requires it be exactly
+// a primitive string among the given choices -- never coerced via ToString.
+inline bool read_string_enum_option(Context& ctx, Object* options, const char* name,
+                                     std::initializer_list<const char*> choices,
+                                     const std::string& fallback, std::string& out) {
+    Value v = options->get_property(name);
+    if (ctx.has_exception()) return false;
+    if (v.is_undefined()) { out = fallback; return true; }
+    if (!v.is_string()) {
+        ctx.throw_type_error(std::string(name) + " must be a string");
+        return false;
+    }
+    const std::string& s = v.as_string()->str();
+    for (const char* c : choices) {
+        if (s == c) { out = s; return true; }
+    }
+    ctx.throw_type_error(std::string("Invalid ") + name + ": " + s);
+    return false;
+}
+
+inline LastChunkHandling parse_last_chunk_handling(const std::string& s) {
+    if (s == "strict") return LastChunkHandling::Strict;
+    if (s == "stop-before-partial") return LastChunkHandling::StopBeforePartial;
+    return LastChunkHandling::Loose;
+}
+
+} // namespace Base64Codec
+
 // ToString via ToPrimitive("string"): Value::to_string() for objects ignores user toString.
 static std::string to_string_via_toprimitive(Context& ctx, const Value& v) {
     if (v.is_symbol()) { ctx.throw_type_error("Cannot convert a Symbol value to a string"); return ""; }
@@ -425,68 +596,46 @@ void register_typed_array_builtins(Context& ctx) {
             if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
             return construct_typed_array_generic(ctx, args, TypedArrayBase::ArrayType::UINT8, 1);
         }, 3);
-    // ES2025: Uint8Array.fromBase64 / fromHex static methods
+    // ES2025: fromBase64/fromHex ignore their receiver -- always %Uint8Array.prototype%,
+    // even called as Subclass.fromBase64(...).
     {
-        // fromHex(str) -> Uint8Array
+        auto make_result = [](Context& ctx, const std::vector<uint8_t>& bytes) -> Value {
+            auto ta = TypedArrayFactory::create_uint8_array(bytes.size());
+            for (size_t j = 0; j < bytes.size(); j++) ta->set_element(j, Value(static_cast<double>(bytes[j])));
+            Object* u8ctor = ctx.get_built_in_object("Uint8Array");
+            Value proto = u8ctor ? u8ctor->get_property("prototype") : Value();
+            if (proto.is_object()) ta->set_prototype(proto.as_object());
+            return Value(ta.release());
+        };
+
         auto fromHex_fn = ObjectFactory::create_native_function("fromHex",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [make_result](Context& ctx, const std::vector<Value>& args) -> Value {
                 if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromHex requires a string"); return Value(); }
-                const std::string& hex = args[0].as_string()->str();
-                if (hex.size() % 2 != 0) { ctx.throw_syntax_error("fromHex: odd-length string"); return Value(); }
-                auto ta = TypedArrayFactory::create_uint8_array(hex.size() / 2);
-                for (size_t i = 0; i < hex.size(); i += 2) {
-                    auto h = [](char c) -> int {
-                        if (c >= '0' && c <= '9') return c - '0';
-                        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                        return -1;
-                    };
-                    int hi = h(hex[i]), lo = h(hex[i+1]);
-                    if (hi < 0 || lo < 0) { ctx.throw_syntax_error("fromHex: invalid hex character"); return Value(); }
-                    ta->set_element(i/2, Value((double)((hi << 4) | lo)));
-                }
-                return Value(ta.release());
+                auto result = Base64Codec::decode_hex(args[0].as_string()->str(), SIZE_MAX);
+                if (result.error) { ctx.throw_syntax_error("Uint8Array.fromHex: invalid hex string"); return Value(); }
+                return make_result(ctx, result.bytes);
             }, 1);
         uint8array_constructor->set_property("fromHex", Value(fromHex_fn.release()), PropertyAttributes::BuiltinFunction);
 
-        // fromBase64(str, {alphabet, lastChunkHandling}) → Uint8Array
         auto fromBase64_fn = ObjectFactory::create_native_function("fromBase64",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [make_result](Context& ctx, const std::vector<Value>& args) -> Value {
                 if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("fromBase64 requires a string"); return Value(); }
-                std::string str = args[0].as_string()->str();
                 bool url_safe = false;
-                if (args.size() > 1 && args[1].is_object()) {
-                    Value alph = args[1].as_object()->get_property("alphabet");
-                    if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
+                Base64Codec::LastChunkHandling mode = Base64Codec::LastChunkHandling::Loose;
+                if (args.size() > 1 && (args[1].is_object() || args[1].is_function())) {
+                    Object* opts = args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
+                    std::string alphabet, last_chunk;
+                    if (!Base64Codec::read_string_enum_option(ctx, opts, "alphabet", {"base64", "base64url"}, "base64", alphabet)) return Value();
+                    url_safe = alphabet == "base64url";
+                    if (!Base64Codec::read_string_enum_option(ctx, opts, "lastChunkHandling", {"loose", "strict", "stop-before-partial"}, "loose", last_chunk)) return Value();
+                    mode = Base64Codec::parse_last_chunk_handling(last_chunk);
+                } else if (args.size() > 1 && !args[1].is_undefined()) {
+                    ctx.throw_type_error("options must be an object");
+                    return Value();
                 }
-                // decode base64
-                auto decode_char = [url_safe](char c) -> int {
-                    if (c >= 'A' && c <= 'Z') return c - 'A';
-                    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-                    if (c >= '0' && c <= '9') return c - '0' + 52;
-                    if (url_safe) { if (c == '-') return 62; if (c == '_') return 63; }
-                    else          { if (c == '+') return 62; if (c == '/') return 63; }
-                    return -1;
-                };
-                // strip padding/whitespace, validate
-                std::string clean;
-                for (char c : str) { if (c == '=') break; if (c != ' ' && c != '\t' && c != '\n' && c != '\r') clean += c; }
-                std::vector<uint8_t> bytes;
-                size_t i = 0;
-                while (i < clean.size()) {
-                    int b0 = i < clean.size() ? decode_char(clean[i++]) : 0;
-                    int b1 = i < clean.size() ? decode_char(clean[i++]) : 0;
-                    int b2 = i < clean.size() ? decode_char(clean[i++]) : -2; // -2 = absent
-                    int b3 = i < clean.size() ? decode_char(clean[i++]) : -2;
-                    if (b0 < 0 || b1 < 0) { ctx.throw_syntax_error("fromBase64: invalid character"); return Value(); }
-                    if (b2 < -1 || b3 < -1) { ctx.throw_syntax_error("fromBase64: invalid character"); return Value(); }
-                    bytes.push_back((b0 << 2) | (b1 >> 4));
-                    if (b2 >= 0) bytes.push_back(((b1 & 0xF) << 4) | (b2 >> 2));
-                    if (b3 >= 0) bytes.push_back(((b2 & 0x3) << 6) | b3);
-                }
-                auto ta = TypedArrayFactory::create_uint8_array(bytes.size());
-                for (size_t j = 0; j < bytes.size(); j++) ta->set_element(j, Value((double)bytes[j]));
-                return Value(ta.release());
+                auto result = Base64Codec::decode(args[0].as_string()->str(), url_safe, mode, SIZE_MAX);
+                if (result.error) { ctx.throw_syntax_error("Uint8Array.fromBase64: invalid base64 string"); return Value(); }
+                return make_result(ctx, result.bytes);
             }, 1);
         uint8array_constructor->set_property("fromBase64", Value(fromBase64_fn.release()), PropertyAttributes::BuiltinFunction);
     }
@@ -1970,138 +2119,107 @@ static void register_uint8array_base64_hex(Context& ctx) {
     if (!proto_val.is_object()) return;
     Object* proto = proto_val.as_object();
 
+    // Callers read options (firing any getter) before calling this, so a detach
+    // triggered from within an option getter is caught here.
+    auto validate_uint8array = [](Context& ctx, const char* name) -> TypedArrayBase* {
+        Object* obj = ctx.get_this_binding();
+        if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
+            ctx.throw_type_error(std::string(name) + " requires a Uint8Array this");
+            return nullptr;
+        }
+        TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
+        if (ta->is_out_of_bounds()) { ctx.throw_type_error(std::string(name) + ": TypedArray is out of bounds"); return nullptr; }
+        return ta;
+    };
+
     proto->set_property("toHex", Value(ObjectFactory::create_native_function("toHex",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
+        [validate_uint8array](Context& ctx, const std::vector<Value>& args) -> Value {
             (void)args;
-            Object* obj = ctx.get_this_binding();
-            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("toHex: not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
-            if (ta->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("toHex: requires Uint8Array"); return Value(); }
-            if (ta->is_out_of_bounds()) { ctx.throw_type_error("toHex: TypedArray is out of bounds"); return Value(); }
-            static const char hex[] = "0123456789abcdef";
+            TypedArrayBase* ta = validate_uint8array(ctx, "toHex");
+            if (!ta) return Value();
             std::string result;
-            result.reserve(ta->length() * 2);
-            for (size_t i = 0; i < ta->length(); i++) {
-                uint8_t b = static_cast<uint8_t>(ta->get_element(i).to_number());
-                result += hex[b >> 4];
-                result += hex[b & 0xF];
-            }
+            size_t n = ta->length();
+            std::vector<uint8_t> bytes(n);
+            for (size_t i = 0; i < n; i++) bytes[i] = static_cast<uint8_t>(ta->get_element(i).to_number());
+            Base64Codec::encode_hex(bytes.data(), n, result);
             return Value(result);
         }, 0).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("toBase64", Value(ObjectFactory::create_native_function("toBase64",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* obj = ctx.get_this_binding();
-            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("toBase64: not a TypedArray"); return Value(); }
-            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
-            if (ta->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("toBase64: requires Uint8Array"); return Value(); }
-            if (ta->is_out_of_bounds()) { ctx.throw_type_error("toBase64: TypedArray is out of bounds"); return Value(); }
+            if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
+                ctx.throw_type_error("toBase64 requires a Uint8Array this");
+                return Value();
+            }
             bool url_safe = false, omit_padding = false;
-            if (!args.empty() && args[0].is_object()) {
-                Value alph = args[0].as_object()->get_property("alphabet");
-                if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
-                Value op = args[0].as_object()->get_property("omitPadding");
-                if (!op.is_undefined()) omit_padding = op.to_boolean();
+            if (!args.empty() && (args[0].is_object() || args[0].is_function())) {
+                Object* opts = args[0].is_function() ? static_cast<Object*>(args[0].as_function()) : args[0].as_object();
+                std::string alphabet;
+                if (!Base64Codec::read_string_enum_option(ctx, opts, "alphabet", {"base64", "base64url"}, "base64", alphabet)) return Value();
+                url_safe = alphabet == "base64url";
+                Value op = opts->get_property("omitPadding");
+                if (ctx.has_exception()) return Value();
+                omit_padding = op.to_boolean();
+            } else if (!args.empty() && !args[0].is_undefined()) {
+                ctx.throw_type_error("options must be an object");
+                return Value();
             }
-            const char* tbl = url_safe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-                                        : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            std::string result;
+            // Detachedness is checked only after the options object's side effects finish.
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("toBase64: TypedArray is out of bounds"); return Value(); }
             size_t n = ta->length();
-            for (size_t i = 0; i < n; i += 3) {
-                uint8_t b0 = static_cast<uint8_t>(ta->get_element(i).to_number());
-                uint8_t b1 = i+1 < n ? static_cast<uint8_t>(ta->get_element(i+1).to_number()) : 0;
-                uint8_t b2 = i+2 < n ? static_cast<uint8_t>(ta->get_element(i+2).to_number()) : 0;
-                result += tbl[b0 >> 2];
-                result += tbl[((b0 & 3) << 4) | (b1 >> 4)];
-                if (i+1 < n) result += tbl[((b1 & 0xF) << 2) | (b2 >> 6)];
-                else if (!omit_padding) result += '=';
-                if (i+2 < n) result += tbl[b2 & 0x3F];
-                else if (!omit_padding) result += '=';
-            }
+            std::vector<uint8_t> bytes(n);
+            for (size_t i = 0; i < n; i++) bytes[i] = static_cast<uint8_t>(ta->get_element(i).to_number());
+            std::string result;
+            Base64Codec::encode(bytes.data(), n, url_safe, omit_padding, result);
             return Value(result);
         }, 0).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("setFromHex", Value(ObjectFactory::create_native_function("setFromHex",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* obj = ctx.get_this_binding();
-            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("setFromHex: not a TypedArray"); return Value(); }
-            TypedArrayBase* ta2 = static_cast<TypedArrayBase*>(obj);
-            if (ta2->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("setFromHex: requires Uint8Array"); return Value(); }
-            if (ta2->is_out_of_bounds()) { ctx.throw_type_error("setFromHex: TypedArray is out of bounds"); return Value(); }
+        [validate_uint8array](Context& ctx, const std::vector<Value>& args) -> Value {
             if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromHex requires a string"); return Value(); }
-            TypedArrayBase* ta = ta2;
-            const std::string& hex = args[0].as_string()->str();
-            if (hex.size() % 2 != 0) { ctx.throw_syntax_error("setFromHex: odd-length string"); return Value(); }
-            auto h = [](char c) -> int {
-                if (c >= '0' && c <= '9') return c - '0';
-                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-                return -1;
-            };
-            size_t written = 0;
-            for (size_t i = 0; i < hex.size() && written < ta->length(); i += 2, written++) {
-                int hi = h(hex[i]), lo = h(hex[i+1]);
-                if (hi < 0 || lo < 0) { ctx.throw_syntax_error("setFromHex: invalid hex character"); return Value(); }
-                ta->set_element(written, Value((double)((hi << 4) | lo)));
-            }
+            TypedArrayBase* ta = validate_uint8array(ctx, "setFromHex");
+            if (!ta) return Value();
+            auto result = Base64Codec::decode_hex(args[0].as_string()->str(), ta->length());
+            for (size_t i = 0; i < result.bytes.size(); i++) ta->set_element(i, Value(static_cast<double>(result.bytes[i])));
+            if (result.error) { ctx.throw_syntax_error("setFromHex: invalid hex string"); return Value(); }
             auto res = ObjectFactory::create_object();
-            res->set_property("read", Value((double)(written * 2)));
-            res->set_property("written", Value((double)written));
+            res->set_property("read", Value(static_cast<double>(result.read)));
+            res->set_property("written", Value(static_cast<double>(result.bytes.size())));
             return Value(res.release());
         }, 1).release()), PropertyAttributes::BuiltinFunction);
 
     proto->set_property("setFromBase64", Value(ObjectFactory::create_native_function("setFromBase64",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            Object* obj = ctx.get_this_binding();
-            if (!obj || !obj->is_typed_array()) { ctx.throw_type_error("setFromBase64: not a TypedArray"); return Value(); }
-            TypedArrayBase* ta2 = static_cast<TypedArrayBase*>(obj);
-            if (ta2->get_array_type() != TypedArrayBase::ArrayType::UINT8) { ctx.throw_type_error("setFromBase64: requires Uint8Array"); return Value(); }
-            if (ta2->is_out_of_bounds()) { ctx.throw_type_error("setFromBase64: TypedArray is out of bounds"); return Value(); }
             if (args.empty() || !args[0].is_string()) { ctx.throw_type_error("setFromBase64 requires a string"); return Value(); }
-            TypedArrayBase* ta = ta2;
-            std::string str = args[0].as_string()->str();
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_typed_array() || static_cast<TypedArrayBase*>(obj)->get_array_type() != TypedArrayBase::ArrayType::UINT8) {
+                ctx.throw_type_error("setFromBase64 requires a Uint8Array this");
+                return Value();
+            }
             bool url_safe = false;
-            if (args.size() > 1 && args[1].is_object()) {
-                Value alph = args[1].as_object()->get_property("alphabet");
-                if (!alph.is_undefined() && alph.to_string() == "base64url") url_safe = true;
+            Base64Codec::LastChunkHandling mode = Base64Codec::LastChunkHandling::Loose;
+            if (args.size() > 1 && (args[1].is_object() || args[1].is_function())) {
+                Object* opts = args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
+                std::string alphabet, last_chunk;
+                if (!Base64Codec::read_string_enum_option(ctx, opts, "alphabet", {"base64", "base64url"}, "base64", alphabet)) return Value();
+                url_safe = alphabet == "base64url";
+                if (!Base64Codec::read_string_enum_option(ctx, opts, "lastChunkHandling", {"loose", "strict", "stop-before-partial"}, "loose", last_chunk)) return Value();
+                mode = Base64Codec::parse_last_chunk_handling(last_chunk);
+            } else if (args.size() > 1 && !args[1].is_undefined()) {
+                ctx.throw_type_error("options must be an object");
+                return Value();
             }
-            auto decode_char = [url_safe](char c) -> int {
-                if (c >= 'A' && c <= 'Z') return c - 'A';
-                if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-                if (c >= '0' && c <= '9') return c - '0' + 52;
-                if (url_safe) { if (c == '-') return 62; if (c == '_') return 63; }
-                else          { if (c == '+') return 62; if (c == '/') return 63; }
-                return -1;
-            };
-            std::string clean;
-            size_t chars_read = 0;
-            for (size_t i = 0; i < str.size(); i++) {
-                char c = str[i];
-                if (c == '=') { chars_read = i; break; }
-                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;
-                clean += c;
-                chars_read = i + 1;
-            }
-            if (chars_read == 0 && !str.empty()) chars_read = str.size();
-            size_t written = 0;
-            std::vector<uint8_t> bytes;
-            for (size_t i = 0; i < clean.size(); ) {
-                int b0 = i < clean.size() ? decode_char(clean[i++]) : 0;
-                int b1 = i < clean.size() ? decode_char(clean[i++]) : 0;
-                int b2_absent = (i >= clean.size()); int b2 = !b2_absent ? decode_char(clean[i++]) : 0;
-                int b3_absent = (i >= clean.size()); int b3 = !b3_absent ? decode_char(clean[i++]) : 0;
-                if (b0 < 0 || b1 < 0 || (!b2_absent && b2 < 0) || (!b3_absent && b3 < 0)) {
-                    ctx.throw_syntax_error("setFromBase64: invalid character"); return Value();
-                }
-                bytes.push_back((b0 << 2) | (b1 >> 4));
-                if (!b2_absent) bytes.push_back(((b1 & 0xF) << 4) | (b2 >> 2));
-                if (!b3_absent) bytes.push_back(((b2 & 0x3) << 6) | b3);
-            }
-            written = std::min(bytes.size(), ta->length());
-            for (size_t i = 0; i < written; i++) ta->set_element(i, Value((double)bytes[i]));
+            // Detachedness is checked only after the options object's side effects finish.
+            TypedArrayBase* ta = static_cast<TypedArrayBase*>(obj);
+            if (ta->is_out_of_bounds()) { ctx.throw_type_error("setFromBase64: TypedArray is out of bounds"); return Value(); }
+            auto result = Base64Codec::decode(args[0].as_string()->str(), url_safe, mode, ta->length());
+            for (size_t i = 0; i < result.bytes.size(); i++) ta->set_element(i, Value(static_cast<double>(result.bytes[i])));
+            if (result.error) { ctx.throw_syntax_error("setFromBase64: invalid base64 string"); return Value(); }
             auto res = ObjectFactory::create_object();
-            res->set_property("read", Value((double)chars_read));
-            res->set_property("written", Value((double)written));
+            res->set_property("read", Value(static_cast<double>(result.read)));
+            res->set_property("written", Value(static_cast<double>(result.bytes.size())));
             return Value(res.release());
         }, 1).release()), PropertyAttributes::BuiltinFunction);
 }
