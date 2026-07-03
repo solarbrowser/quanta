@@ -9,29 +9,19 @@
 
 #include "quanta/core/runtime/Value.h"
 #include "quanta/core/engine/Context.h"
-#include <chrono>
-#include <ctime>
-#include <iomanip>
-#include <sstream>
+#include <string>
+#include <vector>
 
 namespace Quanta {
 
 class Date {
-private:
-    std::chrono::system_clock::time_point time_point_;
-    bool is_invalid_;
-    
 public:
-    Date();
-    Date(int64_t timestamp);
-    Date(int year, int month, int day = 1, int hour = 0, int minute = 0, int second = 0, int millisecond = 0);
-    
+    static Value date_constructor(Context& ctx, const std::vector<Value>& args);
+
     static Value now(Context& ctx, const std::vector<Value>& args);
     static Value parse(Context& ctx, const std::vector<Value>& args);
     static Value UTC(Context& ctx, const std::vector<Value>& args);
-    
-    static Value date_constructor(Context& ctx, const std::vector<Value>& args);
-    
+
     static Value getTime(Context& ctx, const std::vector<Value>& args);
     static Value getFullYear(Context& ctx, const std::vector<Value>& args);
     static Value getMonth(Context& ctx, const std::vector<Value>& args);
@@ -41,7 +31,18 @@ public:
     static Value getMinutes(Context& ctx, const std::vector<Value>& args);
     static Value getSeconds(Context& ctx, const std::vector<Value>& args);
     static Value getMilliseconds(Context& ctx, const std::vector<Value>& args);
-    
+    static Value getTimezoneOffset(Context& ctx, const std::vector<Value>& args);
+    static Value getYear(Context& ctx, const std::vector<Value>& args);
+
+    static Value getUTCFullYear(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMonth(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCDate(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCDay(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCHours(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMinutes(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCSeconds(Context& ctx, const std::vector<Value>& args);
+    static Value getUTCMilliseconds(Context& ctx, const std::vector<Value>& args);
+
     static Value setTime(Context& ctx, const std::vector<Value>& args);
     static Value setFullYear(Context& ctx, const std::vector<Value>& args);
     static Value setMonth(Context& ctx, const std::vector<Value>& args);
@@ -50,20 +51,7 @@ public:
     static Value setMinutes(Context& ctx, const std::vector<Value>& args);
     static Value setSeconds(Context& ctx, const std::vector<Value>& args);
     static Value setMilliseconds(Context& ctx, const std::vector<Value>& args);
-
-    static Value getYear(Context& ctx, const std::vector<Value>& args);
     static Value setYear(Context& ctx, const std::vector<Value>& args);
-
-    static Value getTimezoneOffset(Context& ctx, const std::vector<Value>& args);
-
-    static Value getUTCDate(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCDay(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCFullYear(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCHours(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCMilliseconds(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCMinutes(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCMonth(Context& ctx, const std::vector<Value>& args);
-    static Value getUTCSeconds(Context& ctx, const std::vector<Value>& args);
 
     static Value setUTCFullYear(Context& ctx, const std::vector<Value>& args);
     static Value setUTCMonth(Context& ctx, const std::vector<Value>& args);
@@ -74,17 +62,20 @@ public:
     static Value setUTCMilliseconds(Context& ctx, const std::vector<Value>& args);
 
     static Value toString(Context& ctx, const std::vector<Value>& args);
+    static Value toDateString(Context& ctx, const std::vector<Value>& args);
+    static Value toTimeString(Context& ctx, const std::vector<Value>& args);
     static Value toISOString(Context& ctx, const std::vector<Value>& args);
-    static Value toJSON(Context& ctx, const std::vector<Value>& args);
-    static Value valueOf(Context& ctx, const std::vector<Value>& args);
     static Value toUTCString(Context& ctx, const std::vector<Value>& args);
     static Value toGMTString(Context& ctx, const std::vector<Value>& args);
+    static Value toJSON(Context& ctx, const std::vector<Value>& args);
     static Value toLocaleString(Context& ctx, const std::vector<Value>& args);
+    static Value toLocaleDateString(Context& ctx, const std::vector<Value>& args);
+    static Value toLocaleTimeString(Context& ctx, const std::vector<Value>& args);
+    static Value valueOf(Context& ctx, const std::vector<Value>& args);
+    static Value symbol_to_primitive(Context& ctx, const std::vector<Value>& args);
 
-    double getTimestamp() const;
-    std::time_t getTimeT() const;
-    std::tm getLocalTime() const;
-    std::tm getUTCTime() const;
+    static double current_time_ms();
+    static std::string to_date_string(double tv);
 };
 
 }
