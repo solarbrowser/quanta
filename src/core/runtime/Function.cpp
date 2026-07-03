@@ -945,8 +945,9 @@ Value Function::construct(Context& ctx, const std::vector<Value>& args) {
     if (is_default_ctor && super_constructor_prop.is_function()) {
         Function* super_constructor = super_constructor_prop.as_function();
         Value super_result;
-        if (super_constructor->is_native()) {
-            // Native built-ins (Boolean, Number, String, etc.) need construct semantics
+        if (super_constructor->is_native() || super_constructor->has_own_property("__default_ctor__")) {
+            // Native built-ins need construct semantics; so does a default-ctor JS parent,
+            // whose own implicit super(...args) only runs inside construct().
             super_result = super_constructor->construct(ctx, args);
         } else {
             super_result = super_constructor->call(ctx, args, this_value);

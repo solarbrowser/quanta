@@ -157,10 +157,12 @@ static TypedArrayBase* typed_array_species_create(Context& ctx, TypedArrayBase* 
 }
 
 // ToIntegerOrInfinity: NaN -> 0, ±Infinity passes through, finite numbers truncate toward zero.
+// The result is a mathematical value, so -0 normalizes to +0.
 static double to_integer_or_infinity(double num) {
     if (std::isnan(num)) return 0.0;
     if (std::isinf(num)) return num;
-    return num < 0 ? -std::floor(-num) : std::floor(num);
+    double r = num < 0 ? -std::floor(-num) : std::floor(num);
+    return r == 0.0 ? 0.0 : r;
 }
 
 // Clamp a relative index to [0, len]: negative wraps from end, Infinity clamps to len.
@@ -641,19 +643,19 @@ void register_typed_array_builtins(Context& ctx) {
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             TypedArrayBase* ta = validate_typed_array(ctx, ctx.get_this_binding());
             if (!ta) return Value();
+            // len is captured before coercion; the coercion can resize the buffer.
+            double len = static_cast<double>(ta->length());
             double rel = args.empty() ? 0.0 : to_integer_or_infinity(to_number_throwing(ctx, args[0]));
             if (ctx.has_exception()) return Value();
-            int64_t len = static_cast<int64_t>(ta->length());
-            int64_t index = static_cast<int64_t>(rel);
-
-            if (index < 0) {
-                index = len + index;
-            }
+            double index = rel >= 0 ? rel : len + rel;
 
             if (index < 0 || index >= len) {
                 return Value();
             }
-
+            // Get(O, k): an index no longer valid after a resize reads as undefined.
+            if (!ta->is_valid_integer_index(index)) {
+                return Value();
+            }
             return ta->get_element(static_cast<size_t>(index));
         }, 1);
     PropertyDescriptor typedarray_at_desc(Value(typedarray_at_fn.release()),
@@ -1222,8 +1224,9 @@ void register_typed_array_builtins(Context& ctx) {
             Value numeric_value = args.size() > 1 ? args[1] : Value();
             numeric_value = is_bigint_kind ? to_bigint_for_typed_array(ctx, numeric_value) : Value(numeric_value.to_number());
             if (ctx.has_exception()) return Value();
-            // Bounds-check the double before casting to int64_t: actual_index_d may be +-Infinity.
-            if (actual_index_d < 0 || actual_index_d >= static_cast<double>(len)) {
+            // IsValidIntegerIndex runs after all coercions, against the current (possibly
+            // resized) state -- not against the length captured at entry.
+            if (!ta->is_valid_integer_index(actual_index_d)) {
                 ctx.throw_range_error("Invalid typed array index");
                 return Value();
             }
@@ -1231,7 +1234,9 @@ void register_typed_array_builtins(Context& ctx) {
             TypedArrayBase* r = create_same_type_typed_array(ctx, ta, static_cast<size_t>(len));
             if (!r) return Value();
             for (int64_t i = 0; i < len; i++) {
-                r->set_element(static_cast<size_t>(i), i == actual_index ? numeric_value : ta->get_element(static_cast<size_t>(i)));
+                Value v = i == actual_index ? numeric_value
+                        : (static_cast<size_t>(i) < ta->length() ? ta->get_element(static_cast<size_t>(i)) : Value());
+                r->set_element(static_cast<size_t>(i), v);
             }
             return Value(r);
         }, 2);
@@ -1287,12 +1292,15 @@ void register_typed_array_builtins(Context& ctx) {
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
-                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                Value arr_val = it->get_property("__arr");
+                auto res = ObjectFactory::create_object();
+                // An exhausted iterator stays done regardless of later buffer resizes.
+                if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                auto res = ObjectFactory::create_object();
-                if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
-                else { auto pair = ObjectFactory::create_object(); pair->set_property("0", Value((double)idx)); pair->set_property("1", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); pair->set_property("length", Value(2.0));
+                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                else { auto pair = ObjectFactory::create_array(2); pair->set_element(0, Value((double)idx)); pair->set_element(1, live->get_element(idx));
                     res->set_property("done", Value(false)); res->set_property("value", Value(pair.release())); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
@@ -1311,11 +1319,13 @@ void register_typed_array_builtins(Context& ctx) {
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
-                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                Value arr_val = it->get_property("__arr");
+                auto res = ObjectFactory::create_object();
+                if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                auto res = ObjectFactory::create_object();
-                if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
                 else { res->set_property("done", Value(false)); res->set_property("value", Value((double)idx)); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
@@ -1334,12 +1344,14 @@ void register_typed_array_builtins(Context& ctx) {
             auto next = ObjectFactory::create_native_function("next", [](Context& ctx, const std::vector<Value>& a) -> Value {
                 // Re-derive length fresh each call (not cached at iterator-creation time), so a length-tracking view sees a mid-iteration resize of its buffer.
                 (void)a; Object* it = ctx.get_this_binding();
-                TypedArrayBase* live = static_cast<TypedArrayBase*>(it->get_property("__arr").as_object());
+                Value arr_val = it->get_property("__arr");
+                auto res = ObjectFactory::create_object();
+                if (!arr_val.is_object()) { res->set_property("done", Value(true)); res->set_property("value", Value()); return Value(res.release()); }
+                TypedArrayBase* live = static_cast<TypedArrayBase*>(arr_val.as_object());
                 if (live->is_out_of_bounds()) { ctx.throw_type_error("TypedArray is out of bounds"); return Value(); }
                 size_t idx = (size_t)it->get_property("__idx").to_number(); size_t len = live->length();
-                auto res = ObjectFactory::create_object();
-                if (idx >= len) { res->set_property("done", Value(true)); res->set_property("value", Value()); }
-                else { res->set_property("done", Value(false)); res->set_property("value", static_cast<TypedArrayBase*>(it->get_property("__arr").as_object())->get_element(idx)); it->set_property("__idx", Value((double)(idx + 1))); }
+                if (idx >= len) { it->set_property("__arr", Value()); res->set_property("done", Value(true)); res->set_property("value", Value()); }
+                else { res->set_property("done", Value(false)); res->set_property("value", live->get_element(idx)); it->set_property("__idx", Value((double)(idx + 1))); }
                 return Value(res.release()); }, 0);
             iter->set_property("next", Value(next.release()));
             return Value(iter.release());
