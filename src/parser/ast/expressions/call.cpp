@@ -243,7 +243,10 @@ Value CallExpression::evaluate(Context& ctx) {
 
                     ctx.set_pending_construct_call(true);
                     Value result;
-                    if (this_obj) {
+                    // A default-ctor parent's own implicit super(...args) only runs via construct().
+                    if (!parent_func->is_native() && parent_func->has_own_property("__default_ctor__")) {
+                        result = parent_func->construct(ctx, arg_values);
+                    } else if (this_obj) {
                         Value this_value(this_obj);
                         result = parent_func->call(ctx, arg_values, this_value);
                     } else {

@@ -15,34 +15,56 @@ namespace Quanta {
 void register_bigint_builtins(Context& ctx) {
     auto bigint_constructor = ObjectFactory::create_native_constructor("BigInt",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (args.empty()) {
-                ctx.throw_exception(Value(std::string("BigInt constructor requires an argument")));
-                return Value();
+            Value prim = args.empty() ? Value() : args[0];
+            // ToPrimitive(value, number) before conversion.
+            if (prim.is_object() || prim.is_function()) {
+                Object* obj = prim.is_function() ? static_cast<Object*>(prim.as_function()) : prim.as_object();
+                Symbol* to_prim_sym = Symbol::get_well_known(Symbol::TO_PRIMITIVE);
+                Value fn = to_prim_sym ? obj->get_property(to_prim_sym->to_property_key()) : Value();
+                if (ctx.has_exception()) return Value();
+                if (fn.is_function()) {
+                    prim = fn.as_function()->call(ctx, {Value(std::string("number"))}, prim);
+                    if (ctx.has_exception()) return Value();
+                    if (prim.is_object() || prim.is_function()) {
+                        ctx.throw_type_error("Symbol.toPrimitive returned an object");
+                        return Value();
+                    }
+                } else {
+                    prim = Value();
+                    for (const char* name : {"valueOf", "toString"}) {
+                        Value m = obj->get_property(name);
+                        if (ctx.has_exception()) return Value();
+                        if (!m.is_function()) continue;
+                        Value r = m.as_function()->call(ctx, {}, Value(obj));
+                        if (ctx.has_exception()) return Value();
+                        if (!r.is_object() && !r.is_function()) { prim = r; break; }
+                    }
+                }
             }
-            
+
             try {
-                if (args[0].is_bigint()) {
-                    return args[0];
-                } else if (args[0].is_number()) {
-                    double num = args[0].as_number();
-                    if (std::floor(num) != num) {
-                        ctx.throw_exception(Value(std::string("Cannot convert non-integer Number to BigInt")));
+                if (prim.is_bigint()) {
+                    return prim;
+                } else if (prim.is_number()) {
+                    double num = prim.as_number();
+                    if (!std::isfinite(num) || std::floor(num) != num) {
+                        ctx.throw_range_error("Cannot convert non-integer Number to BigInt");
                         return Value();
                     }
                     auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(num));
                     return Value(bigint.release());
-                } else if (args[0].is_string()) {
-                    auto bigint = std::make_unique<BigInt>(args[0].to_string());
+                } else if (prim.is_string()) {
+                    auto bigint = std::make_unique<BigInt>(prim.to_string());
                     return Value(bigint.release());
-                } else if (args[0].is_boolean()) {
-                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(args[0].to_boolean() ? 1 : 0));
+                } else if (prim.is_boolean()) {
+                    auto bigint = std::make_unique<BigInt>(static_cast<int64_t>(prim.to_boolean() ? 1 : 0));
                     return Value(bigint.release());
                 } else {
-                    ctx.throw_exception(Value(std::string("Cannot convert value to BigInt")));
+                    ctx.throw_type_error("Cannot convert value to BigInt");
                     return Value();
                 }
             } catch (const std::exception& e) {
-                ctx.throw_exception(Value("Invalid BigInt: " + std::string(e.what())));
+                ctx.throw_syntax_error("Invalid BigInt: " + std::string(e.what()));
                 return Value();
             }
         });
