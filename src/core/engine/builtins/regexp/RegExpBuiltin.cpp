@@ -8,6 +8,7 @@
 #include "quanta/core/runtime/Object.h"
 #include "quanta/core/runtime/RegExp.h"
 #include "quanta/core/runtime/Symbol.h"
+#include "quanta/core/runtime/Iterator.h"
 #include <sstream>
 #include "quanta/parser/AST.h"
 #include <algorithm>
@@ -1136,10 +1137,84 @@ void register_regexp_builtins(Context& ctx) {
         }, 2);
     regexp_prototype->set_property("Symbol.split", Value(regexp_sym_split.release()), PropertyAttributes::BuiltinFunction);
 
+    // %RegExpStringIteratorPrototype%: shared prototype for RegExp.prototype[Symbol.matchAll] results.
+    // Per-instance state lives in "[[RegExpStringIterator*]]" own properties (checked by has_own_property
+    // in `next` so Object.create(iter) -- which inherits but doesn't own them -- correctly TypeErrors).
+    Object* regexp_string_iter_proto = nullptr;
+    {
+        auto proto = ObjectFactory::create_object();
+        proto->set_prototype(Iterator::s_iterator_prototype_);
+        Symbol* tag_sym = Symbol::get_well_known(Symbol::TO_STRING_TAG);
+        if (tag_sym) {
+            PropertyDescriptor tag_desc(Value(std::string("RegExp String Iterator")),
+                static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
+            proto->set_property_descriptor(tag_sym->to_property_key(), tag_desc);
+        }
+        auto next_fn = ObjectFactory::create_native_function("next",
+            [](Context& ctx, const std::vector<Value>&) -> Value {
+                Object* self = ctx.get_this_binding();
+                if (!self || !self->has_own_property("[[RegExpStringIteratorRegExp]]")) {
+                    ctx.throw_type_error("%RegExpStringIteratorPrototype%.next called on incompatible receiver");
+                    return Value();
+                }
+                auto make_result = [](const Value& value, bool done) {
+                    auto result = ObjectFactory::create_object();
+                    result->set_property("value", value);
+                    result->set_property("done", Value(done));
+                    return Value(result.release());
+                };
+                if (self->get_own_property("[[RegExpStringIteratorDone]]").to_boolean()) {
+                    return make_result(Value(), true);
+                }
+                Value r_v = self->get_own_property("[[RegExpStringIteratorRegExp]]");
+                Object* r_obj = r_v.is_function() ? static_cast<Object*>(r_v.as_function()) : r_v.as_object();
+                std::string s = self->get_own_property("[[RegExpStringIteratorString]]").to_string();
+                bool global = self->get_own_property("[[RegExpStringIteratorGlobal]]").to_boolean();
+                bool full_unicode = self->get_own_property("[[RegExpStringIteratorUnicode]]").to_boolean();
+
+                Value match;
+                if (!regexp_exec_abstract(ctx, r_obj, s, match)) return Value();
+                if (match.is_null() || match.is_undefined()) {
+                    self->set_property("[[RegExpStringIteratorDone]]", Value(true));
+                    return make_result(Value(), true);
+                }
+                if (!global) {
+                    self->set_property("[[RegExpStringIteratorDone]]", Value(true));
+                    return make_result(match, false);
+                }
+                Object* m_obj = match.is_function() ? static_cast<Object*>(match.as_function()) : match.as_object();
+                Value m0 = m_obj->get_property("0");
+                if (ctx.has_exception()) return Value();
+                std::string match_str;
+                if (m0.is_symbol()) { ctx.throw_type_error("Cannot convert Symbol to string"); return Value(); }
+                else if (m0.is_object() || m0.is_function()) { match_str = m0.to_property_key(); if (ctx.has_exception()) return Value(); }
+                else { match_str = m0.to_string(); }
+                if (match_str.empty()) {
+                    Value li_v = r_obj->get_property("lastIndex");
+                    if (ctx.has_exception()) return Value();
+                    double this_idx = li_v.to_number();
+                    if (ctx.has_exception()) return Value();
+                    if (std::isnan(this_idx) || this_idx < 0) this_idx = 0;
+                    size_t idx_sz = static_cast<size_t>(this_idx);
+                    size_t next_idx = idx_sz + 1;
+                    if (full_unicode) {
+                        std::u16string s16 = wtf8_to_utf16(s);
+                        if (idx_sz < s16.size() && s16[idx_sz] >= 0xD800 && s16[idx_sz] <= 0xDBFF) next_idx = idx_sz + 2;
+                    }
+                    bool ok = r_obj->set_property("lastIndex", Value(static_cast<double>(next_idx)));
+                    if (ctx.has_exception()) return Value();
+                    if (!ok) { ctx.throw_type_error("Cannot assign to read only property 'lastIndex'"); return Value(); }
+                }
+                return make_result(match, false);
+            }, 0);
+        proto->set_property("next", Value(next_fn.release()), PropertyAttributes::BuiltinFunction);
+        regexp_string_iter_proto = proto.release();
+    }
+
     // RegExp.prototype[Symbol.matchAll]: per-spec, creates a matcher via SpeciesConstructor then returns iterator.
     {
         auto regexp_sym_matchAll = ObjectFactory::create_native_function("[Symbol.matchAll]",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [regexp_string_iter_proto](Context& ctx, const std::vector<Value>& args) -> Value {
                 // Step 1: If Type(R) is not Object, throw TypeError.
                 Value raw_this_ma = ctx.get_binding("this");
                 if (!raw_this_ma.is_object() && !raw_this_ma.is_function()) {
@@ -1216,76 +1291,13 @@ void register_regexp_builtins(Context& ctx) {
                     if (ctx.has_exception()) return Value();
                 }
 
-                struct MatchAllState {
-                    std::string str;
-                    Value matcher;
-                    bool done = false;
-                    bool global = false;
-                    bool full_unicode = false;
-                };
-                auto state = std::make_shared<MatchAllState>(MatchAllState{str, matcher_obj_v, false, global_ma, full_unicode_ma});
                 auto iterator = ObjectFactory::create_object();
-                Object* iter_ptr = iterator.get();
-                auto next_fn = ObjectFactory::create_native_function("next",
-                    [state](Context& ctx, const std::vector<Value>&) -> Value {
-                        auto result = ObjectFactory::create_object();
-                        if (state->done) {
-                            result->set_property("done", Value(true));
-                            result->set_property("value", Value());
-                            return Value(result.release());
-                        }
-                        Object* mx = state->matcher.is_function()
-                            ? static_cast<Object*>(state->matcher.as_function())
-                            : state->matcher.as_object();
-                        if (!mx) { state->done = true; result->set_property("done", Value(true)); result->set_property("value", Value()); return Value(result.release()); }
-                        Value match;
-                        if (!regexp_exec_abstract(ctx, mx, state->str, match)) return Value();
-                        if (match.is_null() || match.is_undefined()) {
-                            state->done = true;
-                            result->set_property("done", Value(true));
-                            result->set_property("value", Value());
-                        } else {
-                            result->set_property("done", Value(false));
-                            result->set_property("value", match);
-                            if (!state->global) {
-                                state->done = true;
-                            } else if (match.is_object()) {
-                                // After zero-length match in global mode, ensure lastIndex advances.
-                                // exec_fn already advances, but verify for custom-exec scenarios.
-                                Value m0 = match.as_object()->get_element(0);
-                                if ((m0.is_undefined() || m0.is_null() || m0.to_string().empty()) && !ctx.has_exception()) {
-                                    Value li_val = mx->get_property("lastIndex");
-                                    if (ctx.has_exception()) return Value();
-                                    double li = li_val.to_number();
-                                    if (ctx.has_exception()) return Value();
-                                    if (std::isnan(li) || li < 0) li = 0;
-                                    size_t cur = static_cast<size_t>(li);
-                                    // Get match index
-                                    Value idx_v = match.as_object()->get_property("index");
-                                    double match_idx = idx_v.is_number() ? idx_v.to_number() : 0;
-                                    size_t mi = (match_idx >= 0) ? static_cast<size_t>(match_idx) : 0;
-                                    size_t min_next = mi + 1;
-                                    if (state->full_unicode) {
-                                        std::u16string s16 = wtf8_to_utf16(state->str);
-                                        if (mi < s16.size() && s16[mi] >= 0xD800 && s16[mi] <= 0xDBFF)
-                                            min_next = mi + 2;
-                                    }
-                                    if (cur < min_next) {
-                                        mx->set_property("lastIndex", Value(static_cast<double>(min_next)));
-                                        if (ctx.has_exception()) return Value();
-                                    }
-                                }
-                            }
-                        }
-                        return Value(result.release());
-                    }, 0);
-                iterator->set_property("next", Value(next_fn.release()));
-                Symbol* iter_sym = Symbol::get_well_known(Symbol::ITERATOR);
-                if (iter_sym) {
-                    auto sym_iter_fn = ObjectFactory::create_native_function("[Symbol.iterator]",
-                        [iter_ptr](Context& ctx, const std::vector<Value>&) -> Value { (void)ctx; return Value(iter_ptr); }, 0);
-                    iterator->set_property(iter_sym->to_property_key(), Value(sym_iter_fn.release()));
-                }
+                iterator->set_prototype(regexp_string_iter_proto);
+                iterator->set_property_descriptor("[[RegExpStringIteratorRegExp]]", PropertyDescriptor(matcher_obj_v, PropertyAttributes::None));
+                iterator->set_property_descriptor("[[RegExpStringIteratorString]]", PropertyDescriptor(Value(str), PropertyAttributes::None));
+                iterator->set_property_descriptor("[[RegExpStringIteratorGlobal]]", PropertyDescriptor(Value(global_ma), PropertyAttributes::None));
+                iterator->set_property_descriptor("[[RegExpStringIteratorUnicode]]", PropertyDescriptor(Value(full_unicode_ma), PropertyAttributes::None));
+                iterator->set_property_descriptor("[[RegExpStringIteratorDone]]", PropertyDescriptor(Value(false), PropertyAttributes::Writable));
                 return Value(iterator.release());
             }, 1);
         Symbol* matchAll_sym = Symbol::get_well_known(Symbol::MATCH_ALL);
