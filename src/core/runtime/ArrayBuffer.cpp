@@ -381,8 +381,12 @@ std::unique_ptr<ArrayBuffer> from_vector(const std::vector<uint8_t>& vec) {
 }
 
 
-SharedArrayBuffer::SharedArrayBuffer(size_t byte_length) 
+SharedArrayBuffer::SharedArrayBuffer(size_t byte_length)
     : ArrayBuffer(byte_length) {
+}
+
+SharedArrayBuffer::SharedArrayBuffer(size_t byte_length, size_t max_byte_length)
+    : ArrayBuffer(byte_length, max_byte_length) {
 }
 
 Value SharedArrayBuffer::constructor(Context& ctx, const std::vector<Value>& args) {

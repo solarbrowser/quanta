@@ -104,12 +104,13 @@ namespace ArrayBufferFactory {
 
 class SharedArrayBuffer : public ArrayBuffer {
 private:
-    
+
 public:
     explicit SharedArrayBuffer(size_t byte_length);
-    
+    SharedArrayBuffer(size_t byte_length, size_t max_byte_length);
+
     static Value constructor(Context& ctx, const std::vector<Value>& args);
-    
+
     bool is_shared_array_buffer() const override { return true; }
 };
 

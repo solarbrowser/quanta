@@ -82,8 +82,10 @@ static Object* resolve_new_target_prototype(Context& ctx, Object* default_proto)
 }
 
 // SpeciesConstructor(O, %ArrayBuffer%) then Construct(C, « newLen »), with result invariants checked.
-static ArrayBuffer* array_buffer_species_create(Context& ctx, Object* o, size_t new_len) {
-    Value default_ctor = ctx.get_binding("ArrayBuffer");
+// SpeciesConstructor(O, %ArrayBuffer%|%SharedArrayBuffer%) then Construct(C, « newLen »).
+// for_shared flips the default constructor and which buffer kind the result must be.
+static ArrayBuffer* array_buffer_species_create(Context& ctx, Object* o, size_t new_len, bool for_shared = false) {
+    Value default_ctor = ctx.get_binding(for_shared ? "SharedArrayBuffer" : "ArrayBuffer");
     Function* ctor_fn = default_ctor.is_function() ? default_ctor.as_function() : nullptr;
 
     Value c = o->get_property("constructor");
@@ -112,8 +114,12 @@ static ArrayBuffer* array_buffer_species_create(Context& ctx, Object* o, size_t 
         return nullptr;
     }
     ArrayBuffer* new_ab = static_cast<ArrayBuffer*>(result.as_object());
-    if (new_ab->is_shared_array_buffer()) { ctx.throw_type_error("Species constructor returned a SharedArrayBuffer"); return nullptr; }
-    if (new_ab->is_detached()) { ctx.throw_type_error("Species constructor returned a detached ArrayBuffer"); return nullptr; }
+    if (new_ab->is_shared_array_buffer() != for_shared) {
+        ctx.throw_type_error(for_shared ? "Species constructor did not return a SharedArrayBuffer"
+                                        : "Species constructor returned a SharedArrayBuffer");
+        return nullptr;
+    }
+    if (!for_shared && new_ab->is_detached()) { ctx.throw_type_error("Species constructor returned a detached ArrayBuffer"); return nullptr; }
     if (static_cast<Object*>(new_ab) == o) { ctx.throw_type_error("Species constructor returned the same ArrayBuffer"); return nullptr; }
     if (new_ab->byte_length() < new_len) { ctx.throw_type_error("Species constructor returned a too-small ArrayBuffer"); return nullptr; }
     return new_ab;
@@ -436,64 +442,182 @@ void register_arraybuffer_builtins(Context& ctx) {
         ctx.register_built_in_object("Atomics", atomics_obj.release());
     }
 
-    // ES2017: SharedArrayBuffer stub constructor
+    // ES2017/ES2024: SharedArrayBuffer, with growable-buffer support (grow/growable/maxByteLength).
     {
+        auto sab_prototype = ObjectFactory::create_object();
+        Object* sab_proto_ptr = sab_prototype.get();
+
         auto sab_constructor = ObjectFactory::create_native_constructor("SharedArrayBuffer",
-            [](Context& ctx, const std::vector<Value>& args) -> Value {
+            [sab_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
                 if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
-                double length_double = args.empty() ? 0.0 : args[0].to_number();
+
+                double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
                 if (ctx.has_exception()) return Value();
-                if (std::isnan(length_double) || length_double < 0 || length_double != std::floor(length_double)) {
-                    ctx.throw_range_error("SharedArrayBuffer size must be a non-negative integer");
+
+                bool has_max = false;
+                double max_byte_length_d = 0.0;
+                if (args.size() > 1 && (args[1].is_object() || args[1].is_function())) {
+                    Object* opts = args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
+                    Value mbl = opts->get_property("maxByteLength");
+                    if (ctx.has_exception()) return Value();
+                    if (!mbl.is_undefined()) {
+                        max_byte_length_d = to_index_checked(ctx, mbl);
+                        if (ctx.has_exception()) return Value();
+                        has_max = true;
+                    }
+                }
+                // Unlike ArrayBuffer, this RangeError precedes prototype resolution.
+                if (has_max && byte_length_d > max_byte_length_d) {
+                    ctx.throw_range_error("SharedArrayBuffer size cannot exceed maxByteLength");
                     return Value();
                 }
-                size_t byte_length = static_cast<size_t>(length_double);
-                auto buf = std::make_unique<SharedArrayBuffer>(byte_length);
-                buf->set_property("_isSharedArrayBuffer", Value(true));
-                return Value(buf.release());
+
+                Object* proto = resolve_new_target_prototype(ctx, sab_proto_ptr);
+                if (ctx.has_exception()) return Value();
+
+                if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {
+                    ctx.throw_range_error("SharedArrayBuffer allocation size is too large");
+                    return Value();
+                }
+
+                try {
+                    std::unique_ptr<SharedArrayBuffer> buf;
+                    if (has_max) {
+                        buf = std::make_unique<SharedArrayBuffer>(static_cast<size_t>(byte_length_d), static_cast<size_t>(max_byte_length_d));
+                    } else {
+                        buf = std::make_unique<SharedArrayBuffer>(static_cast<size_t>(byte_length_d));
+                    }
+                    buf->set_prototype(proto);
+                    return Value(buf.release());
+                } catch (const std::exception&) {
+                    ctx.throw_range_error("SharedArrayBuffer allocation failed: out of memory");
+                    return Value();
+                }
             }, 1);
 
-        auto sab_proto = ObjectFactory::create_object();
+        // RequireInternalSlot(this, [[ArrayBufferData]]) + IsSharedArrayBuffer.
+        auto require_sab = [](Context& ctx, const char* name) -> SharedArrayBuffer* {
+            Object* obj = ctx.get_this_binding();
+            if (!obj || !obj->is_array_buffer() || !obj->is_shared_array_buffer()) {
+                ctx.throw_type_error(std::string(name) + " requires a SharedArrayBuffer this");
+                return nullptr;
+            }
+            return static_cast<SharedArrayBuffer*>(obj);
+        };
 
-        // byteLength getter
         auto byte_length_getter = ObjectFactory::create_native_function("get byteLength",
-            [](Context& ctx, const std::vector<Value>&) -> Value {
-                Object* this_obj = ctx.get_this_binding();
-                if (!this_obj) return Value(0.0);
-                return this_obj->get_property("byteLength");
+            [require_sab](Context& ctx, const std::vector<Value>&) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, "byteLength");
+                if (!ab) return Value();
+                return Value(static_cast<double>(ab->byte_length()));
             }, 0);
         PropertyDescriptor bl_desc;
         bl_desc.set_getter(byte_length_getter.release());
+        bl_desc.set_enumerable(false);
         bl_desc.set_configurable(true);
-        sab_proto->set_property_descriptor("byteLength", bl_desc);
+        sab_prototype->set_property_descriptor("byteLength", bl_desc);
 
-        // slice stub
+        auto growable_getter = ObjectFactory::create_native_function("get growable",
+            [require_sab](Context& ctx, const std::vector<Value>&) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, "growable");
+                if (!ab) return Value();
+                return Value(ab->is_resizable());
+            }, 0);
+        PropertyDescriptor growable_desc;
+        growable_desc.set_getter(growable_getter.release());
+        growable_desc.set_enumerable(false);
+        growable_desc.set_configurable(true);
+        sab_prototype->set_property_descriptor("growable", growable_desc);
+
+        auto max_byte_length_getter = ObjectFactory::create_native_function("get maxByteLength",
+            [require_sab](Context& ctx, const std::vector<Value>&) -> Value {
+                ArrayBuffer* ab = require_sab(ctx, "maxByteLength");
+                if (!ab) return Value();
+                return Value(static_cast<double>(ab->is_resizable() ? ab->max_byte_length() : ab->byte_length()));
+            }, 0);
+        PropertyDescriptor mbl_desc;
+        mbl_desc.set_getter(max_byte_length_getter.release());
+        mbl_desc.set_enumerable(false);
+        mbl_desc.set_configurable(true);
+        sab_prototype->set_property_descriptor("maxByteLength", mbl_desc);
+
+        auto sab_grow = ObjectFactory::create_native_function("grow",
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* obj = ctx.get_this_binding();
+                if (!obj || !obj->is_array_buffer() || !static_cast<ArrayBuffer*>(obj)->is_resizable()) {
+                    ctx.throw_type_error("grow requires a growable SharedArrayBuffer this");
+                    return Value();
+                }
+                if (!obj->is_shared_array_buffer()) { ctx.throw_type_error("grow requires a SharedArrayBuffer this"); return Value(); }
+                ArrayBuffer* ab = static_cast<ArrayBuffer*>(obj);
+                // Spec: ToIntegerOrInfinity here, not ToIndex (grow uses a plain range check below).
+                double new_len = to_integer_or_infinity_checked(ctx, args.empty() ? Value() : args[0]);
+                if (ctx.has_exception()) return Value();
+                if (new_len < 0 || new_len > ab->max_byte_length()) {
+                    ctx.throw_range_error("Invalid SharedArrayBuffer grow length");
+                    return Value();
+                }
+                ab->resize(static_cast<size_t>(new_len));
+                return Value();
+            }, 1);
+        sab_prototype->set_property_descriptor("grow",
+            PropertyDescriptor(Value(sab_grow.release()), PropertyAttributes::BuiltinFunction));
+
         auto sab_slice = ObjectFactory::create_native_function("slice",
-            [](Context&, const std::vector<Value>&) -> Value {
-                auto obj = ObjectFactory::create_object();
-                return Value(static_cast<Object*>(obj.release()));
+            [](Context& ctx, const std::vector<Value>& args) -> Value {
+                Object* this_obj = ctx.get_this_binding();
+                if (!this_obj || !this_obj->is_array_buffer() || !this_obj->is_shared_array_buffer()) {
+                    ctx.throw_type_error("SharedArrayBuffer.prototype.slice called on non-SharedArrayBuffer");
+                    return Value();
+                }
+                ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
+                double len = static_cast<double>(ab->byte_length());
+                double start = 0, end = len;
+                if (!args.empty()) {
+                    double s = to_integer_or_infinity_checked(ctx, args[0]);
+                    if (ctx.has_exception()) return Value();
+                    start = s < 0 ? std::max(len + s, 0.0) : std::min(s, len);
+                }
+                if (args.size() > 1 && !args[1].is_undefined()) {
+                    double e = to_integer_or_infinity_checked(ctx, args[1]);
+                    if (ctx.has_exception()) return Value();
+                    end = e < 0 ? std::max(len + e, 0.0) : std::min(e, len);
+                }
+                size_t new_len = end > start ? static_cast<size_t>(end - start) : 0;
+                size_t start_offset = static_cast<size_t>(start);
+                ArrayBuffer* new_ab = array_buffer_species_create(ctx, this_obj, new_len, /*for_shared=*/true);
+                if (!new_ab) return Value();
+                std::vector<uint8_t> tmp(new_len);
+                if (new_len > 0) {
+                    ab->read_bytes(start_offset, tmp.data(), new_len);
+                    new_ab->write_bytes(0, tmp.data(), new_len);
+                }
+                return Value(new_ab);
             }, 2);
-        sab_proto->set_property("slice", Value(sab_slice.release()), PropertyAttributes::BuiltinFunction);
+        sab_prototype->set_property_descriptor("slice",
+            PropertyDescriptor(Value(sab_slice.release()), PropertyAttributes::BuiltinFunction));
 
-        // Symbol.toStringTag = "SharedArrayBuffer"
         Symbol* to_string_tag = Symbol::get_well_known(Symbol::TO_STRING_TAG);
         if (to_string_tag) {
             PropertyDescriptor tag_desc(Value(std::string("SharedArrayBuffer")),
                 static_cast<PropertyAttributes>(PropertyAttributes::Configurable));
-            sab_proto->set_property_descriptor(to_string_tag->to_property_key(), tag_desc);
+            sab_prototype->set_property_descriptor(to_string_tag->to_property_key(), tag_desc);
         }
 
-        sab_constructor->set_property("prototype", Value(sab_proto.release()), PropertyAttributes::None);
+        sab_prototype->set_property_descriptor("constructor",
+            PropertyDescriptor(Value(sab_constructor.get()),
+                static_cast<PropertyAttributes>(PropertyAttributes::Writable | PropertyAttributes::Configurable)));
+        sab_constructor->set_property("prototype", Value(sab_prototype.release()), PropertyAttributes::None);
 
-        // Symbol.species getter
         Symbol* species_sym = Symbol::get_well_known(Symbol::SPECIES);
         if (species_sym) {
             auto species_getter = ObjectFactory::create_native_function("get [Symbol.species]",
                 [](Context& ctx, const std::vector<Value>&) -> Value {
-                    return ctx.get_binding("SharedArrayBuffer");
+                    return Value(ctx.get_this_binding());
                 }, 0);
             PropertyDescriptor species_desc;
             species_desc.set_getter(species_getter.release());
+            species_desc.set_enumerable(false);
             species_desc.set_configurable(true);
             sab_constructor->set_property_descriptor(species_sym->to_property_key(), species_desc);
         }
