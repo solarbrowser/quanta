@@ -45,6 +45,42 @@ static double to_number_checked(Context& ctx, const Value& v) {
     return n;
 }
 
+// ToIntegerOrInfinity: NaN -> 0, +-Infinity pass through, finite values truncate toward zero.
+static double to_integer_or_infinity_checked(Context& ctx, const Value& v) {
+    double number = to_number_checked(ctx, v);
+    if (ctx.has_exception()) return 0.0;
+    if (std::isnan(number)) return 0.0;
+    if (std::isinf(number)) return number;
+    return number < 0 ? -std::floor(-number) : std::floor(number);
+}
+
+// ToIndex: undefined -> 0, NaN -> 0, RangeError outside [0, 2^53-1].
+static double to_index_checked(Context& ctx, const Value& v) {
+    if (v.is_undefined()) return 0.0;
+    double integer = to_integer_or_infinity_checked(ctx, v);
+    if (ctx.has_exception()) return 0.0;
+    if (integer < 0 || integer > 9007199254740991.0) {
+        ctx.throw_range_error("Invalid index: out of range");
+        return 0.0;
+    }
+    return integer;
+}
+
+// Reject before actually attempting posix_memalign/memset on a multi-petabyte request.
+static constexpr double kMaxAllocatableBytes = 4294967296.0; // 4 GiB
+
+// GetPrototypeFromConstructor: new.target's own "prototype", falling back to default_proto.
+static Object* resolve_new_target_prototype(Context& ctx, Object* default_proto) {
+    Value nt = ctx.get_new_target();
+    if (!nt.is_object() && !nt.is_function()) return default_proto;
+    Object* nt_obj = nt.is_function() ? static_cast<Object*>(nt.as_function()) : nt.as_object();
+    Value p = nt_obj->get_property("prototype");
+    if (ctx.has_exception()) return nullptr;
+    if (p.is_object()) return p.as_object();
+    if (p.is_function()) return static_cast<Object*>(p.as_function());
+    return default_proto;
+}
+
 // SpeciesConstructor(O, %ArrayBuffer%) then Construct(C, « newLen »), with result invariants checked.
 static ArrayBuffer* array_buffer_species_create(Context& ctx, Object* o, size_t new_len) {
     Value default_ctor = ctx.get_binding("ArrayBuffer");
@@ -119,59 +155,58 @@ static Value array_buffer_copy_and_detach(Context& ctx, Object* this_obj, const 
 }
 
 void register_arraybuffer_builtins(Context& ctx) {
-    auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
-        [](Context& ctx, const std::vector<Value>& args) -> Value {
-            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
-            double length_double = 0.0;
+    auto arraybuffer_prototype = ObjectFactory::create_object();
+    Object* arraybuffer_proto_ptr = arraybuffer_prototype.get();
 
-            if (!args.empty()) {
-                if (!args[0].is_number()) {
-                    ctx.throw_type_error("ArrayBuffer size must be a number");
-                    return Value();
+    auto arraybuffer_constructor = ObjectFactory::create_native_constructor("ArrayBuffer",
+        [arraybuffer_proto_ptr](Context& ctx, const std::vector<Value>& args) -> Value {
+            if (!ctx.is_in_constructor_call()) { ctx.throw_type_error("Constructor cannot be invoked without 'new'"); return Value(); }
+
+            double byte_length_d = to_index_checked(ctx, args.empty() ? Value() : args[0]);
+            if (ctx.has_exception()) return Value();
+
+            bool has_max = false;
+            double max_byte_length_d = 0.0;
+            if (args.size() > 1 && (args[1].is_object() || args[1].is_function())) {
+                Object* opts = args[1].is_function() ? static_cast<Object*>(args[1].as_function()) : args[1].as_object();
+                Value mbl = opts->get_property("maxByteLength");
+                if (ctx.has_exception()) return Value();
+                if (!mbl.is_undefined()) {
+                    max_byte_length_d = to_index_checked(ctx, mbl);
+                    if (ctx.has_exception()) return Value();
+                    has_max = true;
                 }
-                length_double = args[0].as_number();
             }
-            if (length_double < 0 || length_double != std::floor(length_double)) {
-                ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
+            if (has_max && byte_length_d > max_byte_length_d) {
+                ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength");
                 return Value();
             }
 
-            size_t byte_length = static_cast<size_t>(length_double);
+            // Prototype resolves before allocation: a throwing prototype getter
+            // must preempt a RangeError from an oversized request.
+            Object* proto = resolve_new_target_prototype(ctx, arraybuffer_proto_ptr);
+            if (ctx.has_exception()) return Value();
+
+            if ((has_max ? max_byte_length_d : byte_length_d) > kMaxAllocatableBytes) {
+                ctx.throw_range_error("ArrayBuffer allocation size is too large");
+                return Value();
+            }
 
             try {
                 std::unique_ptr<ArrayBuffer> buffer_obj;
-                if (args.size() > 1 && args[1].is_object()) {
-                    Value max_byte_length_val = args[1].as_object()->get_property("maxByteLength");
-                    if (!max_byte_length_val.is_undefined()) {
-                        double mbl_double = max_byte_length_val.to_number();
-                        if (std::isnan(mbl_double) || mbl_double < 0 || mbl_double != std::floor(mbl_double)) {
-                            ctx.throw_range_error("maxByteLength must be a non-negative integer");
-                            return Value();
-                        }
-                        size_t max_byte_length = static_cast<size_t>(mbl_double);
-                        if (byte_length > max_byte_length) {
-                            ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength");
-                            return Value();
-                        }
-                        buffer_obj = std::make_unique<ArrayBuffer>(byte_length, max_byte_length);
-                    }
+                if (has_max) {
+                    buffer_obj = std::make_unique<ArrayBuffer>(static_cast<size_t>(byte_length_d), static_cast<size_t>(max_byte_length_d));
+                } else {
+                    buffer_obj = std::make_unique<ArrayBuffer>(static_cast<size_t>(byte_length_d));
                 }
-                if (!buffer_obj) buffer_obj = std::make_unique<ArrayBuffer>(byte_length);
                 buffer_obj->set_property("_isArrayBuffer", Value(true));
-
-                if (ctx.has_binding("ArrayBuffer")) {
-                    Value arraybuffer_ctor = ctx.get_binding("ArrayBuffer");
-                    if (!arraybuffer_ctor.is_undefined()) {
-                        buffer_obj->set_property("constructor", arraybuffer_ctor);
-                    }
-                }
-                
+                buffer_obj->set_prototype(proto);
                 return Value(buffer_obj.release());
-            } catch (const std::exception& e) {
-                ctx.throw_error(std::string("ArrayBuffer allocation failed: ") + e.what());
+            } catch (const std::exception&) {
+                ctx.throw_range_error("ArrayBuffer allocation failed: out of memory");
                 return Value();
             }
-        });
+        }, 1);
     
     auto arraybuffer_isView = ObjectFactory::create_native_function("isView",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -199,8 +234,6 @@ void register_arraybuffer_builtins(Context& ctx) {
     arraybuffer_isView->set_property_descriptor("length", isView_length_desc);
 
     arraybuffer_constructor->set_property("isView", Value(arraybuffer_isView.release()), PropertyAttributes::BuiltinFunction);
-
-    auto arraybuffer_prototype = ObjectFactory::create_object();
 
     auto byteLength_getter = ObjectFactory::create_native_function("get byteLength",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
@@ -245,25 +278,26 @@ void register_arraybuffer_builtins(Context& ctx) {
             if (this_obj->is_shared_array_buffer()) { ctx.throw_type_error("ArrayBuffer.prototype.slice called on a SharedArrayBuffer"); return Value(); }
             ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
             if (ab->is_detached()) { ctx.throw_type_error("Cannot slice a detached ArrayBuffer"); return Value(); }
-            int64_t len = static_cast<int64_t>(ab->byte_length());
-            int64_t start = 0, end = len;
+            double len = static_cast<double>(ab->byte_length());
+            double start = 0, end = len;
             if (!args.empty()) {
-                int64_t s = static_cast<int64_t>(args[0].to_number());
+                double s = to_integer_or_infinity_checked(ctx, args[0]);
                 if (ctx.has_exception()) return Value();
-                start = s < 0 ? (s + len < 0 ? 0 : s + len) : (s > len ? len : s);
+                start = s < 0 ? std::max(len + s, 0.0) : std::min(s, len);
             }
             if (args.size() > 1 && !args[1].is_undefined()) {
-                int64_t e = static_cast<int64_t>(args[1].to_number());
+                double e = to_integer_or_infinity_checked(ctx, args[1]);
                 if (ctx.has_exception()) return Value();
-                end = e < 0 ? (e + len < 0 ? 0 : e + len) : (e > len ? len : e);
+                end = e < 0 ? std::max(len + e, 0.0) : std::min(e, len);
             }
             size_t new_len = end > start ? static_cast<size_t>(end - start) : 0;
+            size_t start_offset = static_cast<size_t>(start);
             ArrayBuffer* new_ab = array_buffer_species_create(ctx, this_obj, new_len);
             if (!new_ab) return Value();
             if (ab->is_detached()) { ctx.throw_type_error("ArrayBuffer was detached during species construction"); return Value(); }
             std::vector<uint8_t> tmp(new_len);
             if (new_len > 0) {
-                ab->read_bytes(static_cast<size_t>(start), tmp.data(), new_len);
+                ab->read_bytes(start_offset, tmp.data(), new_len);
                 new_ab->write_bytes(0, tmp.data(), new_len);
             }
             return Value(new_ab);
@@ -280,21 +314,19 @@ void register_arraybuffer_builtins(Context& ctx) {
                 return Value();
             }
             ArrayBuffer* ab = static_cast<ArrayBuffer*>(this_obj);
-            if (ab->is_detached()) {
-                ctx.throw_type_error("Cannot resize a detached ArrayBuffer");
-                return Value();
-            }
             if (!ab->is_resizable()) {
                 ctx.throw_type_error("Cannot resize a non-resizable ArrayBuffer");
                 return Value();
             }
-            double new_len_double = args.empty() ? 0.0 : to_number_checked(ctx, args[0]);
+            // ToIndex(newLength) runs before the detached check: a valueOf that
+            // detaches the buffer as a side effect must still be observed.
+            double new_len_double = to_index_checked(ctx, args.empty() ? Value() : args[0]);
             if (ctx.has_exception()) return Value();
-            if (std::isnan(new_len_double) || new_len_double < 0 || new_len_double != std::floor(new_len_double)) {
-                ctx.throw_range_error("ArrayBuffer size must be a non-negative integer");
+            if (ab->is_detached()) {
+                ctx.throw_type_error("Cannot resize a detached ArrayBuffer");
                 return Value();
             }
-            if (static_cast<size_t>(new_len_double) > ab->max_byte_length()) {
+            if (new_len_double > ab->max_byte_length()) {
                 ctx.throw_range_error("ArrayBuffer size cannot exceed maxByteLength");
                 return Value();
             }
