@@ -170,35 +170,20 @@ static bool regexp_exec_abstract(Context& ctx, Object* r, const std::string& str
 void register_regexp_builtins(Context& ctx) {
     auto regexp_prototype = ObjectFactory::create_object();
 
+    // Annex B compile - delegates to [[compile]] (mirrors exec/[[exec]]) so it actually recompiles.
     auto compile_fn = ObjectFactory::create_native_function("compile",
         [](Context& ctx, const std::vector<Value>& args) -> Value {
             Object* this_obj = ctx.get_this_binding();
-            if (!this_obj) {
-                ctx.throw_type_error("RegExp.prototype.compile called on null or undefined");
+            if (!this_obj || !this_obj->get_own_property("_isRegExp").to_boolean()) {
+                ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
                 return Value();
             }
-
-            std::string pattern = "";
-            std::string flags = "";
-
-            if (args.size() > 0) {
-                pattern = args[0].to_string();
+            Value own_compile = this_obj->get_own_property("[[compile]]");
+            if (own_compile.is_function()) {
+                return own_compile.as_function()->call(ctx, args, Value(this_obj));
             }
-            if (args.size() > 1 && !args[1].is_undefined() && !args[1].is_null()) {
-                flags = args[1].to_string();
-            }
-
-            this_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(pattern), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(flags.find('g') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(flags.find('i') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(flags.find('m') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(flags.find('u') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(flags.find('y') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(flags.find('s') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(flags.find('d') != std::string::npos), PropertyAttributes::None));
-            this_obj->set_property("lastIndex", Value(0.0));
-
-            return Value(this_obj);
+            ctx.throw_type_error("RegExp.prototype.compile called on incompatible receiver");
+            return Value();
         }, 2);
     regexp_prototype->set_property("compile", Value(compile_fn.release()), PropertyAttributes::BuiltinFunction);
 
@@ -307,14 +292,14 @@ void register_regexp_builtins(Context& ctx) {
 
                 regex_obj->set_property("_isRegExp", Value(true), PropertyAttributes::Writable);
                 // Internal flag slots: stored under [[name]] keys so they don't shadow the prototype accessor getters (the correct public interface per ES2015+).
-                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::None));
+                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
                 {
                     PropertyDescriptor us_desc(Value(regexp_impl->get_unicode_sets()), PropertyAttributes::BuiltinFunction);
                     regex_obj->set_property_descriptor("unicodeSets", us_desc);
@@ -372,28 +357,29 @@ void register_regexp_builtins(Context& ctx) {
 
                         regexp_impl->compile(pattern, flags);
 
-                        regex_obj_ptr->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::None));
-                        regex_obj_ptr->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::None));
+                        regex_obj_ptr->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
+                        regex_obj_ptr->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
                         regex_obj_ptr->set_property("lastIndex", Value(0.0));
 
                         return Value(regex_obj_ptr);
                     }, 2);
-                regex_obj->set_property("compile", Value(compile_inst_fn.release()), PropertyAttributes::BuiltinFunction);
+                regex_obj->set_property_descriptor("[[compile]]",
+                    PropertyDescriptor(Value(compile_inst_fn.release()), PropertyAttributes::None));
 
-                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::None));
-                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::None));
+                regex_obj->set_property_descriptor("[[source]]",     PropertyDescriptor(Value(regexp_impl->get_source()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[global]]",     PropertyDescriptor(Value(regexp_impl->get_global()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[ignoreCase]]", PropertyDescriptor(Value(regexp_impl->get_ignore_case()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[multiline]]",  PropertyDescriptor(Value(regexp_impl->get_multiline()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[unicode]]",    PropertyDescriptor(Value(regexp_impl->get_unicode() && !regexp_impl->get_unicode_sets()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[sticky]]",     PropertyDescriptor(Value(regexp_impl->get_sticky()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[dotAll]]",     PropertyDescriptor(Value(regexp_impl->get_dotall()), PropertyAttributes::Configurable));
+                regex_obj->set_property_descriptor("[[hasIndices]]", PropertyDescriptor(Value(regexp_impl->get_flags().find('d') != std::string::npos), PropertyAttributes::Configurable));
                 regex_obj->set_property("lastIndex", Value(static_cast<double>(regexp_impl->get_last_index())));
 
                 Object* regex_raw = regex_obj.release();
