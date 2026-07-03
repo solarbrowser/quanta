@@ -535,6 +535,11 @@ Value BinaryExpression::evaluate(Context& ctx) {
             ctx.throw_type_error("Cannot convert object to primitive value");
             return Value();
         }
+        // GetMethod: a present but non-callable @@toPrimitive is a TypeError.
+        if (!toPrim.is_undefined() && !toPrim.is_null()) {
+            ctx.throw_type_error("Symbol.toPrimitive is not a function");
+            return Value();
+        }
         bool prefer_string = obj->has_property("_isDate") || hint == "string";
 
         if (prefer_string) {

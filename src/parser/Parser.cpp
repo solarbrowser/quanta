@@ -8296,21 +8296,30 @@ std::unique_ptr<ASTNode> Parser::parse_object_literal() {
                     tokens_[peek_idx].get_type() == TokenType::COMMENT)) {
                 peek_idx++;
             }
-            bool async_has_lt = (peek_idx < tokens_.size() &&
-                                 tokens_[peek_idx].get_start().line > async_line);
-            bool async_next_is_method = (peek_idx + 1 < tokens_.size() &&
-                (tokens_[peek_idx].get_type() == TokenType::IDENTIFIER ||
-                 tokens_[peek_idx].get_type() == TokenType::LEFT_BRACKET ||
-                 tokens_[peek_idx].get_type() == TokenType::STRING ||
-                 tokens_[peek_idx].get_type() == TokenType::NUMBER ||
-                 tokens_[peek_idx].get_type() == TokenType::MULTIPLY ||
-                 is_keyword_token(tokens_[peek_idx].get_type())));
-            if (async_has_lt && async_next_is_method) {
-                add_error("SyntaxError: Line terminator not allowed between 'async' and method name");
-                return nullptr;
+            // `async` immediately followed by ':' ',' '}' or '(' is the property key/shorthand
+            // itself (e.g. {async: 1}, {async}, {async(){}}), not the async-method modifier.
+            bool async_is_key_itself = (peek_idx < tokens_.size() &&
+                (tokens_[peek_idx].get_type() == TokenType::COLON ||
+                 tokens_[peek_idx].get_type() == TokenType::COMMA ||
+                 tokens_[peek_idx].get_type() == TokenType::RIGHT_BRACE ||
+                 tokens_[peek_idx].get_type() == TokenType::LEFT_PAREN));
+            if (!async_is_key_itself) {
+                bool async_has_lt = (peek_idx < tokens_.size() &&
+                                     tokens_[peek_idx].get_start().line > async_line);
+                bool async_next_is_method = (peek_idx + 1 < tokens_.size() &&
+                    (tokens_[peek_idx].get_type() == TokenType::IDENTIFIER ||
+                     tokens_[peek_idx].get_type() == TokenType::LEFT_BRACKET ||
+                     tokens_[peek_idx].get_type() == TokenType::STRING ||
+                     tokens_[peek_idx].get_type() == TokenType::NUMBER ||
+                     tokens_[peek_idx].get_type() == TokenType::MULTIPLY ||
+                     is_keyword_token(tokens_[peek_idx].get_type())));
+                if (async_has_lt && async_next_is_method) {
+                    add_error("SyntaxError: Line terminator not allowed between 'async' and method name");
+                    return nullptr;
+                }
+                is_async = true;
+                advance();
             }
-            is_async = true;
-            advance();
         }
 
         bool is_generator = false;
@@ -10104,9 +10113,10 @@ std::unique_ptr<ASTNode> Parser::parse_destructuring_pattern(int depth) {
                        current_token().get_type() == TokenType::NUMBER ||
                        current_token().get_type() == TokenType::STRING ||
                        current_token().get_type() == TokenType::BIGINT_LITERAL ||
+                       current_token().get_type() == TokenType::ASYNC ||
                        (current_token().get_type() == TokenType::AWAIT && !options_.in_async_body && !options_.source_type_module && !options_.in_class_static_block) ||
                        (current_token().get_type() == TokenType::YIELD && !options_.in_generator_body && !options_.strict_mode)) {
-                // AWAIT/YIELD used as identifier bindings are NOT literal keys (they behave like IDENTIFIER)
+                // ASYNC/AWAIT/YIELD used as identifier bindings are NOT literal keys (they behave like IDENTIFIER)
                 bool is_literal_key = (current_token().get_type() == TokenType::NUMBER ||
                                        current_token().get_type() == TokenType::STRING ||
                                        current_token().get_type() == TokenType::BIGINT_LITERAL);
